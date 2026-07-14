@@ -1,0 +1,31 @@
+{
+  "name": "claudetools",
+  "owner": {
+    "name": "Jim Cline",
+    "url": "https://github.com/JimCline"
+  },
+  "metadata": {
+    "description": "Claude Code plugins by Jim Cline — context-window discipline and related tooling.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "output-discipline",
+      "source": "./output-discipline",
+      "description": "Stops Claude Code from flooding the context window with command output. Blocks streaming/foreground long-running commands before they run and coaches toward background tasks and redirect-then-grep.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Jim Cline"
+      },
+      "license": "MIT",
+      "keywords": [
+        "context-window",
+        "tokens",
+        "hooks",
+        "bash",
+        "cost"
+      ],
+      "category": "productivity"
+    }
+  ]
+}

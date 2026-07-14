@@ -1,0 +1,27 @@
+{
+  "description": "output-discipline — PreToolUse gate on Bash that blocks context-flooding commands before they run; SessionStart injects the output-discipline rules on startup, resume, clear, and post-compaction so they survive compaction.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-bash.mjs\""
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}
