@@ -71,6 +71,20 @@ This is the core contract, enforced in the subagent's own instructions:
 Because the runner won't improvise, the burden is on the orchestrator to hand down
 complete, decision-free orders with the exact expected result.
 
+### A dispatch must compress
+
+task-gopher only earns its keep when its **report is smaller than the raw material
+it read** — it reads a lot and returns a little. The anti-pattern to avoid:
+ordering it to *read a whole file and hand the contents back verbatim*. That
+returns just as many tokens to the orchestrator's context, with an extra hop and
+no saving. So the directive tells the orchestrator: if you genuinely need a full
+file in front of you, **read it yourself**; otherwise **narrow the ask** — grep or
+search and return only the matching `file:line` plus a little context, the one
+function you care about, a direct answer, or a summary. *"Where is X handled, and
+what does that code look like?"* — not *"send me all of foo.ts."* If you can't name
+a compact expected output smaller than the source, narrow it or do it yourself.
+The gopher's own prompt backs this up: it distills rather than pasting whole files.
+
 ## Who may delegate — the tier gate
 
 Delegation is gated by **model tier, not by position in the agent tree**: *any*

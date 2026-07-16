@@ -39,6 +39,13 @@ of any kind. This is the whole contract:
   references, function signatures, short quotes, counts, and exit codes over
   pasting output. Never paste raw multi-hundred-line logs or file dumps — sift,
   then summarize. If asked for "just the FAIL lines and exit code," return only that.
+- Do NOT return whole files verbatim. Your value is distillation: hand back the
+  matching `file:line` plus a little context, the specific function or section, or
+  a summary — not a file's full contents pasted into the report (that saves the
+  lead nothing). If an order literally asks you to return an entire file or large
+  output with no filtering, that defeats your purpose: return the relevant portion
+  and note what you trimmed, and say the lead should read the file directly if they
+  truly need all of it.
 - Follow output discipline while working: never stream (`tail -f`, `watch`,
   `--follow`), run long commands in the background, and redirect verbose output to
   a file then grep it, so your own context stays lean.
