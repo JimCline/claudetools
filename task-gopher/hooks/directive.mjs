@@ -75,6 +75,14 @@ export const FULL_DIRECTIVE = [
   "",
   'Decision rule (apply fast, do not overthink it): "Would doing this myself flood my context, OR is it a mechanical task I can specify exactly? -> dispatch it. Does it need MY judgment? -> keep the judgment, dispatch only the legwork." When unsure whether a step needs reasoning, keep it.',
   "",
+  "This is a DEFAULT, not a preference you re-decide per step. The failure mode to avoid: talking yourself out of it one step at a time — \"this single read / grep / diff is quick enough to just do myself.\" Individually small retrievals are EXACTLY what floods your context in aggregate, and \"it's quick\" is not a reason to keep it. The trigger is the KIND of work (reading files, grepping, diffing, running commands), not the size of any one step. If you notice you are about to run a Read/Grep/Glob/Bash retrieval directly, treat that as the signal to dispatch instead.",
+  "",
+  'Batch, do not skip: when you have several small retrieval steps (read these 3 files, grep for X, diff against main), bundle them into ONE task-gopher order rather than doing them inline because each looks trivial. One dispatch with a clear spec returns one compact report — that is cheaper than both doing them yourself AND than many tiny dispatches.',
+  "",
+  "Reserve doing it yourself for: work that needs YOUR judgment, or a genuinely singular trivial peek where a dispatch would plainly cost more than the step (e.g. re-reading one short file already partly in your context). Everything else in the retrieval/tool-heavy category is a dispatch by default.",
+  "",
+  "Skill/command overrides win: if an active skill or command explicitly mandates a DIFFERENT subagent for a class of work (e.g. a GitHub worker that owns the MCP connection), follow that — it is a deliberate override, not a violation of this directive. Absent such an override, task-gopher is the default for tool-heavy and info-gathering work.",
+  "",
   '`task-gopher` is a PURE task-runner: it never reasons, decides, or fills gaps, and it makes no design/correctness/security calls. It will STOP and report back if an order is ambiguous rather than guess. So the burden is on YOU to hand down COMPLETE orders — the exact task, and the exact expected result / compact output you want back (e.g. "run `npm test`, report only the FAIL lines and the exit code"; "just the file:line and the function signature"). Never dispatch a step that would require the runner to make a choice. It cannot see your context — every order must be self-contained.',
   "",
   "Escape hatch: if `task-gopher` returns incomplete, wrong, or insufficient information, or reports it could not proceed (usually because an order needed a decision), you MAY do it yourself or re-dispatch ONCE with a sharper, fully-specified order. Do not ping-pong more than about once before taking it over — a stalled dispatch costs more than just doing it.",
@@ -82,4 +90,4 @@ export const FULL_DIRECTIVE = [
 
 /** Compact per-turn reminder — injected at UserPromptSubmit to keep the behavior alive. */
 export const SHORT_REMINDER =
-  "[task-gopher: ON] If you are Sonnet-tier or higher (any agent, top-level or subagent): prefer dispatching tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders, and keep reasoning for yourself. If you are Haiku-tier, ignore this. Escape hatch: take it over if the runner fails or returns too little.";
+  "[task-gopher: ON] If you are Sonnet-tier or higher (any agent, top-level or subagent): by DEFAULT dispatch tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders, and keep reasoning for yourself. Don't do small reads/greps/diffs inline because they seem quick — batch them into one order; that per-step rationalization is the failure mode. If you are Haiku-tier, ignore this. Escape hatch: take it over if the runner fails or returns too little.";

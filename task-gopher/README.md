@@ -43,6 +43,16 @@ reasoning deciding what to dispatch):
 > specify exactly? → dispatch it. Does it need my judgment? → keep the judgment,
 > dispatch only the legwork. When unsure, keep it.
 
+It's a **default, not a per-step preference.** The failure mode the directive
+guards against is talking yourself out of it one step at a time — "this single
+read / grep / diff is quick enough to just do myself." Individually small
+retrievals are exactly what floods context in aggregate, so the trigger is the
+*kind* of work, not the size of any one step. When several small retrievals come
+up together (read these 3 files, grep for X, diff against main), the agent
+**batches them into one order** rather than doing them inline. And an explicit
+skill/command override (e.g. a GitHub worker that owns the MCP connection) wins —
+that's a deliberate exception, not a violation.
+
 ## task-gopher is a runner, never a decider
 
 This is the core contract, enforced in the subagent's own instructions:
