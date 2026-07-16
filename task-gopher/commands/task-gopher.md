@@ -1,5 +1,5 @@
 ---
-description: Toggle task-gopher (Haiku delegation) and strict mode. Usage: /task-gopher [on|off|status|strict [on|off]]
+description: Toggle task-gopher (Haiku delegation), strict mode, and audit report. Usage: /task-gopher [on|off|status|strict [on|off]|report|log clear]
 ---
 
 The user ran `/task-gopher` with argument: `$ARGUMENTS`
@@ -23,6 +23,11 @@ Pick the ONE case matching the argument and run its command with the Bash tool:
   `rm -f ~/.claude/task-gopher.strict ~/.claude/task-gopher.nudge && echo "task-gopher: strict OFF (delegation still ON)"`
 - **`status`**:
   `if [ -f ~/.claude/task-gopher.enabled ]; then if [ -f ~/.claude/task-gopher.strict ]; then echo "task-gopher: ON + STRICT"; else echo "task-gopher: ON"; fi; else echo "task-gopher: OFF"; fi`
+- **`report`** (print the strict-mode audit summary): locate and run the report
+  script — `node "${CLAUDE_PLUGIN_ROOT:-}/hooks/report.mjs" 2>/dev/null || node "$(ls -t ~/.claude/plugins/cache/*/task-gopher/*/hooks/report.mjs 2>/dev/null | head -1)"`.
+  Show its output verbatim to the user; do not summarize or re-run any retrievals yourself.
+- **`log clear`** (wipe the audit log): run
+  `rm -f ~/.claude/task-gopher.log && echo "task-gopher: audit log cleared"`
 - **empty / `toggle` / anything else** (toggles the base on/off; leaves strict as-is unless turning off):
   `if [ -f ~/.claude/task-gopher.enabled ]; then rm -f ~/.claude/task-gopher.enabled ~/.claude/task-gopher.strict ~/.claude/task-gopher.nudge && echo "task-gopher: OFF"; else mkdir -p ~/.claude && touch ~/.claude/task-gopher.enabled && echo "task-gopher: ON"; fi`
 

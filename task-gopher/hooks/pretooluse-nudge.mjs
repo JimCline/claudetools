@@ -27,8 +27,8 @@
  * agent in a re-nudge loop.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
-import { NUDGE_FILE, isEnabled, isStrict, isTaskGopherAgent } from "./directive.mjs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { LOG_FILE, NUDGE_FILE, isEnabled, isStrict, isTaskGopherAgent } from "./directive.mjs";
 
 // Re-block on the Nth consecutive bypass within a turn (N-1 pass silently).
 const RENUDGE_AFTER = 3;
@@ -76,6 +76,38 @@ function isTaskGopherDispatch(payload) {
   if (payload.tool_name !== "Agent") return false;
   const st = payload?.tool_input?.subagent_type;
   return typeof st === "string" && st.includes("task-gopher");
+}
+
+// A short description of WHAT the agent ran directly, for the audit log.
+function detailOf(payload) {
+  const t = payload.tool_input || {};
+  switch (payload.tool_name) {
+    case "Bash":
+      return String(t.command || "").slice(0, 160);
+    case "Read":
+      return String(t.file_path || "");
+    case "Grep":
+      return String(t.pattern || "");
+    case "Glob":
+      return String(t.pattern || t.glob || "");
+    default:
+      return "";
+  }
+}
+
+// Append one audit line. Never throws — logging must not break the tool.
+function logEvent(entry) {
+  try {
+    let ts = "";
+    try {
+      ts = new Date().toISOString();
+    } catch {
+      ts = "";
+    }
+    appendFileSync(LOG_FILE, JSON.stringify({ ts, ...entry }) + "\n");
+  } catch {
+    // best-effort; drop on failure
+  }
 }
 
 function readState() {
@@ -138,6 +170,7 @@ try {
   if (payload.tool_name === "Agent") {
     if (isTaskGopherDispatch(payload) && typeof pid === "string" && pid) {
       writeState(pid, 0);
+      logEvent({ pid, event: "dispatch", tool: "Agent", detail: "task-gopher" });
     }
     allow();
   }
@@ -146,11 +179,14 @@ try {
   if (typeof pid !== "string" || !pid) allow(); // can't scope a turn -> fail open
 
   const state = readState();
+  const tool = payload.tool_name;
+  const detail = detailOf(payload);
 
   // New turn: initial checkpoint. Only block if we can persist state, else the
   // re-run would re-trigger forever.
   if (state.pid !== pid) {
     if (!writeState(pid, 0)) allow();
+    logEvent({ pid, event: "checkpoint", kind: "turn-start", tool, detail });
     deny(nudgeMessage(payload, 0));
   }
 
@@ -158,10 +194,12 @@ try {
   const next = state.n + 1;
   if (next >= RENUDGE_AFTER) {
     if (!writeState(pid, 0)) allow(); // reset streak; re-block once
+    logEvent({ pid, event: "checkpoint", kind: "escalated", bypasses: next, tool, detail });
     deny(nudgeMessage(payload, next));
   }
 
   writeState(pid, next); // record the bypass and allow
+  logEvent({ pid, event: "bypass", n: next, tool, detail });
   allow();
 } catch {
   allow(); // fail open, always

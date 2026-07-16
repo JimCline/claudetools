@@ -160,9 +160,41 @@ getting stopped. A "turn" is one user prompt (tracked by the payload's
 > **Honest limit:** this is a *forcing function, not a guarantee*. The hook can't
 > verify the agent genuinely reconsidered — a re-run always passes, and it can't
 > tell a retrieval-read from a read the agent needs for its own reasoning/editing
-> (which is why it nudges once and steps aside rather than hard-blocking every
-> read). It makes the deliberate choice explicit; it doesn't force a good one.
-> That's also why strict mode is opt-in and separate from base ON.
+> (which is why it escalates rather than hard-blocking every read). It makes the
+> deliberate choice explicit; it doesn't force a good one. That's also why strict
+> mode is opt-in and separate from base ON — and why it keeps an audit log so you
+> can check whether the choices *were* good.
+
+### Audit log and report
+
+Strict mode writes an append-only JSONL log to `~/.claude/task-gopher.log` — one
+line per **checkpoint** (the gate blocked), **bypass** (a direct retrieval done
+anyway, recording the exact file/command), and **dispatch** (a delegation to
+task-gopher), each stamped with a `prompt_id` and time. Because a re-run always
+passes, this log is where the gate actually gets its teeth: it's the record of
+what the agent chose to do directly.
+
+```
+/task-gopher report      # summarize the log
+/task-gopher log clear   # wipe it
+```
+
+The report shows totals, the **bypass-to-dispatch ratio** (lower is better), which
+tools get bypassed most, and the most recent bypasses with *what was run
+directly* — so you can see at a glance whether the orchestrator is being
+deliberate or just rubber-stamping past the checkpoint. Example:
+
+```
+checkpoints:    3  (times the gate blocked)
+bypasses:       4  (direct retrievals done anyway)
+dispatches:     1  (delegations to task-gopher)
+bypass/dispatch ratio: 4.00  (lower is better)
+bypassed tools: Read 3, Bash 1
+recent bypasses (last 4) — what was run directly:
+  - 2026-07-16 14:40:00  Read: src/app.ts
+  - 2026-07-16 14:40:00  Bash: git diff main -- config/
+  ...
+```
 
 ## How it's wired
 
@@ -172,10 +204,12 @@ getting stopped. A "turn" is one user prompt (tracked by the payload's
   stop-and-report rather than decide, and never delegate onward.
 - **`hooks/`** — `SessionStart` (startup/resume/clear/**compact**) injects the
   full directive; `UserPromptSubmit` injects a one-line reminder each turn;
-  `PreToolUse` (strict mode only) is the once-per-turn checkpoint. All are no-ops
-  when the plugin is OFF (and the checkpoint also requires strict mode), and
-  no-ops inside task-gopher itself. See "Who may delegate" for the tier gate.
-- **`commands/task-gopher.md`** — the on/off/status/toggle/strict slash command.
+  `PreToolUse` (strict mode only) is the escalating checkpoint that also writes the
+  audit log; `report.mjs` renders that log. All hooks are no-ops when the plugin is
+  OFF (and the checkpoint also requires strict mode), and no-ops inside task-gopher
+  itself. See "Who may delegate" for the tier gate.
+- **`commands/task-gopher.md`** — the on/off/status/toggle/strict/report/log-clear
+  slash command.
 
 ## Composes with output-discipline
 

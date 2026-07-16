@@ -26,8 +26,11 @@ export function isEnabled() {
  */
 export const STRICT_FILE = join(homedir(), ".claude", "task-gopher.strict");
 
-/** Records the prompt_id of the turn already nudged, so the bump fires once/turn. */
+/** Records {pid, n} for the current turn, so the checkpoint escalates by bypass count. */
 export const NUDGE_FILE = join(homedir(), ".claude", "task-gopher.nudge");
+
+/** Append-only JSONL audit of strict-mode checkpoints, bypasses, and dispatches. */
+export const LOG_FILE = join(homedir(), ".claude", "task-gopher.log");
 
 export function isStrict() {
   return existsSync(STRICT_FILE);
