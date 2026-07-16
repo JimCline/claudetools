@@ -37,6 +37,10 @@ export async function readHookInput() {
  * recursing and breaking its "never reason/decide" contract. `agent_id` is
  * present only in a subagent's hook payload and absent in the main session
  * (per the Claude Code hooks docs), so it is the reliable discriminator.
+ *
+ * Deliberately keyed on `agent_id`, NOT `agent_type`: `agent_type` is also set
+ * when the top-level session is launched with `--agent`, so keying on it would
+ * wrongly suppress the main orchestrator. `agent_id` stays subagent-only.
  */
 export function isSubagent(input) {
   return Boolean(input && input.agent_id);
