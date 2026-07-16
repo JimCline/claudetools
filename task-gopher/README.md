@@ -61,6 +61,35 @@ This is the core contract, enforced in the subagent's own instructions:
 Because the runner won't improvise, the burden is on the orchestrator to hand down
 complete, decision-free orders with the exact expected result.
 
+## Who may delegate — the tier gate
+
+Delegation is gated by **model tier, not by position in the agent tree**: *any*
+Sonnet-tier-or-higher agent — the top-level agent OR a subagent — may dispatch to
+the Haiku task-gopher. A Haiku-tier agent may not, which is also what stops
+task-gopher (itself Haiku) from dispatching to task-gopher and recursing.
+
+The rationale: the whole point is to move cheap legwork off an *expensive*
+reasoner. If the agent doing the work is already Haiku, there's nothing to save —
+Haiku delegating to Haiku is pure overhead. But a capable reasoner should push
+legwork down regardless of whether it's the main agent or a subagent it was itself
+spawned into.
+
+There's a catch that shapes the implementation: **Claude Code hook payloads carry
+no model field.** (Verified against the CLI — the payload is `session_id`,
+`transcript_path`, `cwd`, `prompt_id`, `permission_mode`, `agent_id`, `agent_type`,
+and `effort`; that `effort` is the thinking level `low|medium|high`, not a
+capability tier. There is no "reasoning index" exposed to hooks.) So the hook
+*can't* read the tier. Instead:
+
+- The hook injects the directive to **every** agent (except task-gopher itself,
+  which it skips by name via `agent_type` so the recursion-prone runner never even
+  sees it).
+- The directive **opens with a tier gate**: if you are Haiku-tier, ignore it and do
+  the work yourself; if you are Sonnet-tier or higher, follow it. Each agent
+  self-excludes based on its own model identity — which the model knows reliably,
+  far better than any payload field could tell it.
+- task-gopher's own prompt is the hard backstop: it never delegates onward, period.
+
 ### Escape hatch
 
 Dispatching isn't a trap. If task-gopher returns incomplete, wrong, or
@@ -89,17 +118,12 @@ sessions and after compaction.
 
 - **`agents/task-gopher.md`** — the Haiku runner: read/search/run tools
   (`Read, Grep, Glob, Bash, WebFetch, WebSearch`), no file mutation, prompted to
-  execute exact orders only, return the smallest report that fully answers, and
-  stop-and-report rather than decide.
+  execute exact orders only, return the smallest report that fully answers,
+  stop-and-report rather than decide, and never delegate onward.
 - **`hooks/`** — `SessionStart` (startup/resume/clear/**compact**) injects the
   full directive; `UserPromptSubmit` injects a one-line reminder each turn. Both
-  are no-ops when the plugin is OFF, **and no-ops inside a subagent** — only the
-  top-level orchestrator gets the directive. These hooks also fire during subagent
-  execution, so without this guard a Haiku gopher would receive the directive and
-  try to dispatch to task-gopher itself, recursing and breaking its runner
-  contract. The hooks detect the subagent by the `agent_id` field in the hook
-  payload (present only in subagents) and stay silent. The gopher's own prompt
-  reinforces this: it never delegates onward.
+  are no-ops when the plugin is OFF, and no-ops inside task-gopher itself. See
+  "Who may delegate" for how the tier gate works.
 - **`commands/task-gopher.md`** — the on/off/status/toggle slash command.
 
 ## Composes with output-discipline

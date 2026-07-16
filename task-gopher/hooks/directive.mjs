@@ -31,24 +31,30 @@ export async function readHookInput() {
 }
 
 /**
- * True when the hook is firing inside a SUBAGENT rather than the top-level
- * orchestrator. The delegation directive must NEVER reach a subagent — else a
- * task-gopher (Haiku) runner would try to dispatch to task-gopher itself,
- * recursing and breaking its "never reason/decide" contract. `agent_id` is
- * present only in a subagent's hook payload and absent in the main session
- * (per the Claude Code hooks docs), so it is the reliable discriminator.
+ * Who may delegate is gated by MODEL TIER, not by orchestrator-vs-subagent: any
+ * Sonnet-tier-or-higher agent (main OR subagent) may dispatch to the Haiku
+ * task-gopher; a Haiku-tier agent may not. Crucially, the hook payload exposes
+ * NO model field (verified against the Claude Code CLI: the base hook input is
+ * session_id/transcript_path/cwd/prompt_id/permission_mode/agent_id/agent_type/
+ * effort — `effort` is the thinking level low|medium|high, not a capability
+ * tier). So the hook cannot read the tier; the tier gate lives in the directive
+ * text itself, where each agent self-excludes if it is Haiku-tier.
  *
- * Deliberately keyed on `agent_id`, NOT `agent_type`: `agent_type` is also set
- * when the top-level session is launched with `--agent`, so keying on it would
- * wrongly suppress the main orchestrator. `agent_id` stays subagent-only.
+ * The one thing the hook CAN do reliably is skip task-gopher itself by name
+ * (`agent_type` carries the subagent's name), so the recursion-prone runner
+ * never even receives the directive. Substring match tolerates the plugin-scoped
+ * form (e.g. "task-gopher:task-gopher").
  */
-export function isSubagent(input) {
-  return Boolean(input && input.agent_id);
+export function isTaskGopherAgent(input) {
+  const type = input && input.agent_type;
+  return typeof type === "string" && type.includes("task-gopher");
 }
 
 /** Full directive — injected at SessionStart (and re-injected post-compaction). */
 export const FULL_DIRECTIVE = [
-  "[task-gopher: ON] Dispatch expensive tool work to the `task-gopher` subagent (pinned to Haiku) instead of doing it yourself. Spend YOUR expensive high-reasoning tokens on judgment, not on tool output or log dumps. You are the orchestrator; task-gopher is a hired runner that carries out explicit orders and reports back.",
+  "[task-gopher: ON] TIER GATE — read first: this directive is for Sonnet-tier models and above (Sonnet, Opus, and the Mythos-class Fable/Mythos). If YOU are a Haiku-tier model, IGNORE everything below and just do the work yourself — you are the cheap runner, not the expensive reasoner this optimizes for. This is also what stops a task-gopher (Haiku) runner from dispatching to task-gopher and recursing. Otherwise, if you are Sonnet-tier or higher, follow the rest — and note it applies whether you are the top-level agent or a subagent: any capable reasoner should push cheap legwork down to Haiku.",
+  "",
+  "Dispatch expensive tool work to the `task-gopher` subagent (pinned to Haiku) instead of doing it yourself. Spend YOUR expensive high-reasoning tokens on judgment, not on tool output or log dumps. task-gopher is a hired runner that carries out explicit orders and reports back.",
   "",
   'Dispatch to `task-gopher` (Agent tool, subagent_type: "task-gopher") when a step is:',
   "- Tool/output-heavy: running test suites, builds, installs, long or verbose bash; sifting logs.",
@@ -66,4 +72,4 @@ export const FULL_DIRECTIVE = [
 
 /** Compact per-turn reminder — injected at UserPromptSubmit to keep the behavior alive. */
 export const SHORT_REMINDER =
-  "[task-gopher: ON] Prefer dispatching tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders; keep all reasoning for yourself. Escape hatch: take it over if the runner fails or returns too little.";
+  "[task-gopher: ON] If you are Sonnet-tier or higher (any agent, top-level or subagent): prefer dispatching tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders, and keep reasoning for yourself. If you are Haiku-tier, ignore this. Escape hatch: take it over if the runner fails or returns too little.";

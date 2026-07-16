@@ -4,15 +4,17 @@
  *
  * Injects the full delegation directive when the plugin is ON, so a fresh,
  * resumed, or post-compaction session starts already knowing to dispatch
- * tool-heavy work to the task-gopher subagent. Silent when OFF, and silent
- * inside a subagent (only the top-level orchestrator may delegate).
+ * tool-heavy work to task-gopher. Delivered to any agent (top-level or
+ * subagent); the directive's own tier gate means only Sonnet-tier-or-higher
+ * agents act on it. Silent when OFF, and silent inside task-gopher itself (it
+ * must never dispatch to task-gopher).
  */
 
-import { FULL_DIRECTIVE, isEnabled, isSubagent, readHookInput } from "./directive.mjs";
+import { FULL_DIRECTIVE, isEnabled, isTaskGopherAgent, readHookInput } from "./directive.mjs";
 
 const input = await readHookInput();
 
-if (isEnabled() && !isSubagent(input)) {
+if (isEnabled() && !isTaskGopherAgent(input)) {
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {
