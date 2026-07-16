@@ -90,6 +90,14 @@ capability tier. There is no "reasoning index" exposed to hooks.) So the hook
   far better than any payload field could tell it.
 - task-gopher's own prompt is the hard backstop: it never delegates onward, period.
 
+> **Note — the tier gate is currently soft.** Because no model/tier field is
+> exposed to hooks, the gate relies on each agent recognizing its own tier and
+> self-excluding; the plugin cannot enforce it. This is reliable for "am I
+> Haiku?" but it is not a hard guarantee. If a future Claude Code version adds a
+> model or capability-tier field to the hook payload, this becomes a hard gate —
+> the hook would suppress injection for Haiku-tier agents directly. Tracked as a
+> `TODO(hard-gate)` in `hooks/directive.mjs`.
+
 ### Escape hatch
 
 Dispatching isn't a trap. If task-gopher returns incomplete, wrong, or

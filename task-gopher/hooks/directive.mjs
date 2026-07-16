@@ -44,6 +44,16 @@ export async function readHookInput() {
  * (`agent_type` carries the subagent's name), so the recursion-prone runner
  * never even receives the directive. Substring match tolerates the plugin-scoped
  * form (e.g. "task-gopher:task-gopher").
+ *
+ * TODO(hard-gate): the tier gate is currently SOFT — the directive asks each
+ * agent to self-exclude if it is Haiku-tier, which the hook cannot enforce
+ * because no model/tier field exists in the hook payload (as of Claude Code
+ * v2.1.211). If a future version adds one (e.g. `model` or a capability tier
+ * to the SessionStart/UserPromptSubmit payload), convert this to a HARD gate:
+ * read the field here and suppress injection for any Haiku-tier agent, so the
+ * gate no longer relies on the model recognizing its own tier. Re-check the
+ * payload shape in the CLI (function `Uf`, the base hook-input builder) when
+ * upgrading. Track: https://code.claude.com/docs/en/hooks
  */
 export function isTaskGopherAgent(input) {
   const type = input && input.agent_type;
