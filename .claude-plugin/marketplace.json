@@ -26,6 +26,25 @@
         "cost"
       ],
       "category": "productivity"
+    },
+    {
+      "name": "understudy",
+      "source": "./understudy",
+      "description": "Delegates tool-heavy, high-output, and information-gathering work to a cheaper Haiku subagent that returns a compact report, so the main high-reasoning agent spends its expensive tokens on judgment instead of on tool output. Toggle with /understudy.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Jim Cline"
+      },
+      "license": "MIT",
+      "keywords": [
+        "haiku",
+        "tokens",
+        "cost",
+        "delegation",
+        "subagent",
+        "context-window"
+      ],
+      "category": "productivity"
     }
   ]
 }

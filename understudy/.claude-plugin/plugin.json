@@ -1,0 +1,18 @@
+{
+  "name": "understudy",
+  "displayName": "Understudy — Haiku Delegation",
+  "version": "0.1.0",
+  "description": "Delegates tool-heavy, high-output, and information-gathering work to a cheaper Haiku subagent that returns a compact report, so the main high-reasoning agent spends its expensive tokens on judgment instead of on tool output. Toggle with /understudy.",
+  "author": {
+    "name": "Jim Cline"
+  },
+  "license": "MIT",
+  "keywords": [
+    "haiku",
+    "tokens",
+    "cost",
+    "delegation",
+    "subagent",
+    "context-window"
+  ]
+}
