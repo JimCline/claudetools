@@ -1,5 +1,5 @@
 {
-  "description": "understudy — SessionStart injects the full Haiku-delegation directive on startup, resume, clear, and post-compaction (so it survives compaction); UserPromptSubmit injects a compact reminder each turn. Both are no-ops unless the plugin is toggled ON.",
+  "description": "task-rabbit — SessionStart injects the full Haiku-delegation directive on startup, resume, clear, and post-compaction (so it survives compaction); UserPromptSubmit injects a compact reminder each turn. Both are no-ops unless the plugin is toggled ON.",
   "hooks": {
     "SessionStart": [
       {

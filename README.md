@@ -21,14 +21,15 @@ rules, including after compaction.
 
 Prevention, not compression. Composes with `PostToolUse` compressors like squeez.
 
-### [understudy](./understudy)
+### [task-rabbit](./task-rabbit)
 
-Makes the main, high-reasoning agent **delegate the legwork to a cheap Haiku
-subagent** — running tests/builds, sifting logs, grepping the tree, gathering
+Makes the main, high-reasoning agent **dispatch the legwork to a cheap Haiku
+runner** — running tests/builds, sifting logs, grepping the tree, gathering
 information — and reason over the compact report it hands back. Expensive model
-tokens go to judgment, not to tool output. Toggle on/off with `/understudy`
-(ships OFF, opt-in). Includes an escape hatch so the main agent takes over if the
-subagent falls short.
+tokens go to judgment, not to tool output. The runner carries out explicit orders
+only: it never reasons or decides, and stops to report back rather than guess.
+Toggle on/off with `/task-rabbit` (ships OFF, opt-in). Includes an escape hatch so
+the main agent takes over if the runner falls short.
 
 ## License
 
