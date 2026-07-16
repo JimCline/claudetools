@@ -121,16 +121,42 @@ than just doing the work.
 Ships **OFF** — it changes how the agent works, so it's opt-in.
 
 ```
-/task-gopher on        # enable delegation
-/task-gopher off       # disable, main agent handles tools itself
-/task-gopher status    # show current state
-/task-gopher           # toggle
+/task-gopher on         # enable delegation
+/task-gopher off        # disable, main agent handles tools itself
+/task-gopher status     # show current state
+/task-gopher            # toggle
+/task-gopher strict     # enable strict mode (also turns delegation on)
+/task-gopher strict off # back to guidance-only
 ```
 
 State is a marker file at `~/.claude/task-gopher.enabled` (existence = ON). It
 lives in your home directory, so the setting survives plugin updates. Turning it
 on takes effect on your next prompt; it's re-established automatically in new
 sessions and after compaction.
+
+## Strict mode — the double-check gate
+
+The directive is guidance; a capable agent can still rationalize *"this one read
+is quick enough to just do myself"* on every small step and never actually
+delegate. Strict mode adds a **hard checkpoint** on top: when it's on, a
+`PreToolUse` hook **blocks the first direct retrieval of each turn once** — the
+first `Read`/`Grep`/`Glob`, or retrieval-style `Bash` (`grep`, `find`, `cat`,
+`git diff`, a test/build run, …) — with a message telling the agent to consider
+dispatching to task-gopher and to batch this with other reads/greps/diffs into one
+order. Re-running the same call proceeds, and the gate stays silent for the rest
+of that turn. It never fires on non-retrieval commands (`git commit`, `mkdir`, …)
+or inside task-gopher itself.
+
+A "turn" is one user prompt, tracked by the hook payload's `prompt_id`. So you get
+exactly one deliberate "should this go to the gopher?" beat per turn, then it gets
+out of the way.
+
+> **Honest limit:** this is a *forcing function, not a guarantee*. The hook can't
+> verify the agent genuinely reconsidered — a re-run always passes, and it can't
+> tell a retrieval-read from a read the agent needs for its own reasoning/editing
+> (which is why it nudges once and steps aside rather than hard-blocking every
+> read). It makes the deliberate choice explicit; it doesn't force a good one.
+> That's also why strict mode is opt-in and separate from base ON.
 
 ## How it's wired
 
@@ -139,10 +165,11 @@ sessions and after compaction.
   execute exact orders only, return the smallest report that fully answers,
   stop-and-report rather than decide, and never delegate onward.
 - **`hooks/`** — `SessionStart` (startup/resume/clear/**compact**) injects the
-  full directive; `UserPromptSubmit` injects a one-line reminder each turn. Both
-  are no-ops when the plugin is OFF, and no-ops inside task-gopher itself. See
-  "Who may delegate" for how the tier gate works.
-- **`commands/task-gopher.md`** — the on/off/status/toggle slash command.
+  full directive; `UserPromptSubmit` injects a one-line reminder each turn;
+  `PreToolUse` (strict mode only) is the once-per-turn checkpoint. All are no-ops
+  when the plugin is OFF (and the checkpoint also requires strict mode), and
+  no-ops inside task-gopher itself. See "Who may delegate" for the tier gate.
+- **`commands/task-gopher.md`** — the on/off/status/toggle/strict slash command.
 
 ## Composes with output-discipline
 

@@ -1,6 +1,17 @@
 {
-  "description": "task-gopher — SessionStart injects the full Haiku-delegation directive on startup, resume, clear, and post-compaction (so it survives compaction); UserPromptSubmit injects a compact reminder each turn. Both are no-ops unless the plugin is toggled ON.",
+  "description": "task-gopher — SessionStart injects the full Haiku-delegation directive on startup, resume, clear, and post-compaction (so it survives compaction); UserPromptSubmit injects a compact reminder each turn; PreToolUse (strict mode only) blocks the first direct retrieval of each turn once as a consider-task-gopher checkpoint. All are no-ops unless the plugin is toggled ON (and, for the checkpoint, strict mode too).",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Grep|Glob|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-nudge.mjs\""
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "startup|resume|clear|compact",

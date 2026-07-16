@@ -17,6 +17,22 @@ export function isEnabled() {
   return existsSync(STATE_FILE);
 }
 
+/**
+ * Strict mode — an optional enforcement layer ON TOP of `enabled`. When both are
+ * set, a PreToolUse hook blocks the FIRST direct retrieval of each turn once, so
+ * the agent has to consciously decide "should this go to task-gopher?" before
+ * doing tool work itself. It's a speed-bump, not a hard block: re-running the
+ * same call proceeds, and the gate stays quiet for the rest of that turn.
+ */
+export const STRICT_FILE = join(homedir(), ".claude", "task-gopher.strict");
+
+/** Records the prompt_id of the turn already nudged, so the bump fires once/turn. */
+export const NUDGE_FILE = join(homedir(), ".claude", "task-gopher.nudge");
+
+export function isStrict() {
+  return existsSync(STRICT_FILE);
+}
+
 /** Read the hook's stdin JSON payload; returns {} if absent or unparseable. */
 export async function readHookInput() {
   const chunks = [];
