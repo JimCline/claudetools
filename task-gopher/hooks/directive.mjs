@@ -17,6 +17,31 @@ export function isEnabled() {
   return existsSync(STATE_FILE);
 }
 
+/** Read the hook's stdin JSON payload; returns {} if absent or unparseable. */
+export async function readHookInput() {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * True when the hook is firing inside a SUBAGENT rather than the top-level
+ * orchestrator. The delegation directive must NEVER reach a subagent — else a
+ * task-gopher (Haiku) runner would try to dispatch to task-gopher itself,
+ * recursing and breaking its "never reason/decide" contract. `agent_id` is
+ * present only in a subagent's hook payload and absent in the main session
+ * (per the Claude Code hooks docs), so it is the reliable discriminator.
+ */
+export function isSubagent(input) {
+  return Boolean(input && input.agent_id);
+}
+
 /** Full directive — injected at SessionStart (and re-injected post-compaction). */
 export const FULL_DIRECTIVE = [
   "[task-gopher: ON] Dispatch expensive tool work to the `task-gopher` subagent (pinned to Haiku) instead of doing it yourself. Spend YOUR expensive high-reasoning tokens on judgment, not on tool output or log dumps. You are the orchestrator; task-gopher is a hired runner that carries out explicit orders and reports back.",

@@ -93,7 +93,13 @@ sessions and after compaction.
   stop-and-report rather than decide.
 - **`hooks/`** — `SessionStart` (startup/resume/clear/**compact**) injects the
   full directive; `UserPromptSubmit` injects a one-line reminder each turn. Both
-  are no-ops when the plugin is OFF.
+  are no-ops when the plugin is OFF, **and no-ops inside a subagent** — only the
+  top-level orchestrator gets the directive. These hooks also fire during subagent
+  execution, so without this guard a Haiku gopher would receive the directive and
+  try to dispatch to task-gopher itself, recursing and breaking its runner
+  contract. The hooks detect the subagent by the `agent_id` field in the hook
+  payload (present only in subagents) and stay silent. The gopher's own prompt
+  reinforces this: it never delegates onward.
 - **`commands/task-gopher.md`** — the on/off/status/toggle slash command.
 
 ## Composes with output-discipline
