@@ -31,7 +31,7 @@
       "name": "task-gopher",
       "source": "./task-gopher",
       "description": "Dispatches tool-heavy, high-output, and information-gathering work to a cheaper Haiku subagent that carries out explicit orders and returns a compact report, so the main high-reasoning agent spends its expensive tokens on judgment instead of on tool output. Toggle with /task-gopher.",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "author": {
         "name": "Jim Cline"
       },

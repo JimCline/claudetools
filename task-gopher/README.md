@@ -139,17 +139,23 @@ sessions and after compaction.
 The directive is guidance; a capable agent can still rationalize *"this one read
 is quick enough to just do myself"* on every small step and never actually
 delegate. Strict mode adds a **hard checkpoint** on top: when it's on, a
-`PreToolUse` hook **blocks the first direct retrieval of each turn once** — the
-first `Read`/`Grep`/`Glob`, or retrieval-style `Bash` (`grep`, `find`, `cat`,
-`git diff`, a test/build run, …) — with a message telling the agent to consider
-dispatching to task-gopher and to batch this with other reads/greps/diffs into one
-order. Re-running the same call proceeds, and the gate stays silent for the rest
-of that turn. It never fires on non-retrieval commands (`git commit`, `mkdir`, …)
-or inside task-gopher itself.
+`PreToolUse` hook **blocks a direct retrieval** — a `Read`/`Grep`/`Glob`, or
+retrieval-style `Bash` (`grep`, `find`, `cat`, `git diff`, a test/build run, …) —
+with a message telling the agent to consider dispatching to task-gopher and to
+batch this with other reads/greps/diffs into one order. Re-running the same call
+proceeds. It never fires on non-retrieval commands (`git commit`, `mkdir`, …) or
+inside task-gopher itself.
 
-A "turn" is one user prompt, tracked by the hook payload's `prompt_id`. So you get
-exactly one deliberate "should this go to the gopher?" beat per turn, then it gets
-out of the way.
+It doesn't just nudge once and then give up for the turn — it **escalates on
+consecutive bypasses**. It blocks the first retrieval of a turn, lets the next two
+direct retrievals through silently, then **re-blocks on the 3rd consecutive
+bypass**, and every 3rd after that. So an agent that keeps pulling things into its
+own context gets re-checkpointed instead of quietly drifting.
+
+**Dispatching to task-gopher resets the streak** — good behavior buys a clean
+slate, so an agent that delegates is left alone while one that doesn't keeps
+getting stopped. A "turn" is one user prompt (tracked by the payload's
+`prompt_id`); a new turn re-arms the first-retrieval checkpoint.
 
 > **Honest limit:** this is a *forcing function, not a guarantee*. The hook can't
 > verify the agent genuinely reconsidered — a re-run always passes, and it can't
