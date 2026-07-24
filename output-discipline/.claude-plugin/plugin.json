@@ -1,7 +1,7 @@
 {
   "name": "output-discipline",
   "displayName": "Output Discipline",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Stops Claude Code from flooding the context window with command output. Blocks streaming/foreground long-running commands before they run and coaches toward background tasks and redirect-then-grep.",
   "author": {
     "name": "Jim Cline"
