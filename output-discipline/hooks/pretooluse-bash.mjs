@@ -28,7 +28,7 @@ const STREAMING = [
   /--watch\b/,
   /--follow\b/,
   /\bless\b/,
-  /\btop\b|\bhtop\b/,
+  /(?<![-\w])top\b|\bhtop\b/,
 ];
 
 // Long-lived foreground processes. These belong in a background task.
@@ -86,6 +86,94 @@ const deny = (reason) => {
 
 const matches = (patterns, cmd) => patterns.some((re) => re.test(cmd));
 
+// Deny patterns describe *executables*, but the raw command string also carries
+// data — heredoc bodies, quoted arguments — where prose like "bottom-to-top" or
+// "watch the sequence" would false-positive. Match against a skeleton with data
+// regions blanked out. ALREADY_TAMED keeps the raw string: stripping there only
+// risks re-blocking commands that already capture their output.
+function commandSkeleton(cmd) {
+  // heredoc bodies (handles <<EOF, <<-EOF, <<'EOF', <<"EOF")
+  const s = cmd.replace(
+    /<<-?\s*(['"]?)(\w+)\1[\s\S]*?\n\2(?=\s*($|\n|;|&|\)))/g,
+    "<<HEREDOC_STRIPPED"
+  );
+  return stripQuotedSpans(s);
+}
+
+// Single left-to-right scan with shell quoting rules — a regex pass can't know
+// that the apostrophe in `-m "don't watch"` is data, not an opening quote.
+// Command/process substitution inside double quotes still EXECUTES, so `$(…)`
+// and backticks are kept as code rather than stripped with the quoted data.
+// Unterminated quotes strip to end of string, which errs toward allowing.
+function stripQuotedSpans(s) {
+  const n = s.length;
+  let out = "";
+  let i = 0;
+
+  const scanSingle = () => {
+    // no escapes inside single quotes; runs to the next ' or end of string
+    const end = s.indexOf("'", i + 1);
+    out += "''";
+    i = end === -1 ? n : end + 1;
+  };
+
+  const scanDouble = () => {
+    out += '"';
+    i++;
+    while (i < n && s[i] !== '"') {
+      if (s[i] === "\\") i += 2;
+      else if (s[i] === "$" && s[i + 1] === "(") {
+        out += "$(";
+        i += 2;
+        scanCode(")");
+        if (s[i] === ")") {
+          out += ")";
+          i++;
+        }
+      } else if (s[i] === "`") {
+        out += "`";
+        i++;
+        scanCode("`");
+        if (s[i] === "`") {
+          out += "`";
+          i++;
+        }
+      } else i++; // plain data, dropped
+    }
+    out += '"';
+    i++;
+  };
+
+  const scanCode = (stop) => {
+    while (i < n) {
+      const c = s[i];
+      if (stop && c === stop) return;
+      if (c === "\\") {
+        out += c + (s[i + 1] ?? "");
+        i += 2;
+      } else if (c === "'") scanSingle();
+      else if (c === '"') scanDouble();
+      else if (c === "(") {
+        // bare group/subshell — recurse so a nested ')' doesn't end an
+        // enclosing $( … ) early
+        out += c;
+        i++;
+        scanCode(")");
+        if (s[i] === ")") {
+          out += ")";
+          i++;
+        }
+      } else {
+        out += c;
+        i++;
+      }
+    }
+  };
+
+  scanCode(null);
+  return out;
+}
+
 // --- main -------------------------------------------------------------------
 try {
   if (OFF) allow();
@@ -103,9 +191,11 @@ try {
 
   if (EXTRA_ALLOW.some((frag) => cmd.includes(frag))) allow();
 
+  const skeleton = commandSkeleton(cmd);
+
   // 1. Streaming commands: never acceptable, background or not. A backgrounded
   //    `tail -f` still floods the moment its output is read back.
-  if (matches(STREAMING, cmd)) {
+  if (matches(STREAMING, skeleton)) {
     deny(
       `output-discipline: this command streams output indefinitely, which floods the context window.\n\n` +
         `Command: ${cmd}\n\n` +
@@ -117,7 +207,7 @@ try {
   }
 
   // 2. Long-running foreground processes: fine, but they must be backgrounded.
-  if (!isBackground && matches(LONG_RUNNING, cmd)) {
+  if (!isBackground && matches(LONG_RUNNING, skeleton)) {
     deny(
       `output-discipline: this is a long-running process and must not run in the foreground — it will block and its output will flood the context window.\n\n` +
         `Command: ${cmd}\n\n` +
@@ -126,7 +216,7 @@ try {
   }
 
   // 3. Verbose one-shot commands: must capture to a file and filter.
-  if (!isBackground && matches(NOISY, cmd) && !matches(ALREADY_TAMED, cmd)) {
+  if (!isBackground && matches(NOISY, skeleton) && !matches(ALREADY_TAMED, cmd)) {
     deny(
       `output-discipline: this command can emit hundreds of lines straight into the context window, where they are re-sent on every subsequent turn.\n\n` +
         `Command: ${cmd}\n\n` +
