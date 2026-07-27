@@ -30,9 +30,13 @@ Resolution rules you must respect in everything below:
 - Merge is **shallow per role**: a role object in the project config replaces the
   user-scope role object entirely — never merge key by key.
 - `enabled`: **most-specific scope wins** (project overrides user).
-- Valid models: `opus`, `sonnet`, `haiku`, `fable`, `inherit`. `inherit` means
-  "omit the `model` parameter on the Agent call" — it is a legal value in this
-  JSON file only, and must never be passed to the Agent tool literally.
+- Valid models are **per role**. `architect`, `reviewer`, and `implementor` are
+  reasoning roles: `opus`, `sonnet`, `fable`, `inherit` only — **`haiku` is
+  never valid for a reasoning role** and must never be offered or written for
+  one. `task-runner` (legwork, no reasoning) additionally allows `haiku`.
+  `inherit` means "omit the `model` parameter on the Agent call" — it is a
+  legal value in this JSON file only, and must never be passed to the Agent
+  tool literally.
 - Roles are `architect`, `reviewer`, `implementor`, `task-runner`. The
   **Orchestrator is not configurable** — it is always the session agent itself.
 
@@ -75,9 +79,9 @@ Pick the ONE case matching the argument:
    that one instead, and tell the user which scope you pulled the values from.
    With no config anywhere, use these defaults (recommended first):
    - **Architect** — `opus` (recommended), `sonnet`, `fable`, `inherit`
-   - **Reviewer** — `sonnet` (recommended), `opus`, `haiku`, `inherit`
+   - **Reviewer** — `sonnet` (recommended), `opus`, `fable`, `inherit`
    - **Implementor** — `inherit` (recommended — runs on the session model),
-     `sonnet`, `opus`, `haiku`
+     `sonnet`, `opus`, `fable`
    - **Task-Runner** (only when task-gopher is NOT installed) —
      `Install task-gopher (recommended)`, `haiku`, `sonnet`, `opus`.
      If they pick the install option: write
@@ -89,8 +93,9 @@ Pick the ONE case matching the argument:
 
    Any other model (including full model IDs, which only work in agent
    frontmatter, not here) goes through AskUserQuestion's automatic "Other"
-   free-text — validate anything typed there against the five valid values and
-   re-ask rather than writing something invalid.
+   free-text — validate anything typed there against **that role's** valid
+   values (no `haiku` for reasoning roles) and re-ask rather than writing
+   something invalid.
 6. **Write nothing until the wizard completes.** If the user aborts, cancels, or
    the role call does not come back with an answer for every asked role, write
    no file and say the config was left unchanged.
@@ -121,8 +126,9 @@ warning, and the propagation note. Do not recompute the table yourself.
 ## `set <role> <model>`
 
 1. Validate `<role>` is one of `architect`, `reviewer`, `implementor`,
-   `task-runner` and `<model>` is one of `opus`, `sonnet`, `haiku`, `fable`,
-   `inherit`. If not, say what is valid and stop — write nothing.
+   `task-runner` and `<model>` is valid **for that role** (reasoning roles:
+   `opus`, `sonnet`, `fable`, `inherit`; `task-runner` also allows `haiku`).
+   If not, say what is valid for that role and stop — write nothing.
 2. Edit **the most specific config that already exists**: the project config if
    `<cwd>/.claude/agent-hierarchy.json` exists, otherwise the user config. If
    neither exists, tell the user to run `/hierarchy init` first and stop.

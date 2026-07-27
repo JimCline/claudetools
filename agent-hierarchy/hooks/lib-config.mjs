@@ -47,11 +47,22 @@ export const ROLE_DEFAULTS = {
 };
 
 /**
- * Accepted model values in the config file. `inherit` is accepted here and
- * converted at render time into "omit the model parameter" — it is NOT a legal
- * Agent-tool value and must never be passed through literally.
+ * Accepted model values, per role. `inherit` is accepted here and converted at
+ * render time into "omit the model parameter" — it is NOT a legal Agent-tool
+ * value and must never be passed through literally.
+ *
+ * Architect, Reviewer, and Implementor are REASONING roles: haiku is never
+ * valid for them — a Haiku-tier model cannot carry design, review, or
+ * implementation judgment. Only Task-Runner (legwork, no reasoning) may run
+ * on haiku.
  */
-export const VALID_MODELS = ["opus", "sonnet", "haiku", "fable", "inherit"];
+export const REASONING_MODELS = ["opus", "sonnet", "fable", "inherit"];
+export const VALID_MODELS_BY_ROLE = {
+  architect: REASONING_MODELS,
+  reviewer: REASONING_MODELS,
+  implementor: REASONING_MODELS,
+  "task-runner": [...REASONING_MODELS, "haiku"],
+};
 
 export const CONFIG_BASENAME = "agent-hierarchy.json";
 
@@ -166,9 +177,10 @@ export function resolveConfig(cwd) {
 
   for (const role of ROLES) {
     const model = roles[role].model;
-    if (typeof model !== "string" || !VALID_MODELS.includes(model)) {
+    const valid = VALID_MODELS_BY_ROLE[role];
+    if (typeof model !== "string" || !valid.includes(model)) {
       warnings.push(
-        `agent-hierarchy: invalid model ${JSON.stringify(model)} for role "${role}" — using the default "${ROLE_DEFAULTS[role].model}".`
+        `agent-hierarchy: model ${JSON.stringify(model)} is not allowed for role "${role}" (allowed: ${valid.join(", ")}) — using the default "${ROLE_DEFAULTS[role].model}".`
       );
       roles[role] = { ...roles[role], model: ROLE_DEFAULTS[role].model };
     }

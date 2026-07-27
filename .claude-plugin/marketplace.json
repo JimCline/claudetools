@@ -13,7 +13,7 @@
       "name": "agent-hierarchy",
       "source": "./agent-hierarchy",
       "description": "Runs work through a five-role agent hierarchy — Orchestrator, Architect, Reviewer, Implementor, Task-Runner — with a per-role model you pick once via /hierarchy. A SessionStart hook injects the role→model table and the orchestration protocol so design, implementation, and review stay separated and each step runs on the cheapest model that can do it.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": {
         "name": "Jim Cline"
       },
