@@ -31,6 +31,25 @@ only: it never reasons or decides, and stops to report back rather than guess.
 Toggle on/off with `/task-gopher` (ships OFF, opt-in). Includes an escape hatch so
 the main agent takes over if the runner falls short.
 
+### [agent-hierarchy](./agent-hierarchy)
+
+Splits work across **five roles with a model each** — Orchestrator (the session
+agent itself), Architect, Reviewer, Implementor, Task-Runner. Design reasoning
+goes to a strong model that writes a spec file and never implements; the
+Implementor builds exactly that spec and reports gaps up instead of deciding; a
+read-only Reviewer validates the diff and labels each finding **impl-defect** or
+**spec-defect** so it routes back to the right role. Run `/hierarchy` once to
+assign the models — user-scoped or committed per-repo — and a `SessionStart` hook
+injects the resolved role→model table plus the orchestration protocol, including
+after compaction. Silent inside subagents, so role dispatches don't pay for it.
+
+Tiered so small work stays cheap: trivial edits skip the chain entirely, and
+fully-specified requests skip the Architect but keep the Reviewer. When
+task-gopher is installed, the Task-Runner role delegates to it, so both plugins
+point retrieval at the same Haiku runner. `/hierarchy status` shows the effective
+table and where each value came from; `/hierarchy set <role> <model>` tweaks one
+role; `/hierarchy off` silences it.
+
 ## License
 
 MIT

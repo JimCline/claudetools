@@ -1,0 +1,16 @@
+{
+  "description": "agent-hierarchy — SessionStart injects the resolved role→model table and the orchestration protocol on startup, resume, clear, fork, and post-compaction (so it survives compaction). Silent inside any subagent session, and silent when the config sets enabled:false. With no config at all it emits a one-line nudge to run /hierarchy init.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}

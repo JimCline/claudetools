@@ -10,6 +10,25 @@
   },
   "plugins": [
     {
+      "name": "agent-hierarchy",
+      "source": "./agent-hierarchy",
+      "description": "Runs work through a five-role agent hierarchy — Orchestrator, Architect, Reviewer, Implementor, Task-Runner — with a per-role model you pick once via /hierarchy. A SessionStart hook injects the role→model table and the orchestration protocol so design, implementation, and review stay separated and each step runs on the cheapest model that can do it.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Jim Cline"
+      },
+      "license": "MIT",
+      "keywords": [
+        "subagent",
+        "delegation",
+        "orchestration",
+        "models",
+        "review",
+        "cost"
+      ],
+      "category": "productivity"
+    },
+    {
       "name": "output-discipline",
       "source": "./output-discipline",
       "description": "Stops Claude Code from flooding the context window with command output. Blocks streaming/foreground long-running commands before they run and coaches toward background tasks and redirect-then-grep.",
