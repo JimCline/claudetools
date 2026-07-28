@@ -1,7 +1,7 @@
 {
   "name": "agent-hierarchy",
   "displayName": "Agent Hierarchy — Role/Model Assignment",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Runs work through a six-role agent hierarchy — Orchestrator, Ultra-Advisor, Architect, Reviewer, Implementor, Task-Runner — with a per-role model you pick once via /hierarchy. A SessionStart hook injects the role→model table and the orchestration protocol so design, implementation, and review stay separated, each step runs on the cheapest model that can do it, and the hardest calls escalate to the Ultra-Advisor.",
   "author": {
     "name": "Jim Cline"

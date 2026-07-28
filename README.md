@@ -51,6 +51,15 @@ low confidence, when the review loop stalls, when the blast radius is outsized
 (security, auth, data migration, concurrency, public interfaces), or when you
 say a problem is important. It adjudicates and never implements.
 
+Tool access follows the roles rather than describing them. Every role but
+Task-Runner inherits the session's full toolset — including your MCP servers —
+with writes removed where the contract requires it: the Reviewer is denied
+`Edit`, `Write`, and `NotebookEdit`, so read-only is structural; the Architect
+and Ultra-Advisor are denied `Edit` and keep `Write` only to author a spec; the
+Implementor, the one role that changes product code, is denied nothing.
+Task-Runner stays on a fixed read/search/bash allowlist with no MCP access —
+it is the cheap runner, and it only ever does what it is explicitly told.
+
 Tiered so small work stays cheap: trivial edits skip the chain entirely, and
 fully-specified requests skip the Architect but keep the Reviewer. When
 task-gopher is installed, the Task-Runner role delegates to it, so both plugins
