@@ -1,0 +1,17 @@
+{
+  "name": "comment-discipline",
+  "displayName": "Comment Discipline — No Ephemeral Comments",
+  "version": "0.1.0",
+  "description": "Stops Claude from writing comments that only make sense next to the diff — `// changed from foo to bar`, `// NEW: added validation`, `// for now` — which stop meaning anything once the change merges. A SessionStart hook injects the authoring rule on startup and after compaction, for subagents too. Enable per-repo or globally with /comment-discipline.",
+  "author": {
+    "name": "Jim Cline"
+  },
+  "license": "MIT",
+  "keywords": [
+    "comments",
+    "code-quality",
+    "review",
+    "hooks",
+    "authoring"
+  ]
+}

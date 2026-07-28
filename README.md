@@ -21,6 +21,27 @@ rules, including after compaction.
 
 Prevention, not compression. Composes with `PostToolUse` compressors like squeez.
 
+### [comment-discipline](./comment-discipline)
+
+Stops Claude writing **ephemeral comments** — `// changed from foo to bar`,
+`// NEW: added validation`, `// as suggested, kept for backwards compat`,
+`// for now` — the narration that only parses while the diff is on screen and
+describes a transition nobody can see once it merges. A comment's audience is the
+next person to *read* the code, not whoever reviews the change; git history
+already records what changed.
+
+Where `github-pr-toolkit`'s `/code-critic` catches these at review time, this stops
+them being written. A `SessionStart` hook injects the rule on startup and after
+compaction — and unlike the plugins above it deliberately does **not** suppress
+itself inside subagents, since subagents write plenty of code too.
+
+It never asks for prose: the absence of a comment is not a defect, so it can't
+backfire into defensive doc-comments. Public-API contracts and why-this-is-non-obvious
+explanations are explicitly encouraged, and time markers survive with a qualifier —
+`// TODO(#4127): remove once the v2 endpoint lands` is good, bare `// for now` is not.
+Run `/comment-discipline init` once to enable it globally or per-repo (project scope
+wins over user); `/comment-discipline on|off|status` toggles it.
+
 ### [task-gopher](./task-gopher)
 
 Makes the main, high-reasoning agent **dispatch the legwork to a cheap Haiku

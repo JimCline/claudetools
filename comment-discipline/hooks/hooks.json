@@ -1,0 +1,16 @@
+{
+  "description": "comment-discipline — SessionStart injects the no-ephemeral-comments authoring directive on startup, resume, clear, fork, and post-compaction (so it survives compaction rather than being quietly dropped mid-session). Delivered to subagents too, since they write code as well. Silent when the config sets enabled:false; with no config at all it emits a one-line nudge to run /comment-discipline init.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}

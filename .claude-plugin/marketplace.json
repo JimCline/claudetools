@@ -29,6 +29,24 @@
       "category": "productivity"
     },
     {
+      "name": "comment-discipline",
+      "source": "./comment-discipline",
+      "description": "Stops Claude from writing comments that only make sense next to the diff — `// changed from foo to bar`, `// NEW: added validation`, `// for now` — which stop meaning anything once the change merges. A SessionStart hook injects the authoring rule on startup and after compaction, for subagents too. Enable per-repo or globally with /comment-discipline.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Jim Cline"
+      },
+      "license": "MIT",
+      "keywords": [
+        "comments",
+        "code-quality",
+        "review",
+        "hooks",
+        "authoring"
+      ],
+      "category": "productivity"
+    },
+    {
       "name": "output-discipline",
       "source": "./output-discipline",
       "description": "Stops Claude Code from flooding the context window with command output. Blocks streaming/foreground long-running commands before they run and coaches toward background tasks and redirect-then-grep.",
