@@ -33,15 +33,23 @@ the main agent takes over if the runner falls short.
 
 ### [agent-hierarchy](./agent-hierarchy)
 
-Splits work across **five roles with a model each** — Orchestrator (the session
-agent itself), Architect, Reviewer, Implementor, Task-Runner. Design reasoning
-goes to a strong model that writes a spec file and never implements; the
-Implementor builds exactly that spec and reports gaps up instead of deciding; a
-read-only Reviewer validates the diff and labels each finding **impl-defect** or
-**spec-defect** so it routes back to the right role. Run `/hierarchy` once to
+Splits work across **six roles with a model each** — Orchestrator (the session
+agent itself), Ultra-Advisor, Architect, Reviewer, Implementor, Task-Runner.
+Design reasoning goes to a strong model that writes a spec file and never
+implements; the Implementor builds exactly that spec and reports gaps up instead
+of deciding; a read-only Reviewer validates the diff and labels each finding
+**impl-defect** or **spec-defect** so it routes back to the right role.
+Run `/hierarchy` once to
 assign the models — user-scoped or committed per-repo — and a `SessionStart` hook
 injects the resolved role→model table plus the orchestration protocol, including
 after compaction. Silent inside subagents, so role dispatches don't pay for it.
+
+Above the Architect sits the **Ultra-Advisor** (defaults to `fable`; `opus` is
+the only alternative — no `sonnet`, no `inherit`). It is an escalation apex, not
+a routine step: it runs when the Architect couldn't resolve a fork or reported
+low confidence, when the review loop stalls, when the blast radius is outsized
+(security, auth, data migration, concurrency, public interfaces), or when you
+say a problem is important. It adjudicates and never implements.
 
 Tiered so small work stays cheap: trivial edits skip the chain entirely, and
 fully-specified requests skip the Architect but keep the Reviewer. When

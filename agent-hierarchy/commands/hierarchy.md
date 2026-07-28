@@ -17,13 +17,18 @@ Config shape (`version` is the schema version, always `1`):
   "version": 1,
   "enabled": true,
   "roles": {
-    "architect":   { "model": "opus" },
-    "reviewer":    { "model": "sonnet" },
-    "implementor": { "model": "inherit" },
-    "task-runner": { "model": "haiku", "delegate": "task-gopher" }
+    "ultra-advisor": { "model": "fable" },
+    "architect":     { "model": "opus" },
+    "reviewer":      { "model": "sonnet" },
+    "implementor":   { "model": "inherit" },
+    "task-runner":   { "model": "haiku", "delegate": "task-gopher" }
   }
 }
 ```
+
+A config written before Ultra-Advisor existed is still valid: a missing
+`ultra-advisor` key resolves to the shipped default (`fable`) with no warning,
+so `version` stays `1`.
 
 Resolution rules you must respect in everything below:
 
@@ -34,11 +39,15 @@ Resolution rules you must respect in everything below:
   reasoning roles: `opus`, `sonnet`, `fable`, `inherit` only — **`haiku` is
   never valid for a reasoning role** and must never be offered or written for
   one. `task-runner` (legwork, no reasoning) additionally allows `haiku`.
+  `ultra-advisor` is the escalation apex and is **top-tier only: `fable` or
+  `opus`** — not `sonnet`, and not `inherit` (inheriting a lesser session model
+  would make the tier meaningless), so its model is always explicit.
   `inherit` means "omit the `model` parameter on the Agent call" — it is a
   legal value in this JSON file only, and must never be passed to the Agent
   tool literally.
-- Roles are `architect`, `reviewer`, `implementor`, `task-runner`. The
-  **Orchestrator is not configurable** — it is always the session agent itself.
+- Roles are `ultra-advisor`, `architect`, `reviewer`, `implementor`,
+  `task-runner`. The **Orchestrator is not configurable** — it is always the
+  session agent itself.
 
 The resolved table is printed by the plugin's own resolver, so it can never
 drift from what the hook injects. Run it with Bash from the repo you care about:
@@ -54,7 +63,7 @@ Pick the ONE case matching the argument:
 ## empty or `init` — the wizard
 
 1. Tell the user the **Orchestrator is fixed**: it is this session's own agent,
-   whatever model the session runs on. Only the other four roles are assignable.
+   whatever model the session runs on. Only the other five roles are assignable.
 2. Check for existing config: read `~/.claude/agent-hierarchy.json` and
    `<cwd>/.claude/agent-hierarchy.json` (either may be absent). Also check
    whether task-gopher is installed — `ls -d ~/.claude/plugins/cache/*/task-gopher 2>/dev/null` or the presence of a `task-gopher:task-gopher` agent type.
@@ -70,47 +79,58 @@ Pick the ONE case matching the argument:
    repos)" and "Project (this repo, committable)". If a config already exists at
    either scope, say so in the question header and mark that scope's option as
    the existing one.
-5. **AskUserQuestion call 2 — the remaining roles.** One question per role, all
-   in a single call: three questions when task-gopher is installed, four when it
-   is not. **Maximum 4 options per question** — this is a hard AskUserQuestion
-   limit, so curate. **Prefill if a config exists at either scope**: use the
-   chosen scope's current values as the first/recommended option for each role,
-   or — if the chosen scope has no config but the other one does — prefill from
-   that one instead, and tell the user which scope you pulled the values from.
-   With no config anywhere, use these defaults (recommended first):
+5. **AskUserQuestion call 2 — the four reasoning roles.** One question each for
+   Ultra-Advisor, Architect, Reviewer, and Implementor, all in a single call.
+   That is exactly 4 questions, the hard AskUserQuestion maximum — so
+   Task-Runner never rides along here; it gets its own call in step 6.
+   **Maximum 4 options per question** is also a hard limit, so curate.
+   **Prefill if a config exists at either scope**: use the chosen scope's
+   current values as the first/recommended option for each role, or — if the
+   chosen scope has no config but the other one does — prefill from that one
+   instead, and tell the user which scope you pulled the values from. A role
+   missing from the prefill source — an older config written before that role
+   existed, which is every config predating Ultra-Advisor — uses its shipped
+   default below as the recommended option, not whatever the file happens to
+   contain. With no config anywhere, use these defaults (recommended first):
+   - **Ultra-Advisor** — `fable` (recommended), `opus`. Only two options exist;
+     do not offer `sonnet` or `inherit`. Say what the role is for: the
+     escalation apex, dispatched only for the hardest or highest-stakes calls,
+     so it is rarely used and its per-call cost matters less than its judgment.
    - **Architect** — `opus` (recommended), `sonnet`, `fable`, `inherit`
    - **Reviewer** — `sonnet` (recommended), `opus`, `fable`, `inherit`
    - **Implementor** — `inherit` (recommended — runs on the session model),
      `sonnet`, `opus`, `fable`
-   - **Task-Runner** (only when task-gopher is NOT installed) —
-     `Install task-gopher (recommended)`, `haiku`, `sonnet`, `opus`.
-     If they pick the install option: write
-     `{ "model": "haiku", "delegate": "task-gopher" }` and tell them to run
-     `/plugin install task-gopher@claudetools` themselves (you cannot run
-     `/plugin`). Until it is installed, the directive's fallback rule routes
-     Task-Runner work to the bundled `agent-hierarchy:task-runner`, so nothing
-     breaks in the meantime.
+6. **AskUserQuestion call 3 — Task-Runner. Only when task-gopher is NOT
+   installed** (when it is installed, step 3 already settled this and you ask
+   nothing). One question, options: `Install task-gopher (recommended)`,
+   `haiku`, `sonnet`, `opus`. If they pick the install option: write
+   `{ "model": "haiku", "delegate": "task-gopher" }` and tell them to run
+   `/plugin install task-gopher@claudetools` themselves (you cannot run
+   `/plugin`). Until it is installed, the directive's fallback rule routes
+   Task-Runner work to the bundled `agent-hierarchy:task-runner`, so nothing
+   breaks in the meantime.
 
-   Any other model (including full model IDs, which only work in agent
-   frontmatter, not here) goes through AskUserQuestion's automatic "Other"
-   free-text — validate anything typed there against **that role's** valid
-   values (no `haiku` for reasoning roles) and re-ask rather than writing
+   For every question in steps 5 and 6: any other model (including full model
+   IDs, which only work in agent frontmatter, not here) goes through
+   AskUserQuestion's automatic "Other" free-text — validate anything typed
+   there against **that role's** valid values (no `haiku` for reasoning roles;
+   only `fable` or `opus` for `ultra-advisor`) and re-ask rather than writing
    something invalid.
-6. **Write nothing until the wizard completes.** If the user aborts, cancels, or
-   the role call does not come back with an answer for every asked role, write
+7. **Write nothing until the wizard completes.** If the user aborts, cancels, or
+   the role calls do not come back with an answer for every asked role, write
    no file and say the config was left unchanged.
-7. On completion, write the JSON with the Write tool to the chosen scope's path
+8. On completion, write the JSON with the Write tool to the chosen scope's path
    (`mkdir -p` the `.claude` directory first if needed). Set `"version": 1` and
-   `"enabled": true`. The Task-Runner entry comes from step 3 (auto-assigned or
-   answered); only the task-gopher deferral carries `delegate` — a plain model
-   pick omits it.
-8. **Echo the resolved effective table**, not what you just wrote — run the
+   `"enabled": true`. The Task-Runner entry comes from step 3 or step 6
+   (auto-assigned or answered); only the task-gopher deferral carries
+   `delegate` — a plain model pick omits it.
+9. **Echo the resolved effective table**, not what you just wrote — run the
    resolver command above and show its output. If it reports that a project
    config shadows user-scope values you just set, call that out explicitly:
    the values you wrote are not the ones in force.
-9. Close with the propagation note: the assignments apply to **this** session
-   immediately, and other live sessions pick them up at their next start,
-   clear, or compaction.
+10. Close with the propagation note: the assignments apply to **this** session
+    immediately, and other live sessions pick them up at their next start,
+    clear, or compaction.
 
 ---
 
@@ -125,9 +145,10 @@ warning, and the propagation note. Do not recompute the table yourself.
 
 ## `set <role> <model>`
 
-1. Validate `<role>` is one of `architect`, `reviewer`, `implementor`,
-   `task-runner` and `<model>` is valid **for that role** (reasoning roles:
-   `opus`, `sonnet`, `fable`, `inherit`; `task-runner` also allows `haiku`).
+1. Validate `<role>` is one of `ultra-advisor`, `architect`, `reviewer`,
+   `implementor`, `task-runner` and `<model>` is valid **for that role**
+   (`architect`/`reviewer`/`implementor`: `opus`, `sonnet`, `fable`, `inherit`;
+   `task-runner` also allows `haiku`; `ultra-advisor`: `fable` or `opus` only).
    If not, say what is valid for that role and stop — write nothing.
 2. Edit **the most specific config that already exists**: the project config if
    `<cwd>/.claude/agent-hierarchy.json` exists, otherwise the user config. If

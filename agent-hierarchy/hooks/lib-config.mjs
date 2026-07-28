@@ -29,9 +29,10 @@ import { join, resolve } from "node:path";
 export const CONFIG_VERSION = 1;
 
 /** Selectable roles, in display order. Orchestrator is the session agent and is not configurable. */
-export const ROLES = ["architect", "reviewer", "implementor", "task-runner"];
+export const ROLES = ["ultra-advisor", "architect", "reviewer", "implementor", "task-runner"];
 
 export const ROLE_LABELS = {
+  "ultra-advisor": "Ultra-Advisor",
   architect: "Architect",
   reviewer: "Reviewer",
   implementor: "Implementor",
@@ -40,6 +41,7 @@ export const ROLE_LABELS = {
 
 /** Shipped defaults — these mirror the agent-file frontmatter (implementor has no `model:` key). */
 export const ROLE_DEFAULTS = {
+  "ultra-advisor": { model: "fable" },
   architect: { model: "opus" },
   reviewer: { model: "sonnet" },
   implementor: { model: "inherit" },
@@ -55,9 +57,17 @@ export const ROLE_DEFAULTS = {
  * valid for them — a Haiku-tier model cannot carry design, review, or
  * implementation judgment. Only Task-Runner (legwork, no reasoning) may run
  * on haiku.
+ *
+ * Ultra-Advisor is the escalation apex: it exists only to bring MORE reasoning
+ * than the Architect already applied, so it takes top-tier models only and
+ * never `inherit` — inheriting a Sonnet session would make the tier
+ * decorative, which is the same argument that keeps haiku out of the
+ * reasoning roles. Its model is always explicit.
  */
 export const REASONING_MODELS = ["opus", "sonnet", "fable", "inherit"];
+export const TOP_TIER_MODELS = ["fable", "opus"];
 export const VALID_MODELS_BY_ROLE = {
+  "ultra-advisor": TOP_TIER_MODELS,
   architect: REASONING_MODELS,
   reviewer: REASONING_MODELS,
   implementor: REASONING_MODELS,
@@ -218,14 +228,15 @@ export function buildDirective(resolved) {
     ...roleLines(resolved.roles),
     "",
     "Protocol (hard default, not a preference):",
-    "1. Gate: binds the top-level Orchestrator only. Role agents never spawn architect/reviewer/implementor. They MAY dispatch task-gopher for legwork — that is not recursion.",
+    "1. Gate: binds the top-level Orchestrator only. Role agents never spawn ultra-advisor/architect/reviewer/implementor. They MAY dispatch task-gopher for legwork — that is not recursion.",
     "2. Scope: the chain governs changes. Analysis, debugging, and research go to Architect (design reasoning) or Task-Runner (retrieval) alone — no Reviewer without a diff.",
-    "3. Tiers: trivial (one blind Edit, no verification — typo, config value) → do it yourself. Determined (the request fixes the spec; no design choices left) → Implementor, then Reviewer. Everything else → Architect → spec → Implementor → Reviewer.",
+    "3. Tiers: trivial (one blind Edit, no verification — typo, config value) → do it yourself. Determined (the request fixes the spec; no design choices left) → Implementor, then Reviewer. Everything else → Architect → spec → Implementor → Reviewer, with Ultra-Advisor inserted ahead of the Architect when one of item 7's triggers fires.",
     "4. Spec handoff: generate one unique absolute spec path (scratchpad dir + task slug), dictate it in the Architect's prompt, and give the same path to Implementor and Reviewer. Dispatches are self-contained — subagents share no context.",
     "5. Living spec: if the Implementor reports a spec gap or a deviation is agreed, amend the spec file (yourself, or re-dispatch the Architect for design questions) BEFORE the Reviewer runs. The Reviewer always validates against the current spec.",
-    "6. Review loop: the Reviewer classifies each finding impl-defect or spec-defect. Impl-defects go back to the Implementor, spec-defects to the Architect. Max 2 round-trips, then surface open findings to the user.",
-    "7. Task-Runner: prefer `task-gopher:task-gopher`; if that agent type is unavailable use `agent-hierarchy:task-runner`. task-gopher's on/off toggle controls only its directive, not the agent — delegation works either way.",
-    "8. Skills and commands override: a skill mandating a different flow (tdd, diagnose, review) wins over this protocol for its scope.",
+    "6. Review loop: the Reviewer classifies each finding impl-defect or spec-defect. Impl-defects go back to the Implementor, spec-defects to the Architect. Max 2 round-trips; if findings are still open after that, escalate to Ultra-Advisor rather than looping again, then surface its verdict to the user.",
+    "7. Ultra-Advisor — escalation apex, never a routine step. It reasons and adjudicates; it never implements. Dispatch it ONLY when: the user says the problem is hard, important, or high-stakes, or asks for a second opinion; the Architect reports low confidence or a fork it could not resolve; the review loop hits its cap in item 6; or the change carries outsized blast radius (security, auth, data migration, concurrency, a public interface, anything hard to reverse). Give it the same absolute spec path plus the specific question. Its answer is authoritative: fold it into the spec before the Implementor runs again. Do not escalate merely because a task feels large — size is the Architect's job.",
+    "8. Task-Runner: prefer `task-gopher:task-gopher`; if that agent type is unavailable use `agent-hierarchy:task-runner`. task-gopher's on/off toggle controls only its directive, not the agent — delegation works either way.",
+    "9. Skills and commands override: a skill mandating a different flow (tdd, diagnose, review) wins over this protocol for its scope.",
   ];
   for (const warning of resolved.warnings) lines.push(warning);
   return lines.join("\n");
