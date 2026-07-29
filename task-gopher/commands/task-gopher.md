@@ -16,7 +16,7 @@ Pick the ONE case matching the argument and run its command with the Bash tool:
 - **`on`** / `enable`:
   `mkdir -p ~/.claude && touch ~/.claude/task-gopher.enabled && echo "task-gopher: ON"`
 - **`off`** / `disable` (also clears strict):
-  `rm -f ~/.claude/task-gopher.enabled ~/.claude/task-gopher.strict ~/.claude/task-gopher.nudge ~/.claude/task-gopher.relay && echo "task-gopher: OFF (strict cleared)"`
+  `rm -f ~/.claude/task-gopher.enabled ~/.claude/task-gopher.strict ~/.claude/task-gopher.nudge && echo "task-gopher: OFF (strict cleared)"`
 - **`strict`** / `strict on`:
   `mkdir -p ~/.claude && touch ~/.claude/task-gopher.enabled ~/.claude/task-gopher.strict && echo "task-gopher: ON + STRICT"`
 - **`strict off`**:
@@ -29,7 +29,7 @@ Pick the ONE case matching the argument and run its command with the Bash tool:
 - **`log clear`** (wipe the audit log): run
   `rm -f ~/.claude/task-gopher.log && echo "task-gopher: audit log cleared"`
 - **empty / `toggle` / anything else** (toggles the base on/off; leaves strict as-is unless turning off):
-  `if [ -f ~/.claude/task-gopher.enabled ]; then rm -f ~/.claude/task-gopher.enabled ~/.claude/task-gopher.strict ~/.claude/task-gopher.nudge ~/.claude/task-gopher.relay && echo "task-gopher: OFF"; else mkdir -p ~/.claude && touch ~/.claude/task-gopher.enabled && echo "task-gopher: ON"; fi`
+  `if [ -f ~/.claude/task-gopher.enabled ]; then rm -f ~/.claude/task-gopher.enabled ~/.claude/task-gopher.strict ~/.claude/task-gopher.nudge && echo "task-gopher: OFF"; else mkdir -p ~/.claude && touch ~/.claude/task-gopher.enabled && echo "task-gopher: ON"; fi`
 
 Run the single matching command and report the resulting state to the user in one line.
 

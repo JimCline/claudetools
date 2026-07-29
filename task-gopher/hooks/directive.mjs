@@ -29,13 +29,11 @@ export const STRICT_FILE = join(homedir(), ".claude", "task-gopher.strict");
 /** Records {pid, n} for the current turn, so the checkpoint escalates by bypass count. */
 export const NUDGE_FILE = join(homedir(), ".claude", "task-gopher.nudge");
 
-/** Records {pid, n} relay bounces for the current turn, so the relay gate fails open after repeated denies. */
-export const RELAY_FILE = join(homedir(), ".claude", "task-gopher.relay");
 
 /**
  * Append-only JSONL audit log. Checkpoint/bypass lines require strict mode;
- * dispatch and relay-ok/relay-bounce/relay-forgone lines are written whenever
- * the plugin is ON.
+ * dispatch and relay-ok/relay-injected lines are written whenever the plugin
+ * is ON.
  */
 export const LOG_FILE = join(homedir(), ".claude", "task-gopher.log");
 
@@ -90,8 +88,9 @@ export function isTaskGopherAgent(input) {
 }
 
 /**
- * Marker the relay gate looks for in Agent dispatch prompts. Both directive
- * texts open with it, so a verbatim copy of either satisfies the check.
+ * Marker the relay gate looks for at the top of Agent dispatch prompts, to tell
+ * an already-stamped dispatch from one that still needs the directive. Both
+ * directive texts open with it.
  */
 export const SENTINEL = "[task-gopher: ON]";
 
@@ -124,9 +123,9 @@ export const FULL_DIRECTIVE = [
   "",
   "Escape hatch: if `task-gopher` returns incomplete, wrong, or insufficient information, or reports it could not proceed (usually because an order needed a decision), you MAY do it yourself or re-dispatch ONCE with a sharper, fully-specified order. Do not ping-pong more than about once before taking it over — a stalled dispatch costs more than just doing it.",
   "",
-  'RELAY — carry this directive to your subagents: subagents do NOT inherit your context or this directive, so when you dispatch a subagent, COPY THIS ENTIRE DIRECTIVE BLOCK VERBATIM (from "[task-gopher: ON]" through this paragraph) to the TOP of the dispatch prompt, then write your task below it. Skip the copy for task-gopher itself and for read-only/utility scouts without the Agent tool (Explore, Plan, statusline-setup, output-style-setup) — they cannot delegate, so it would only waste tokens. The copy contains this very instruction, so it chains to their subagents too, and the tier gate at the top makes over-delivery harmless. A PreToolUse checkpoint bounces other Agent dispatches whose prompt is missing the directive.',
+  "Relay is automatic — do NOT copy this directive into subagent prompts yourself. Subagents do not inherit it, so a PreToolUse hook stamps it onto every dispatch prompt in flight (skipping task-gopher itself and tool-less scouts). Writing it out by hand would just spend your own output tokens on something the harness already did.",
 ].join("\n");
 
 /** Compact per-turn reminder — injected at UserPromptSubmit to keep the behavior alive. */
 export const SHORT_REMINDER =
-  "[task-gopher: ON] If you are Sonnet-tier or higher (any agent, top-level or subagent): by DEFAULT dispatch tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders, and keep reasoning for yourself. Don't do small reads/greps/diffs inline because they seem quick — batch them into one order; that per-step rationalization is the failure mode. Order NARROW queries (grep/answer/summary that come back smaller than the source), never \"read the whole file and send it back\" — if you need a full file, read it yourself. If you are Haiku-tier or have no Agent tool, ignore this. Escape hatch: take it over if the runner fails or returns too little. Relay: when dispatching any subagent except task-gopher itself and tool-less scouts (Explore, Plan), copy the full [task-gopher: ON] directive block verbatim to the top of the dispatch prompt — subagents don't inherit it, and a checkpoint bounces dispatches that omit it.";
+  "[task-gopher: ON] If you are Sonnet-tier or higher (any agent, top-level or subagent): by DEFAULT dispatch tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders, and keep reasoning for yourself. Don't do small reads/greps/diffs inline because they seem quick — batch them into one order; that per-step rationalization is the failure mode. Order NARROW queries (grep/answer/summary that come back smaller than the source), never \"read the whole file and send it back\" — if you need a full file, read it yourself. If you are Haiku-tier or have no Agent tool, ignore this. Escape hatch: take it over if the runner fails or returns too little. Don't copy this directive into subagent prompts — a hook stamps it onto every dispatch automatically.";

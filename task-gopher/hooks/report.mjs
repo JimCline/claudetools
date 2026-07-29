@@ -51,8 +51,7 @@ function main() {
   const bypasses = events.filter((e) => e.event === "bypass");
   const dispatches = events.filter((e) => e.event === "dispatch");
   const relayOk = events.filter((e) => e.event === "relay-ok");
-  const relayBounces = events.filter((e) => e.event === "relay-bounce");
-  const relayForgone = events.filter((e) => e.event === "relay-forgone");
+  const relayInjected = events.filter((e) => e.event === "relay-injected");
   const turns = new Set(events.map((e) => e.pid).filter(Boolean)).size;
 
   // Only dispatches from turns the strict gate actually saw count toward the
@@ -87,9 +86,9 @@ function main() {
   console.log(`dispatches:     ${dispatches.length}  (delegations to task-gopher; ${strictDispatches.length} in strict-gated turns)`);
   console.log(`bypass/dispatch ratio: ${ratio}  (strict-gated turns only; lower is better)`);
   if (toolBreakdown) console.log(`bypassed tools: ${toolBreakdown}`);
-  if (relayOk.length || relayBounces.length || relayForgone.length) {
+  if (relayOk.length || relayInjected.length) {
     console.log(
-      `subagent relay:  ${relayOk.length} ok, ${relayBounces.length} bounced, ${relayForgone.length} forgone (fail-open)`
+      `subagent relay:  ${relayInjected.length} dispatches stamped, ${relayOk.length} already carried it`
     );
   }
 

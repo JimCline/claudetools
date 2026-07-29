@@ -6,14 +6,17 @@
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(cd "$PLUGIN/.." && pwd)"
 HOOK="$PLUGIN/hooks/pretooluse-nudge.mjs"
-FAKEHOME="$(mktemp -d "${TMPDIR:-/tmp}/task-gopher-relay-test.XXXXXX")"
-trap 'rm -rf "$FAKEHOME"' EXIT
+SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/task-gopher-relay-test.XXXXXX")"
+trap 'rm -rf "$SANDBOX"' EXIT
+FAKEHOME="$SANDBOX/home"
+SANDBOX_COUNT="$SANDBOX/stamped.count"
 PASS=0; FAIL=0
 
-REAL_RELAY="$(printf '%s' ~)/.claude/task-gopher.relay"
-REAL_RELAY_PRE=0; [ -f "$REAL_RELAY" ] && REAL_RELAY_PRE=1
+REAL_NUDGE="$(printf '%s' ~)/.claude/task-gopher.nudge"
+REAL_NUDGE_PRE=0; [ -f "$REAL_NUDGE" ] && REAL_NUDGE_PRE=1
 
 mkdir -p "$FAKEHOME/.claude"
+: > "$SANDBOX_COUNT"
 
 # run_hook <payload-json>  -> sets OUT (stdout) and RC (exit code)
 run_hook() { OUT=$(printf '%s' "$1" | HOME="$FAKEHOME" node "$HOOK" 2>/dev/null); RC=$?; }
@@ -23,8 +26,9 @@ check() { # check <name> <condition...>
   if eval "$@"; then PASS=$((PASS+1)); echo "PASS: $name"; else FAIL=$((FAIL+1)); echo "FAIL: $name (OUT=${OUT:0:120} RC=$RC)"; fi
 }
 
-is_allow() { [ $RC -eq 0 ] && [ -z "$OUT" ]; }
-is_deny()  { [ $RC -eq 0 ] && printf '%s' "$OUT" | grep -q '"permissionDecision":"deny"'; }
+is_allow()  { [ $RC -eq 0 ] && [ -z "$OUT" ]; }
+is_deny()   { [ $RC -eq 0 ] && printf '%s' "$OUT" | grep -q '"permissionDecision":"deny"'; }
+is_inject() { [ $RC -eq 0 ] && printf '%s' "$OUT" | grep -q '"updatedInput"'; }
 
 DISPATCH_NOSENT='{"tool_name":"Agent","prompt_id":"PID","tool_input":{"subagent_type":"TYPE","prompt":"do the thing"}}'
 DISPATCH_SENT='{"tool_name":"Agent","prompt_id":"PID","tool_input":{"subagent_type":"TYPE","prompt":"[task-gopher: ON] tier gate blah\n\ndo the thing"}}'
@@ -42,23 +46,22 @@ check "on: dispatch TO gopher never bounced" is_allow
 check "on: gopher dispatch logged" "grep -q '\"event\":\"dispatch\"' \"$FAKEHOME/.claude/task-gopher.log\""
 
 run_hook "$(payload "$DISPATCH_NOSENT" t1 general-purpose)"
-check "on: missing sentinel -> deny" is_deny
-check "deny reason carries full directive" "printf '%s' \"\$OUT\" | grep -q 'COPY EVERYTHING BELOW'"
-check "deny reason carries sentinel text" "printf '%s' \"\$OUT\" | grep -q 'task-gopher: ON'"
+check "on: missing sentinel -> rewrites the dispatch (updatedInput)" is_inject
+check "rewritten prompt is stamped with the directive" "printf '%s' \"\$OUT\" | grep -q 'task-gopher: ON'"
+check "rewritten prompt keeps the original task text" "printf '%s' \"\$OUT\" | grep -q 'do the thing'"
+check "rewrite does NOT deny" "! printf '%s' \"\$OUT\" | grep -q 'permissionDecision'"
+check "relay-injected logged" "grep -q '\"event\":\"relay-injected\"' \"$FAKEHOME/.claude/task-gopher.log\""
+# every other tool_input field must survive the rewrite
+OUT=$(printf '%s' '{"tool_name":"Agent","prompt_id":"t1b","tool_input":{"subagent_type":"general-purpose","prompt":"x","description":"keep me","model":"opus"}}' | HOME="$FAKEHOME" node "$HOOK"); RC=$?
+check "rewrite preserves other tool_input fields" "printf '%s' \"\$OUT\" | grep -q 'keep me' && printf '%s' \"\$OUT\" | grep -q 'opus'"
+check "rewrite preserves subagent_type" "printf '%s' \"\$OUT\" | grep -q 'general-purpose'"
 
 run_hook "$(payload "$DISPATCH_SENT" t1 general-purpose)"
-check "on: sentinel present -> allow" is_allow
+check "on: sentinel present -> allow, no double-stamp" is_allow
 check "relay-ok logged" "grep -q '\"event\":\"relay-ok\"' \"$FAKEHOME/.claude/task-gopher.log\""
 
-run_hook "$(payload "$DISPATCH_NOSENT" t1 general-purpose)"
-check "on: second missing-sentinel dispatch -> deny (bounce 2)" is_deny
-
-run_hook "$(payload "$DISPATCH_NOSENT" t1 general-purpose)"
-check "on: third missing-sentinel dispatch -> fail-open allow" is_allow
-check "relay-forgone logged" "grep -q '\"event\":\"relay-forgone\"' \"$FAKEHOME/.claude/task-gopher.log\""
-
 run_hook "$(payload "$DISPATCH_NOSENT" t2 general-purpose)"
-check "on: new turn re-arms relay gate -> deny" is_deny
+check "on: every dispatch is stamped (no once-per-turn limit)" is_inject
 
 run_hook "$(payload "$DISPATCH_NOSENT" t2 Explore)"
 check "on: Explore exempt" is_allow
@@ -72,12 +75,12 @@ check "on: inside gopher runner nothing gates" is_allow
 
 TASK_ALIAS='{"tool_name":"Task","prompt_id":"t3","tool_input":{"subagent_type":"general-purpose","prompt":"x"}}'
 run_hook "$TASK_ALIAS"
-check "on: Task tool name gated same as Agent" is_deny
+check "on: Task tool name gated same as Agent" is_inject
 
 PAD=$(printf 'x%.0s' $(seq 1 210))
 BURIED="{\"tool_name\":\"Agent\",\"prompt_id\":\"t3b\",\"tool_input\":{\"subagent_type\":\"general-purpose\",\"prompt\":\"$PAD [task-gopher: ON] quoted mention\"}}"
 run_hook "$BURIED"
-check "on: sentinel buried past top window -> still deny" is_deny
+check "on: sentinel buried past top window -> still stamped" is_inject
 
 NOSTRING='{"tool_name":"Agent","prompt_id":"t3c","tool_input":{"subagent_type":"general-purpose","prompt":42}}'
 run_hook "$NOSTRING"
@@ -86,26 +89,17 @@ check "on: non-string prompt (schema drift) -> fail open" is_allow
 run_hook "$(payload "$DISPATCH_NOSENT" t3d statusline-setup)"
 check "on: statusline-setup exempt" is_allow
 
-# ---- per-context bounce budgets (single shared slot would fail all of these)
+# ---- the rewrite is stateless: every context is stamped, always
 SESA='{"tool_name":"Agent","prompt_id":"t5","session_id":"sA","tool_input":{"subagent_type":"general-purpose","prompt":"x"}}'
 SESB='{"tool_name":"Agent","prompt_id":"t5","session_id":"sB","tool_input":{"subagent_type":"general-purpose","prompt":"x"}}'
-run_hook "$SESA"; run_hook "$SESA"   # sA: bounces 1 and 2
+run_hook "$SESA"; run_hook "$SESA"; run_hook "$SESA"
+check "repeat dispatches in one turn: still stamped (no budget to exhaust)" is_inject
 run_hook "$SESB"
-check "cross-session: sB has its own budget -> deny" is_deny
-run_hook "$SESA"
-check "cross-session: sA fail-open not reset by sB -> allow" is_allow
+check "second session: stamped, unaffected by the first" is_inject
 
 AG1='{"tool_name":"Agent","prompt_id":"t6","session_id":"sA","agent_id":"ag1","tool_input":{"subagent_type":"general-purpose","prompt":"x"}}'
-AG2='{"tool_name":"Agent","prompt_id":"t6","session_id":"sA","agent_id":"ag2","tool_input":{"subagent_type":"general-purpose","prompt":"x"}}'
-run_hook "$AG1"; run_hook "$AG1"; run_hook "$AG1"  # ag1: bounce, bounce, forgone
-run_hook "$AG2"
-check "sibling agent: budget not exhausted by ag1 -> deny" is_deny
-
-X1='{"tool_name":"Agent","prompt_id":"p1","session_id":"sX","tool_input":{"subagent_type":"general-purpose","prompt":"x"}}'
-Y1='{"tool_name":"Agent","prompt_id":"p2","session_id":"sY","tool_input":{"subagent_type":"general-purpose","prompt":"x"}}'
-run_hook "$X1"; run_hook "$Y1"; run_hook "$X1"   # interleaved: X:1, Y:1, X:2
-run_hook "$X1"
-check "interleaved sessions: X still reaches fail-open -> allow" is_allow
+run_hook "$AG1"
+check "nested dispatch from inside a subagent: stamped (chain is automatic)" is_inject
 
 READ_P='{"tool_name":"Read","prompt_id":"t4","tool_input":{"file_path":"/x"}}'
 run_hook "$READ_P"
@@ -129,28 +123,22 @@ check "strict: gopher dispatch allowed" is_allow
 run_hook "$READ_P"
 check "strict: dispatch reset streak (Read allowed, no escalate)" is_allow
 
-# ---- concurrent contexts must not wipe each other's relay counters
-# (regression: non-atomic writeFileSync let a torn read reset the whole map)
-rm -f "$FAKEHOME/.claude/task-gopher.relay"
+# ---- concurrent dispatches all get stamped (rewrite keeps no shared state)
 for i in $(seq 1 12); do
   printf '%s' "{\"tool_name\":\"Agent\",\"prompt_id\":\"cc\",\"session_id\":\"s$i\",\"tool_input\":{\"subagent_type\":\"general-purpose\",\"prompt\":\"x\"}}" \
-    | HOME="$FAKEHOME" node "$HOOK" >/dev/null 2>&1 &
+    | HOME="$FAKEHOME" node "$HOOK" 2>/dev/null | grep -c '"updatedInput"' >> "$SANDBOX_COUNT" &
 done
 wait
-KEPT=$(node -e "try{const s=require('fs').readFileSync('$FAKEHOME/.claude/task-gopher.relay','utf8').split('\n').filter(Boolean);process.stdout.write(String(new Set(s).size))}catch(e){process.stdout.write('0')}")
-[ "$KEPT" -eq 12 ] && { PASS=$((PASS+1)); echo "PASS: 12 concurrent contexts, all 12 counters survived"; } || { FAIL=$((FAIL+1)); echo "FAIL: concurrent counters lost, only $KEPT/12 survived"; }
+STAMPED=$(awk '{s+=$1} END {print s+0}' "$SANDBOX_COUNT")
+[ "$STAMPED" -eq 12 ] && { PASS=$((PASS+1)); echo "PASS: 12 concurrent dispatches, all 12 stamped"; } || { FAIL=$((FAIL+1)); echo "FAIL: only $STAMPED/12 concurrent dispatches stamped"; }
 STRAY=$(ls "$FAKEHOME/.claude/" | grep -c '\.tmp$')
 [ "$STRAY" -eq 0 ] && { PASS=$((PASS+1)); echo "PASS: no stray .tmp files left behind"; } || { FAIL=$((FAIL+1)); echo "FAIL: $STRAY stray .tmp files"; }
 
-# ---- state dir is created when absent
+# ---- works on a fresh HOME with no state dir
 NOHOME="$(mktemp -d "${TMPDIR:-/tmp}/task-gopher-nohome.XXXXXX")"
-touch "$NOHOME/task-gopher.enabled" 2>/dev/null
-mkdir -p "$NOHOME/.claude" && mv "$NOHOME/task-gopher.enabled" "$NOHOME/.claude/" 2>/dev/null
-rm -rf "$NOHOME/.claude"
 mkdir -p "$NOHOME/.claude" && touch "$NOHOME/.claude/task-gopher.enabled"
-rm -f "$NOHOME/.claude/task-gopher.relay"
 OUT=$(printf '%s' "$(payload "$DISPATCH_NOSENT" nh general-purpose)" | HOME="$NOHOME" node "$HOOK" 2>/dev/null); RC=$?
-check "fresh HOME: relay gate still denies (state writable)" is_deny
+check "fresh HOME: dispatch still stamped" is_inject
 rm -rf "$NOHOME"
 
 # ---- robustness
@@ -174,11 +162,16 @@ V_MARKET=$(node -e "const m=JSON.parse(require('fs').readFileSync('$ROOT/.claude
 
 # ---- real config untouched (fail only if the file APPEARED during this run;
 # a live session running the plugin may have created it beforehand)
-if [ -f "$REAL_RELAY" ] && [ "$REAL_RELAY_PRE" -eq 0 ]; then
-  FAIL=$((FAIL+1)); echo "FAIL: real relay file was created by the tests!"
+if [ -f "$REAL_NUDGE" ] && [ "$REAL_NUDGE_PRE" -eq 0 ]; then
+  FAIL=$((FAIL+1)); echo "FAIL: real state file was created by the tests!"
 else
-  PASS=$((PASS+1)); echo "PASS: real ~/.claude/task-gopher.relay untouched by tests"
+  PASS=$((PASS+1)); echo "PASS: real ~/.claude state untouched by tests"
 fi
+
+# ---- the retired bounce machinery is fully gone
+grep -q 'RELAY_FILE\|relay-bounce\|relay-forgone\|RELAY_FORGO_AFTER' "$PLUGIN"/hooks/*.mjs \
+  && { FAIL=$((FAIL+1)); echo "FAIL: dead relay-bounce machinery still referenced"; } \
+  || { PASS=$((PASS+1)); echo "PASS: relay-bounce machinery fully removed"; }
 
 echo "----"
 echo "SUMMARY: $PASS passed, $FAIL failed"

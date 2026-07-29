@@ -51,8 +51,8 @@ chain.
 5. **Toggleable plugin directives that shape behavior** → **this relay design**,
    in one of two flavors:
    - **5a. Directive shapes everything the subagent does** (how it plans, what
-     it delegates) → relay clause + `PreToolUse` sentinel-deny on `Agent`.
-     Delivery must be at spawn, because the behavior starts immediately.
+     it delegates) → **`PreToolUse` rewrite on `Agent`**. Delivery must be at
+     spawn, because the behavior starts immediately. See "Rewrite in flight".
    - **5b. Directive only matters at a specific tool boundary** (how it writes
      code, how it runs commands) → relay clause + **targeted injection**: a
      `PostToolUse` hook on *those* tools that injects the directive once per
@@ -61,9 +61,55 @@ chain.
      tradeoff is that the *first* such tool call is unguarded — the relay
      clause is what covers it.
 
-## The design
+## Rewrite in flight — the primary mechanism
 
-Three cooperating parts:
+A `PreToolUse` hook can return `hookSpecificOutput.updatedInput` to replace a
+tool's arguments before it runs, and **this works on the `Agent` tool**: return
+the original `tool_input` with `prompt` replaced by `directive + "\n\n" +
+prompt`, and the spawned subagent receives the rewritten prompt.
+
+```js
+process.stdout.write(JSON.stringify({
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse",
+    updatedInput: { ...toolInput, prompt: DIRECTIVE + "\n\n" + toolInput.prompt },
+  },
+}))
+```
+
+Verified live (2026-07-29, Claude Code 2.1.x): a probe agent dispatched with a
+~300-character prompt reported receiving a ~7,300-character one beginning with
+the injected directive. The docs describe `updatedInput` generically but do not
+document it for `Agent`, so re-verify after harness upgrades.
+
+Pass the **whole** `tool_input` back with only `prompt` changed, so the result
+is correct whether the harness merges or replaces the object.
+
+This is strictly better than the alternatives: no model has to cooperate, the
+parent spends no output tokens, there is no bounce or retry, and it needs no
+state file — so no counters, no fail-open, no concurrency. Because
+`PreToolUse` also fires inside a subagent's loop, nested dispatches are
+rewritten too and the chain is automatic.
+
+Still skip: dispatches to your own runner/worker agents, agent types that
+cannot act on the directive, and prompts that already carry the sentinel near
+the top (don't duplicate a hand-pasted copy).
+
+**The one real risk.** Claude Code's auto-mode permission classifier evaluates
+the *final* dispatch prompt — orchestrator text plus anything a hook injected.
+A third-party plugin, `context-mode`, hit exactly this: its `Agent` hook
+appended a ~4.5KB routing block to every dispatch, whose "keep raw bytes out of
+the transcript" phrasing pattern-matched an oversight-evasion signature, so
+dispatches were rejected as "Auto-Mode Bypass" *no matter how clean the
+orchestrator's own prompt was*, and re-sending stripped didn't help because the
+injection was re-added downstream. Keep injected directives plainly about the
+work (cost, style, correctness) and free of anything that reads like evading
+oversight or hiding activity. If dispatches start failing that way, fall back to
+the deny flavor below, where the text is the parent's own.
+
+## The fallback design (deny and retry)
+
+Use this only where `updatedInput` isn't honored. Three cooperating parts:
 
 1. **Relay instruction inside the directive itself.** The injected directive
    tells the agent: *when you dispatch any subagent (except <exempt targets>),
@@ -121,15 +167,15 @@ So: **at most one plugin should sentinel-deny a given tool.** A second plugin
 wanting the same tool should use flavor 5b (targeted injection on a *different*
 tool), where the documented aggregation behavior applies and no deny is needed.
 
-**The top slot belongs to the gate.** A top-anchored sentinel check (first ~200
-chars) and a second plugin that also says "copy this to the top of the prompt"
-are a live conflict: whichever block lands first pushes the other's sentinel out
-of the window, and the gate then denies every dispatch — bouncing until its
-fail-open trips, on every dispatch. Only the deny-gating plugin may claim the
-top; every other relaying directive must tell agents to place its block *below*
-any directive already leading the prompt. Enforce this in the directive text,
-because the gate cannot detect the ordering problem — it just sees a missing
-sentinel.
+**The top slot belongs to the rewriting plugin.** A top-anchored sentinel check
+(first ~200 chars) and a second plugin that also puts its block at the top are a
+live conflict: whichever lands first pushes the other's sentinel out of the
+window, so the first plugin re-stamps a prompt that was already stamped (or, in
+the deny flavor, bounces every dispatch until fail-open). Only one plugin may
+claim the top; any other relaying directive must be placed *below* whatever
+already leads the prompt. Note the rewrite mechanism prepends, so it naturally
+takes the top — a second plugin relaying by instruction must say "below any
+directive already leading the prompt."
 
 **Injection backstops cannot detect a relay.** A `PostToolUse` hook has no view
 of the dispatch prompt, so it fires whether or not the parent relayed. The two
@@ -141,7 +187,7 @@ Worked examples in this repo:
 
 | Plugin | Channel | Why |
 |---|---|---|
-| task-gopher | relay clause + deny gate on `Agent` | Delegation shapes everything; needs at-spawn delivery |
+| task-gopher | `updatedInput` rewrite on `Agent` | Delegation shapes everything; needs at-spawn delivery |
 | comment-discipline | relay clause (below task-gopher's block) + `PostToolUse` injection on `Edit`/`Write`/`NotebookEdit` | Only matters when authoring; keeps off `Agent`, where task-gopher already denies |
 | output-discipline | nothing added | Its `PreToolUse` Bash gate already fires inside subagent loops; deny reasons teach in-context |
 | agent-hierarchy | nothing added | Suppression is the intent; role agents carry their own `agents/*.md` |
@@ -163,10 +209,9 @@ dispatching an agent that will write code") keeps that bounded.
 - [ ] Script logic, in order: plugin enabled? → payload parse (fail open) →
       inside own runner (`agent_type`)? allow → is `Agent`/`Task` call? →
       target exempt (`subagent_type`)? allow → `prompt` not a string? allow →
-      sentinel near top of `prompt`? allow → no `prompt_id`? allow → bounce
-      count ≥ N for this (session, agent, turn) key? allow (log forgone) →
-      increment that key's counter (fail open if unwritable), deny with
-      directive in reason.
+      sentinel near top of `prompt`? allow (already stamped) → emit
+      `updatedInput` with the directive prepended. No state, no counters.
+      (Deny-flavor fallback adds the bounce budget described above.)
 - [ ] Add the relay paragraph to every injected directive text (full + any
       per-turn reminder), naming the exemptions and warning that a checkpoint
       bounces non-compliant dispatches.
@@ -192,13 +237,15 @@ dispatching an agent that will write code") keeps that bounded.
 
 Run the hook directly — `printf '<payload>' | HOME=$FAKEHOME node hooks/<gate>.mjs`
 — and assert on exit code + stdout. Cover at minimum: plugin OFF passthrough;
-dispatch-to-exempt-target allowed; missing sentinel → deny whose reason
-contains the directive; sentinel at top → allow; sentinel buried mid-prompt →
-still deny; N bounces then fail-open; a different `session_id`/`agent_id`/
-`prompt_id` gets its own bounce budget (no cross-context reset or exhaustion);
+dispatch-to-exempt-target allowed; missing sentinel → `updatedInput` whose
+prompt carries both the directive and the original task text, with every other
+`tool_input` field preserved and no `permissionDecision`; sentinel at top →
+plain allow (no double-stamp); sentinel buried mid-prompt → still stamped;
 non-string `prompt` → allow; inside-own-runner passthrough (`agent_type`);
 `Task` alias; malformed/empty stdin; any pre-existing gate in the same script
-unchanged; real `~/.claude` untouched afterward. Working example:
+unchanged; real `~/.claude` untouched afterward. Assert too that retired
+machinery is actually gone — a grep for the old symbols catches the dead
+references docs and reports keep referring to. Working example:
 [`task-gopher/tests/test-relay-gate.sh`](https://github.com/JimCline/claudetools/blob/main/task-gopher/tests/test-relay-gate.sh)
 (36 cases).
 
@@ -211,9 +258,9 @@ unchanged; real `~/.claude` untouched afterward. Working example:
   subagent's perspective — strictly better than first-tool-call
   `additionalContext` injection (one call late; misses tool-less agents),
   which remains a valid *backstop* if you want belt-and-suspenders.
-- **Untested upgrade:** `PreToolUse` supports `hookSpecificOutput.updatedInput`
-  (replaces tool arguments before the tool runs). If it works on the `Agent`
-  tool's `prompt` — the docs demonstrate it only for regular tools — the hook
-  could append the directive silently and the deny/retry bounce disappears
-  entirely. Verify empirically before building on it; if it works, the
-  sentinel deny becomes the fallback for harness versions without it.
+- The `updatedInput` rewrite is now the primary mechanism (verified live) and
+  the deny/retry flavor is the fallback. Its own limit: delivery depends on the
+  harness honoring `updatedInput` on `Agent`, and if that stops the relay fails
+  **silently** — the dispatch still succeeds, the subagent just never sees the
+  directive. Log an injection count so the failure is visible, and re-verify
+  after harness upgrades.

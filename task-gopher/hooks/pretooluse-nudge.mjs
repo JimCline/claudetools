@@ -2,20 +2,26 @@
 /**
  * task-gopher — PreToolUse gate. Two independent jobs:
  *
- * RELAY GATE (active whenever the plugin is ON): subagents inherit neither the
+ * RELAY (active whenever the plugin is ON): subagents inherit neither the
  * parent's context nor the SessionStart/UserPromptSubmit injections — the
- * dispatch prompt is the only channel that reaches them at spawn. So this gate
- * bounces any Agent/Task dispatch missing the directive sentinel near the top
- * of its prompt (top-anchored so a mid-prompt *mention* of the sentinel doesn't
- * count as a relay), and puts the FULL directive in the deny reason so the
- * retry is a mechanical copy, not a reconstruction from memory. Dispatches to
- * task-gopher itself are never bounced (they ARE the delegation), and built-in
- * subagents without the Agent tool (Explore, Plan, statusline-setup,
- * output-style-setup) are exempt — they cannot act on the directive. After
- * RELAY_FORGO_AFTER bounces per context — counted per (session, agent, turn),
- * since one shared counter would let concurrent sessions starve each other's
- * cap — the gate stands down: a missed relay is a mild inefficiency, a deny
- * loop is a real failure.
+ * dispatch prompt is the only channel that reaches them at spawn. So this hook
+ * REWRITES the dispatch in flight: it returns `updatedInput` with the directive
+ * prepended to the subagent's prompt. The parent never sees it, spends no
+ * output tokens copying it, and there is no bounce — the harness hands the
+ * spawned subagent a prompt that already carries the directive. (Verified live:
+ * a probe agent dispatched with a 300-char prompt reported receiving a
+ * 7300-char one opening with the tier gate.)
+ *
+ * Because PreToolUse also fires inside a subagent's own loop, a subagent
+ * dispatching a grandchild gets the same rewrite — the chain is automatic and
+ * needs no cooperation from any model.
+ *
+ * Skipped: dispatches to task-gopher itself (they ARE the delegation), builtin
+ * subagents that cannot dispatch (Explore, Plan, statusline-setup,
+ * output-style-setup), and any prompt that already carries the sentinel near
+ * the top — a parent that pasted the directive by hand is not made to carry it
+ * twice. The sentinel check is top-anchored so a mid-prompt *mention* of it
+ * does not count as a relay.
  *
  * STRICT CHECKPOINT (requires strict mode on top of ON): nudges the agent to
  * consider dispatching to task-gopher before it does retrieval work itself.
@@ -30,17 +36,17 @@
  * things into its own context gets re-checkpointed; an agent that delegates is
  * left alone.
  *
- * Turn = one user prompt, tracked by the payload's `prompt_id`. Checkpoint
- * state lives in NUDGE_FILE, relay-bounce state in RELAY_FILE, both as JSON
- * {pid, n}.
+ * Turn = one user prompt, tracked by the payload's `prompt_id`; checkpoint
+ * state lives in NUDGE_FILE as JSON {pid, n}.
  *
- * HONEST LIMIT: the checkpoint cannot verify the agent *genuinely* reconsidered
- * — a re-run always passes — and the relay gate checks for the sentinel string,
- * not for a faithful copy. Both are forcing functions, not guarantees. Neither
- * ever fires inside task-gopher itself.
+ * HONEST LIMITS: the checkpoint cannot verify the agent *genuinely*
+ * reconsidered — a re-run always passes. And the relay depends on the harness
+ * honoring `updatedInput` on the Agent tool; if a future version stops doing
+ * so, delivery fails SILENTLY (the dispatch still succeeds, the subagent just
+ * never sees the directive). Neither ever fires inside task-gopher itself.
  *
- * Fails open on any error, unknown shape, missing prompt_id, or unwritable
- * state — a broken gate must never brick tools or trap an agent in a deny loop.
+ * Fails open on any error, unknown shape, or unwritable state — a broken gate
+ * must never brick tools or block a dispatch.
  */
 
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -49,7 +55,6 @@ import {
   FULL_DIRECTIVE,
   LOG_FILE,
   NUDGE_FILE,
-  RELAY_FILE,
   SENTINEL,
   isEnabled,
   isStrict,
@@ -59,21 +64,31 @@ import {
 // Re-block on the Nth consecutive bypass within a turn (N-1 pass silently).
 const RENUDGE_AFTER = 3;
 
-// Stop bouncing relay-less dispatches after this many denies per context.
-const RELAY_FORGO_AFTER = 2;
-
-// A faithful copy puts the directive at the top of the dispatch prompt, so the
-// sentinel must appear this early; anywhere later is a mention, not a relay.
+// A relayed directive leads the prompt, so the sentinel must appear this early;
+// anywhere later is a mention, not a relay.
 const SENTINEL_WINDOW = 200;
 
-// Contexts tracked in RELAY_FILE before the oldest are pruned.
-const RELAY_MAX_KEYS = 32;
-
 // Built-in subagents without the Agent tool: they can't act on the directive,
-// so a missing relay there isn't worth a bounce.
+// so rewriting their prompt would only cost tokens.
 const RELAY_EXEMPT = new Set(["Explore", "Plan", "statusline-setup", "output-style-setup"]);
 
 const allow = () => process.exit(0);
+
+/**
+ * Rewrite the dispatch in flight. Passes the whole tool_input back with only
+ * `prompt` changed, so it is correct whether the harness merges or replaces.
+ */
+const injectDirective = (toolInput) => {
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        updatedInput: { ...toolInput, prompt: FULL_DIRECTIVE + "\n\n" + toolInput.prompt },
+      },
+    })
+  );
+  process.exit(0);
+};
 
 const deny = (reason) => {
   process.stdout.write(
@@ -157,91 +172,20 @@ function readCounter(file) {
 }
 
 /**
- * Replace a state file atomically (temp + rename). These files are shared by
- * every concurrent session and parallel subagent under this HOME; a plain
- * writeFileSync truncates in place, so a reader hitting that window sees a torn
- * file and treats it as absent — silently discarding counters.
+ * Replace a state file atomically (temp + rename). NUDGE_FILE is shared by
+ * every session under this HOME; a plain writeFileSync truncates in place, so a
+ * reader hitting that window sees a torn file and treats it as absent.
  */
-function writeJsonAtomic(file, data) {
+function writeCounter(file, pid, n) {
   const tmp = `${file}.${process.pid}.tmp`;
   try {
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(tmp, JSON.stringify(data));
+    writeFileSync(tmp, JSON.stringify({ pid, n }));
     renameSync(tmp, file);
     return true;
   } catch {
     return false;
   }
-}
-
-function writeCounter(file, pid, n) {
-  return writeJsonAtomic(file, { pid, n });
-}
-
-// Relay bounces are counted per (session, agent, turn): RELAY_FILE is shared by
-// every session under this HOME, and a single {pid,n} slot would let interleaved
-// contexts reset each other's count — starving the fail-open cap exactly when
-// it's needed — while sibling agents in one turn would exhaust it for each other.
-function relayKey(payload, pid) {
-  const sid = typeof payload.session_id === "string" ? payload.session_id : "";
-  const aid = typeof payload.agent_id === "string" ? payload.agent_id : "";
-  return sid + "|" + aid + "|" + pid;
-}
-
-/**
- * Bounces are an append-only line log — one key per bounce, count = occurrences
- * — NOT a JSON map rewritten in place. RELAY_FILE is shared by every concurrent
- * session and parallel subagent, and a read-modify-write drops increments
- * whenever two hooks interleave, which would hand a context extra denies past
- * its fail-open cap. An O_APPEND write of a short line is atomic, so concurrent
- * bounces simply queue.
- */
-function readRelayCount(key) {
-  try {
-    let n = 0;
-    for (const line of readFileSync(RELAY_FILE, "utf8").split("\n")) {
-      if (line === key) n++;
-    }
-    return n;
-  } catch {
-    return 0;
-  }
-}
-
-/** Compact the log once it holds far more than the live contexts need. */
-function pruneRelayLog() {
-  try {
-    const lines = readFileSync(RELAY_FILE, "utf8").split("\n").filter(Boolean);
-    const cap = RELAY_MAX_KEYS * (RELAY_FORGO_AFTER + 1);
-    if (lines.length <= cap * 2) return;
-    const tmp = `${RELAY_FILE}.${process.pid}.tmp`;
-    writeFileSync(tmp, lines.slice(-cap).join("\n") + "\n");
-    renameSync(tmp, RELAY_FILE); // keeps the most recent lines, so live contexts keep their counts
-  } catch {
-    // best-effort: a skipped prune only costs disk
-  }
-}
-
-function bumpRelayCount(key) {
-  try {
-    mkdirSync(dirname(RELAY_FILE), { recursive: true });
-    appendFileSync(RELAY_FILE, key + "\n");
-    pruneRelayLog();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function relayMessage() {
-  return [
-    "task-gopher — relay checkpoint: this dispatch prompt is missing the delegation directive.",
-    "",
-    "Subagents do not inherit your context, so the directive reaches them only inside the dispatch prompt. RE-ISSUE this exact call with the FULL directive block below copied VERBATIM to the TOP of `prompt` (the check is top-anchored), then your task text unchanged. Dispatches to task-gopher itself never need it. (This won't loop: after two bounces it stands down for this turn.)",
-    "",
-    "--- COPY EVERYTHING BELOW THIS LINE TO THE TOP OF THE DISPATCH PROMPT ---",
-    FULL_DIRECTIVE,
-  ].join("\n");
 }
 
 function nudgeMessage(payload, bypasses) {
@@ -282,7 +226,7 @@ try {
     const t = payload.tool_input || {};
     const st = typeof t.subagent_type === "string" ? t.subagent_type : "";
 
-    // A dispatch to task-gopher is the desired outcome: never bounced, and it
+    // A dispatch to task-gopher is the desired outcome: never rewritten, and it
     // resets the strict-mode consecutive-bypass streak (reward good behavior).
     if (st.includes("task-gopher")) {
       if (pid) {
@@ -297,20 +241,11 @@ try {
     if (typeof t.prompt !== "string") allow(); // unexpected payload shape -> fail open
     if (t.prompt.slice(0, SENTINEL_WINDOW).includes(SENTINEL)) {
       logEvent({ pid, event: "relay-ok", tool: payload.tool_name, detail: st });
-      allow();
+      allow(); // already carries it — don't double up
     }
 
-    if (!pid) allow(); // can't scope the stand-down counter -> fail open
-
-    const key = relayKey(payload, pid);
-    const n = readRelayCount(key);
-    if (n >= RELAY_FORGO_AFTER) {
-      logEvent({ pid, event: "relay-forgone", tool: payload.tool_name, detail: st });
-      allow();
-    }
-    if (!bumpRelayCount(key)) allow();
-    logEvent({ pid, event: "relay-bounce", n: n + 1, tool: payload.tool_name, detail: st });
-    deny(relayMessage());
+    logEvent({ pid, event: "relay-injected", tool: payload.tool_name, detail: st });
+    injectDirective(t);
   }
 
   if (!isStrict()) allow();

@@ -141,36 +141,38 @@ conversation. A subagent inherits its own agent file, the CLAUDE.md hierarchy,
 and the dispatch prompt — nothing else. So without help, a Sonnet-tier subagent
 would never see the directive at all.
 
-The fix is a **relay, enforced at the only event that fires before a subagent
+The fix is a **relay, applied at the only event that fires before a subagent
 exists**: spawning a subagent is just an `Agent` tool call, and `PreToolUse`
-fires for it in the spawning agent's loop, with the full dispatch prompt visible
-in the hook input. Whenever the plugin is ON (strict not required):
+fires for it in the spawning agent's loop with the full dispatch prompt visible
+in the hook input — and, crucially, that hook can **rewrite the call before it
+runs**. Whenever the plugin is ON (strict not required):
 
-- The directive itself carries a **relay instruction**: copy the entire block
-  verbatim to the top of any dispatch prompt (except dispatches to task-gopher
-  itself). The copy contains the relay instruction, so it **chains** to
-  grandchildren; the tier gate at the top makes over-delivery harmless.
-- The `PreToolUse` hook **bounces any dispatch missing the `[task-gopher: ON]`
-  sentinel near the top of its prompt** (top-anchored, so a mid-prompt *mention*
-  of the sentinel doesn't count as a relay) — with the full directive embedded
-  in the deny reason, so the retry is a mechanical copy rather than a
-  reconstruction from memory. The parent re-issues, the check passes, and the
-  subagent spawns with the directive at the top of its context.
-- **Exemptions:** dispatches *to* task-gopher are never bounced (they are the
-  point), and built-in subagents without the `Agent` tool (`Explore`, `Plan`,
-  `statusline-setup`, `output-style-setup`) are exempt — they can't act on the
-  directive. The directive itself also opens with an escape clause for any
-  other tool-less agent it gets relayed into.
-- **Fail-open:** after two bounces the gate stands down for that context and
-  lets the dispatch through. Bounces are counted per (session, agent, turn) —
-  a single shared counter would let concurrent sessions reset each other's
-  count and starve the cap. A missed relay just means that one subagent behaves
-  as if the plugin were off; a deny loop would be a real failure.
+- The hook returns `hookSpecificOutput.updatedInput` with the directive
+  prepended to the dispatch prompt. The subagent spawns with the directive at
+  the top of its context. **The parent is never involved** — it doesn't see the
+  rewrite, isn't bounced, and spends no output tokens copying anything.
+- Because `PreToolUse` also fires inside a subagent's own loop, a subagent
+  dispatching a grandchild gets the same rewrite. The chain is automatic and
+  depends on no model's cooperation.
+- **Skipped:** dispatches *to* task-gopher (they are the point), built-in
+  subagents without the `Agent` tool (`Explore`, `Plan`, `statusline-setup`,
+  `output-style-setup`), and any prompt already carrying the `[task-gopher: ON]`
+  sentinel near the top — a hand-pasted directive isn't duplicated. That check
+  is top-anchored, so a mid-prompt *mention* of the sentinel doesn't count.
+  The directive also opens with an escape clause for tool-less agents.
 
-Because the checkpoint runs *before spawn*, a Sonnet-tier subagent only comes
-into existence without the directive through the documented fail-open paths
-(bounce cap reached, missing `prompt_id`, unwritable state) — each of which
-degrades to pre-relay behavior for that one dispatch rather than blocking work.
+This replaced an earlier deny-and-retry design, where the hook rejected
+directive-less dispatches and made the parent paste the block in. That worked,
+but cost a round trip plus ~1.4K tokens of parent output per dispatch, and
+needed per-context bounce counters to avoid deny loops. Rewriting in flight
+costs none of it.
+
+> **Honest limit:** delivery now depends on the harness honoring `updatedInput`
+> on the `Agent` tool (verified live — a probe dispatched with a 300-character
+> prompt reported receiving a 7,300-character one opening with the tier gate).
+> If a future version stops honoring it, the relay fails **silently**: the
+> dispatch still succeeds, the subagent just never sees the directive. The
+> `relay-injected` count in `/task-gopher report` is how you'd notice.
 
 ## Toggle it on and off
 
@@ -226,10 +228,10 @@ getting stopped. A "turn" is one user prompt (tracked by the payload's
 The plugin writes an append-only JSONL log to `~/.claude/task-gopher.log` — one
 line per **checkpoint** (the strict gate blocked), **bypass** (a direct retrieval
 done anyway, recording the exact file/command), **dispatch** (a delegation to
-task-gopher), and **relay event** (`relay-ok` / `relay-bounce` / `relay-forgone`
-from the subagent relay checkpoint), each stamped with a `prompt_id` and time.
-Checkpoint and bypass lines require strict mode; dispatch and relay lines are
-written whenever the plugin is ON. Because a re-run always
+task-gopher), and **relay event** (`relay-injected` when a dispatch was stamped
+with the directive, `relay-ok` when it already carried one), each stamped with a
+`prompt_id` and time. Checkpoint and bypass lines require strict mode; dispatch
+and relay lines are written whenever the plugin is ON. Because a re-run always
 passes, this log is where the gate actually gets its teeth: it's the record of
 what the agent chose to do directly.
 
