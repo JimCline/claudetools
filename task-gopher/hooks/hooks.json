@@ -1,9 +1,9 @@
 {
-  "description": "task-gopher — SessionStart injects the full Haiku-delegation directive on startup, resume, clear, and post-compaction (so it survives compaction); UserPromptSubmit injects a compact reminder each turn; PreToolUse (strict mode only) blocks the first direct retrieval of each turn once as a consider-task-gopher checkpoint. All are no-ops unless the plugin is toggled ON (and, for the checkpoint, strict mode too).",
+  "description": "task-gopher — SessionStart injects the full Haiku-delegation directive on startup, resume, clear, and post-compaction (so it survives compaction); UserPromptSubmit injects a compact reminder each turn; PreToolUse enforces the subagent relay whenever ON (Agent dispatches missing the directive sentinel are bounced with the directive in the deny reason, since SessionStart/UserPromptSubmit never fire for subagents) and, in strict mode, additionally blocks the first direct retrieval of each turn as a consider-task-gopher checkpoint. All are no-ops unless the plugin is toggled ON.",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Read|Grep|Glob|Bash|Agent",
+        "matcher": "Read|Grep|Glob|Bash|Agent|Task",
         "hooks": [
           {
             "type": "command",

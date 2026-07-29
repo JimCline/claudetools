@@ -1,11 +1,26 @@
 #!/usr/bin/env node
 /**
- * task-gopher — strict-mode PreToolUse checkpoint.
+ * task-gopher — PreToolUse gate. Two independent jobs:
  *
- * Active only when BOTH task-gopher is enabled AND strict mode is on. It nudges
- * the agent to consider dispatching to task-gopher before it does tool work
- * itself. This is the "double-check gate": a conscious, deliberate beat, not a
- * hard wall — re-running the same call proceeds.
+ * RELAY GATE (active whenever the plugin is ON): subagents inherit neither the
+ * parent's context nor the SessionStart/UserPromptSubmit injections — the
+ * dispatch prompt is the only channel that reaches them at spawn. So this gate
+ * bounces any Agent/Task dispatch missing the directive sentinel near the top
+ * of its prompt (top-anchored so a mid-prompt *mention* of the sentinel doesn't
+ * count as a relay), and puts the FULL directive in the deny reason so the
+ * retry is a mechanical copy, not a reconstruction from memory. Dispatches to
+ * task-gopher itself are never bounced (they ARE the delegation), and built-in
+ * subagents without the Agent tool (Explore, Plan, statusline-setup,
+ * output-style-setup) are exempt — they cannot act on the directive. After
+ * RELAY_FORGO_AFTER bounces per context — counted per (session, agent, turn),
+ * since one shared counter would let concurrent sessions starve each other's
+ * cap — the gate stands down: a missed relay is a mild inefficiency, a deny
+ * loop is a real failure.
+ *
+ * STRICT CHECKPOINT (requires strict mode on top of ON): nudges the agent to
+ * consider dispatching to task-gopher before it does retrieval work itself.
+ * This is the "double-check gate": a conscious, deliberate beat, not a hard
+ * wall — re-running the same call proceeds.
  *
  * ESCALATION: rather than nudging only once per turn, it tracks CONSECUTIVE
  * bypasses. It blocks the first retrieval of a turn, then lets the next two
@@ -15,23 +30,47 @@
  * things into its own context gets re-checkpointed; an agent that delegates is
  * left alone.
  *
- * Turn = one user prompt, tracked by the payload's `prompt_id`. State lives in
- * NUDGE_FILE as JSON {pid, n} where n is the bypass count within the turn.
+ * Turn = one user prompt, tracked by the payload's `prompt_id`. Checkpoint
+ * state lives in NUDGE_FILE, relay-bounce state in RELAY_FILE, both as JSON
+ * {pid, n}.
  *
- * HONEST LIMIT: this cannot verify the agent *genuinely* reconsidered — a re-run
- * always passes. It is a forcing function, not a guarantee. It never fires inside
- * task-gopher itself (retrieval is that runner's whole job).
+ * HONEST LIMIT: the checkpoint cannot verify the agent *genuinely* reconsidered
+ * — a re-run always passes — and the relay gate checks for the sentinel string,
+ * not for a faithful copy. Both are forcing functions, not guarantees. Neither
+ * ever fires inside task-gopher itself.
  *
- * Fails open on any error, unknown shape, missing prompt_id, or unwritable state
- * — a broken gate must never brick the Read/Grep/Glob/Bash tools or trap the
- * agent in a re-nudge loop.
+ * Fails open on any error, unknown shape, missing prompt_id, or unwritable
+ * state — a broken gate must never brick tools or trap an agent in a deny loop.
  */
 
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { LOG_FILE, NUDGE_FILE, isEnabled, isStrict, isTaskGopherAgent } from "./directive.mjs";
+import {
+  FULL_DIRECTIVE,
+  LOG_FILE,
+  NUDGE_FILE,
+  RELAY_FILE,
+  SENTINEL,
+  isEnabled,
+  isStrict,
+  isTaskGopherAgent,
+} from "./directive.mjs";
 
 // Re-block on the Nth consecutive bypass within a turn (N-1 pass silently).
 const RENUDGE_AFTER = 3;
+
+// Stop bouncing relay-less dispatches after this many denies per context.
+const RELAY_FORGO_AFTER = 2;
+
+// A faithful copy puts the directive at the top of the dispatch prompt, so the
+// sentinel must appear this early; anywhere later is a mention, not a relay.
+const SENTINEL_WINDOW = 200;
+
+// Contexts tracked in RELAY_FILE before the oldest are pruned.
+const RELAY_MAX_KEYS = 32;
+
+// Built-in subagents without the Agent tool: they can't act on the directive,
+// so a missing relay there isn't worth a bounce.
+const RELAY_EXEMPT = new Set(["Explore", "Plan", "statusline-setup", "output-style-setup"]);
 
 const allow = () => process.exit(0);
 
@@ -72,12 +111,6 @@ function isRetrieval(payload) {
   return false;
 }
 
-function isTaskGopherDispatch(payload) {
-  if (payload.tool_name !== "Agent") return false;
-  const st = payload?.tool_input?.subagent_type;
-  return typeof st === "string" && st.includes("task-gopher");
-}
-
 // A short description of WHAT the agent ran directly, for the audit log.
 function detailOf(payload) {
   const t = payload.tool_input || {};
@@ -110,9 +143,9 @@ function logEvent(entry) {
   }
 }
 
-function readState() {
+function readCounter(file) {
   try {
-    const o = JSON.parse(readFileSync(NUDGE_FILE, "utf8"));
+    const o = JSON.parse(readFileSync(file, "utf8"));
     if (o && typeof o.pid === "string") {
       return { pid: o.pid, n: Number.isInteger(o.n) ? o.n : 0 };
     }
@@ -122,13 +155,65 @@ function readState() {
   return { pid: "", n: 0 };
 }
 
-function writeState(pid, n) {
+function writeCounter(file, pid, n) {
   try {
-    writeFileSync(NUDGE_FILE, JSON.stringify({ pid, n }));
+    writeFileSync(file, JSON.stringify({ pid, n }));
     return true;
   } catch {
     return false;
   }
+}
+
+// Relay bounces are counted per (session, agent, turn): RELAY_FILE is shared by
+// every session under this HOME, and a single {pid,n} slot would let interleaved
+// contexts reset each other's count — starving the fail-open cap exactly when
+// it's needed — while sibling agents in one turn would exhaust it for each other.
+function relayKey(payload, pid) {
+  const sid = typeof payload.session_id === "string" ? payload.session_id : "";
+  const aid = typeof payload.agent_id === "string" ? payload.agent_id : "";
+  return sid + "|" + aid + "|" + pid;
+}
+
+function readRelayCount(key) {
+  try {
+    const o = JSON.parse(readFileSync(RELAY_FILE, "utf8"));
+    const n = o && o.entries ? o.entries[key] : 0;
+    return Number.isInteger(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function bumpRelayCount(key) {
+  // Unlocked read-modify-write: a concurrent fan-out can drop an increment,
+  // which only delays that context's fail-open by one bounce.
+  let entries = {};
+  try {
+    const o = JSON.parse(readFileSync(RELAY_FILE, "utf8"));
+    if (o && o.entries && typeof o.entries === "object") entries = o.entries;
+  } catch {
+    // no/broken state -> fresh
+  }
+  entries[key] = (Number.isInteger(entries[key]) ? entries[key] : 0) + 1;
+  const keys = Object.keys(entries);
+  for (let i = 0; i < keys.length - RELAY_MAX_KEYS; i++) delete entries[keys[i]];
+  try {
+    writeFileSync(RELAY_FILE, JSON.stringify({ entries }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function relayMessage() {
+  return [
+    "task-gopher — relay checkpoint: this dispatch prompt is missing the delegation directive.",
+    "",
+    "Subagents do not inherit your context, so the directive reaches them only inside the dispatch prompt. RE-ISSUE this exact call with the FULL directive block below copied VERBATIM to the TOP of `prompt` (the check is top-anchored), then your task text unchanged. Dispatches to task-gopher itself never need it. (This won't loop: after two bounces it stands down for this turn.)",
+    "",
+    "--- COPY EVERYTHING BELOW THIS LINE TO THE TOP OF THE DISPATCH PROMPT ---",
+    FULL_DIRECTIVE,
+  ].join("\n");
 }
 
 function nudgeMessage(payload, bypasses) {
@@ -155,37 +240,63 @@ function nudgeMessage(payload, bypasses) {
 }
 
 try {
-  if (!isStrict() || !isEnabled()) allow();
+  if (!isEnabled()) allow();
 
   const raw = readFileSync(0, "utf8");
   if (!raw.trim()) allow();
 
   const payload = JSON.parse(raw);
-  if (isTaskGopherAgent(payload)) allow(); // never gate the gopher's own retrievals
+  if (isTaskGopherAgent(payload)) allow(); // never gate the gopher's own tool use
 
-  const pid = payload.prompt_id;
+  const pid = typeof payload.prompt_id === "string" ? payload.prompt_id : "";
 
-  // A dispatch to task-gopher resets the consecutive-bypass streak (reward good
-  // behavior). Agent calls are never themselves gated.
-  if (payload.tool_name === "Agent") {
-    if (isTaskGopherDispatch(payload) && typeof pid === "string" && pid) {
-      writeState(pid, 0);
-      logEvent({ pid, event: "dispatch", tool: "Agent", detail: "task-gopher" });
+  if (payload.tool_name === "Agent" || payload.tool_name === "Task") {
+    const t = payload.tool_input || {};
+    const st = typeof t.subagent_type === "string" ? t.subagent_type : "";
+
+    // A dispatch to task-gopher is the desired outcome: never bounced, and it
+    // resets the strict-mode consecutive-bypass streak (reward good behavior).
+    if (st.includes("task-gopher")) {
+      if (pid) {
+        writeCounter(NUDGE_FILE, pid, 0);
+        logEvent({ pid, event: "dispatch", tool: payload.tool_name, detail: st });
+      }
+      allow();
     }
-    allow();
+
+    if (RELAY_EXEMPT.has(st)) allow();
+
+    if (typeof t.prompt !== "string") allow(); // unexpected payload shape -> fail open
+    if (t.prompt.slice(0, SENTINEL_WINDOW).includes(SENTINEL)) {
+      logEvent({ pid, event: "relay-ok", tool: payload.tool_name, detail: st });
+      allow();
+    }
+
+    if (!pid) allow(); // can't scope the stand-down counter -> fail open
+
+    const key = relayKey(payload, pid);
+    const n = readRelayCount(key);
+    if (n >= RELAY_FORGO_AFTER) {
+      logEvent({ pid, event: "relay-forgone", tool: payload.tool_name, detail: st });
+      allow();
+    }
+    if (!bumpRelayCount(key)) allow();
+    logEvent({ pid, event: "relay-bounce", n: n + 1, tool: payload.tool_name, detail: st });
+    deny(relayMessage());
   }
 
+  if (!isStrict()) allow();
   if (!isRetrieval(payload)) allow();
-  if (typeof pid !== "string" || !pid) allow(); // can't scope a turn -> fail open
+  if (!pid) allow(); // can't scope a turn -> fail open
 
-  const state = readState();
+  const state = readCounter(NUDGE_FILE);
   const tool = payload.tool_name;
   const detail = detailOf(payload);
 
   // New turn: initial checkpoint. Only block if we can persist state, else the
   // re-run would re-trigger forever.
   if (state.pid !== pid) {
-    if (!writeState(pid, 0)) allow();
+    if (!writeCounter(NUDGE_FILE, pid, 0)) allow();
     logEvent({ pid, event: "checkpoint", kind: "turn-start", tool, detail });
     deny(nudgeMessage(payload, 0));
   }
@@ -193,12 +304,12 @@ try {
   // Same turn: this retrieval is a bypass.
   const next = state.n + 1;
   if (next >= RENUDGE_AFTER) {
-    if (!writeState(pid, 0)) allow(); // reset streak; re-block once
+    if (!writeCounter(NUDGE_FILE, pid, 0)) allow(); // reset streak; re-block once
     logEvent({ pid, event: "checkpoint", kind: "escalated", bypasses: next, tool, detail });
     deny(nudgeMessage(payload, next));
   }
 
-  writeState(pid, next); // record the bypass and allow
+  writeCounter(NUDGE_FILE, pid, next); // record the bypass and allow
   logEvent({ pid, event: "bypass", n: next, tool, detail });
   allow();
 } catch {

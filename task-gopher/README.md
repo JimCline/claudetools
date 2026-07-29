@@ -105,9 +105,11 @@ and `effort`; that `effort` is the thinking level `low|medium|high`, not a
 capability tier. There is no "reasoning index" exposed to hooks.) So the hook
 *can't* read the tier. Instead:
 
-- The hook injects the directive to **every** agent (except task-gopher itself,
-  which it skips by name via `agent_type` so the recursion-prone runner never even
-  sees it).
+- The directive reaches the **main session** via the injection hooks and reaches
+  **subagents** via the relay checkpoint (see "Reaching subagents" below —
+  `SessionStart`/`UserPromptSubmit` never fire for subagents). task-gopher itself
+  is skipped by name via `agent_type`, so the recursion-prone runner never sees
+  the directive through either channel.
 - The directive **opens with a tier gate**: if you are Haiku-tier, ignore it and do
   the work yourself; if you are Sonnet-tier or higher, follow it. Each agent
   self-excludes based on its own model identity — which the model knows reliably,
@@ -129,6 +131,46 @@ insufficient information — or reports it couldn't proceed because an order nee
 decision — the main agent may do the task itself or re-dispatch once with a
 sharper, fully-specified order. It won't ping-pong; a stalled dispatch costs more
 than just doing the work.
+
+## Reaching subagents — the relay checkpoint
+
+The directive claims to bind subagents too — but Claude Code's `SessionStart`
+and `UserPromptSubmit` hooks **never fire for subagents** (a subagent is not a
+session), and `SubagentStart` cannot inject context into the subagent's
+conversation. A subagent inherits its own agent file, the CLAUDE.md hierarchy,
+and the dispatch prompt — nothing else. So without help, a Sonnet-tier subagent
+would never see the directive at all.
+
+The fix is a **relay, enforced at the only event that fires before a subagent
+exists**: spawning a subagent is just an `Agent` tool call, and `PreToolUse`
+fires for it in the spawning agent's loop, with the full dispatch prompt visible
+in the hook input. Whenever the plugin is ON (strict not required):
+
+- The directive itself carries a **relay instruction**: copy the entire block
+  verbatim to the top of any dispatch prompt (except dispatches to task-gopher
+  itself). The copy contains the relay instruction, so it **chains** to
+  grandchildren; the tier gate at the top makes over-delivery harmless.
+- The `PreToolUse` hook **bounces any dispatch missing the `[task-gopher: ON]`
+  sentinel near the top of its prompt** (top-anchored, so a mid-prompt *mention*
+  of the sentinel doesn't count as a relay) — with the full directive embedded
+  in the deny reason, so the retry is a mechanical copy rather than a
+  reconstruction from memory. The parent re-issues, the check passes, and the
+  subagent spawns with the directive at the top of its context.
+- **Exemptions:** dispatches *to* task-gopher are never bounced (they are the
+  point), and built-in subagents without the `Agent` tool (`Explore`, `Plan`,
+  `statusline-setup`, `output-style-setup`) are exempt — they can't act on the
+  directive. The directive itself also opens with an escape clause for any
+  other tool-less agent it gets relayed into.
+- **Fail-open:** after two bounces the gate stands down for that context and
+  lets the dispatch through. Bounces are counted per (session, agent, turn) —
+  a single shared counter would let concurrent sessions reset each other's
+  count and starve the cap. A missed relay just means that one subagent behaves
+  as if the plugin were off; a deny loop would be a real failure.
+
+Because the checkpoint runs *before spawn*, a Sonnet-tier subagent only comes
+into existence without the directive through the documented fail-open paths
+(bounce cap reached, missing `prompt_id`, unwritable state) — each of which
+degrades to pre-relay behavior for that one dispatch rather than blocking work.
 
 ## Toggle it on and off
 
@@ -181,10 +223,13 @@ getting stopped. A "turn" is one user prompt (tracked by the payload's
 
 ### Audit log and report
 
-Strict mode writes an append-only JSONL log to `~/.claude/task-gopher.log` — one
-line per **checkpoint** (the gate blocked), **bypass** (a direct retrieval done
-anyway, recording the exact file/command), and **dispatch** (a delegation to
-task-gopher), each stamped with a `prompt_id` and time. Because a re-run always
+The plugin writes an append-only JSONL log to `~/.claude/task-gopher.log` — one
+line per **checkpoint** (the strict gate blocked), **bypass** (a direct retrieval
+done anyway, recording the exact file/command), **dispatch** (a delegation to
+task-gopher), and **relay event** (`relay-ok` / `relay-bounce` / `relay-forgone`
+from the subagent relay checkpoint), each stamped with a `prompt_id` and time.
+Checkpoint and bypass lines require strict mode; dispatch and relay lines are
+written whenever the plugin is ON. Because a re-run always
 passes, this log is where the gate actually gets its teeth: it's the record of
 what the agent chose to do directly.
 
@@ -199,11 +244,13 @@ directly* — so you can see at a glance whether the orchestrator is being
 deliberate or just rubber-stamping past the checkpoint. Example:
 
 ```
-checkpoints:    3  (times the gate blocked)
+turns logged:   5  (3 saw the strict gate)
+checkpoints:    3  (times the strict gate blocked)
 bypasses:       4  (direct retrievals done anyway)
-dispatches:     1  (delegations to task-gopher)
-bypass/dispatch ratio: 4.00  (lower is better)
+dispatches:     2  (delegations to task-gopher; 1 in strict-gated turns)
+bypass/dispatch ratio: 4.00  (strict-gated turns only; lower is better)
 bypassed tools: Read 3, Bash 1
+subagent relay:  5 ok, 1 bounced, 0 forgone (fail-open)
 recent bypasses (last 4) — what was run directly:
   - 2026-07-16 14:40:00  Read: src/app.ts
   - 2026-07-16 14:40:00  Bash: git diff main -- config/
@@ -218,10 +265,11 @@ recent bypasses (last 4) — what was run directly:
   stop-and-report rather than decide, and never delegate onward.
 - **`hooks/`** — `SessionStart` (startup/resume/clear/**compact**) injects the
   full directive; `UserPromptSubmit` injects a one-line reminder each turn;
-  `PreToolUse` (strict mode only) is the escalating checkpoint that also writes the
-  audit log; `report.mjs` renders that log. All hooks are no-ops when the plugin is
-  OFF (and the checkpoint also requires strict mode), and no-ops inside task-gopher
-  itself. See "Who may delegate" for the tier gate.
+  `PreToolUse` enforces the subagent **relay checkpoint** whenever ON and, in
+  strict mode, adds the escalating retrieval checkpoint — both write the audit
+  log; `report.mjs` renders that log. All hooks are no-ops when the plugin is
+  OFF, and no-ops inside task-gopher itself. See "Who may delegate" for the tier
+  gate and "Reaching subagents" for the relay.
 - **`commands/task-gopher.md`** — the on/off/status/toggle/strict/report/log-clear
   slash command.
 

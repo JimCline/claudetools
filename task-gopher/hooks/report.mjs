@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 /**
- * task-gopher — strict-mode audit report.
+ * task-gopher — audit report.
  *
  * Reads the append-only JSONL log written by pretooluse-nudge.mjs and prints a
- * human-readable summary: how often the checkpoint fired, how many direct
- * retrievals were bypassed (and what they were), and how many times the agent
- * actually dispatched to task-gopher. The bypass-to-dispatch ratio and the list
- * of recent bypasses are what let you judge whether the orchestrator is being
- * deliberate or just rubber-stamping past the gate.
+ * human-readable summary: how often the strict checkpoint fired, how many
+ * direct retrievals were bypassed (and what they were), how many times the
+ * agent dispatched to task-gopher, and how the subagent relay behaved. Because
+ * dispatch/relay lines are written whenever the plugin is ON while
+ * checkpoint/bypass lines require strict mode, the bypass-to-dispatch ratio is
+ * computed only over dispatches from strict-gated turns — otherwise
+ * non-strict-era dispatches would dilute the exact rubber-stamping signal the
+ * ratio exists to expose.
  *
  * Read-only. Prints to stdout. Never throws.
  */
@@ -23,7 +26,7 @@ function main() {
     raw = readFileSync(LOG_FILE, "utf8");
   } catch {
     console.log(`No task-gopher audit log yet (${LOG_FILE}).`);
-    console.log("It fills up once strict mode is on and the checkpoint starts firing.");
+    console.log("It fills up once the plugin is ON (dispatch/relay events) — and in strict mode, checkpoint events too.");
     return;
   }
 
@@ -47,11 +50,19 @@ function main() {
   const checkpoints = events.filter((e) => e.event === "checkpoint");
   const bypasses = events.filter((e) => e.event === "bypass");
   const dispatches = events.filter((e) => e.event === "dispatch");
+  const relayOk = events.filter((e) => e.event === "relay-ok");
+  const relayBounces = events.filter((e) => e.event === "relay-bounce");
+  const relayForgone = events.filter((e) => e.event === "relay-forgone");
   const turns = new Set(events.map((e) => e.pid).filter(Boolean)).size;
 
-  const ratio = dispatches.length
-    ? (bypasses.length / dispatches.length).toFixed(2)
-    : `∞ (${bypasses.length} bypasses, 0 dispatches)`;
+  // Only dispatches from turns the strict gate actually saw count toward the
+  // ratio; dispatch lines also accrue in non-strict mode.
+  const strictPids = new Set([...checkpoints, ...bypasses].map((e) => e.pid).filter(Boolean));
+  const strictDispatches = dispatches.filter((d) => strictPids.has(d.pid));
+
+  const ratio = strictDispatches.length
+    ? (bypasses.length / strictDispatches.length).toFixed(2)
+    : `∞ (${bypasses.length} bypasses, 0 strict-turn dispatches)`;
 
   // Which tools/commands get bypassed most.
   const byTool = {};
@@ -66,16 +77,21 @@ function main() {
       ? `${events[0].ts} → ${events[events.length - 1].ts}`
       : "(no timestamps)";
 
-  console.log("task-gopher — strict-mode audit report");
+  console.log("task-gopher — audit report");
   console.log("=".repeat(42));
   console.log(`log:            ${LOG_FILE}`);
   console.log(`span:           ${span}`);
-  console.log(`turns w/ gate:  ${turns}`);
-  console.log(`checkpoints:    ${checkpoints.length}  (times the gate blocked)`);
+  console.log(`turns logged:   ${turns}  (${strictPids.size} saw the strict gate)`);
+  console.log(`checkpoints:    ${checkpoints.length}  (times the strict gate blocked)`);
   console.log(`bypasses:       ${bypasses.length}  (direct retrievals done anyway)`);
-  console.log(`dispatches:     ${dispatches.length}  (delegations to task-gopher)`);
-  console.log(`bypass/dispatch ratio: ${ratio}  (lower is better)`);
+  console.log(`dispatches:     ${dispatches.length}  (delegations to task-gopher; ${strictDispatches.length} in strict-gated turns)`);
+  console.log(`bypass/dispatch ratio: ${ratio}  (strict-gated turns only; lower is better)`);
   if (toolBreakdown) console.log(`bypassed tools: ${toolBreakdown}`);
+  if (relayOk.length || relayBounces.length || relayForgone.length) {
+    console.log(
+      `subagent relay:  ${relayOk.length} ok, ${relayBounces.length} bounced, ${relayForgone.length} forgone (fail-open)`
+    );
+  }
 
   const recent = bypasses.slice(-RECENT);
   if (recent.length) {

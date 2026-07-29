@@ -29,7 +29,14 @@ export const STRICT_FILE = join(homedir(), ".claude", "task-gopher.strict");
 /** Records {pid, n} for the current turn, so the checkpoint escalates by bypass count. */
 export const NUDGE_FILE = join(homedir(), ".claude", "task-gopher.nudge");
 
-/** Append-only JSONL audit of strict-mode checkpoints, bypasses, and dispatches. */
+/** Records {pid, n} relay bounces for the current turn, so the relay gate fails open after repeated denies. */
+export const RELAY_FILE = join(homedir(), ".claude", "task-gopher.relay");
+
+/**
+ * Append-only JSONL audit log. Checkpoint/bypass lines require strict mode;
+ * dispatch and relay-ok/relay-bounce/relay-forgone lines are written whenever
+ * the plugin is ON.
+ */
 export const LOG_FILE = join(homedir(), ".claude", "task-gopher.log");
 
 export function isStrict() {
@@ -59,10 +66,13 @@ export async function readHookInput() {
  * tier). So the hook cannot read the tier; the tier gate lives in the directive
  * text itself, where each agent self-excludes if it is Haiku-tier.
  *
- * The one thing the hook CAN do reliably is skip task-gopher itself by name
- * (`agent_type` carries the subagent's name), so the recursion-prone runner
- * never even receives the directive. Substring match tolerates the plugin-scoped
- * form (e.g. "task-gopher:task-gopher").
+ * The one thing the hooks CAN do reliably is skip task-gopher itself by name
+ * (`agent_type` carries the subagent's name), so no gate ever fires inside the
+ * recursion-prone runner. Substring match tolerates the plugin-scoped form
+ * (e.g. "task-gopher:task-gopher"). Note the injection hooks (SessionStart,
+ * UserPromptSubmit) only ever run for the MAIN session — they never fire for
+ * subagents. Subagents receive the directive solely via the relay gate in
+ * pretooluse-nudge.mjs, which makes parents copy it into dispatch prompts.
  *
  * TODO(hard-gate): the tier gate is currently SOFT — the directive asks each
  * agent to self-exclude if it is Haiku-tier, which the hook cannot enforce
@@ -79,9 +89,15 @@ export function isTaskGopherAgent(input) {
   return typeof type === "string" && type.includes("task-gopher");
 }
 
+/**
+ * Marker the relay gate looks for in Agent dispatch prompts. Both directive
+ * texts open with it, so a verbatim copy of either satisfies the check.
+ */
+export const SENTINEL = "[task-gopher: ON]";
+
 /** Full directive — injected at SessionStart (and re-injected post-compaction). */
 export const FULL_DIRECTIVE = [
-  "[task-gopher: ON] TIER GATE — read first: this directive is for Sonnet-tier models and above (Sonnet, Opus, and the Mythos-class Fable/Mythos). If YOU are a Haiku-tier model, IGNORE everything below and just do the work yourself — you are the cheap runner, not the expensive reasoner this optimizes for. This is also what stops a task-gopher (Haiku) runner from dispatching to task-gopher and recursing. Otherwise, if you are Sonnet-tier or higher, follow the rest — and note it applies whether you are the top-level agent or a subagent: any capable reasoner should push cheap legwork down to Haiku.",
+  "[task-gopher: ON] TIER GATE — read first: this directive is for Sonnet-tier models and above (Sonnet, Opus, and the Mythos-class Fable/Mythos). If YOU are a Haiku-tier model, IGNORE everything below and just do the work yourself — you are the cheap runner, not the expensive reasoner this optimizes for. This is also what stops a task-gopher (Haiku) runner from dispatching to task-gopher and recursing. Likewise if you have NO Agent/Task tool: you cannot dispatch, so ignore this directive and simply work efficiently. Otherwise, if you are Sonnet-tier or higher, follow the rest — and note it applies whether you are the top-level agent or a subagent: any capable reasoner should push cheap legwork down to Haiku.",
   "",
   "Dispatch expensive tool work to the `task-gopher` subagent (pinned to Haiku) instead of doing it yourself. Spend YOUR expensive high-reasoning tokens on judgment, not on tool output or log dumps. task-gopher is a hired runner that carries out explicit orders and reports back.",
   "",
@@ -107,8 +123,10 @@ export const FULL_DIRECTIVE = [
   '`task-gopher` is a PURE task-runner: it never reasons, decides, or fills gaps, and it makes no design/correctness/security calls. It will STOP and report back if an order is ambiguous rather than guess. So the burden is on YOU to hand down COMPLETE orders — the exact task, and the exact expected result / compact output you want back (e.g. "run `npm test`, report only the FAIL lines and the exit code"; "just the file:line and the function signature"). Never dispatch a step that would require the runner to make a choice. It cannot see your context — every order must be self-contained.',
   "",
   "Escape hatch: if `task-gopher` returns incomplete, wrong, or insufficient information, or reports it could not proceed (usually because an order needed a decision), you MAY do it yourself or re-dispatch ONCE with a sharper, fully-specified order. Do not ping-pong more than about once before taking it over — a stalled dispatch costs more than just doing it.",
+  "",
+  'RELAY — carry this directive to your subagents: subagents do NOT inherit your context or this directive, so when you dispatch a subagent, COPY THIS ENTIRE DIRECTIVE BLOCK VERBATIM (from "[task-gopher: ON]" through this paragraph) to the TOP of the dispatch prompt, then write your task below it. Skip the copy for task-gopher itself and for read-only/utility scouts without the Agent tool (Explore, Plan, statusline-setup, output-style-setup) — they cannot delegate, so it would only waste tokens. The copy contains this very instruction, so it chains to their subagents too, and the tier gate at the top makes over-delivery harmless. A PreToolUse checkpoint bounces other Agent dispatches whose prompt is missing the directive.',
 ].join("\n");
 
 /** Compact per-turn reminder — injected at UserPromptSubmit to keep the behavior alive. */
 export const SHORT_REMINDER =
-  "[task-gopher: ON] If you are Sonnet-tier or higher (any agent, top-level or subagent): by DEFAULT dispatch tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders, and keep reasoning for yourself. Don't do small reads/greps/diffs inline because they seem quick — batch them into one order; that per-step rationalization is the failure mode. Order NARROW queries (grep/answer/summary that come back smaller than the source), never \"read the whole file and send it back\" — if you need a full file, read it yourself. If you are Haiku-tier, ignore this. Escape hatch: take it over if the runner fails or returns too little.";
+  "[task-gopher: ON] If you are Sonnet-tier or higher (any agent, top-level or subagent): by DEFAULT dispatch tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders, and keep reasoning for yourself. Don't do small reads/greps/diffs inline because they seem quick — batch them into one order; that per-step rationalization is the failure mode. Order NARROW queries (grep/answer/summary that come back smaller than the source), never \"read the whole file and send it back\" — if you need a full file, read it yourself. If you are Haiku-tier or have no Agent tool, ignore this. Escape hatch: take it over if the runner fails or returns too little. Relay: when dispatching any subagent except task-gopher itself and tool-less scouts (Explore, Plan), copy the full [task-gopher: ON] directive block verbatim to the top of the dispatch prompt — subagents don't inherit it, and a checkpoint bounces dispatches that omit it.";

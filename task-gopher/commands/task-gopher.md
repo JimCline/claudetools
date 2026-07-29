@@ -16,7 +16,7 @@ Pick the ONE case matching the argument and run its command with the Bash tool:
 - **`on`** / `enable`:
   `mkdir -p ~/.claude && touch ~/.claude/task-gopher.enabled && echo "task-gopher: ON"`
 - **`off`** / `disable` (also clears strict):
-  `rm -f ~/.claude/task-gopher.enabled ~/.claude/task-gopher.strict ~/.claude/task-gopher.nudge && echo "task-gopher: OFF (strict cleared)"`
+  `rm -f ~/.claude/task-gopher.enabled ~/.claude/task-gopher.strict ~/.claude/task-gopher.nudge ~/.claude/task-gopher.relay && echo "task-gopher: OFF (strict cleared)"`
 - **`strict`** / `strict on`:
   `mkdir -p ~/.claude && touch ~/.claude/task-gopher.enabled ~/.claude/task-gopher.strict && echo "task-gopher: ON + STRICT"`
 - **`strict off`**:
@@ -29,7 +29,7 @@ Pick the ONE case matching the argument and run its command with the Bash tool:
 - **`log clear`** (wipe the audit log): run
   `rm -f ~/.claude/task-gopher.log && echo "task-gopher: audit log cleared"`
 - **empty / `toggle` / anything else** (toggles the base on/off; leaves strict as-is unless turning off):
-  `if [ -f ~/.claude/task-gopher.enabled ]; then rm -f ~/.claude/task-gopher.enabled ~/.claude/task-gopher.strict ~/.claude/task-gopher.nudge && echo "task-gopher: OFF"; else mkdir -p ~/.claude && touch ~/.claude/task-gopher.enabled && echo "task-gopher: ON"; fi`
+  `if [ -f ~/.claude/task-gopher.enabled ]; then rm -f ~/.claude/task-gopher.enabled ~/.claude/task-gopher.strict ~/.claude/task-gopher.nudge ~/.claude/task-gopher.relay && echo "task-gopher: OFF"; else mkdir -p ~/.claude && touch ~/.claude/task-gopher.enabled && echo "task-gopher: ON"; fi`
 
 Run the single matching command and report the resulting state to the user in one line.
 
@@ -47,7 +47,11 @@ of the session (the SessionStart hook re-establishes it in future sessions):
 > a complete, decision-free order and state the exact expected result / compact
 > output you want. Escape hatch: if it returns incomplete/wrong/insufficient
 > info or reports it couldn't proceed, do it yourself or re-dispatch once with a
-> sharper order — don't ping-pong more than about once.
+> sharper order — don't ping-pong more than about once. When dispatching any
+> subagent except task-gopher itself and tool-less scouts (Explore, Plan),
+> copy the full [task-gopher: ON] directive block verbatim to the top of the
+> dispatch prompt — subagents don't inherit your context, and a relay
+> checkpoint bounces dispatches that omit it.
 
 If the result also says **STRICT**, note to the user that from now on the first
 direct Read/Grep/Glob or retrieval-style Bash call of each turn will be blocked
