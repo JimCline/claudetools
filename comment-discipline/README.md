@@ -26,40 +26,41 @@ directive mid-session and lets the old habit creep back.
 
 ## Reaching subagents
 
-`SessionStart` fires for the **main session only** — a subagent is not a session, so no
-injection hook ever runs inside one. That gap matters here more than for most plugins:
-subagents write plenty of code, and an Implementor or a general-purpose agent is exactly
-who leaves `// NEW: added validation` behind.
+`SessionStart` fires for the **main session only** — a subagent is not a session, so that
+hook never runs inside one. The gap matters here more than for most plugins: subagents
+write plenty of code, and an Implementor or a general-purpose agent is exactly who leaves
+`// NEW: added validation` behind.
 
 So the rule reaches them two ways:
 
-1. **Relay at dispatch.** The directive asks the dispatching agent to copy the rule
-   verbatim into the prompt of any subagent that will *write or edit code* — the only
-   channel that reaches a subagent at spawn. Retrieval, search, and review-only dispatches
-   are deliberately skipped: they author nothing, so the copy would be pure token cost. The
-   copy goes *below* any directive block already leading the prompt, because a sibling
-   plugin may run a top-anchored check on the first line. The copy carries the relay
-   instruction with it, so it chains onward.
-2. **Injection on the first edit.** A `PostToolUse` hook on `Edit`/`Write`/`NotebookEdit`
-   injects the rule once per subagent. Tool events are the only hooks that fire *inside* a
-   subagent's loop, so this is the one channel that works without the parent's cooperation.
+1. **At spawn, via `SubagentStart`.** A hook injects the rule into the subagent's own
+   context as it starts, before its first turn. This event *does* deliver into the subagent
+   — but **only** when the hook emits a JSON `hookSpecificOutput` object. The same text
+   written as plain stdout is discarded silently, with no error, which is the opposite of
+   `SessionStart` and the reason this channel is easy to write off as broken.
+   Known-non-authoring agent types (`Explore`, `Plan`, a task-gopher runner) are skipped, so
+   the ~2.4KB is charged only where code might get written.
+2. **On the first edit, as a backstop.** A `PostToolUse` hook on
+   `Edit`/`Write`/`NotebookEdit` injects the rule once per subagent. `SubagentStart` marks
+   each agent it reached, so for an ordinary dispatch this hook finds the mark and stays
+   quiet.
 
-Keying that injection to the edit tools rather than gating `Agent` dispatches is deliberate:
-the rule only matters to an agent that actually authors code, so this charges the directive
-only to agents that write, never to the retrieval traffic that dominates dispatches. It
-also keeps this plugin off the `Agent` tool, where `task-gopher`'s relay gate already
-denies — the hook docs don't define how two denying hooks combine, so stacking a second one
-there would be a guess.
+Before 0.3.0 the first channel was a *relay clause*: the directive asked the dispatching
+agent to copy the rule into code-writing dispatch prompts by hand. That cost the parent
+output tokens on every dispatch, depended on the model cooperating, and had to carefully
+place its copy *below* any block already leading the prompt so it didn't break a sibling
+plugin's top-anchored sentinel check. `SubagentStart` needs none of that, and doesn't
+contend for the `Agent` tool's input — which `task-gopher`'s relay already owns.
 
-Two honest limits, since the two channels are additive rather than complementary:
+Two honest limits:
 
-- The hook **cannot tell whether the relay happened** — `PostToolUse` carries no dispatch
-  prompt — so it always injects. A correctly relayed subagent therefore receives the rule
-  twice, about 2.4KB of avoidable duplication once per code-writing subagent. That is the
-  price of covering the agents the relay missed.
-- The **first edit is unguarded**, since the injection lands with that edit's result and
-  shapes everything after it. The relay is what covers edit #1 — and it is the only thing
-  that covers a subagent which makes exactly one edit.
+- **Whether the backstop is still load-bearing is unknown.** It now only covers spawns that
+  produce no `SubagentStart` event. Whether any exist — agents created by a workflow runner
+  rather than an `Agent` tool call, say — has not been measured. It is kept because the cost
+  is one file read per edit and it removes a silent-failure mode.
+- The **first edit is unguarded** *by the backstop*, since that injection lands with the
+  edit's result. `SubagentStart` is what covers edit #1, and it is the only thing that
+  covers a subagent which makes exactly one edit.
 
 The full design, and how to choose a channel in other plugins, is written up in
 [docs/subagent-directive-relay.md](../docs/subagent-directive-relay.md).

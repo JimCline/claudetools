@@ -29,6 +29,26 @@ export const SEEN_FILE = join(homedir(), ".claude", "comment-discipline.seen");
 /** Agents tracked in SEEN_FILE before the oldest entries are pruned. */
 export const SEEN_MAX_KEYS = 64;
 
+/**
+ * Agent types that cannot author code, so spending the directive on them is
+ * pure waste. Built-in `Explore`/`Plan` have no `Edit`/`Write`, and a
+ * task-gopher runner is a retrieval worker. Plugin agents arrive namespaced
+ * (`plugin:agent`), so both forms are listed — `agent_type` is matched exactly,
+ * not by substring, to avoid catching a custom agent whose name merely contains
+ * one of these.
+ *
+ * This is an optimization, not a safety gate: over-delivery is harmless because
+ * the directive's own guards tell an agent that authors nothing to do nothing.
+ * Custom read-only agents can't be enumerated and will receive it.
+ */
+export const NON_AUTHORING_AGENTS = new Set([
+  "Explore",
+  "Plan",
+  "output-style-setup",
+  "task-gopher",
+  "task-gopher:task-gopher",
+]);
+
 export function userConfigPath() {
   return join(homedir(), ".claude", CONFIG_BASENAME);
 }
@@ -132,7 +152,7 @@ export const DIRECTIVE = [
   "1. This NEVER asks you to document. It removes noise; it does not request prose. When in doubt, write NOTHING — a missing comment is not a defect under this directive, and adding defensive doc-comments to demonstrate compliance is itself the failure mode.",
   "2. This governs the comments YOU write or edit. Do not go clean up pre-existing comments you were not asked to touch — drive-by comment deletion produces noisy diffs and is out of scope. A stale comment on a line you are not otherwise changing stays.",
   "",
-  "Relay to code-writing subagents: subagents do not inherit this rule — the hook that injects it reaches the main session only. So when you dispatch a subagent that will WRITE OR EDIT CODE, copy this entire block verbatim into its prompt, placed BELOW any directive block already leading that prompt (another plugin may enforce a top-anchored check on the first line) and above your task text. Skip the copy for retrieval, search, or review-only dispatches; they author nothing, and it would just cost tokens. The copy carries this instruction with it, so it chains to any subagent they dispatch in turn.",
+  "Subagents get this automatically — do NOT copy this block into their prompts by hand. A SubagentStart hook injects it as each subagent spawns, so writing it out yourself would spend your own output tokens duplicating what already happened.",
 ].join("\n");
 
 export const NUDGE =

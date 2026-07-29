@@ -90,11 +90,11 @@ check "empty stdin -> silent, exit 0" is_silent
 run "$INJECT" '{"tool_name":"Edit","agent_id":"ag9"}'
 check "missing cwd/session_id -> no crash" "[ $RC -eq 0 ]"
 
-# ---- the relay clause reaches the main session via SessionStart
+# ---- SessionStart still covers the main session
 enable_user
 run "$SESSION" "{\"cwd\":\"$PROJ\",\"hook_event_name\":\"SessionStart\"}"
 check "SessionStart still injects the directive" has_rule
-check "directive carries the relay clause" "printf '%s' \"\$OUT\" | grep -q 'Relay to code-writing subagents'"
+check "directive tells agents NOT to hand-relay it" "printf '%s' \"\$OUT\" | grep -q 'do NOT copy this block'"
 
 # ---- persistence must fail toward DELIVERY, never silently die
 # (regression: markSeen had no mkdirSync, so a missing ~/.claude silenced the
@@ -128,14 +128,16 @@ KEPT=$(node -e "try{const s=require('fs').readFileSync('$FAKEHOME/.claude/commen
 STRAY=$(ls "$FAKEHOME/.claude/" | grep -c '\.tmp$')
 [ "$STRAY" -eq 0 ] && { PASS=$((PASS+1)); echo "PASS: no stray .tmp files left behind"; } || { FAIL=$((FAIL+1)); echo "FAIL: $STRAY stray .tmp files"; }
 
-# ---- relay clause must not claim the top slot (task-gopher gates the first 200 chars)
+# ---- the hand-relay clause is retired (0.3.0 delivers at SubagentStart).
+# It used to have to defer the top slot so task-gopher's 200-char sentinel
+# window stayed intact; nothing is written into a dispatch prompt now, so that
+# whole contention is gone. Assert it stays gone.
 node -e "
 const {DIRECTIVE} = await import('$PLUGIN/hooks/lib-config.mjs');
-const p = DIRECTIVE.split('\n').find(l => l.startsWith('Relay to code-writing'));
-process.exit(p && /BELOW any directive block already leading/.test(p) ? 0 : 1);
+process.exit(/copy this entire block verbatim|Relay to code-writing/.test(DIRECTIVE) ? 1 : 0);
 " --input-type=module >/dev/null 2>&1 \
-  && { PASS=$((PASS+1)); echo "PASS: relay clause defers the top slot"; } \
-  || { FAIL=$((FAIL+1)); echo "FAIL: relay clause does not defer the top slot"; }
+  && { PASS=$((PASS+1)); echo "PASS: hand-relay clause is gone"; } \
+  || { FAIL=$((FAIL+1)); echo "FAIL: hand-relay clause still present in DIRECTIVE"; }
 
 # ---- syntax + JSON validity
 for f in "$PLUGIN"/hooks/*.mjs; do

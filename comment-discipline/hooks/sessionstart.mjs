@@ -11,10 +11,11 @@
  * subagent gate: it simply never runs in one. That matters here more than for
  * the sibling plugins, because subagents write plenty of code — an Implementor
  * or a general-purpose agent is exactly who leaves `// NEW: added validation`
- * behind — so the directive reaches them two other ways: it asks the
- * dispatching agent to relay it into code-writing dispatch prompts, and
- * posttooluse-inject.mjs injects it on a subagent's first edit (always — it
- * cannot tell whether the relay happened). See docs/subagent-directive-relay.md.
+ * behind — so subagentstart.mjs covers them at spawn, with
+ * posttooluse-inject.mjs as a backstop. See docs/subagent-directive-relay.md.
+ *
+ * Note the format asymmetry between the two: this event injects plain stdout as
+ * context, SubagentStart does not. Both emit JSON here, which is valid for both.
  *
  * Three states:
  *   - unconfigured           → one-line setup nudge

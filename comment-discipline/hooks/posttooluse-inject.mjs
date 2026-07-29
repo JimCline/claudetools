@@ -2,30 +2,27 @@
 /**
  * comment-discipline — subagent backstop.
  *
- * SessionStart reaches the main session only, so a subagent starts without the
- * authoring rule unless the dispatching agent relayed it into the prompt. This
- * hook delivers it on the subagent's first edit.
+ * As of 0.3.0 this is a BACKSTOP, not the primary channel. subagentstart.mjs
+ * delivers the rule at spawn and marks the agent in SEEN_FILE, so for an
+ * ordinary dispatch this hook finds the key already present and stays silent.
+ * What is left for it: spawns SubagentStart does not reach.
  *
- * Why PostToolUse on the edit tools rather than a gate on `Agent` dispatches:
- * this rule only matters to an agent that actually authors code, and tool
- * events are the only hooks that fire INSIDE a subagent's loop (their input
- * carries `agent_id`/`agent_type`). Keying on the first edit therefore charges
- * the ~2.4KB directive only to agents that write, and never to the retrieval
- * and review dispatches that make up most subagent traffic. It also keeps this
- * plugin off the `Agent` tool, where task-gopher's relay gate already denies —
- * the docs do not define how two denying hooks combine, so not stacking a
- * second one there is deliberate.
+ * Whether any such spawns exist is genuinely UNKNOWN. A spawn-lifecycle event
+ * could reasonably fire for every subagent regardless of origin, in which case
+ * this hook is dead weight — but agents created by machinery other than an
+ * `Agent`/`Task` tool call (a workflow runner, say) have already been measured
+ * to bypass one at-spawn channel, and nothing has probed whether they bypass
+ * this one too. Keeping the backstop costs a `seenKeys()` read per edit and
+ * removes a silent-failure mode. Delete it once someone measures.
  *
- * Two honest limits:
- *   - It CANNOT tell whether the relay already happened: PostToolUse carries no
- *     dispatch prompt. So it injects unconditionally on the first edit, and a
- *     subagent that WAS correctly relayed receives the rule twice (~2.4KB of
- *     avoidable duplication, once per code-writing subagent). That is the price
- *     of covering the agents the relay missed.
- *   - The first edit itself is unguarded — the injection lands with that edit's
- *     result and shapes every edit after it. Relaying into the dispatch prompt
- *     is what covers edit #1, and it is the ONLY thing that covers a subagent
- *     which makes exactly one edit.
+ * It also still covers the case where SubagentStart fired but could not persist
+ * its mark.
+ *
+ * The standing limit: the first edit is unguarded. The injection lands with
+ * that edit's RESULT, so it shapes every edit after it but not the one that
+ * triggered it — and a subagent making exactly one edit is never covered by
+ * this hook at all. Only at-spawn delivery covers edit #1, which is precisely
+ * why subagentstart.mjs is the primary channel now.
  *
  * Injects at most once per (session, agent), tracked in SEEN_FILE. Silent for
  * the main session (`agent_id` absent — SessionStart already covered it) and

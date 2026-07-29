@@ -1,6 +1,17 @@
 {
-  "description": "comment-discipline — SessionStart injects the no-ephemeral-comments authoring directive on startup, resume, clear, fork, and post-compaction (so it survives compaction rather than being quietly dropped mid-session). SessionStart reaches the main session only, so subagents — which write plenty of code — get the rule two other ways: the directive asks dispatching agents to relay it into code-writing dispatch prompts, and PostToolUse on the edit tools injects it once per subagent on its first edit. The hook cannot see whether the relay happened, so it always injects; a relayed subagent gets the rule twice. Silent when the config sets enabled:false; with no config at all it emits a one-line nudge to run /comment-discipline init.",
+  "description": "comment-discipline — SessionStart injects the no-ephemeral-comments authoring directive on startup, resume, clear, fork, and post-compaction (so it survives compaction rather than being quietly dropped mid-session). SessionStart reaches the main session only, so subagents — which write plenty of code — get the rule from SubagentStart, which injects it into the subagent's own context as it spawns, before its first turn. PostToolUse on the edit tools is the backstop for spawns SubagentStart did not reach: it injects once per subagent on its first edit, and skips any agent SubagentStart already marked. Silent when the config sets enabled:false; with no config at all it emits a one-line nudge to run /comment-discipline init.",
   "hooks": {
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/subagentstart.mjs\""
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write|NotebookEdit",
