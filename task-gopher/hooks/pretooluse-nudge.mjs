@@ -112,10 +112,9 @@ const deny = (reason) => {
 // Bash commands that are retrieval/search/read/heavy — the delegatable kind.
 // (Plain state changes like git add/commit, mkdir, cd, echo are intentionally
 // NOT gated: they aren't what floods context and aren't task-gopher's job.)
-const RETRIEVAL_BASH = [
+const RETRIEVAL_ANY = [
   /\b(grep|rg|ack|ag)\b/,
   /\bfind\b/,
-  /\b(cat|head|tail|bat|less)\b/,
   /\bgit\s+(diff|log|show|blame|grep)\b/,
   /\b(npm|yarn|pnpm|bun)\s+(test|run\s+build|run\s+lint)\b/,
   /\b(pytest|jest|vitest|tox|nox)\b/,
@@ -123,14 +122,40 @@ const RETRIEVAL_BASH = [
   /\b(make|gradle|gradlew|mvn)\b/,
 ];
 
+/**
+ * These count ONLY when they lead the command. `tail -50 app.log` reads a file;
+ * `git push | tail -10` TRIMS output — which is the habit this plugin exists to
+ * encourage, so gating it was backwards. Same for `cmd | head`, `... | less`.
+ */
+const READER_LEADING = [/\b(cat|head|tail|bat|less)\b/];
+
+/**
+ * A retrieval word inside a quoted span is text, not a command:
+ * `git commit -m "add tail support"` is not a read, and neither is
+ * `git commit -m "$(cat <<'EOF' ...)"`. Both were being blocked.
+ */
+function stripQuoted(cmd) {
+  return cmd.replace(/'[^']*'/g, " ").replace(/"[^"]*"/g, " ");
+}
+
+/**
+ * Match per pipeline/sequence stage rather than against the raw string, so a
+ * word's POSITION decides what it means.
+ */
 function isRetrieval(payload) {
   const tool = payload.tool_name;
   if (tool === "Read" || tool === "Grep" || tool === "Glob") return true;
-  if (tool === "Bash") {
-    const cmd = payload?.tool_input?.command;
-    return typeof cmd === "string" && RETRIEVAL_BASH.some((re) => re.test(cmd));
-  }
-  return false;
+  if (tool !== "Bash") return false;
+
+  const cmd = payload?.tool_input?.command;
+  if (typeof cmd !== "string") return false;
+
+  const stages = stripQuoted(cmd).split(/\|\||&&|[|;\n]/);
+  return stages.some(
+    (stage, i) =>
+      RETRIEVAL_ANY.some((re) => re.test(stage)) ||
+      (i === 0 && READER_LEADING.some((re) => re.test(stage)))
+  );
 }
 
 // A short description of WHAT the agent ran directly, for the audit log.

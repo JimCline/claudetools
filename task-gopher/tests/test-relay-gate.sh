@@ -162,6 +162,35 @@ check "strict: subagent re-run passes" is_allow
 run_hook "$READ_PAR"
 check "strict: subagent's streak did not consume the parent's budget" is_allow
 
+# ---- retrieval detection is POSITIONAL, not a substring scan.
+# Each of these previously matched somewhere in the raw string and got blocked,
+# though none of them is a retrieval. Uses a fresh turn per case so a checkpoint
+# would be unambiguous: a gated command denies on its turn's first call, an
+# ungated one is allowed outright.
+bash_payload() { # <command> <prompt_id>
+  printf '{"tool_name":"Bash","prompt_id":"%s","session_id":"sB","tool_input":{"command":%s}}' \
+    "$2" "$(printf '%s' "$1" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify(s)))')"
+}
+
+run_hook "$(bash_payload 'git push origin main | tail -10' b1)"
+check "strict: 'push | tail' is trimming output, not retrieval" is_allow
+run_hook "$(bash_payload 'npm run deploy | head -5' b2)"
+check "strict: '| head' is trimming output, not retrieval" is_allow
+run_hook "$(bash_payload 'git commit -m "add tail support and cat helpers"' b3)"
+check "strict: retrieval words inside a commit message are text" is_allow
+run_hook "$(bash_payload 'git add -A && git commit -m "fix"' b4)"
+check "strict: plain state changes still ungated" is_allow
+
+# ...and the real retrievals must still be caught.
+run_hook "$(bash_payload 'tail -200 /var/log/app.log' b5)"
+check "strict: leading 'tail FILE' IS retrieval" is_deny
+run_hook "$(bash_payload 'cat src/index.ts' b6)"
+check "strict: leading 'cat FILE' IS retrieval" is_deny
+run_hook "$(bash_payload 'ls -la && grep -rn TODO src/' b7)"
+check "strict: grep in a later stage IS retrieval" is_deny
+run_hook "$(bash_payload 'npm test 2>&1 | tail -40' b8)"
+check "strict: a test run stays gated despite the trailing tail" is_deny
+
 # ---- state is an append-only line log, not a rewritten JSON slot
 check "strict: nudge state is a line log, not JSON" \
   '! head -c 1 "$FAKEHOME/.claude/task-gopher.nudge" | grep -q "{"'
