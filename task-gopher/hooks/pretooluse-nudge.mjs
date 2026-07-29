@@ -36,8 +36,14 @@
  * things into its own context gets re-checkpointed; an agent that delegates is
  * left alone.
  *
- * Turn = one user prompt, tracked by the payload's `prompt_id`; checkpoint
- * state lives in NUDGE_FILE as JSON {pid, n}.
+ * SCOPE: one streak per (session, agent, turn) — see `contextKey`. Each
+ * subagent therefore gets its own checkpoint rather than spending the parent's
+ * budget, which is deliberate: the directive applies to subagents too, and a
+ * subagent that shares the parent's counter is almost never checkpointed at all
+ * (the parent has usually spent the turn-start block before the subagent runs).
+ * The cost is one extra round trip per retrieval-doing subagent; dispatches to
+ * task-gopher itself are exempt at the top of the script, so the runner never
+ * pays it.
  *
  * HONEST LIMITS: the checkpoint cannot verify the agent *genuinely*
  * reconsidered — a re-run always passes. And the relay depends on the harness
@@ -159,29 +165,85 @@ function logEvent(entry) {
   }
 }
 
-function readCounter(file) {
-  try {
-    const o = JSON.parse(readFileSync(file, "utf8"));
-    if (o && typeof o.pid === "string") {
-      return { pid: o.pid, n: Number.isInteger(o.n) ? o.n : 0 };
-    }
-  } catch {
-    // no/broken state -> fresh
-  }
-  return { pid: "", n: 0 };
+/**
+ * Identifies ONE agent's streak within ONE turn. All three parts are load-
+ * bearing: `prompt_id` alone is a turn but not a context, so the main agent and
+ * every subagent it spawns shared a single counter — and `session_id` is what
+ * keeps concurrent Claude Code sessions off each other's state, since
+ * NUDGE_FILE is shared by every session under this HOME.
+ *
+ * Empty `agent_id` means the main session, which is a context like any other.
+ */
+function contextKey(payload) {
+  const p = typeof payload.prompt_id === "string" ? payload.prompt_id : "";
+  if (!p) return ""; // can't scope a turn -> caller fails open
+  const s = typeof payload.session_id === "string" ? payload.session_id : "";
+  const a = typeof payload.agent_id === "string" ? payload.agent_id : "";
+  return `${s}|${a}|${p}`;
 }
 
 /**
- * Replace a state file atomically (temp + rename). NUDGE_FILE is shared by
- * every session under this HOME; a plain writeFileSync truncates in place, so a
- * reader hitting that window sees a torn file and treats it as absent.
+ * Streak state is an append-only line log, NOT a single {pid, n} slot rewritten
+ * in place. The slot was the bug: one shared record for the whole machine meant
+ * any other context writing its own id made the next reader see a foreign turn
+ * and re-fire the turn-start checkpoint — so the "just RE-RUN to proceed"
+ * escape hatch this gate advertises did not actually work. Measured over five
+ * days: 76% of turn-start checkpoints fired on a turn already in progress,
+ * median 2.7 seconds after that turn's previous event.
+ *
+ * An O_APPEND write of a short line is atomic, so concurrent contexts queue
+ * instead of clobbering. A bare key line is one bypass; `key\tR` resets the
+ * streak to zero. Resets are markers rather than deletions because the log
+ * cannot be rewritten safely, and because "seen but reset to 0" must stay
+ * distinguishable from "never seen" — that distinction is exactly what tells a
+ * re-run apart from a fresh turn.
  */
-function writeCounter(file, pid, n) {
-  const tmp = `${file}.${process.pid}.tmp`;
+const RESET = "\tR";
+const NUDGE_MAX_LINES = 400;
+
+function readLines() {
   try {
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(tmp, JSON.stringify({ pid, n }));
-    renameSync(tmp, file);
+    return readFileSync(NUDGE_FILE, "utf8").split("\n").filter(Boolean);
+  } catch {
+    return []; // absent or unreadable -> nothing seen yet
+  }
+}
+
+/** Replay one context's lines: has it been checkpointed, and how many bypasses since its last reset. */
+function readStreak(lines, key) {
+  const reset = key + RESET;
+  let seen = false;
+  let n = 0;
+  for (const line of lines) {
+    if (line === key) {
+      seen = true;
+      n++;
+    } else if (line === reset) {
+      seen = true;
+      n = 0;
+    }
+  }
+  return { seen, n };
+}
+
+/** Compact once the log has grown well past what any live turn needs. */
+function pruneIfLarge() {
+  try {
+    const lines = readLines();
+    if (lines.length <= NUDGE_MAX_LINES * 2) return;
+    const tmp = `${NUDGE_FILE}.${process.pid}.tmp`;
+    writeFileSync(tmp, lines.slice(-NUDGE_MAX_LINES).join("\n") + "\n");
+    renameSync(tmp, NUDGE_FILE); // rename is atomic; readers never see a partial file
+  } catch {
+    // best-effort: a skipped prune only costs disk
+  }
+}
+
+function appendState(line) {
+  try {
+    mkdirSync(dirname(NUDGE_FILE), { recursive: true });
+    appendFileSync(NUDGE_FILE, line + "\n");
+    pruneIfLarge();
     return true;
   } catch {
     return false;
@@ -221,6 +283,8 @@ try {
   if (isTaskGopherAgent(payload)) allow(); // never gate the gopher's own tool use
 
   const pid = typeof payload.prompt_id === "string" ? payload.prompt_id : "";
+  const aid = typeof payload.agent_id === "string" ? payload.agent_id : "";
+  const key = contextKey(payload);
 
   if (payload.tool_name === "Agent" || payload.tool_name === "Task") {
     const t = payload.tool_input || {};
@@ -229,9 +293,9 @@ try {
     // A dispatch to task-gopher is the desired outcome: never rewritten, and it
     // resets the strict-mode consecutive-bypass streak (reward good behavior).
     if (st.includes("task-gopher")) {
-      if (pid) {
-        writeCounter(NUDGE_FILE, pid, 0);
-        logEvent({ pid, event: "dispatch", tool: payload.tool_name, detail: st });
+      if (key) {
+        appendState(key + RESET);
+        logEvent({ pid, aid, event: "dispatch", tool: payload.tool_name, detail: st });
       }
       allow();
     }
@@ -240,40 +304,40 @@ try {
 
     if (typeof t.prompt !== "string") allow(); // unexpected payload shape -> fail open
     if (t.prompt.slice(0, SENTINEL_WINDOW).includes(SENTINEL)) {
-      logEvent({ pid, event: "relay-ok", tool: payload.tool_name, detail: st });
+      logEvent({ pid, aid, event: "relay-ok", tool: payload.tool_name, detail: st });
       allow(); // already carries it — don't double up
     }
 
-    logEvent({ pid, event: "relay-injected", tool: payload.tool_name, detail: st });
+    logEvent({ pid, aid, event: "relay-injected", tool: payload.tool_name, detail: st });
     injectDirective(t);
   }
 
   if (!isStrict()) allow();
   if (!isRetrieval(payload)) allow();
-  if (!pid) allow(); // can't scope a turn -> fail open
+  if (!key) allow(); // can't scope a turn -> fail open
 
-  const state = readCounter(NUDGE_FILE);
+  const { seen, n } = readStreak(readLines(), key);
   const tool = payload.tool_name;
   const detail = detailOf(payload);
 
-  // New turn: initial checkpoint. Only block if we can persist state, else the
-  // re-run would re-trigger forever.
-  if (state.pid !== pid) {
-    if (!writeCounter(NUDGE_FILE, pid, 0)) allow();
-    logEvent({ pid, event: "checkpoint", kind: "turn-start", tool, detail });
+  // First retrieval by THIS agent in this turn: the checkpoint. Only block if
+  // the mark persists, else the re-run would re-trigger forever.
+  if (!seen) {
+    if (!appendState(key + RESET)) allow();
+    logEvent({ pid, aid, event: "checkpoint", kind: "turn-start", tool, detail });
     deny(nudgeMessage(payload, 0));
   }
 
-  // Same turn: this retrieval is a bypass.
-  const next = state.n + 1;
+  // Already checkpointed this turn: this retrieval is a bypass.
+  const next = n + 1;
   if (next >= RENUDGE_AFTER) {
-    if (!writeCounter(NUDGE_FILE, pid, 0)) allow(); // reset streak; re-block once
-    logEvent({ pid, event: "checkpoint", kind: "escalated", bypasses: next, tool, detail });
+    if (!appendState(key + RESET)) allow(); // reset streak; re-block once
+    logEvent({ pid, aid, event: "checkpoint", kind: "escalated", bypasses: next, tool, detail });
     deny(nudgeMessage(payload, next));
   }
 
-  writeCounter(NUDGE_FILE, pid, next); // record the bypass and allow
-  logEvent({ pid, event: "bypass", n: next, tool, detail });
+  if (!appendState(key)) allow(); // record the bypass and allow
+  logEvent({ pid, aid, event: "bypass", n: next, tool, detail });
   allow();
 } catch {
   allow(); // fail open, always

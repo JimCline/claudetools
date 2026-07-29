@@ -136,13 +136,18 @@ than just doing the work.
 
 The directive claims to bind subagents too — but Claude Code's `SessionStart`
 and `UserPromptSubmit` hooks **never fire for subagents** (a subagent is not a
-session), and `SubagentStart` cannot inject context into the subagent's
-conversation. A subagent inherits its own agent file, the CLAUDE.md hierarchy,
-and the dispatch prompt — nothing else. So without help, a Sonnet-tier subagent
+session). A subagent inherits its own agent file, the CLAUDE.md hierarchy, and
+the dispatch prompt — nothing else. So without help, a Sonnet-tier subagent
 would never see the directive at all.
 
-The fix is a **relay, applied at the only event that fires before a subagent
-exists**: spawning a subagent is just an `Agent` tool call, and `PreToolUse`
+`SubagentStart` is a second viable channel (it does reach the subagent, given a
+JSON payload), but it carries no dispatch prompt, so it cannot skip dispatches
+to task-gopher itself or to agents that have no `Agent` tool. This plugin needs
+both of those, so it rewrites the prompt instead. See
+[docs/subagent-directive-relay.md](../docs/subagent-directive-relay.md).
+
+The fix is a **relay applied before the subagent exists**: spawning a subagent
+is just an `Agent` tool call, and `PreToolUse`
 fires for it in the spawning agent's loop with the full dispatch prompt visible
 in the hook input — and, crucially, that hook can **rewrite the call before it
 runs**. Whenever the plugin is ON (strict not required):
@@ -212,8 +217,23 @@ own context gets re-checkpointed instead of quietly drifting.
 
 **Dispatching to task-gopher resets the streak** — good behavior buys a clean
 slate, so an agent that delegates is left alone while one that doesn't keeps
-getting stopped. A "turn" is one user prompt (tracked by the payload's
-`prompt_id`); a new turn re-arms the first-retrieval checkpoint.
+getting stopped.
+
+Each streak is scoped to one **agent** within one **turn** — keyed on
+`session_id`, `agent_id`, and `prompt_id` together. All three matter. Keying on
+the turn alone (as versions before 0.7.0 did) put the main agent, every subagent
+it spawns, and every other Claude Code session on this machine into a single
+shared counter, which broke the gate in both directions: a subagent almost never
+got checkpointed at all, because the parent had already spent the turn's one
+block before the subagent ran; and any other context writing its own id made the
+next reader see a foreign turn and re-fire the first-retrieval checkpoint, so the
+"re-run to proceed" escape hatch silently didn't work. Measured over five days of
+real use, **76% of first-retrieval checkpoints fired on a turn already in
+progress**, a median 2.7 seconds after that turn's previous event.
+
+Subagents therefore get their own checkpoint now. That costs one extra round trip
+per retrieval-doing subagent; dispatches to task-gopher itself are exempt, so the
+runner never pays it.
 
 > **Honest limit:** this is a *forcing function, not a guarantee*. The hook can't
 > verify the agent genuinely reconsidered — a re-run always passes, and it can't
@@ -252,7 +272,7 @@ bypasses:       4  (direct retrievals done anyway)
 dispatches:     2  (delegations to task-gopher; 1 in strict-gated turns)
 bypass/dispatch ratio: 4.00  (strict-gated turns only; lower is better)
 bypassed tools: Read 3, Bash 1
-subagent relay:  5 ok, 1 bounced, 0 forgone (fail-open)
+subagent relay:  5 stamped, 1 already carried it
 recent bypasses (last 4) — what was run directly:
   - 2026-07-16 14:40:00  Read: src/app.ts
   - 2026-07-16 14:40:00  Bash: git diff main -- config/

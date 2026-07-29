@@ -100,7 +100,7 @@ export const FULL_DIRECTIVE = [
   "",
   "Dispatch expensive tool work to the `task-gopher` subagent (pinned to Haiku) instead of doing it yourself. Spend YOUR expensive high-reasoning tokens on judgment, not on tool output or log dumps. task-gopher is a hired runner that carries out explicit orders and reports back.",
   "",
-  'Dispatch to `task-gopher` (Agent tool, subagent_type: "task-gopher") when a step is:',
+  'Dispatch with the Agent tool, subagent_type: "task-gopher:task-gopher" — plugin agents are namespaced `plugin:agent`, and the bare name does NOT resolve ("Agent type \'task-gopher\' not found"). If your available-agents list shows a different exact spelling, use that. Dispatch when a step is:',
   "- Tool/output-heavy: running test suites, builds, installs, long or verbose bash; sifting logs.",
   '- Retrieval / summarization: "find where X is defined", "list the callers", "summarize module Y", reading many files, searching a large tree.',
   "- Long-running or high-output, or otherwise likely to dump lots of tokens into your context.",

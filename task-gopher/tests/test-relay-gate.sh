@@ -117,11 +117,56 @@ check "strict: bypass 2 silent" is_allow
 run_hook "$READ_P"
 check "strict: 3rd consecutive bypass -> escalated deny" is_deny
 
-run_hook "$READ_P"; run_hook "$READ_P"   # bypasses 1 and 2 of the new streak
+run_hook "$READ_P"
+check "strict: re-run passes after escalation (escape hatch survives the reset)" is_allow
+run_hook "$READ_P"                       # bypass 2 of the new streak
 run_hook "$(payload "$DISPATCH_NOSENT" t4 task-gopher:task-gopher)"
 check "strict: gopher dispatch allowed" is_allow
 run_hook "$READ_P"
 check "strict: dispatch reset streak (Read allowed, no escalate)" is_allow
+
+# ---- THE INTERLEAVE BUG: state was one shared {pid,n} slot, so any other
+# context writing its own id made the next reader see a foreign turn and
+# re-fire the turn-start checkpoint. Measured in the wild: 76% of turn-start
+# checkpoints hit a turn already in progress, median 2.7s after its last event.
+# A checkpointed context must survive another context checkpointing between
+# its calls.
+READ_OTHER='{"tool_name":"Read","prompt_id":"tOTHER","session_id":"sOTHER","tool_input":{"file_path":"/x"}}'
+run_hook "$READ_OTHER"
+check "strict: a different context gets its own turn-start" is_deny
+run_hook "$READ_P"
+check "strict: original context NOT re-checkpointed after a foreign turn" is_allow
+
+# Concurrent sessions must not share a streak at all.
+READ_S2='{"tool_name":"Read","prompt_id":"tS","session_id":"sTWO","tool_input":{"file_path":"/x"}}'
+READ_S3='{"tool_name":"Read","prompt_id":"tS","session_id":"sTHREE","tool_input":{"file_path":"/x"}}'
+run_hook "$READ_S2"; run_hook "$READ_S2"   # sTWO: checkpointed, then bypassing
+run_hook "$READ_S3"
+check "strict: same prompt_id in another SESSION is its own streak" is_deny
+
+# ---- a subagent gets its own budget, not the parent's spent one.
+# Uses a fresh turn so the parent's own streak position is unambiguous:
+# before the fix, the subagent shared the parent's counter, so a parent that
+# had already spent its turn-start meant the subagent was never checkpointed
+# at all — measured live, a subagent's first Read sailed straight through.
+READ_PAR='{"tool_name":"Read","prompt_id":"tPAR","session_id":"sPAR","tool_input":{"file_path":"/x"}}'
+READ_SUB='{"tool_name":"Read","prompt_id":"tPAR","session_id":"sPAR","agent_id":"agSUB","tool_input":{"file_path":"/x"}}'
+run_hook "$READ_PAR"
+check "strict: parent turn-start" is_deny
+run_hook "$READ_PAR"
+check "strict: parent bypass 1" is_allow
+run_hook "$READ_SUB"
+check "strict: subagent in an already-checkpointed turn is still checkpointed" is_deny
+run_hook "$READ_SUB"
+check "strict: subagent re-run passes" is_allow
+run_hook "$READ_PAR"
+check "strict: subagent's streak did not consume the parent's budget" is_allow
+
+# ---- state is an append-only line log, not a rewritten JSON slot
+check "strict: nudge state is a line log, not JSON" \
+  '! head -c 1 "$FAKEHOME/.claude/task-gopher.nudge" | grep -q "{"'
+check "strict: parent and subagent are separate keys" \
+  'grep -q "^sPAR||tPAR" "$FAKEHOME/.claude/task-gopher.nudge" && grep -q "^sPAR|agSUB|tPAR" "$FAKEHOME/.claude/task-gopher.nudge"'
 
 # ---- concurrent dispatches all get stamped (rewrite keeps no shared state)
 for i in $(seq 1 12); do
@@ -172,6 +217,22 @@ fi
 grep -q 'RELAY_FILE\|relay-bounce\|relay-forgone\|RELAY_FORGO_AFTER' "$PLUGIN"/hooks/*.mjs \
   && { FAIL=$((FAIL+1)); echo "FAIL: dead relay-bounce machinery still referenced"; } \
   || { PASS=$((PASS+1)); echo "PASS: relay-bounce machinery fully removed"; }
+
+# ---- so is the single-slot counter it replaced
+grep -q 'readCounter\|writeCounter' "$PLUGIN"/hooks/*.mjs \
+  && { FAIL=$((FAIL+1)); echo "FAIL: single-slot counter still referenced"; } \
+  || { PASS=$((PASS+1)); echo "PASS: single-slot counter fully removed"; }
+
+# ---- the directive must name the agent the way the harness resolves it:
+# plugin agents are namespaced, and the bare name errors with "not found".
+# A subagent has no agent roster until after its first tool call, so the
+# directive text is its only source for the correct spelling.
+grep -q 'task-gopher:task-gopher' "$PLUGIN/hooks/directive.mjs" \
+  && { PASS=$((PASS+1)); echo "PASS: directive names the namespaced subagent_type"; } \
+  || { FAIL=$((FAIL+1)); echo "FAIL: directive lacks the namespaced subagent_type"; }
+grep -q 'subagent_type: "task-gopher")' "$PLUGIN/hooks/directive.mjs" \
+  && { FAIL=$((FAIL+1)); echo "FAIL: directive still tells agents to use the bare name"; } \
+  || { PASS=$((PASS+1)); echo "PASS: directive no longer uses the bare agent name"; }
 
 echo "----"
 echo "SUMMARY: $PASS passed, $FAIL failed"
