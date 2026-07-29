@@ -6,11 +6,15 @@
  * post-compaction, so the rule survives the compaction that would otherwise
  * quietly drop it mid-session.
  *
- * Unlike task-gopher and agent-hierarchy, this hook does NOT gate on subagents.
- * Those two suppress inside subagents to stop dispatch recursion; there is no
- * recursion here, and subagents write plenty of code — an Implementor or a
- * general-purpose agent is exactly who leaves `// NEW: added validation`
- * behind. Suppressing there would gut the plugin.
+ * MAIN SESSION ONLY — not a choice, a platform fact: SessionStart never fires
+ * for subagents (a subagent is not a session). This hook therefore needs no
+ * subagent gate: it simply never runs in one. That matters here more than for
+ * the sibling plugins, because subagents write plenty of code — an Implementor
+ * or a general-purpose agent is exactly who leaves `// NEW: added validation`
+ * behind — so the directive reaches them two other ways: it asks the
+ * dispatching agent to relay it into code-writing dispatch prompts, and
+ * posttooluse-inject.mjs injects it on a subagent's first edit (always — it
+ * cannot tell whether the relay happened). See docs/subagent-directive-relay.md.
  *
  * Three states:
  *   - unconfigured           → one-line setup nudge

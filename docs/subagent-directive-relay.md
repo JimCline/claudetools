@@ -8,10 +8,14 @@ never fire for subagents, so every subagent runs directive-blind.
 that mechanically with a `PreToolUse` hook on the `Agent` tool — the only event
 that fires *before* a subagent exists.
 
-Reference implementation: [task-gopher ≥ 0.5.0](https://github.com/JimCline/claudetools/tree/main/task-gopher)
-([`hooks/pretooluse-nudge.mjs`](https://github.com/JimCline/claudetools/blob/main/task-gopher/hooks/pretooluse-nudge.mjs)).
-Verified against Claude Code docs 2026-07 (`code.claude.com/docs/en/hooks`,
-`/sub-agents`).
+Reference implementations:
+[task-gopher ≥ 0.5.0](https://github.com/JimCline/claudetools/tree/main/task-gopher)
+([`hooks/pretooluse-nudge.mjs`](https://github.com/JimCline/claudetools/blob/main/task-gopher/hooks/pretooluse-nudge.mjs))
+for the deny-gate flavor, and
+[comment-discipline ≥ 0.2.0](https://github.com/JimCline/claudetools/tree/main/comment-discipline)
+([`hooks/posttooluse-inject.mjs`](https://github.com/JimCline/claudetools/blob/main/comment-discipline/hooks/posttooluse-inject.mjs))
+for the targeted-injection flavor. Verified against Claude Code docs 2026-07
+(`code.claude.com/docs/en/hooks`, `/sub-agents`).
 
 ## The facts that force this design
 
@@ -39,7 +43,23 @@ chain.
 3. **Rules you can enforce mechanically** (e.g. a command-blocking `PreToolUse`
    gate) → you may not need delivery at all: tool-event hooks already fire
    inside subagent loops, and deny reasons teach the rule in-context.
-4. **Toggleable plugin directives that shape behavior** → **this relay design.**
+4. **Directives that shouldn't reach subagents at all** → do nothing. Some
+   plugins genuinely want suppression (an orchestration protocol that would
+   make a worker start orchestrating). The platform already suppresses; just
+   don't mistake the dead `isSubagent()` branch in a `SessionStart` hook for
+   the mechanism that's doing it.
+5. **Toggleable plugin directives that shape behavior** → **this relay design**,
+   in one of two flavors:
+   - **5a. Directive shapes everything the subagent does** (how it plans, what
+     it delegates) → relay clause + `PreToolUse` sentinel-deny on `Agent`.
+     Delivery must be at spawn, because the behavior starts immediately.
+   - **5b. Directive only matters at a specific tool boundary** (how it writes
+     code, how it runs commands) → relay clause + **targeted injection**: a
+     `PostToolUse` hook on *those* tools that injects the directive once per
+     `agent_id`. Charges the tokens only to agents that reach the boundary,
+     needs no deny, and leaves the `Agent` tool free (see Composition). The
+     tradeoff is that the *first* such tool call is unguarded — the relay
+     clause is what covers it.
 
 ## The design
 
@@ -86,6 +106,50 @@ Three cooperating parts:
 Optionally add an audit trail (`relay-ok` / `relay-bounce` / `relay-forgone`
 JSONL events) so you can measure the real-world first-try relay rate.
 
+## Composition — don't stack deny gates on one tool
+
+The docs state that all matching hooks for an event **run in parallel**, and
+that when several return `additionalContext` for the same event *"Claude
+receives all of the values."* But they are **silent** on how conflicting
+`permissionDecision` results combine: whether every denying hook's
+`permissionDecisionReason` is surfaced, or only one wins. That gap is load-
+bearing when two plugins both gate the `Agent` tool — if only one reason
+surfaces, each dispatch costs an extra round trip per plugin, and the plugins'
+independent fail-open counters multiply.
+
+So: **at most one plugin should sentinel-deny a given tool.** A second plugin
+wanting the same tool should use flavor 5b (targeted injection on a *different*
+tool), where the documented aggregation behavior applies and no deny is needed.
+
+**The top slot belongs to the gate.** A top-anchored sentinel check (first ~200
+chars) and a second plugin that also says "copy this to the top of the prompt"
+are a live conflict: whichever block lands first pushes the other's sentinel out
+of the window, and the gate then denies every dispatch — bouncing until its
+fail-open trips, on every dispatch. Only the deny-gating plugin may claim the
+top; every other relaying directive must tell agents to place its block *below*
+any directive already leading the prompt. Enforce this in the directive text,
+because the gate cannot detect the ordering problem — it just sees a missing
+sentinel.
+
+**Injection backstops cannot detect a relay.** A `PostToolUse` hook has no view
+of the dispatch prompt, so it fires whether or not the parent relayed. The two
+channels are additive, not complementary: a correctly relayed subagent receives
+the directive twice. Budget for that duplication rather than claiming the
+backstop "only fires when the relay didn't happen" — it can't know that.
+
+Worked examples in this repo:
+
+| Plugin | Channel | Why |
+|---|---|---|
+| task-gopher | relay clause + deny gate on `Agent` | Delegation shapes everything; needs at-spawn delivery |
+| comment-discipline | relay clause (below task-gopher's block) + `PostToolUse` injection on `Edit`/`Write`/`NotebookEdit` | Only matters when authoring; keeps off `Agent`, where task-gopher already denies |
+| output-discipline | nothing added | Its `PreToolUse` Bash gate already fires inside subagent loops; deny reasons teach in-context |
+| agent-hierarchy | nothing added | Suppression is the intent; role agents carry their own `agents/*.md` |
+
+Also weigh the cumulative prompt cost: each relaying plugin adds its directive
+to every dispatch it covers. Scoping a relay clause ("copy this only when
+dispatching an agent that will write code") keeps that bounded.
+
 ## Implementation checklist
 
 - [ ] `hooks.json`: `PreToolUse` matcher includes `Agent|Task` (match against
@@ -106,6 +170,20 @@ JSONL events) so you can measure the real-world first-try relay rate.
 - [ ] Add the relay paragraph to every injected directive text (full + any
       per-turn reminder), naming the exemptions and warning that a checkpoint
       bounces non-compliant dispatches.
+- [ ] Make state **append-only**, not a JSON map rewritten in place. Hook state
+      lives in one file shared by every concurrent session and parallel
+      subagent, so a read-modify-write silently drops entries when two hooks
+      interleave (measured: ~3 of 12 lost in a parallel fan-out), and a reader
+      landing in `writeFileSync`'s truncation window sees a torn file and
+      discards *everything*. Both of this repo's gates store one short line per
+      event — an `O_APPEND` write is atomic, so concurrent writers just queue —
+      and derive state by scanning (set membership, or counting occurrences).
+      Compact occasionally via temp-file + `renameSync`, keeping the most
+      recent lines so live contexts keep their counts.
+- [ ] `mkdirSync` the state directory before writing — it may not exist — and
+      prefer failing toward delivery (inject/allow anyway) over failing silent
+      when state can't be persisted. A dead safety net is worse than a
+      duplicated directive, and a silent one is never diagnosed.
 - [ ] Clear the relay state file wherever the plugin's `off` path clears state.
 - [ ] Version-bump everywhere your marketplace requires (this repo: plugin's
       `plugin.json` **and** root `marketplace.json`).

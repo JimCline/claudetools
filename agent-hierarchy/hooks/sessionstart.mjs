@@ -7,12 +7,18 @@
  * which model each role runs on and how to route work through the chain.
  *
  * Gating:
- *   - Any subagent session (`agent_type` set) → inject NOTHING. This is the
- *     hard recursion suppression: `agent-hierarchy:*` role agents must never
- *     receive the protocol (subagents can nest), and foreign subagents such as
- *     `task-gopher:task-gopher` should not pay for it either. A soft role-gate
- *     sentence stays in the directive as a backstop for paths where the hook
- *     does not run.
+ *   - Any subagent (`agent_type` set) → inject NOTHING. Belt-and-braces only:
+ *     SessionStart fires for the main session alone, so this branch is not what
+ *     keeps the protocol out of subagents — the platform does. Suppression is
+ *     nonetheless the INTENT here, unlike sibling plugins that must relay their
+ *     directives into subagents to work at all (see
+ *     docs/subagent-directive-relay.md): `agent-hierarchy:*` role agents must
+ *     never receive the protocol, since subagents can nest and an Implementor
+ *     that starts orchestrating defeats the hierarchy. Foreign subagents such
+ *     as `task-gopher:task-gopher` should not pay for it either. Each role
+ *     agent gets its own instructions from its `agents/*.md` body, which IS
+ *     loaded at spawn. A soft role-gate sentence stays in the directive as a
+ *     backstop for paths where the hook does not run.
  *   - Top-level, configured, enabled  → the directive.
  *   - Top-level, no usable config     → a one-line setup nudge.
  *   - Top-level, config with enabled:false → silence (the user opted out;

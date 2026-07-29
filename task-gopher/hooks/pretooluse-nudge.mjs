@@ -43,7 +43,8 @@
  * state — a broken gate must never brick tools or trap an agent in a deny loop.
  */
 
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import {
   FULL_DIRECTIVE,
   LOG_FILE,
@@ -155,13 +156,26 @@ function readCounter(file) {
   return { pid: "", n: 0 };
 }
 
-function writeCounter(file, pid, n) {
+/**
+ * Replace a state file atomically (temp + rename). These files are shared by
+ * every concurrent session and parallel subagent under this HOME; a plain
+ * writeFileSync truncates in place, so a reader hitting that window sees a torn
+ * file and treats it as absent — silently discarding counters.
+ */
+function writeJsonAtomic(file, data) {
+  const tmp = `${file}.${process.pid}.tmp`;
   try {
-    writeFileSync(file, JSON.stringify({ pid, n }));
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(tmp, JSON.stringify(data));
+    renameSync(tmp, file);
     return true;
   } catch {
     return false;
   }
+}
+
+function writeCounter(file, pid, n) {
+  return writeJsonAtomic(file, { pid, n });
 }
 
 // Relay bounces are counted per (session, agent, turn): RELAY_FILE is shared by
@@ -174,31 +188,45 @@ function relayKey(payload, pid) {
   return sid + "|" + aid + "|" + pid;
 }
 
+/**
+ * Bounces are an append-only line log — one key per bounce, count = occurrences
+ * — NOT a JSON map rewritten in place. RELAY_FILE is shared by every concurrent
+ * session and parallel subagent, and a read-modify-write drops increments
+ * whenever two hooks interleave, which would hand a context extra denies past
+ * its fail-open cap. An O_APPEND write of a short line is atomic, so concurrent
+ * bounces simply queue.
+ */
 function readRelayCount(key) {
   try {
-    const o = JSON.parse(readFileSync(RELAY_FILE, "utf8"));
-    const n = o && o.entries ? o.entries[key] : 0;
-    return Number.isInteger(n) ? n : 0;
+    let n = 0;
+    for (const line of readFileSync(RELAY_FILE, "utf8").split("\n")) {
+      if (line === key) n++;
+    }
+    return n;
   } catch {
     return 0;
   }
 }
 
-function bumpRelayCount(key) {
-  // Unlocked read-modify-write: a concurrent fan-out can drop an increment,
-  // which only delays that context's fail-open by one bounce.
-  let entries = {};
+/** Compact the log once it holds far more than the live contexts need. */
+function pruneRelayLog() {
   try {
-    const o = JSON.parse(readFileSync(RELAY_FILE, "utf8"));
-    if (o && o.entries && typeof o.entries === "object") entries = o.entries;
+    const lines = readFileSync(RELAY_FILE, "utf8").split("\n").filter(Boolean);
+    const cap = RELAY_MAX_KEYS * (RELAY_FORGO_AFTER + 1);
+    if (lines.length <= cap * 2) return;
+    const tmp = `${RELAY_FILE}.${process.pid}.tmp`;
+    writeFileSync(tmp, lines.slice(-cap).join("\n") + "\n");
+    renameSync(tmp, RELAY_FILE); // keeps the most recent lines, so live contexts keep their counts
   } catch {
-    // no/broken state -> fresh
+    // best-effort: a skipped prune only costs disk
   }
-  entries[key] = (Number.isInteger(entries[key]) ? entries[key] : 0) + 1;
-  const keys = Object.keys(entries);
-  for (let i = 0; i < keys.length - RELAY_MAX_KEYS; i++) delete entries[keys[i]];
+}
+
+function bumpRelayCount(key) {
   try {
-    writeFileSync(RELAY_FILE, JSON.stringify({ entries }));
+    mkdirSync(dirname(RELAY_FILE), { recursive: true });
+    appendFileSync(RELAY_FILE, key + "\n");
+    pruneRelayLog();
     return true;
   } catch {
     return false;

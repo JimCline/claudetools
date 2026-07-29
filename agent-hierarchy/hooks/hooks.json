@@ -1,5 +1,5 @@
 {
-  "description": "agent-hierarchy — SessionStart injects the resolved role→model table and the orchestration protocol on startup, resume, clear, fork, and post-compaction (so it survives compaction). Silent inside any subagent session, and silent when the config sets enabled:false. With no config at all it emits a one-line nudge to run /hierarchy init.",
+  "description": "agent-hierarchy — SessionStart injects the resolved role→model table and the orchestration protocol on startup, resume, clear, fork, and post-compaction (so it survives compaction). Main session only — SessionStart does not fire for subagents, and that suppression is intended here: role agents carry their own instructions in agents/*.md, and an Implementor that starts orchestrating would defeat the hierarchy. Silent when the config sets enabled:false; with no config at all it emits a one-line nudge to run /hierarchy init.",
   "hooks": {
     "SessionStart": [
       {

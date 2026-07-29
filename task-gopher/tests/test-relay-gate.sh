@@ -129,6 +129,30 @@ check "strict: gopher dispatch allowed" is_allow
 run_hook "$READ_P"
 check "strict: dispatch reset streak (Read allowed, no escalate)" is_allow
 
+# ---- concurrent contexts must not wipe each other's relay counters
+# (regression: non-atomic writeFileSync let a torn read reset the whole map)
+rm -f "$FAKEHOME/.claude/task-gopher.relay"
+for i in $(seq 1 12); do
+  printf '%s' "{\"tool_name\":\"Agent\",\"prompt_id\":\"cc\",\"session_id\":\"s$i\",\"tool_input\":{\"subagent_type\":\"general-purpose\",\"prompt\":\"x\"}}" \
+    | HOME="$FAKEHOME" node "$HOOK" >/dev/null 2>&1 &
+done
+wait
+KEPT=$(node -e "try{const s=require('fs').readFileSync('$FAKEHOME/.claude/task-gopher.relay','utf8').split('\n').filter(Boolean);process.stdout.write(String(new Set(s).size))}catch(e){process.stdout.write('0')}")
+[ "$KEPT" -eq 12 ] && { PASS=$((PASS+1)); echo "PASS: 12 concurrent contexts, all 12 counters survived"; } || { FAIL=$((FAIL+1)); echo "FAIL: concurrent counters lost, only $KEPT/12 survived"; }
+STRAY=$(ls "$FAKEHOME/.claude/" | grep -c '\.tmp$')
+[ "$STRAY" -eq 0 ] && { PASS=$((PASS+1)); echo "PASS: no stray .tmp files left behind"; } || { FAIL=$((FAIL+1)); echo "FAIL: $STRAY stray .tmp files"; }
+
+# ---- state dir is created when absent
+NOHOME="$(mktemp -d "${TMPDIR:-/tmp}/task-gopher-nohome.XXXXXX")"
+touch "$NOHOME/task-gopher.enabled" 2>/dev/null
+mkdir -p "$NOHOME/.claude" && mv "$NOHOME/task-gopher.enabled" "$NOHOME/.claude/" 2>/dev/null
+rm -rf "$NOHOME/.claude"
+mkdir -p "$NOHOME/.claude" && touch "$NOHOME/.claude/task-gopher.enabled"
+rm -f "$NOHOME/.claude/task-gopher.relay"
+OUT=$(printf '%s' "$(payload "$DISPATCH_NOSENT" nh general-purpose)" | HOME="$NOHOME" node "$HOOK" 2>/dev/null); RC=$?
+check "fresh HOME: relay gate still denies (state writable)" is_deny
+rm -rf "$NOHOME"
+
 # ---- robustness
 run_hook 'not json at all'
 check "malformed stdin -> allow" is_allow

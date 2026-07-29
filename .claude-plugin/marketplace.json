@@ -13,7 +13,7 @@
       "name": "agent-hierarchy",
       "source": "./agent-hierarchy",
       "description": "Runs work through a six-role agent hierarchy — Orchestrator, Ultra-Advisor, Architect, Reviewer, Implementor, Task-Runner — with a per-role model you pick once via /hierarchy. A SessionStart hook injects the role→model table and the orchestration protocol so design, implementation, and review stay separated, each step runs on the cheapest model that can do it, and the hardest calls escalate to the Ultra-Advisor.",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "author": {
         "name": "Jim Cline"
       },
@@ -31,8 +31,8 @@
     {
       "name": "comment-discipline",
       "source": "./comment-discipline",
-      "description": "Stops Claude from writing comments that only make sense next to the diff — `// changed from foo to bar`, `// NEW: added validation`, `// for now` — which stop meaning anything once the change merges. A SessionStart hook injects the authoring rule on startup and after compaction, for subagents too. Enable per-repo or globally with /comment-discipline.",
-      "version": "0.1.0",
+      "description": "Stops Claude from writing comments that only make sense next to the diff — `// changed from foo to bar`, `// NEW: added validation`, `// for now` — which stop meaning anything once the change merges. A SessionStart hook injects the authoring rule on startup and after compaction; subagents get it by relay at dispatch, backstopped by a PostToolUse hook that injects it on their first edit. Enable per-repo or globally with /comment-discipline.",
+      "version": "0.2.0",
       "author": {
         "name": "Jim Cline"
       },
@@ -68,7 +68,7 @@
       "name": "task-gopher",
       "source": "./task-gopher",
       "description": "Dispatches tool-heavy, high-output, and information-gathering work to a cheaper Haiku subagent that carries out explicit orders and returns a compact report, so the main high-reasoning agent spends its expensive tokens on judgment instead of on tool output. Relays the directive into subagent dispatches — a PreToolUse checkpoint bounces Agent dispatches that omit it, since session hooks never reach subagents. Toggle with /task-gopher.",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "author": {
         "name": "Jim Cline"
       },

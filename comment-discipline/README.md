@@ -24,9 +24,45 @@ A `SessionStart` hook injects the authoring rule on `startup`, `resume`, `clear`
 and `compact` — the last one matters most, since compaction is what silently drops a
 directive mid-session and lets the old habit creep back.
 
-It is delivered to **subagents too**. Sibling plugins (`task-gopher`, `agent-hierarchy`)
-deliberately suppress themselves inside subagents to prevent dispatch recursion; there is
-no recursion here, and subagents write plenty of code, so the gate is intentionally absent.
+## Reaching subagents
+
+`SessionStart` fires for the **main session only** — a subagent is not a session, so no
+injection hook ever runs inside one. That gap matters here more than for most plugins:
+subagents write plenty of code, and an Implementor or a general-purpose agent is exactly
+who leaves `// NEW: added validation` behind.
+
+So the rule reaches them two ways:
+
+1. **Relay at dispatch.** The directive asks the dispatching agent to copy the rule
+   verbatim into the prompt of any subagent that will *write or edit code* — the only
+   channel that reaches a subagent at spawn. Retrieval, search, and review-only dispatches
+   are deliberately skipped: they author nothing, so the copy would be pure token cost. The
+   copy goes *below* any directive block already leading the prompt, because a sibling
+   plugin may run a top-anchored check on the first line. The copy carries the relay
+   instruction with it, so it chains onward.
+2. **Injection on the first edit.** A `PostToolUse` hook on `Edit`/`Write`/`NotebookEdit`
+   injects the rule once per subagent. Tool events are the only hooks that fire *inside* a
+   subagent's loop, so this is the one channel that works without the parent's cooperation.
+
+Keying that injection to the edit tools rather than gating `Agent` dispatches is deliberate:
+the rule only matters to an agent that actually authors code, so this charges the directive
+only to agents that write, never to the retrieval traffic that dominates dispatches. It
+also keeps this plugin off the `Agent` tool, where `task-gopher`'s relay gate already
+denies — the hook docs don't define how two denying hooks combine, so stacking a second one
+there would be a guess.
+
+Two honest limits, since the two channels are additive rather than complementary:
+
+- The hook **cannot tell whether the relay happened** — `PostToolUse` carries no dispatch
+  prompt — so it always injects. A correctly relayed subagent therefore receives the rule
+  twice, about 2.4KB of avoidable duplication once per code-writing subagent. That is the
+  price of covering the agents the relay missed.
+- The **first edit is unguarded**, since the injection lands with that edit's result and
+  shapes everything after it. The relay is what covers edit #1 — and it is the only thing
+  that covers a subagent which makes exactly one edit.
+
+The full design, and how to choose a channel in other plugins, is written up in
+[docs/subagent-directive-relay.md](../docs/subagent-directive-relay.md).
 
 ## The rule
 

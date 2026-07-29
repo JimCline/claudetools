@@ -18,6 +18,17 @@ import { dirname, join, resolve } from "node:path";
 export const CONFIG_VERSION = 1;
 export const CONFIG_BASENAME = "comment-discipline.json";
 
+/**
+ * Records which subagents have already been handed the directive, so the
+ * PostToolUse backstop injects it once per agent instead of after every edit.
+ * Keyed by `session_id|agent_id`; lives outside the plugin cache so it survives
+ * plugin upgrades.
+ */
+export const SEEN_FILE = join(homedir(), ".claude", "comment-discipline.seen");
+
+/** Agents tracked in SEEN_FILE before the oldest entries are pruned. */
+export const SEEN_MAX_KEYS = 64;
+
 export function userConfigPath() {
   return join(homedir(), ".claude", CONFIG_BASENAME);
 }
@@ -120,6 +131,8 @@ export const DIRECTIVE = [
   "Two guards, both load-bearing:",
   "1. This NEVER asks you to document. It removes noise; it does not request prose. When in doubt, write NOTHING — a missing comment is not a defect under this directive, and adding defensive doc-comments to demonstrate compliance is itself the failure mode.",
   "2. This governs the comments YOU write or edit. Do not go clean up pre-existing comments you were not asked to touch — drive-by comment deletion produces noisy diffs and is out of scope. A stale comment on a line you are not otherwise changing stays.",
+  "",
+  "Relay to code-writing subagents: subagents do not inherit this rule — the hook that injects it reaches the main session only. So when you dispatch a subagent that will WRITE OR EDIT CODE, copy this entire block verbatim into its prompt, placed BELOW any directive block already leading that prompt (another plugin may enforce a top-anchored check on the first line) and above your task text. Skip the copy for retrieval, search, or review-only dispatches; they author nothing, and it would just cost tokens. The copy carries this instruction with it, so it chains to any subagent they dispatch in turn.",
 ].join("\n");
 
 export const NUDGE =
