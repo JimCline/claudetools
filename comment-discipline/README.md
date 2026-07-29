@@ -54,10 +54,12 @@ contend for the `Agent` tool's input — which `task-gopher`'s relay already own
 
 Two honest limits:
 
-- **Whether the backstop is still load-bearing is unknown.** It now only covers spawns that
-  produce no `SubagentStart` event. Whether any exist — agents created by a workflow runner
-  rather than an `Agent` tool call, say — has not been measured. It is kept because the cost
-  is one file read per edit and it removes a silent-failure mode.
+- **The backstop is probably redundant now.** Measured 2026-07-29: `SubagentStart` fires
+  for workflow-spawned agents too — agents created with no `Agent` tool call at all, which
+  a prompt-rewrite channel structurally cannot reach. So the "spawns with no
+  `SubagentStart` event" it was kept for may be an empty set. It stays for the one case
+  that is still real: the hook fired but could not persist its mark. One file read per
+  edit, against a channel whose failures are silent.
 - The **first edit is unguarded** *by the backstop*, since that injection lands with the
   edit's result. `SubagentStart` is what covers edit #1, and it is the only thing that
   covers a subagent which makes exactly one edit.

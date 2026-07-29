@@ -7,16 +7,16 @@
  * ordinary dispatch this hook finds the key already present and stays silent.
  * What is left for it: spawns SubagentStart does not reach.
  *
- * Whether any such spawns exist is genuinely UNKNOWN. A spawn-lifecycle event
- * could reasonably fire for every subagent regardless of origin, in which case
- * this hook is dead weight — but agents created by machinery other than an
- * `Agent`/`Task` tool call (a workflow runner, say) have already been measured
- * to bypass one at-spawn channel, and nothing has probed whether they bypass
- * this one too. Keeping the backstop costs a `seenKeys()` read per edit and
- * removes a silent-failure mode. Delete it once someone measures.
+ * Measured 2026-07-29: `SubagentStart` fires for workflow-spawned agents too —
+ * agents created without any `Agent` tool call, which the prompt-rewrite channel
+ * cannot reach. Both agents in a two-agent workflow received the payload and
+ * appeared in SEEN_FILE. So the "spawns with no SubagentStart event" this hook
+ * was kept for may be an empty set.
  *
- * It also still covers the case where SubagentStart fired but could not persist
- * its mark.
+ * It is kept anyway, for the one case that remains real: SubagentStart fired but
+ * could not persist its mark, leaving the agent uncovered. That costs a
+ * `seenKeys()` read per edit and removes a silent-failure mode — cheap insurance
+ * against a channel whose failures are invisible.
  *
  * The standing limit: the first edit is unguarded. The injection lands with
  * that edit's RESULT, so it shapes every edit after it but not the one that

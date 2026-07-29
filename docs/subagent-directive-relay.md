@@ -63,9 +63,15 @@ subagent, under the harness-generated label `SubagentStart hook additional
 context:`, including a key list the hook generated at runtime — while a
 `PreToolUse` hook on the same dispatch independently measured the prompt at 392
 characters, ruling out prompt-carriage. Three probes plus one end-to-end run
-with a ~7.5 KB payload delivered untruncated. **Not independently reproduced on
-the author's machine** (no `SubagentStart` hook is wired there), so this rests
-on that session's instrument rather than a second one.
+with a ~7.5 KB payload delivered untruncated.
+
+**Independently reproduced 2026-07-29** on a second machine with a different
+instrument: comment-discipline's own `SubagentStart` hook, whose side-log
+records every invocation. A dispatched subagent quoted the payload back under
+the harness label `SubagentStart hook additional context:`, the side-log gained
+exactly one line, and its agent id matched the subagent's own. That plugin
+registers no `PreToolUse` hook at all, so it has no way to write into a dispatch
+prompt — the text is attributable to `SubagentStart` alone.
 
 The tell that exposed it: two `SubagentStart` hooks sitting side by side, one
 emitting JSON and working, one emitting plain stdout via `printf` and never
@@ -217,6 +223,9 @@ What this flavor buys over the rewrite, where both apply:
   such plugins.
 - No contention for the `Agent` tool's input, which matters more than it looks —
   see Composition.
+- **Better coverage.** It fires for every spawn, not only those originating from
+  an `Agent`/`Task` *tool call* — confirmed live against workflow-spawned agents,
+  which the rewrite cannot reach at all. See Limits.
 
 ## The fallback design (deny and retry)
 
@@ -450,19 +459,17 @@ Three rules that make the difference between a probe and a wasted afternoon:
   they receive nothing. Measured in this repo: a 47-agent workflow run produced
   zero relay events. Check your own audit log for injections you expected and
   didn't get.
-- **Whether `SubagentStart` closes that gap is UNTESTED.** It is reasonable to
-  expect a spawn-lifecycle event to fire for every spawn regardless of origin,
-  and if it does, flavor 5c covers workflow-spawned agents that the rewrite
-  cannot. But nothing has probed it, and the docs are silent (they say only
-  "when a subagent is spawned", without scoping it). This is the single most
-  consequential open question about the channel, so do not build on it until
-  someone dispatches a workflow-spawned agent with a `SubagentStart` hook wired
-  and checks. Treating a plausible unprobed premise as fact is exactly the error
-  this document already made once.
+- **`SubagentStart` DOES close that gap.** *(live-probed 2026-07-29 — this was
+  the document's single most consequential open question.)* A workflow was run
+  with two agents, neither spawned by an `Agent` tool call. Both received the
+  `SubagentStart` payload and quoted it back under the harness label, and the
+  hook's own side-log gained exactly two lines whose agent ids matched the two
+  workflow agents. So flavor 5c reaches spawns that the rewrite structurally
+  cannot. **This is the strongest reason to prefer 5c** where the directive is
+  task-independent: it is not merely simpler, it has strictly better coverage.
 - **Whether `SubagentStart`'s `additionalContext` *also* reaches the parent is
   unverified.** Both can be true. It changes no advice here — but it would
-  explain how the original parent-only claim formed, and settling it is what
-  would make this section airtight rather than merely well-evidenced.
+  explain how the original parent-only claim formed.
 - **`SubagentStart` can fail silently too**, in two distinct ways: wrong output
   format (bare stdout), and gating on `subagent_type` instead of `agent_type`.
   Neither produces an error. Log every injection.
