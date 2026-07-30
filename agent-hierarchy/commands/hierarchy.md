@@ -1,5 +1,5 @@
 ---
-description: Assign a model to each agent-hierarchy role, or inspect/toggle the hierarchy. Usage: /hierarchy [init|status|set <role> <model>|on|off]
+description: Assign a model to each agent-hierarchy role, or inspect/toggle the hierarchy. Usage: /hierarchy [init|status|set <role> <model>|on|off|usage [day|week|month|all]]
 ---
 
 The user ran `/hierarchy` with argument: `$ARGUMENTS`
@@ -174,7 +174,37 @@ chain and handle it yourself.
 
 ---
 
+## `usage [day|week|month|all]`
+
+Run the reporter and show its output verbatim in a code block — do not
+recompute, reformat, or editorialize the numbers:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/hooks/usage-report.mjs" <the day/week/month/all argument, if any>
+```
+
+The report covers: the latest session's per-role breakdown (agents, calls,
+output/input/cache tokens), a windowed by-role bar chart, and daily totals.
+Data comes from `~/.claude/agent-hierarchy.usage.jsonl`, written by a
+`SubagentStop` hook that sums each finished subagent's transcript — token
+counts the harness already logged, so collection costs zero tokens and no
+agent is ever asked to report its own numbers.
+
+Two things to tell the user when relevant:
+
+- **Zero-token viewing**: running the same command themselves — with the `!`
+  prefix, or in any terminal — keeps the report out of this conversation
+  entirely. Through this command, the only token cost is the printed report
+  entering context.
+- If the report says **"No usage recorded yet"**, the collector has not fired:
+  either the plugin was just enabled (hooks load at session start) or no
+  subagents have finished since. If records show `transcripts not found`, the
+  collector's path derivation broke — that is a bug report, not user error.
+
+---
+
 ## anything else
 
-Show the usage line: `/hierarchy [init|status|set <role> <model>|on|off]`, then
-run `status`.
+Show the usage line:
+`/hierarchy [init|status|set <role> <model>|on|off|usage [day|week|month|all]]`,
+then run `status`.
