@@ -39,9 +39,14 @@ check "architect: still denies Edit, NotebookEdit" 'fm architect.md | grep -E "^
 check "architect: denies Bash (never executes)" 'fm architect.md | grep -E "^disallowedTools:" | grep -qw Bash'
 check "architect: body carries NEEDS-EVIDENCE hand-back rule" 'grep -q "NEEDS-EVIDENCE" "$A/architect.md"'
 check "architect: delegation is read-only retrieval, not execution" 'grep -q "READ-ONLY retrieval" "$A/architect.md" && ! grep -q "execution legwork" "$A/architect.md"'
-# Only the architect loses Bash — reviewer runs tests (spec verification) and
-# implementor builds; their Bash must survive.
-check "reviewer: Bash NOT denied (it verifies by running)" '! fm reviewer.md | grep -E "^disallowedTools:" | grep -qw Bash'
+# Only the architect loses Bash. The reviewer KEEPS it — but scoped by contract
+# to read-only git inspection (the diff must live in its own context to be
+# judged); every execution is a mandatory task-gopher dispatch. The implementor
+# builds, so its Bash is unrestricted.
+check "reviewer: Bash NOT denied (read-only diff inspection needs it)" '! fm reviewer.md | grep -E "^disallowedTools:" | grep -qw Bash'
+check "reviewer: body scopes Bash to read-only inspection" 'grep -q "read-only inspection" "$A/reviewer.md"'
+check "reviewer: body mandates delegated execution" 'grep -q "never execute yourself" "$A/reviewer.md" && grep -q "MANDATORY for execution" "$A/reviewer.md"'
+check "reviewer: old run-it-yourself wording is gone" '! grep -q "a test should pass, run it" "$A/reviewer.md"'
 check "implementor: Bash NOT denied" '! fm implementor.md | grep -E "^disallowedTools:" | grep -qw Bash'
 check "ultra-advisor: still denies Edit, NotebookEdit" 'fm ultra-advisor.md | grep -E "^disallowedTools:" | grep -qw Edit && fm ultra-advisor.md | grep -E "^disallowedTools:" | grep -qw NotebookEdit'
 # implementor must stay otherwise-unrestricted: advisor is its ONLY deny

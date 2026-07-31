@@ -87,6 +87,7 @@ for mode in auto confirm; do
   check "$mode: evidence-loop item present" 'printf "%s" "$OUT" | grep -q "11. Evidence loop"'
   check "$mode: NEEDS-EVIDENCE routing named" 'printf "%s" "$OUT" | grep -q "NEEDS-EVIDENCE"'
   check "$mode: overstep policing is the Orchestrator's job" 'printf "%s" "$OUT" | grep -q "route the work to the role that owns it"'
+  check "$mode: Reviewer execution-delegation clause present" 'printf "%s" "$OUT" | grep -q "The Reviewer likewise reasons only"'
 done
 
 # ---- status report shows the flow line
