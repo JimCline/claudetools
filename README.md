@@ -54,7 +54,10 @@ the main agent takes over if the runner falls short.
 
 ### [agent-hierarchy](./agent-hierarchy)
 
-Splits work across **six roles with a model each** — Orchestrator (the session
+Splits work across **six roles with a model each** — visual map in
+[docs/hierarchy.html](./agent-hierarchy/docs/hierarchy.html)
+([rendered](https://htmlpreview.github.io/?https://github.com/JimCline/claudetools/blob/main/agent-hierarchy/docs/hierarchy.html)) —
+Orchestrator (the session
 agent itself), Ultra-Advisor, Architect, Reviewer, Implementor, Task-Runner.
 Design reasoning goes to a strong model that writes a spec file and never
 implements; the Implementor builds exactly that spec and reports gaps up instead

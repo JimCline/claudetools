@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-hierarchy — role &amp; flow map</title>
+<style>
+  :root {
+    --bg: #f7f8fa; --panel: #ffffff; --ink: #1c2330; --muted: #5b6577;
+    --line: #c9d1de; --grid: #e6eaf1;
+    --orch: #4c6ef5; --ultra: #9c36b5; --arch: #e8590c; --impl: #2f9e44;
+    --rev: #1098ad; --runner: #868e96;
+    --defect-impl: #e03131; --defect-spec: #f08c00; --evidence: #4263eb;
+    --chip-bg: #eef1f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10131a; --panel: #171c26; --ink: #e7ecf4; --muted: #9aa5b5;
+      --line: #3b4657; --grid: #232b3a;
+      --orch: #748ffc; --ultra: #cc5de8; --arch: #ff922b; --impl: #51cf66;
+      --rev: #22b8cf; --runner: #adb5bd;
+      --defect-impl: #ff6b6b; --defect-spec: #ffa94d; --evidence: #748ffc;
+      --chip-bg: #222a38;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1020px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h1 code { font-size: 24px; }
+  .sub { color: var(--muted); margin: 0 0 28px; }
+  h2 { font-size: 18px; margin: 40px 0 12px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--grid); border-radius: 12px;
+    padding: 16px; overflow-x: auto;
+  }
+  svg { display: block; width: 100%; height: auto; min-width: 700px; }
+  svg text { font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; fill: var(--ink); }
+  svg .role-title { font-weight: 700; font-size: 15px; }
+  svg .note  { fill: var(--muted); font-size: 11.5px; }
+  svg .deny  { fill: var(--defect-impl); font-size: 11px; }
+  svg .lbl   { font-size: 11.5px; fill: var(--muted); }
+  svg .box   { fill: var(--panel); stroke-width: 2; }
+  svg .arrow { fill: none; stroke: var(--line); stroke-width: 1.8; }
+  svg .chip-text { font-size: 11px; font-weight: 700; }
+
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 13px; }
+  td.yes { color: var(--impl); font-weight: 600; }
+  td.no  { color: var(--defect-impl); font-weight: 600; }
+  td.cond{ color: var(--defect-spec); font-weight: 600; }
+  .rolename { font-weight: 700; white-space: nowrap; }
+  .chip {
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    background: var(--chip-bg); font-size: 12px; font-weight: 600; margin-left: 6px;
+  }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--grid); border-radius: 12px; padding: 14px 16px; }
+  .card h3 { margin: 0 0 6px; font-size: 15px; }
+  .card p { margin: 0; color: var(--muted); font-size: 14px; }
+  .card .tag { font-weight: 700; color: var(--ink); }
+  footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
+  a { color: var(--evidence); }
+</style>
+</head>
+<body>
+<main>
+  <h1><code>agent-hierarchy</code> — role &amp; flow map</h1>
+  <p class="sub">Six roles, each on a model priced for what that role actually does.
+  Reasoning tiers read and judge; they never execute. The Orchestrator keeps every role in its lane.</p>
+
+  <div class="panel">
+  <svg viewBox="0 0 940 620" role="img" aria-label="agent-hierarchy flow diagram">
+    <defs>
+      <marker id="m-grey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--line)"/>
+      </marker>
+      <marker id="m-impl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--defect-impl)"/>
+      </marker>
+      <marker id="m-spec" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--defect-spec)"/>
+      </marker>
+      <marker id="m-evid" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--evidence)"/>
+      </marker>
+      <marker id="m-ultra" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--ultra)"/>
+      </marker>
+      <marker id="m-run" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="var(--runner)"/>
+      </marker>
+    </defs>
+
+    <!-- ORCHESTRATOR -->
+    <rect class="box" x="320" y="26" width="300" height="92" rx="10" stroke="var(--orch)"/>
+    <text class="role-title" x="336" y="52">Orchestrator</text>
+    <rect x="446" y="38" width="104" height="18" rx="9" fill="var(--chip-bg)"/>
+    <text class="chip-text" x="498" y="51" text-anchor="middle">session model</text>
+    <text class="note" x="336" y="74">decompose · dispatch · synthesize</text>
+    <text class="note" x="336" y="92">polices the lanes — rejects overstepped work</text>
+    <text class="deny" x="336" y="110">never designs or implements non-trivial changes</text>
+
+    <!-- ULTRA-ADVISOR -->
+    <rect class="box" x="706" y="26" width="206" height="92" rx="10" stroke="var(--ultra)"/>
+    <text class="role-title" x="722" y="52">Ultra-Advisor</text>
+    <rect x="838" y="38" width="52" height="18" rx="9" fill="var(--chip-bg)"/>
+    <text class="chip-text" x="864" y="51" text-anchor="middle">fable</text>
+    <text class="note" x="722" y="74">escalation apex — adjudicates</text>
+    <text class="deny" x="722" y="92">✕ Edit · ✕ advisor · never routine</text>
+    <path class="arrow" d="M620,72 H706" stroke="var(--ultra)" stroke-dasharray="6 5" marker-end="url(#m-ultra)"/>
+    <text class="lbl" x="663" y="62" text-anchor="middle">hardest calls only</text>
+
+    <!-- fan-out arrows -->
+    <path class="arrow" d="M380,118 C300,150 210,170 165,206" marker-end="url(#m-grey)"/>
+    <path class="arrow" d="M470,118 V206" marker-end="url(#m-grey)"/>
+    <path class="arrow" d="M560,118 C640,150 730,170 775,206" marker-end="url(#m-grey)"/>
+
+    <!-- NEEDS-EVIDENCE hand-back -->
+    <path class="arrow" d="M110,206 C90,120 220,80 316,60" stroke="var(--evidence)" stroke-dasharray="5 5" marker-end="url(#m-evid)"/>
+    <text class="lbl" x="118" y="108" fill="var(--evidence)">NEEDS-EVIDENCE</text>
+    <text class="lbl" x="118" y="122" fill="var(--evidence)">(what to run, what each result decides)</text>
+
+    <!-- ARCHITECT -->
+    <rect class="box" x="30" y="210" width="255" height="104" rx="10" stroke="var(--arch)"/>
+    <text class="role-title" x="46" y="236">Architect</text>
+    <rect x="146" y="222" width="48" height="18" rx="9" fill="var(--chip-bg)"/>
+    <text class="chip-text" x="170" y="235" text-anchor="middle">opus</text>
+    <text class="note" x="46" y="258">design reasoning → writes the spec</text>
+    <text class="note" x="46" y="276">investigates by READING only</text>
+    <text class="deny" x="46" y="298">✕ Edit · ✕ Bash — never executes</text>
+
+    <!-- IMPLEMENTOR -->
+    <rect class="box" x="342" y="210" width="255" height="104" rx="10" stroke="var(--impl)"/>
+    <text class="role-title" x="358" y="236">Implementor</text>
+    <rect x="478" y="222" width="58" height="18" rx="9" fill="var(--chip-bg)"/>
+    <text class="chip-text" x="507" y="235" text-anchor="middle">inherit</text>
+    <text class="note" x="358" y="258">builds exactly the spec</text>
+    <text class="note" x="358" y="276">runs what it builds — full toolset</text>
+    <text class="deny" x="358" y="298">✕ advisor · spec gaps go UP, not guessed</text>
+
+    <!-- REVIEWER -->
+    <rect class="box" x="655" y="210" width="255" height="104" rx="10" stroke="var(--rev)"/>
+    <text class="role-title" x="671" y="236">Reviewer</text>
+    <rect x="768" y="222" width="58" height="18" rx="9" fill="var(--chip-bg)"/>
+    <text class="chip-text" x="797" y="235" text-anchor="middle">sonnet</text>
+    <text class="note" x="671" y="258">validates diff vs spec — reads it itself</text>
+    <text class="note" x="671" y="276">every run is a delegated dispatch</text>
+    <text class="deny" x="671" y="298">✕ Edit · ✕ Write — reads, never runs</text>
+
+    <!-- chain arrows -->
+    <path class="arrow" d="M285,262 H342" stroke="var(--arch)" marker-end="url(#m-grey)"/>
+    <text class="lbl" x="313" y="252" text-anchor="middle">spec (living)</text>
+    <path class="arrow" d="M597,262 H655" stroke="var(--impl)" marker-end="url(#m-grey)"/>
+    <text class="lbl" x="626" y="252" text-anchor="middle">diff</text>
+
+    <!-- defect loop-backs -->
+    <path class="arrow" d="M740,314 C700,376 540,376 495,318" stroke="var(--defect-impl)" marker-end="url(#m-impl)"/>
+    <text class="lbl" x="617" y="372" text-anchor="middle" fill="var(--defect-impl)">impl-defect → back to Implementor</text>
+    <path class="arrow" d="M700,314 C600,430 260,430 175,318" stroke="var(--defect-spec)" marker-end="url(#m-spec)"/>
+    <text class="lbl" x="438" y="418" text-anchor="middle" fill="var(--defect-spec)">spec-defect → back to Architect (max 2 round-trips, then Ultra-Advisor)</text>
+
+    <!-- TASK-RUNNER -->
+    <rect class="box" x="342" y="480" width="380" height="104" rx="10" stroke="var(--runner)"/>
+    <text class="role-title" x="358" y="506">Task-Runner</text>
+    <rect x="470" y="492" width="52" height="18" rx="9" fill="var(--chip-bg)"/>
+    <text class="chip-text" x="496" y="505" text-anchor="middle">haiku</text>
+    <text class="note" x="358" y="528">task-gopher:task-gopher when installed</text>
+    <text class="note" x="358" y="546">explicit decision-free orders → compact reports</text>
+    <text class="deny" x="358" y="568">never reasons or decides · Architect may send READ-ONLY retrieval only</text>
+
+    <!-- runs delegated to runner -->
+    <path class="arrow" d="M782,314 C790,420 700,470 722,480" stroke="var(--runner)" marker-end="url(#m-run)"/>
+    <text class="lbl" x="812" y="440" text-anchor="middle">all execution —</text>
+    <text class="lbl" x="812" y="454" text-anchor="middle">mandatory dispatch</text>
+    <path class="arrow" d="M470,314 V480" stroke="var(--runner)" stroke-dasharray="3 5" marker-end="url(#m-run)"/>
+    <text class="lbl" x="482" y="452">legwork</text>
+
+    <!-- legend -->
+    <g transform="translate(30,470)">
+      <text class="note" x="0" y="0" font-weight="700">Legend</text>
+      <path class="arrow" d="M0,16 h34" marker-end="url(#m-grey)"/><text class="lbl" x="42" y="20">dispatch / handoff</text>
+      <path class="arrow" d="M0,38 h34" stroke="var(--evidence)" stroke-dasharray="5 5" marker-end="url(#m-evid)"/><text class="lbl" x="42" y="42">evidence hand-back</text>
+      <path class="arrow" d="M0,60 h34" stroke="var(--defect-impl)" marker-end="url(#m-impl)"/><text class="lbl" x="42" y="64">review finding routes</text>
+      <path class="arrow" d="M0,82 h34" stroke="var(--runner)" stroke-dasharray="3 5" marker-end="url(#m-run)"/><text class="lbl" x="42" y="86">delegated legwork</text>
+    </g>
+  </svg>
+  </div>
+
+  <h2>Lanes — what each role may touch</h2>
+  <div class="panel">
+    <table>
+      <thead>
+        <tr><th>Role</th><th>Reads code</th><th>Executes</th><th>Writes</th><th>Escalates via</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="rolename">Orchestrator<span class="chip">session</span></td>
+            <td class="yes">itself</td><td class="cond">trivial steps only</td><td class="cond">trivial edits only</td><td>dispatches Ultra-Advisor</td></tr>
+        <tr><td class="rolename">Ultra-Advisor<span class="chip">fable</span></td>
+            <td class="yes">itself — verifies before ruling</td><td class="no">never</td><td class="cond">spec amendments only</td><td>— (it is the apex)</td></tr>
+        <tr><td class="rolename">Architect<span class="chip">opus</span></td>
+            <td class="yes">itself (Read/Grep/Glob)</td><td class="no">never — Bash denied</td><td class="cond">the spec file only</td><td>NEEDS-EVIDENCE → Orchestrator</td></tr>
+        <tr><td class="rolename">Implementor<span class="chip">inherit</span></td>
+            <td class="yes">itself</td><td class="yes">runs what it builds</td><td class="yes">product code, tests, config</td><td>spec gaps → Orchestrator</td></tr>
+        <tr><td class="rolename">Reviewer<span class="chip">sonnet</span></td>
+            <td class="yes">itself — the diff is its context</td><td class="no">never — mandatory dispatch</td><td class="no">nothing</td><td>impl/spec-defect classification</td></tr>
+        <tr><td class="rolename">Task-Runner<span class="chip">haiku</span></td>
+            <td class="yes">on order</td><td class="yes">on order</td><td class="no">nothing</td><td>stops &amp; reports on ambiguity</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="sub" style="margin-top:10px">Every reasoning role also denies the harness's generic <code>advisor</code> tool —
+  escalation goes through the Orchestrator, never sideways to a model the role may already be running.</p>
+
+  <h2>Tiers — small work stays cheap</h2>
+  <div class="cards">
+    <div class="card"><h3>Trivial</h3><p><span class="tag">Orchestrator alone.</span> One blind edit, no verification — a typo, a config value. No dispatches at all.</p></div>
+    <div class="card"><h3>Determined</h3><p><span class="tag">Implementor → Reviewer.</span> The request itself is the spec; no design choices remain. The Architect is skipped, review is not.</p></div>
+    <div class="card"><h3>Everything else</h3><p><span class="tag">Architect → spec → Implementor → Reviewer.</span> Ultra-Advisor is inserted only when a trigger fires: unresolved fork, low confidence, stalled review loop, outsized blast radius, or the user says it matters.</p></div>
+  </div>
+
+  <h2>Flow control — who advances the chain</h2>
+  <div class="cards">
+    <div class="card"><h3><code>handoffs: "auto"</code> (default)</h3><p>The Orchestrator performs handoffs itself and reports as it goes.</p></div>
+    <div class="card"><h3><code>handoffs: "confirm"</code></h3><p>Before each reasoning-role dispatch the user is asked — <span class="tag">Dispatch / Do&nbsp;it&nbsp;inline / Skip</span> — and skipping states what goes unverified. Legwork is never gated.</p></div>
+    <div class="card"><h3>Switch anytime</h3><p>Both directions, mid-session, in plain words — <em>“ask me before handoffs”, “stop asking”</em> — or <code>/hierarchy flow</code>. Takes effect immediately.</p></div>
+  </div>
+
+  <footer>
+    agent-hierarchy · part of <a href="https://github.com/JimCline/claudetools">claudetools</a> ·
+    per-role token usage: <code>/hierarchy usage</code> (collected at zero model cost by a SubagentStop hook)
+  </footer>
+</main>
+</body>
+</html>

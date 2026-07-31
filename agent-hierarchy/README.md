@@ -14,6 +14,10 @@ job.
 | **Implementor** | `inherit` (session model) | builds exactly the spec; runs what it builds | design; fill spec gaps with its own judgment |
 | **Task-Runner** | `haiku` (delegates to task-gopher when installed) | explicit-order legwork | reason or decide |
 
+**Visual map:** [docs/hierarchy.html](./docs/hierarchy.html) — the full flow,
+lanes, and tiers on one static page
+([rendered](https://htmlpreview.github.io/?https://github.com/JimCline/claudetools/blob/main/agent-hierarchy/docs/hierarchy.html)).
+
 Run `/hierarchy init` once — user-scoped (`~/.claude/agent-hierarchy.json`) or
 committed per-repo (`<repo>/.claude/agent-hierarchy.json`, project wins) — and
 a `SessionStart` hook injects the resolved role→model table plus the
@@ -146,6 +150,7 @@ hooks/
   usage-report.mjs        standalone reporter
   lib-config.mjs          config resolution + directive text (run directly for status)
 commands/hierarchy.md     the /hierarchy command
+docs/hierarchy.html       static visual map of roles, lanes, and flow
 tests/                    3 suites, 88 cases (HOME-redirected; real config untouched)
 ```
 
