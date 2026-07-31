@@ -72,21 +72,34 @@ low confidence, when the review loop stalls, when the blast radius is outsized
 (security, auth, data migration, concurrency, public interfaces), or when you
 say a problem is important. It adjudicates and never implements.
 
-Tool access follows the roles rather than describing them. Every role but
-Task-Runner inherits the session's full toolset — including your MCP servers —
-with writes removed where the contract requires it: the Reviewer is denied
-`Edit`, `Write`, and `NotebookEdit`, so read-only is structural; the Architect
-and Ultra-Advisor are denied `Edit` and keep `Write` only to author a spec; the
-Implementor, the one role that changes product code, is denied nothing.
-Task-Runner stays on a fixed read/search/bash allowlist with no MCP access —
-it is the cheap runner, and it only ever does what it is explicitly told.
+Tool access follows the roles rather than describing them, and **the reasoning
+tiers never execute**: the Architect is denied `Bash` outright — an empirical
+question becomes a NEEDS-EVIDENCE item handed back through the Orchestrator —
+and the Reviewer reads diffs itself (read-only git) but must delegate every
+suite, build, or script run to the Haiku runner and judge the compact report.
+The Reviewer is denied `Edit`, `Write`, and `NotebookEdit`, so read-only is
+structural; the Architect and Ultra-Advisor are denied `Edit` and keep `Write`
+only to author a spec; the Implementor — the one role that both changes product
+code and runs what it builds — is denied nothing but the generic `advisor`
+tool, which every reasoning role refuses: escalation goes through the
+Orchestrator, not sideways to a model you may already be running. Task-Runner
+stays on a fixed read/search/bash allowlist with no MCP access. The
+Orchestrator polices all of it: work a role did outside its lane is rejected
+and re-routed, not accepted.
+
+**Handoffs are the user's to control**: `auto` (default) runs the chain and
+reports; `confirm` asks before each reasoning-role dispatch — approve, do it
+inline, or skip — switchable mid-session in plain words, in either direction.
+A `SubagentStop` hook also records every subagent's token usage from its
+transcript at **zero model cost**; `/hierarchy usage` renders per-role
+session/day/week/month reports, `/usage`-style.
 
 Tiered so small work stays cheap: trivial edits skip the chain entirely, and
 fully-specified requests skip the Architect but keep the Reviewer. When
 task-gopher is installed, the Task-Runner role delegates to it, so both plugins
 point retrieval at the same Haiku runner. `/hierarchy status` shows the effective
 table and where each value came from; `/hierarchy set <role> <model>` tweaks one
-role; `/hierarchy off` silences it.
+role; `/hierarchy flow` switches handoff mode; `/hierarchy off` silences it.
 
 ## License
 
