@@ -80,6 +80,15 @@ for mode in auto confirm; do
   check "$mode: switch updates config AND takes effect now" 'printf "%s" "$OUT" | grep -q "honor the new mode immediately"'
 done
 
+# ---- evidence loop: the Orchestrator polices role lanes, in BOTH modes
+for mode in auto confirm; do
+  user_cfg "{$BASE,\"handoffs\":\"$mode\"}"
+  eval_js "L.buildDirective(r)"
+  check "$mode: evidence-loop item present" 'printf "%s" "$OUT" | grep -q "11. Evidence loop"'
+  check "$mode: NEEDS-EVIDENCE routing named" 'printf "%s" "$OUT" | grep -q "NEEDS-EVIDENCE"'
+  check "$mode: overstep policing is the Orchestrator's job" 'printf "%s" "$OUT" | grep -q "route the work to the role that owns it"'
+done
+
 # ---- status report shows the flow line
 user_cfg "{$BASE,\"handoffs\":\"confirm\"}"
 OUT=$(cd "$PROJ" && HOME="$FAKEHOME" node "$LIB" 2>&1); RC=$?

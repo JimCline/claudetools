@@ -31,6 +31,18 @@ check "task-runner: tools allowlist does not grant advisor" '! fm task-runner.md
 # ---- the denies this plugin already relies on must not have been dropped
 check "reviewer: still denies Edit, Write, NotebookEdit" 'fm reviewer.md | grep -E "^disallowedTools:" | grep -qw Edit && fm reviewer.md | grep -E "^disallowedTools:" | grep -qw Write && fm reviewer.md | grep -E "^disallowedTools:" | grep -qw NotebookEdit'
 check "architect: still denies Edit, NotebookEdit" 'fm architect.md | grep -E "^disallowedTools:" | grep -qw Edit && fm architect.md | grep -E "^disallowedTools:" | grep -qw NotebookEdit'
+# The Architect is design-only: no execution by any means. Bash is denied
+# mechanically, and the body must carry both halves of the rule — the
+# NEEDS-EVIDENCE hand-back and the no-execution-via-runner clause (a live
+# Architect was observed running test cycles through task-runner, licensed by
+# the old "execution legwork" wording).
+check "architect: denies Bash (never executes)" 'fm architect.md | grep -E "^disallowedTools:" | grep -qw Bash'
+check "architect: body carries NEEDS-EVIDENCE hand-back rule" 'grep -q "NEEDS-EVIDENCE" "$A/architect.md"'
+check "architect: delegation is read-only retrieval, not execution" 'grep -q "READ-ONLY retrieval" "$A/architect.md" && ! grep -q "execution legwork" "$A/architect.md"'
+# Only the architect loses Bash — reviewer runs tests (spec verification) and
+# implementor builds; their Bash must survive.
+check "reviewer: Bash NOT denied (it verifies by running)" '! fm reviewer.md | grep -E "^disallowedTools:" | grep -qw Bash'
+check "implementor: Bash NOT denied" '! fm implementor.md | grep -E "^disallowedTools:" | grep -qw Bash'
 check "ultra-advisor: still denies Edit, NotebookEdit" 'fm ultra-advisor.md | grep -E "^disallowedTools:" | grep -qw Edit && fm ultra-advisor.md | grep -E "^disallowedTools:" | grep -qw NotebookEdit'
 # implementor must stay otherwise-unrestricted: advisor is its ONLY deny
 check "implementor: denies advisor and nothing else" '[ "$(fm implementor.md | grep -E "^disallowedTools:" )" = "disallowedTools: advisor" ]'
