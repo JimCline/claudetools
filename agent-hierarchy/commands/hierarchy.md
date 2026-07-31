@@ -1,5 +1,5 @@
 ---
-description: Assign a model to each agent-hierarchy role, or inspect/toggle the hierarchy. Usage: /hierarchy [init|status|set <role> <model>|on|off|usage [day|week|month|all]]
+description: Assign a model to each agent-hierarchy role, or inspect/toggle the hierarchy. Usage: /hierarchy [init|status|set <role> <model>|on|off|flow [auto|confirm]|usage [day|week|month|all]]
 ---
 
 The user ran `/hierarchy` with argument: `$ARGUMENTS`
@@ -75,10 +75,18 @@ Pick the ONE case matching the argument:
      the user chose it once; keep it and say so.
    - **task-gopher NOT installed** → Task-Runner gets a question in call 2
      (see below) whose recommended option is installing task-gopher.
-4. **AskUserQuestion call 1 — scope.** One question, two options: "User (all
-   repos)" and "Project (this repo, committable)". If a config already exists at
-   either scope, say so in the question header and mark that scope's option as
-   the existing one.
+4. **AskUserQuestion call 1 — scope and flow.** Two questions in one call:
+   - **Scope**: "User (all repos)" and "Project (this repo, committable)". If a
+     config already exists at either scope, say so in the question header and
+     mark that scope's option as the existing one.
+   - **Handoff flow**: "Automatic handoffs (Recommended)" — the Orchestrator
+     runs the chain itself and reports; and "Confirm each handoff" — before
+     every reasoning-role dispatch (Architect, Implementor, Reviewer,
+     Ultra-Advisor) the user is asked to approve, redirect, or skip it. Say in
+     the description that this is switchable at ANY time afterwards — via
+     `/hierarchy flow` or just by telling the Orchestrator mid-session — so
+     nothing is locked in here. Prefill from an existing config's `handoffs`
+     key if present.
 5. **AskUserQuestion call 2 — the four reasoning roles.** One question each for
    Ultra-Advisor, Architect, Reviewer, and Implementor, all in a single call.
    That is exactly 4 questions, the hard AskUserQuestion maximum — so
@@ -120,10 +128,12 @@ Pick the ONE case matching the argument:
    the role calls do not come back with an answer for every asked role, write
    no file and say the config was left unchanged.
 8. On completion, write the JSON with the Write tool to the chosen scope's path
-   (`mkdir -p` the `.claude` directory first if needed). Set `"version": 1` and
-   `"enabled": true`. The Task-Runner entry comes from step 3 or step 6
-   (auto-assigned or answered); only the task-gopher deferral carries
-   `delegate` — a plain model pick omits it.
+   (`mkdir -p` the `.claude` directory first if needed). Set `"version": 1`,
+   `"enabled": true`, and `"handoffs"` to the flow answer from call 1 ("auto"
+   or "confirm" — write it explicitly even for auto, so the file documents the
+   choice). The Task-Runner entry comes from step 3 or step 6 (auto-assigned or
+   answered); only the task-gopher deferral carries `delegate` — a plain model
+   pick omits it.
 9. **Echo the resolved effective table**, not what you just wrote — run the
    resolver command above and show its output. If it reports that a project
    config shadows user-scope values you just set, call that out explicitly:
@@ -174,6 +184,32 @@ chain and handle it yourself.
 
 ---
 
+## `flow [auto|confirm]`
+
+Who advances the chain. `auto` — the Orchestrator performs handoffs itself and
+reports (the default). `confirm` — before each reasoning-role dispatch
+(Architect, Implementor, Reviewer, Ultra-Advisor, including review-loop
+re-dispatches) the user is asked to approve, redirect, or skip. Legwork
+dispatches (Task-Runner / task-gopher) are never gated — errands are not
+handoffs.
+
+- **No argument**: run the resolver command above and report the `handoff flow`
+  line, plus one sentence on what each mode means.
+- **With `auto` or `confirm`**: set `"handoffs": "<value>"` in the most
+  specific config that already exists (project if present, else user),
+  preserving every other key, with the Write tool. If neither config exists,
+  say so and suggest `/hierarchy init`. Then echo the resolved table and the
+  propagation note — and **honor the new mode immediately in this session**;
+  the config write is for future sessions, not a restart requirement.
+- Anything else as the argument: show the two valid values and stop.
+
+This switch belongs entirely to the user, at any time, in both directions. If
+they ask for it mid-conversation in plain words ("ask me before each handoff",
+"stop asking, just run it"), do exactly what this section says without making
+them invoke the command.
+
+---
+
 ## `usage [day|week|month|all]`
 
 Run the reporter and show its output verbatim in a code block — do not
@@ -206,5 +242,5 @@ Two things to tell the user when relevant:
 ## anything else
 
 Show the usage line:
-`/hierarchy [init|status|set <role> <model>|on|off|usage [day|week|month|all]]`,
+`/hierarchy [init|status|set <role> <model>|on|off|flow [auto|confirm]|usage [day|week|month|all]]`,
 then run `status`.

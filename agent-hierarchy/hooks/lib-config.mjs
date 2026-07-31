@@ -76,6 +76,15 @@ export const VALID_MODELS_BY_ROLE = {
 
 export const CONFIG_BASENAME = "agent-hierarchy.json";
 
+/**
+ * Flow control: who advances the chain. `auto` (default) — the Orchestrator
+ * performs handoffs itself and reports. `confirm` — the Orchestrator asks the
+ * user before each reasoning-role dispatch, so every handoff is a decision the
+ * user makes. Legwork dispatches (Task-Runner / task-gopher) are exempt in
+ * both modes: errands are not handoffs.
+ */
+export const HANDOFF_MODES = ["auto", "confirm"];
+
 /** Read the hook's stdin JSON payload; returns {} if absent or unparseable. */
 export async function readHookInput() {
   const chunks = [];
@@ -160,12 +169,39 @@ export function resolveConfig(cwd) {
   }
 
   if (layers.length === 0) {
-    return { configured: false, enabled: true, roles, sources, shadowed: [], layers, warnings };
+    return {
+      configured: false,
+      enabled: true,
+      handoffs: "auto",
+      handoffsSource: "default",
+      roles,
+      sources,
+      shadowed: [],
+      layers,
+      warnings,
+    };
   }
 
   let enabled = true;
   for (const layer of layers) {
     if (typeof layer.data.enabled === "boolean") enabled = layer.data.enabled;
+  }
+
+  // Most-specific scope wins, same rule as `enabled`.
+  let handoffs = "auto";
+  let handoffsSource = "default";
+  for (const layer of layers) {
+    if (typeof layer.data.handoffs === "string") {
+      handoffs = layer.data.handoffs;
+      handoffsSource = layer.scope;
+    }
+  }
+  if (!HANDOFF_MODES.includes(handoffs)) {
+    warnings.push(
+      `agent-hierarchy: handoffs ${JSON.stringify(handoffs)} is not a mode (allowed: ${HANDOFF_MODES.join(", ")}) — using "auto".`
+    );
+    handoffs = "auto";
+    handoffsSource = "default";
   }
 
   const definedBy = {};
@@ -196,7 +232,7 @@ export function resolveConfig(cwd) {
     }
   }
 
-  return { configured: true, enabled, roles, sources, shadowed, layers, warnings };
+  return { configured: true, enabled, handoffs, handoffsSource, roles, sources, shadowed, layers, warnings };
 }
 
 /** The subagent_type to dispatch for a role, honouring task-runner's `delegate`. */
@@ -221,6 +257,7 @@ function roleLines(roles) {
 
 /** The full SessionStart injection for a configured, enabled session. */
 export function buildDirective(resolved) {
+  const confirm = resolved.handoffs === "confirm";
   const lines = [
     "Agent hierarchy ACTIVE. You are the Orchestrator: decompose, dispatch, synthesize — do not design or implement non-trivial changes yourself.",
     "",
@@ -228,6 +265,11 @@ export function buildDirective(resolved) {
     ...roleLines(resolved.roles),
     "",
     "Protocol (hard default, not a preference):",
+    ...(confirm
+      ? [
+          '0. Handoff gate — the user chose to approve each handoff (config handoffs:"confirm"). Before dispatching Ultra-Advisor, Architect, Implementor, or Reviewer — including review-loop re-dispatches — call AskUserQuestion first: name the role, its model, and one line on what you will hand it; offer "Dispatch <role> (Recommended)", "Do it inline yourself", and "Skip this step". Ask per dispatch, not per plan, and never re-ask for a dispatch the user already approved. Legwork (Task-Runner / task-gopher) is exempt — errands are not handoffs. "Do it inline" means you take that role\'s contract on yourself for that step; "Skip" means the step does not happen and you say plainly what that leaves undesigned or unverified.',
+        ]
+      : []),
     "1. Gate: binds the top-level Orchestrator only. Role agents never spawn ultra-advisor/architect/reviewer/implementor. They MAY dispatch task-gopher for legwork — that is not recursion.",
     "2. Scope: the chain governs changes. Analysis, debugging, and research go to Architect (design reasoning) or Task-Runner (retrieval) alone — no Reviewer without a diff.",
     "3. Tiers: trivial (one blind Edit, no verification — typo, config value) → do it yourself. Determined (the request fixes the spec; no design choices left) → Implementor, then Reviewer. Everything else → Architect → spec → Implementor → Reviewer, with Ultra-Advisor inserted ahead of the Architect when one of item 7's triggers fires.",
@@ -237,6 +279,7 @@ export function buildDirective(resolved) {
     "7. Ultra-Advisor — escalation apex, never a routine step. It reasons and adjudicates; it never implements. Dispatch it ONLY when: the user says the problem is hard, important, or high-stakes, or asks for a second opinion; the Architect reports low confidence or a fork it could not resolve; the review loop hits its cap in item 6; or the change carries outsized blast radius (security, auth, data migration, concurrency, a public interface, anything hard to reverse). Give it the same absolute spec path plus the specific question. Its answer is authoritative: fold it into the spec before the Implementor runs again. Do not escalate merely because a task feels large — size is the Architect's job.",
     "8. Task-Runner: prefer `task-gopher:task-gopher`; if that agent type is unavailable use `agent-hierarchy:task-runner`. task-gopher's on/off toggle controls only its directive, not the agent — delegation works either way.",
     "9. Skills and commands override: a skill mandating a different flow (tdd, diagnose, review) wins over this protocol for its scope.",
+    `10. Flow control — handoffs are currently "${resolved.handoffs}"${confirm ? " (ask before each reasoning-role dispatch, per item 0)" : " (you advance the chain yourself and report)"}. The user owns this switch and may flip it AT ANY TIME, in either direction, just by telling you — "ask me before handoffs", "stop asking", or /hierarchy flow auto|confirm. When they do: update the "handoffs" key in the most specific agent-hierarchy.json that exists (project if present, else user) with the Write tool, preserving every other key; confirm the change in one line; and honor the new mode immediately for the rest of this session — do not wait for a restart.`,
   ];
   for (const warning of resolved.warnings) lines.push(warning);
   return lines.join("\n");
@@ -260,6 +303,9 @@ export function statusReport(cwd) {
   out.push(`agent-hierarchy: ${!resolved.configured ? "NOT CONFIGURED" : resolved.enabled ? "ON" : "OFF (enabled:false)"}`);
   out.push(`user config:    ${seen.user || `${userPath} (none)`}`);
   out.push(`project config: ${seen.project || `${projectPath || "(unknown cwd)"} (none)`}`);
+  out.push(
+    `handoff flow:   ${resolved.handoffs} ${resolved.handoffs === "confirm" ? "(ask before each reasoning-role dispatch)" : "(automatic handoffs)"} — from ${resolved.handoffsSource}; switch anytime with /hierarchy flow or by asking the Orchestrator`
+  );
   out.push("");
   out.push("Resolved effective table:");
   out.push(`  Orchestrator  ${"session model".padEnd(14)} fixed (this session's agent)`);
