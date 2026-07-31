@@ -43,7 +43,7 @@ export const ROLE_LABELS = {
 export const ROLE_DEFAULTS = {
   "ultra-advisor": { model: "fable" },
   architect: { model: "opus" },
-  reviewer: { model: "sonnet" },
+  reviewer: { model: "opus" },
   implementor: { model: "inherit" },
   "task-runner": { model: "haiku", delegate: "task-gopher" },
 };

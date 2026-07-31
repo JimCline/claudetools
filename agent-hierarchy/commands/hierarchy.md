@@ -19,7 +19,7 @@ Config shape (`version` is the schema version, always `1`):
   "roles": {
     "ultra-advisor": { "model": "fable" },
     "architect":     { "model": "opus" },
-    "reviewer":      { "model": "sonnet" },
+    "reviewer":      { "model": "opus" },
     "implementor":   { "model": "inherit" },
     "task-runner":   { "model": "haiku", "delegate": "task-gopher" }
   }
@@ -105,7 +105,7 @@ Pick the ONE case matching the argument:
      escalation apex, dispatched only for the hardest or highest-stakes calls,
      so it is rarely used and its per-call cost matters less than its judgment.
    - **Architect** — `opus` (recommended), `sonnet`, `fable`, `inherit`
-   - **Reviewer** — `sonnet` (recommended), `opus`, `fable`, `inherit`
+   - **Reviewer** — `opus` (recommended), `sonnet`, `fable`, `inherit`
    - **Implementor** — `inherit` (recommended — runs on the session model),
      `sonnet`, `opus`, `fable`
 6. **AskUserQuestion call 3 — Task-Runner. Only when task-gopher is NOT

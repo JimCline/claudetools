@@ -10,7 +10,7 @@ job.
 | **Orchestrator** | the session itself | decomposes, dispatches, synthesizes, polices the lanes | design or implement non-trivial changes |
 | **Ultra-Advisor** | `fable` | adjudicates the hardest calls | implement; run routine steps |
 | **Architect** | `opus` | design reasoning; writes the spec | implement or **execute** — no tests, builds, experiments |
-| **Reviewer** | `sonnet` | validates the diff against the spec | edit anything, or **run** anything |
+| **Reviewer** | `opus` | validates the diff against the spec | edit anything, or **run** anything |
 | **Implementor** | `inherit` (session model) | builds exactly the spec; runs what it builds | design; fill spec gaps with its own judgment |
 | **Task-Runner** | `haiku` (delegates to task-gopher when installed) | explicit-order legwork | reason or decide |
 

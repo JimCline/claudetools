@@ -9,7 +9,7 @@ description: >-
   Implementor or the Architect. It never edits, and it never executes — it
   reads diffs itself but delegates every test/build run to the task-runner and
   judges the compact report. Read-only reasoning by design.
-model: sonnet
+model: opus
 disallowedTools: Edit, Write, NotebookEdit, advisor
 ---
 

@@ -53,7 +53,7 @@ check "ultra-advisor: still denies Edit, NotebookEdit" 'fm ultra-advisor.md | gr
 check "implementor: denies advisor and nothing else" '[ "$(fm implementor.md | grep -E "^disallowedTools:" )" = "disallowedTools: advisor" ]'
 
 # ---- model pins unchanged
-check "reviewer pinned sonnet" 'fm reviewer.md | grep -q "^model: sonnet$"'
+check "reviewer pinned opus" 'fm reviewer.md | grep -q "^model: opus$"'
 check "architect pinned opus" 'fm architect.md | grep -q "^model: opus$"'
 check "ultra-advisor pinned fable" 'fm ultra-advisor.md | grep -q "^model: fable$"'
 check "task-runner pinned haiku" 'fm task-runner.md | grep -q "^model: haiku$"'
