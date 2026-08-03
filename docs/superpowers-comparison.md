@@ -93,23 +93,46 @@ session's model — often the most capable and most expensive — which silently
 section."* A policy written in prose has to be remembered at every dispatch. A policy
 written in frontmatter does not.
 
-### Divergence 2 — how cheap is too cheap
+### Divergence 2 — what the cheapest tier is actually for
 
-This is a direct empirical challenge to the task-gopher design:
+This reads at first like a direct challenge to the task-gopher design. Read in full, it
+isn't — it's the same rule:
 
 > **Turn count beats token price.** Wall-clock and context cost scale with how many turns
 > a subagent takes, and the cheapest models routinely take 2-3× the turns on multi-step
-> work — costing more overall. Use a mid-tier model as the floor for reviewers and for
-> implementers working from prose descriptions.
+> work — costing more overall. Use a mid-tier model as the floor **for reviewers and for
+> implementers working from prose descriptions**. When the task's plan text contains the
+> complete code to write, the implementation is transcription plus testing: **use the
+> cheapest tier for that implementer.** Single-file mechanical fixes also take the
+> cheapest tier.
 
-superpowers reserves the cheapest tier for transcription (the plan already contains the
-code) and single-file mechanical fixes. task-gopher pins Haiku for *all* retrieval and
-execution legwork.
+The governing variable is not model tier — it is **specification completeness**. The 2-3×
+multiplier is measured on cheap models asked to *derive* what to do from prose. Where the
+work is fully specified, superpowers reaches for the cheapest tier itself.
 
-Probably both are right, because the scopes differ — task-gopher's remit (grep, read, run
-a command, report) is close to what superpowers carves out for the cheapest tier anyway.
-But task-gopher's escape hatch is an admission that re-dispatch happens, and a
-re-dispatch is exactly the 2-3× turn multiplier they measured.
+task-gopher's runner operates inside exactly that carve-out by construction: it accepts
+fully-specified, decision-free orders and stops rather than guessing. So the Haiku pin is
+not in tension with the finding — it is the same rule stated twice, once as a judgment the
+controller makes per dispatch, once as a contract the runner enforces.
+
+**Where the churn relocates.** It does not vanish, and three things are worth naming:
+
+- **Ambiguity detection is itself reasoning.** "Stop if the order is ambiguous" asks the
+  runner to *recognize* ambiguity — a judgment call handed to the model instructed not to
+  judge. It can fail in both directions: proceed on an ambiguous order, or bounce on a
+  clear one. This is the softest joint in the design.
+- **A bounce lands on the most expensive component.** It costs an orchestrator turn plus a
+  re-dispatch, and the orchestrator is the largest line item in the breakdown below. A high
+  bounce rate does not remove churn; it moves it onto the priciest model in the system.
+- **The residual risk is quality, not turns.** A runner that does not reason also does not
+  flag an implausible result. Constraining it to mechanical work relocates the requirement
+  to the orchestrator's review of the report rather than eliminating it.
+
+**The number that settles this is bounce rate** — the fraction of dispatches returning
+incomplete, blocked, or needing takeover. Near zero, and pinning the runner beats the
+mid-tier floor for this scope. High, and the churn has simply moved upward. It is cheap to
+instrument: `SubagentStop` already parses transcripts for token counts, and classifying a
+report as complete-versus-bounced is a text check, not a model call.
 
 ### Divergence 3 — what gets measured
 

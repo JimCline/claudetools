@@ -986,30 +986,60 @@
 
       <article class="ov">
         <div class="ov-head">
-          <h3>Divergence 2 — how cheap is too cheap</h3>
-          <p class="eyebrow">a direct empirical challenge</p>
+          <h3>Divergence 2 — what the cheapest tier is actually for</h3>
+          <p class="eyebrow">less a divergence than it first reads</p>
         </div>
         <div class="ov-lanes">
           <div class="lane lane-sp">
-            <p class="lane-tag">superpowers · mid-tier floor</p>
-            <p>“<strong>Turn count beats token price.</strong> Wall-clock and context cost scale with how
-              many turns a subagent takes, and the cheapest models routinely take 2–3× the turns on
-              multi-step work — costing more overall.” The cheapest tier is reserved for transcription
-              (the plan already contains the code) and single-file mechanical fixes.</p>
+            <p class="lane-tag">superpowers · stated as a judgment</p>
+            <p>“<strong>Turn count beats token price</strong> … the cheapest models routinely take 2–3×
+              the turns on multi-step work — costing more overall. Use a mid-tier model as the floor
+              <strong>for reviewers and for implementers working from prose descriptions</strong>. When
+              the task's plan text contains the complete code to write, the implementation is
+              transcription plus testing: <strong>use the cheapest tier</strong>.”</p>
           </div>
           <div class="lane lane-ct">
-            <p class="lane-tag">claudetools · unconditional Haiku</p>
-            <p>task-gopher pins the runner to Haiku for all retrieval and execution legwork, with an
-              escape hatch: if the runner returns too little, take it over or re-dispatch <em>once</em>
-              with a sharper order before giving up.</p>
+            <p class="lane-tag">claudetools · stated as a contract</p>
+            <p>task-gopher pins the runner to Haiku and constrains what may be sent to it: fully
+              specified, decision-free orders only. The runner never reasons, fills gaps, or chooses —
+              it stops and reports back rather than guessing.</p>
           </div>
         </div>
         <div class="ov-diff">
-          <p class="eyebrow">Who is right</p>
-          <p>Probably both, because the scopes differ. task-gopher's remit — grep, read, run a command,
-            report — is close to what superpowers carves out for the cheapest tier anyway. But the
-            escape hatch is an admission that re-dispatch happens, and a re-dispatch is exactly the
-            2–3× turn multiplier they measured.</p>
+          <p class="eyebrow">The difference</p>
+          <p>The governing variable is not model tier — it is <em>specification completeness</em>. The
+            2–3× multiplier is measured on cheap models asked to <em>derive</em> what to do from prose;
+            where the work is fully specified, superpowers reaches for the cheapest tier itself. The
+            Haiku pin is not a challenge to that finding, it operates inside its carve-out by
+            construction — the same rule, once as a judgment the controller makes per dispatch, once as
+            a contract the runner enforces.</p>
+        </div>
+      </article>
+
+      <article class="ov">
+        <div class="ov-head">
+          <h3>Where the churn relocates</h3>
+          <p class="eyebrow">the honest caveat</p>
+        </div>
+        <div class="ov-lanes">
+          <div class="lane lane-ct">
+            <p class="lane-tag">the soft joint</p>
+            <p>“Stop if the order is ambiguous” asks the runner to <em>recognize</em> ambiguity — a
+              judgment call handed to the model instructed not to judge. It can fail in both directions:
+              proceed on an ambiguous order, or bounce on a clear one.</p>
+          </div>
+          <div class="lane lane-ct">
+            <p class="lane-tag">where the cost lands</p>
+            <p>A bounce costs an orchestrator turn plus a re-dispatch — and the orchestrator is the
+              largest line item in the breakdown below. A high bounce rate does not remove churn; it
+              moves it onto the most expensive model in the system.</p>
+          </div>
+        </div>
+        <div class="ov-diff">
+          <p class="eyebrow">And the residual risk is quality, not turns</p>
+          <p>A runner that does not reason also does not flag an implausible result. Constraining it to
+            mechanical work does not eliminate reasoning failures — it relocates the requirement to the
+            orchestrator's review of the report.</p>
         </div>
       </article>
 
@@ -1066,6 +1096,12 @@
           gate over N=5 runs is a real answer to “did this actually save money, or move it.”
           <code>/hierarchy usage</code> already collects the spend side at zero model cost; pairing it with
           a quality gate is the next step, and superpowers has demonstrated the shape.</p>
+        <p><strong>The number that settles the cheap-tier question is bounce rate</strong> — the fraction of
+          dispatches returning incomplete, blocked, or needing takeover. Near zero, and pinning the runner
+          beats the mid-tier floor for this scope. High, and the churn has simply moved onto the
+          orchestrator. It is cheap to instrument: <code>SubagentStop</code> already parses transcripts for
+          token counts, and classifying a report as complete-versus-bounced is a text check, not a model
+          call.</p>
       </div>
     </div>
   </section>
