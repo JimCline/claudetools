@@ -52,6 +52,7 @@ function main() {
   const dispatches = events.filter((e) => e.event === "dispatch");
   const relayOk = events.filter((e) => e.event === "relay-ok");
   const relayInjected = events.filter((e) => e.event === "relay-injected");
+  const relaySkipped = events.filter((e) => e.event === "relay-skip");
   const turns = new Set(events.map((e) => e.pid).filter(Boolean)).size;
 
   // Only dispatches from turns the strict gate actually saw count toward the
@@ -86,10 +87,21 @@ function main() {
   console.log(`dispatches:     ${dispatches.length}  (delegations to task-gopher; ${strictDispatches.length} in strict-gated turns)`);
   console.log(`bypass/dispatch ratio: ${ratio}  (strict-gated turns only; lower is better)`);
   if (toolBreakdown) console.log(`bypassed tools: ${toolBreakdown}`);
-  if (relayOk.length || relayInjected.length) {
+  if (relayOk.length || relayInjected.length || relaySkipped.length) {
     console.log(
       `subagent relay:  ${relayInjected.length} dispatches stamped, ${relayOk.length} already carried it`
     );
+  }
+  if (relaySkipped.length) {
+    // Broken down by reason so a mistaken skip is legible: "no-dispatch-tool" on
+    // an agent that clearly can dispatch is the failure this feature can cause.
+    const byReason = {};
+    for (const s of relaySkipped) byReason[s.reason || "?"] = (byReason[s.reason || "?"] || 0) + 1;
+    const reasons = Object.entries(byReason)
+      .sort((a, b) => b[1] - a[1])
+      .map(([r, n]) => `${r} ${n}`)
+      .join(", ");
+    console.log(`relay skipped:   ${relaySkipped.length} dispatches to agents that can't delegate (${reasons})`);
   }
 
   const recent = bypasses.slice(-RECENT);

@@ -1,15 +1,20 @@
 ---
-description: Toggle task-gopher (Haiku delegation), strict mode, and audit report. Usage: /task-gopher [on|off|status|strict [on|off]|report|log clear]
+description: Toggle task-gopher (Haiku delegation), strict mode, and audit report. Usage: /task-gopher [on|off|status|strict [on|off]|report|log clear|relay-exempt [list|add|remove] <agent-type>]
 ---
 
 The user ran `/task-gopher` with argument: `$ARGUMENTS`
 
-task-gopher uses two marker files under `~/.claude/`:
+task-gopher uses these files under `~/.claude/`:
 - `task-gopher.enabled` — delegation directive ON (existence = ON).
 - `task-gopher.strict` — strict mode: a PreToolUse checkpoint that blocks the
   first direct retrieval of each turn once so you consciously consider dispatching
   to task-gopher. Strict is meaningful only while enabled, so turning strict ON
   also turns the plugin ON, and turning the plugin OFF also clears strict.
+- `task-gopher.relay-exempt` — optional list of `subagent_type`s the relay must
+  never stamp, one per line (`#` comments ignored). The gate already skips agents
+  whose definition file declares a `tools:` list without `Agent`/`Task`; this file
+  covers the ones it cannot read, notably SDK-defined agents that have no file on
+  disk. Exempting an agent that CAN dispatch just means it stops being told to.
 
 Pick the ONE case matching the argument and run its command with the Bash tool:
 
@@ -28,6 +33,13 @@ Pick the ONE case matching the argument and run its command with the Bash tool:
   Show its output verbatim to the user; do not summarize or re-run any retrievals yourself.
 - **`log clear`** (wipe the audit log): run
   `rm -f ~/.claude/task-gopher.log && echo "task-gopher: audit log cleared"`
+- **`relay-exempt`** / `relay-exempt list`:
+  `if [ -s ~/.claude/task-gopher.relay-exempt ]; then echo "relay-exempt:"; grep -v '^\s*\(#\|$\)' ~/.claude/task-gopher.relay-exempt; else echo "relay-exempt: (empty — no user exemptions)"; fi`
+- **`relay-exempt add <agent-type>`** (use the exact namespaced `subagent_type`,
+  e.g. `github-pr-toolkit:thread-assessor`):
+  `mkdir -p ~/.claude && touch ~/.claude/task-gopher.relay-exempt && grep -qxF "<agent-type>" ~/.claude/task-gopher.relay-exempt || echo "<agent-type>" >> ~/.claude/task-gopher.relay-exempt; echo "relay-exempt: <agent-type> exempt"`
+- **`relay-exempt remove <agent-type>`**:
+  `if [ -f ~/.claude/task-gopher.relay-exempt ]; then grep -vxF "<agent-type>" ~/.claude/task-gopher.relay-exempt > ~/.claude/task-gopher.relay-exempt.tmp && mv ~/.claude/task-gopher.relay-exempt.tmp ~/.claude/task-gopher.relay-exempt; fi; echo "relay-exempt: <agent-type> removed"`
 - **empty / `toggle` / anything else** (toggles the base on/off; leaves strict as-is unless turning off):
   `if [ -f ~/.claude/task-gopher.enabled ]; then rm -f ~/.claude/task-gopher.enabled ~/.claude/task-gopher.strict ~/.claude/task-gopher.nudge && echo "task-gopher: OFF"; else mkdir -p ~/.claude && touch ~/.claude/task-gopher.enabled && echo "task-gopher: ON"; fi`
 
@@ -47,11 +59,10 @@ of the session (the SessionStart hook re-establishes it in future sessions):
 > a complete, decision-free order and state the exact expected result / compact
 > output you want. Escape hatch: if it returns incomplete/wrong/insufficient
 > info or reports it couldn't proceed, do it yourself or re-dispatch once with a
-> sharper order — don't ping-pong more than about once. When dispatching any
-> subagent except task-gopher itself and tool-less scouts (Explore, Plan),
-> copy the full [task-gopher: ON] directive block verbatim to the top of the
-> dispatch prompt — subagents don't inherit your context, and a relay
-> checkpoint bounces dispatches that omit it.
+> sharper order — don't ping-pong more than about once. Do NOT copy the
+> [task-gopher: ON] directive into dispatch prompts yourself: subagents don't
+> inherit your context, so a PreToolUse hook rewrites each dispatch in flight to
+> carry it, skipping the agents that have no Agent/Task tool to act on it.
 
 If the result also says **STRICT**, note to the user that from now on the first
 direct Read/Grep/Glob or retrieval-style Bash call of each turn will be blocked

@@ -7,7 +7,7 @@
  * this materially changes how the main agent works, so it is opt-in.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -28,6 +28,27 @@ export const STRICT_FILE = join(homedir(), ".claude", "task-gopher.strict");
 
 /** Records {pid, n} for the current turn, so the checkpoint escalates by bypass count. */
 export const NUDGE_FILE = join(homedir(), ".claude", "task-gopher.nudge");
+
+/**
+ * Optional user-maintained list of `subagent_type`s the relay must never stamp —
+ * one per line, `#` comments and blank lines ignored, missing file means nothing
+ * is exempt. It exists because the automatic tool-less check in agent-tools.mjs
+ * can only read definitions that are ON DISK: an agent defined through the SDK
+ * has no file to parse, so no amount of frontmatter reading will ever classify
+ * it. Managed with `/task-gopher relay-exempt`.
+ */
+export const RELAY_EXEMPT_FILE = join(homedir(), ".claude", "task-gopher.relay-exempt");
+
+export function readRelayExempt() {
+  try {
+    return readFileSync(RELAY_EXEMPT_FILE, "utf8")
+      .split("\n")
+      .map((line) => line.replace(/#.*$/, "").trim())
+      .filter(Boolean);
+  } catch {
+    return []; // absent or unreadable -> nothing exempt, current behavior
+  }
+}
 
 
 /**
@@ -123,9 +144,9 @@ export const FULL_DIRECTIVE = [
   "",
   "Escape hatch: if `task-gopher` returns incomplete, wrong, or insufficient information, or reports it could not proceed (usually because an order needed a decision), you MAY do it yourself or re-dispatch ONCE with a sharper, fully-specified order. Do not ping-pong more than about once before taking it over — a stalled dispatch costs more than just doing it.",
   "",
-  "Relay is automatic — do NOT copy this directive into subagent prompts yourself. Subagents do not inherit it, so a PreToolUse hook stamps it onto every dispatch prompt in flight (skipping task-gopher itself and tool-less scouts). Writing it out by hand would just spend your own output tokens on something the harness already did.",
+  "Relay is automatic — do NOT copy this directive into subagent prompts yourself. Subagents do not inherit it, so a PreToolUse hook stamps it onto dispatch prompts in flight, skipping the ones that would be wasted: task-gopher itself, and any agent whose tool list gives it no Agent/Task tool to dispatch with. Writing it out by hand would just spend your own output tokens on something the harness already did.",
 ].join("\n");
 
 /** Compact per-turn reminder — injected at UserPromptSubmit to keep the behavior alive. */
 export const SHORT_REMINDER =
-  "[task-gopher: ON] If you are Sonnet-tier or higher (any agent, top-level or subagent): by DEFAULT dispatch tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders, and keep reasoning for yourself. Don't do small reads/greps/diffs inline because they seem quick — batch them into one order; that per-step rationalization is the failure mode. Order NARROW queries (grep/answer/summary that come back smaller than the source), never \"read the whole file and send it back\" — if you need a full file, read it yourself. If you are Haiku-tier or have no Agent tool, ignore this. Escape hatch: take it over if the runner fails or returns too little. Don't copy this directive into subagent prompts — a hook stamps it onto every dispatch automatically.";
+  "[task-gopher: ON] If you are Sonnet-tier or higher (any agent, top-level or subagent): by DEFAULT dispatch tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders, and keep reasoning for yourself. Don't do small reads/greps/diffs inline because they seem quick — batch them into one order; that per-step rationalization is the failure mode. Order NARROW queries (grep/answer/summary that come back smaller than the source), never \"read the whole file and send it back\" — if you need a full file, read it yourself. If you are Haiku-tier or have no Agent tool, ignore this. Escape hatch: take it over if the runner fails or returns too little. Don't copy this directive into subagent prompts — a hook stamps it onto the dispatches that can use it automatically.";

@@ -16,12 +16,14 @@
  * dispatching a grandchild gets the same rewrite — the chain is automatic and
  * needs no cooperation from any model.
  *
- * Skipped: dispatches to task-gopher itself (they ARE the delegation), builtin
- * subagents that cannot dispatch (Explore, Plan, statusline-setup,
- * output-style-setup), and any prompt that already carries the sentinel near
- * the top — a parent that pasted the directive by hand is not made to carry it
- * twice. The sentinel check is top-anchored so a mid-prompt *mention* of it
- * does not count as a relay.
+ * Skipped: dispatches to task-gopher itself (they ARE the delegation), agents
+ * that cannot dispatch and so can do nothing with the directive — builtins by
+ * name (Explore, Plan, statusline-setup, output-style-setup), anything the user
+ * listed in RELAY_EXEMPT_FILE, and anything whose definition declares a `tools:`
+ * allow-list without Agent/Task (see agent-tools.mjs) — and any prompt that
+ * already carries the sentinel near the top, so a parent that pasted the
+ * directive by hand is not made to carry it twice. The sentinel check is
+ * top-anchored so a mid-prompt *mention* of it does not count as a relay.
  *
  * STRICT CHECKPOINT (requires strict mode on top of ON): nudges the agent to
  * consider dispatching to task-gopher before it does retrieval work itself.
@@ -57,6 +59,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { cannotDispatch } from "./agent-tools.mjs";
 import {
   FULL_DIRECTIVE,
   LOG_FILE,
@@ -65,6 +68,7 @@ import {
   isEnabled,
   isStrict,
   isTaskGopherAgent,
+  readRelayExempt,
 } from "./directive.mjs";
 
 // Re-block on the Nth consecutive bypass within a turn (N-1 pass silently).
@@ -75,8 +79,23 @@ const RENUDGE_AFTER = 3;
 const SENTINEL_WINDOW = 200;
 
 // Built-in subagents without the Agent tool: they can't act on the directive,
-// so rewriting their prompt would only cost tokens.
+// so rewriting their prompt would only cost tokens. Built-ins ship with no
+// definition file, so they are the one group that has to be named outright —
+// everything else is decided from the agent's own `tools:` list or the user's
+// exempt file.
 const RELAY_EXEMPT = new Set(["Explore", "Plan", "statusline-setup", "output-style-setup"]);
+
+/**
+ * Why this dispatch must not be stamped, or "" to stamp it. Ordered cheapest
+ * first: a name match, then a small file read, then resolving the agent's
+ * definition off disk.
+ */
+function relaySkipReason(subagentType, cwd) {
+  if (RELAY_EXEMPT.has(subagentType)) return "builtin";
+  if (readRelayExempt().includes(subagentType)) return "user-exempt";
+  if (cannotDispatch(subagentType, cwd)) return "no-dispatch-tool";
+  return "";
+}
 
 const allow = () => process.exit(0);
 
@@ -325,7 +344,14 @@ try {
       allow();
     }
 
-    if (RELAY_EXEMPT.has(st)) allow();
+    // Logged rather than silent: a skip that fires wrongly is invisible from the
+    // outside — the dispatch still succeeds, the subagent just never sees the
+    // directive — so the audit log is the only place it can be caught.
+    const skip = relaySkipReason(st, payload.cwd);
+    if (skip) {
+      logEvent({ pid, aid, event: "relay-skip", tool: payload.tool_name, detail: st, reason: skip });
+      allow();
+    }
 
     if (typeof t.prompt !== "string") allow(); // unexpected payload shape -> fail open
     if (t.prompt.slice(0, SENTINEL_WINDOW).includes(SENTINEL)) {

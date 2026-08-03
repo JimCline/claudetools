@@ -89,6 +89,145 @@ check "on: non-string prompt (schema drift) -> fail open" is_allow
 run_hook "$(payload "$DISPATCH_NOSENT" t3d statusline-setup)"
 check "on: statusline-setup exempt" is_allow
 
+# ---- user-maintained exempt list (~/.claude/task-gopher.relay-exempt).
+# Covers what the automatic check cannot see: an SDK-defined agent has no file
+# on disk, so its tool list can never be read.
+EXEMPT="$FAKEHOME/.claude/task-gopher.relay-exempt"
+run_hook "$(payload "$DISPATCH_NOSENT" x0 sdk-only-agent)"
+check "exempt: no exempt file -> stamped as before" is_inject
+
+printf '# a comment\n\nsdk-only-agent\n' > "$EXEMPT"
+run_hook "$(payload "$DISPATCH_NOSENT" x1 sdk-only-agent)"
+check "exempt: listed subagent_type not stamped" is_allow
+check "exempt: skip is logged with a reason" \
+  "grep -q '\"event\":\"relay-skip\".*\"reason\":\"user-exempt\"' \"$FAKEHOME/.claude/task-gopher.log\""
+run_hook "$(payload "$DISPATCH_NOSENT" x2 general-purpose)"
+check "exempt: unlisted subagent_type still stamped" is_inject
+run_hook "$(payload "$DISPATCH_NOSENT" x3 "# a comment")"
+check "exempt: comment lines are not treated as entries" is_inject
+printf 'trailing-space-agent   \n' > "$EXEMPT"
+run_hook "$(payload "$DISPATCH_NOSENT" x4 trailing-space-agent)"
+check "exempt: entries are trimmed" is_allow
+rm -f "$EXEMPT"
+run_hook "$(payload "$DISPATCH_NOSENT" x5 sdk-only-agent)"
+check "exempt: removing the file restores stamping" is_inject
+
+# ---- automatic skip: read the target agent's own `tools:` allow-list.
+# Only an allow-list is decisive — `disallowedTools` is a deny-list and is never
+# evidence that Agent is absent — and anything unresolvable must still be stamped.
+AGENTS="$FAKEHOME/.claude/agents"
+mkdir -p "$AGENTS"
+
+printf -- '---\nname: toolless\ntools: Read, Grep, Glob\n---\n\nbody\n' > "$AGENTS/toolless.md"
+run_hook "$(payload "$DISPATCH_NOSENT" y1 toolless)"
+check "tools: allow-list without Agent/Task -> not stamped" is_allow
+check "tools: skip logged as no-dispatch-tool" \
+  "grep -q '\"event\":\"relay-skip\".*\"reason\":\"no-dispatch-tool\"' \"$FAKEHOME/.claude/task-gopher.log\""
+
+printf -- '---\nname: folded\ntools: >-\n  Read,\n  Grep,\n  advisor\n---\n\nbody\n' > "$AGENTS/folded.md"
+run_hook "$(payload "$DISPATCH_NOSENT" y2 folded)"
+check "tools: folded block scalar (>-) parsed -> not stamped" is_allow
+
+printf -- '---\nname: seq\ntools:\n  - Read\n  - Glob\n---\n\nbody\n' > "$AGENTS/seq.md"
+run_hook "$(payload "$DISPATCH_NOSENT" y3 seq)"
+check "tools: YAML block sequence parsed -> not stamped" is_allow
+
+printf -- '---\nname: hasagent\ntools: Read, Agent, Glob\n---\n\nbody\n' > "$AGENTS/hasagent.md"
+run_hook "$(payload "$DISPATCH_NOSENT" y4 hasagent)"
+check "tools: allow-list WITH Agent -> stamped" is_inject
+
+printf -- '---\nname: hastask\ntools: >-\n  Read,\n  Task\n---\n\nbody\n' > "$AGENTS/hastask.md"
+run_hook "$(payload "$DISPATCH_NOSENT" y5 hastask)"
+check "tools: allow-list with Task counts as dispatch-capable -> stamped" is_inject
+
+printf -- '---\nname: notools\ndescription: inherits everything\n---\n\nbody\n' > "$AGENTS/notools.md"
+run_hook "$(payload "$DISPATCH_NOSENT" y6 notools)"
+check "tools: NO tools key -> inherits Agent -> stamped" is_inject
+
+printf -- '---\nname: denylist\ndisallowedTools: Edit, Write, advisor\n---\n\nbody\n' > "$AGENTS/denylist.md"
+run_hook "$(payload "$DISPATCH_NOSENT" y7 denylist)"
+check "tools: disallowedTools is NOT evidence of absence -> stamped" is_inject
+
+printf -- '---\nname: star\ntools: "*"\n---\n\nbody\n' > "$AGENTS/star.md"
+run_hook "$(payload "$DISPATCH_NOSENT" y8 star)"
+check "tools: wildcard allow-list -> stamped" is_inject
+
+printf -- '---\nname: flow\ntools: [Read, Grep]\n---\n\nbody\n' > "$AGENTS/flow.md"
+run_hook "$(payload "$DISPATCH_NOSENT" y9 flow)"
+check "tools: YAML flow sequence parsed -> not stamped" is_allow
+
+printf -- 'no frontmatter here, just prose\n' > "$AGENTS/nofm.md"
+run_hook "$(payload "$DISPATCH_NOSENT" y10 nofm)"
+check "tools: unparseable definition (no frontmatter) -> stamped" is_inject
+
+run_hook "$(payload "$DISPATCH_NOSENT" y11 does-not-exist-anywhere)"
+check "tools: unresolvable subagent_type -> stamped" is_inject
+
+run_hook '{"tool_name":"Agent","prompt_id":"y12","tool_input":{"subagent_type":"../../../etc/passwd","prompt":"x"}}'
+check "tools: path-traversal subagent_type resolves nothing -> stamped" is_inject
+
+# a project-level agent is found via the payload's cwd
+PROJ="$SANDBOX/proj"
+mkdir -p "$PROJ/.claude/agents"
+printf -- '---\nname: projonly\ntools: Read, Grep\n---\n\nbody\n' > "$PROJ/.claude/agents/projonly.md"
+run_hook "{\"tool_name\":\"Agent\",\"prompt_id\":\"y13\",\"cwd\":\"$PROJ\",\"tool_input\":{\"subagent_type\":\"projonly\",\"prompt\":\"x\"}}"
+check "tools: project .claude/agents resolved from cwd -> not stamped" is_allow
+run_hook "$(payload "$DISPATCH_NOSENT" y14 projonly)"
+check "tools: same agent without cwd is unresolvable -> stamped" is_inject
+
+# ---- plugin agents resolve through installed_plugins.json, which pins the
+# installed version; a bare glob over the cache cannot, since several versions
+# of one plugin sit there side by side.
+mkdir -p "$FAKEHOME/.claude/plugins" "$SANDBOX/plugroot-a/agents" "$SANDBOX/plugroot-b/agents"
+cat > "$FAKEHOME/.claude/plugins/installed_plugins.json" <<EOF
+{"version":1,"plugins":{"fakeplug@mkt":[{"scope":"user","installPath":"$SANDBOX/plugroot-a"}]}}
+EOF
+printf -- '---\nname: assessor\ntools: >-\n  Read,\n  Grep,\n  Glob,\n  advisor\n---\n\nbody\n' \
+  > "$SANDBOX/plugroot-a/agents/assessor.md"
+printf -- '---\nname: worker\ntools: Read, Agent\n---\n\nbody\n' > "$SANDBOX/plugroot-a/agents/worker.md"
+
+run_hook "$(payload "$DISPATCH_NOSENT" y15 fakeplug:assessor)"
+check "plugin: namespaced tool-less agent -> not stamped" is_allow
+run_hook "$(payload "$DISPATCH_NOSENT" y16 fakeplug:worker)"
+check "plugin: namespaced dispatch-capable agent -> stamped" is_inject
+run_hook "$(payload "$DISPATCH_NOSENT" y17 otherplug:assessor)"
+check "plugin: unknown plugin name -> stamped" is_inject
+
+# two installed copies that disagree means we don't actually know -> stamp
+cat > "$FAKEHOME/.claude/plugins/installed_plugins.json" <<EOF
+{"version":1,"plugins":{"fakeplug@mkt":[{"scope":"user","installPath":"$SANDBOX/plugroot-a"},{"scope":"project","installPath":"$SANDBOX/plugroot-b"}]}}
+EOF
+printf -- '---\nname: assessor\ntools: Read, Agent\n---\n\nbody\n' > "$SANDBOX/plugroot-b/agents/assessor.md"
+run_hook "$(payload "$DISPATCH_NOSENT" y18 fakeplug:assessor)"
+check "plugin: copies that disagree -> stamped (fail toward the relay)" is_inject
+
+# a marketplace served from a local checkout is edited in place, so its agents
+# live under the checkout rather than the versioned cache copy
+rm -f "$FAKEHOME/.claude/plugins/installed_plugins.json"
+mkdir -p "$SANDBOX/checkout/localplug/agents"
+cat > "$FAKEHOME/.claude/plugins/known_marketplaces.json" <<EOF
+{"mkt":{"source":{"source":"directory"},"installLocation":"$SANDBOX/checkout"}}
+EOF
+printf -- '---\nname: scout\ntools: Read, Grep\n---\n\nbody\n' > "$SANDBOX/checkout/localplug/agents/scout.md"
+run_hook "$(payload "$DISPATCH_NOSENT" y19 localplug:scout)"
+check "plugin: local-checkout marketplace resolved -> not stamped" is_allow
+rm -f "$FAKEHOME/.claude/plugins/known_marketplaces.json"
+
+# a malformed registry must not break the gate
+printf 'not json' > "$FAKEHOME/.claude/plugins/installed_plugins.json"
+run_hook "$(payload "$DISPATCH_NOSENT" y20 fakeplug:assessor)"
+check "plugin: unparseable installed_plugins.json -> stamped, gate survives" is_inject
+rm -f "$FAKEHOME/.claude/plugins/installed_plugins.json"
+
+# dispatches to the gopher itself outrank every skip path
+printf 'task-gopher:task-gopher\n' > "$EXEMPT"
+run_hook "$(payload "$DISPATCH_NOSENT" y21 task-gopher:task-gopher)"
+check "exempt: gopher dispatch still resets the streak, not skipped as exempt" \
+  "is_allow && grep -q '\"event\":\"dispatch\"' \"$FAKEHOME/.claude/task-gopher.log\""
+rm -f "$EXEMPT"
+
+rm -rf "$AGENTS"
+
 # ---- the rewrite is stateless: every context is stamped, always
 SESA='{"tool_name":"Agent","prompt_id":"t5","session_id":"sA","tool_input":{"subagent_type":"general-purpose","prompt":"x"}}'
 SESB='{"tool_name":"Agent","prompt_id":"t5","session_id":"sB","tool_input":{"subagent_type":"general-purpose","prompt":"x"}}'
@@ -262,6 +401,19 @@ grep -q 'task-gopher:task-gopher' "$PLUGIN/hooks/directive.mjs" \
 grep -q 'subagent_type: "task-gopher")' "$PLUGIN/hooks/directive.mjs" \
   && { FAIL=$((FAIL+1)); echo "FAIL: directive still tells agents to use the bare name"; } \
   || { PASS=$((PASS+1)); echo "PASS: directive no longer uses the bare agent name"; }
+
+# ---- the directive's claim about what the relay skips must be backed by code.
+# It promised a tool-less skip to every agent that read it, for several versions
+# before one existed; that sentence is the most-read text the plugin ships.
+grep -q 'no Agent/Task tool' "$PLUGIN/hooks/directive.mjs" \
+  && grep -q 'cannotDispatch' "$PLUGIN/hooks/pretooluse-nudge.mjs" \
+  && { PASS=$((PASS+1)); echo "PASS: directive's skip claim is backed by the gate"; } \
+  || { FAIL=$((FAIL+1)); echo "FAIL: directive claims a skip the gate does not implement"; }
+
+# ---- the retired manual-copy instruction must not survive in the command doc
+grep -q 'copy the full \[task-gopher: ON\] directive block verbatim' "$PLUGIN/commands/task-gopher.md" \
+  && { FAIL=$((FAIL+1)); echo "FAIL: command doc still tells agents to hand-copy the directive"; } \
+  || { PASS=$((PASS+1)); echo "PASS: command doc describes the automatic relay"; }
 
 echo "----"
 echo "SUMMARY: $PASS passed, $FAIL failed"
