@@ -1,6 +1,7 @@
 # claudetools
 
-A Claude Code plugin marketplace.
+A Claude Code plugin marketplace — hooks that enforce agent behaviour instead of
+asking for it.
 
 ## Install
 
@@ -8,6 +9,72 @@ A Claude Code plugin marketplace.
 /plugin marketplace add JimCline/claudetools
 /plugin install output-discipline@claudetools
 ```
+
+## Why hooks, not prompts
+
+The failure these plugins exist to prevent is not disobedience. No model reads "delegate
+the legwork" and decides to defy it. What happens is **erosion through locally-reasonable
+exceptions**: this grep is tiny, that file is half in context already, dispatching has
+overhead, the answer is needed now. Every individual call is defensible. The aggregate is
+the directive ignored.
+
+Prose defends against this badly, because the rationalization feels like judgment from the
+inside — and judgment is exactly what the model has been told to keep for itself. So the
+useful question is not "is this rule written down" but **how many times must the model
+choose to obey it**. That gives a ladder, strongest first:
+
+| | Mechanism | Here |
+|---|---|---|
+| 1 | **Structurally impossible** — the decision doesn't exist | model pinned in agent frontmatter; Reviewer denied `Write`; Architect denied `Bash` |
+| 2 | **Hard-denied** at `PreToolUse` | output-discipline's Bash gate. Only safe for machine-checkable invariants |
+| 3 | **Checkpoint with an escape hatch** | task-gopher strict mode, for rules where a deny would sometimes be wrong |
+| 4 | **Injected directive** | survives compaction, but is re-decided every turn |
+| 5 | **Prose in a document** | read once, decays with distance |
+
+> A directive is a decision the model must re-make every turn.
+> A structure is a decision made once.
+
+Read that way, the strongest thing here isn't the blocking — it's rung 1. A model pinned in
+an agent definition isn't *enforced*, it's **unforgettable**: there's no per-dispatch choice
+left to erode. The gates are the enforcement arm of a larger principle — move policy out of
+the space of per-turn decisions, and gate only what has to stay behavioral. **Gate
+mechanics; nudge judgment.**
+
+**Where this stops.** Judgment can't be gated: "is this step reasoning or legwork" isn't
+machine-checkable, which is why task-gopher ships a checkpoint rather than a deny. Every
+gate is also a tax — false positives cost real time, and each injected directive is
+resident context on every request. And while it's observable that the gates fire and change
+behavior, whether gated delegation nets out *cheaper* than good prompts plus nothing is
+not yet measured. That's open work.
+
+## Using superpowers?
+
+These plugins compose with [obra/superpowers](https://github.com/obra/superpowers)
+rather than competing with it. superpowers is the **document layer**: fourteen skills
+describing *what process to run* — brainstorm, plan, test first, debug, verify.
+claudetools is the **control layer**: ten hook scripts across six lifecycle events
+deciding *who executes the work and what reaches your context* — with the model fixed in
+the role definition rather than chosen per dispatch.
+superpowers hooks `SessionStart` and everything after it is persuasion; these plugins
+also hook `PreToolUse`, so a rule can deny a call rather than suggest against it.
+
+Both projects independently landed on the same delegation rule — superpowers writes it
+"cheapen mechanics, never judgment", task-gopher writes it "keep the judgment, dispatch
+only the legwork". What differs is where the model decision lives: a tier superpowers'
+controller picks per dispatch, versus a value fixed in an agent definition here.
+superpowers documents the failure mode of its own approach — an omitted `model:`
+"silently defeats" its cost section — which is the gap these plugins close.
+
+Two other places they fit: `verification-before-completion` tells Claude to run the
+command and read the output, which is exactly the flood `output-discipline` gates; and
+superpowers is right that a subagent shouldn't inherit your session history, but standing
+policy isn't history — `task-gopher`'s `PreToolUse` rewrite carries rules to every child
+without carrying the transcript.
+
+Full comparison, including what superpowers does better and the one genuine conflict:
+**[docs/superpowers-comparison.md](./docs/superpowers-comparison.md)**
+(visual version: [docs/superpowers-comparison.html](./docs/superpowers-comparison.html),
+[rendered](https://htmlpreview.github.io/?https://github.com/JimCline/claudetools/blob/main/docs/superpowers-comparison.html)).
 
 ## Plugins
 

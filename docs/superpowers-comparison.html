@@ -1,0 +1,1501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>superpowers vs claudetools — document layer, control layer</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body, h1, h2, h3, p, ul, li, figure, table, td, th { margin: 0; padding: 0; }
+  ul { list-style: none; }
+  table { border-collapse: collapse; }
+
+  :root {
+    --ink: #171b1f;
+    --ink-2: #4c565e;
+    --ink-3: #7a858d;
+    --paper: #eef2f3;
+    --card: #ffffff;
+    --card-2: #f7f9fa;
+    --rule: #d7dfe2;
+    --rule-soft: #e6ecee;
+
+    --sp: #9c6c17;
+    --sp-tint: rgba(156, 108, 23, 0.10);
+    --sp-edge: rgba(156, 108, 23, 0.38);
+
+    --ct: #10716d;
+    --ct-tint: rgba(16, 113, 109, 0.10);
+    --ct-edge: rgba(16, 113, 109, 0.38);
+
+    --flag: #a2382a;
+    --flag-tint: rgba(162, 56, 42, 0.09);
+
+    --serif: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+    --maxw: 1120px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #e4e9eb;
+      --ink-2: #9ba7ae;
+      --ink-3: #6f7c84;
+      --paper: #0d1114;
+      --card: #151b1f;
+      --card-2: #1b2227;
+      --rule: #273137;
+      --rule-soft: #1f272c;
+      --sp: #ddaa4d;
+      --sp-tint: rgba(221, 170, 77, 0.13);
+      --sp-edge: rgba(221, 170, 77, 0.40);
+      --ct: #4cbdb4;
+      --ct-tint: rgba(76, 189, 180, 0.13);
+      --ct-edge: rgba(76, 189, 180, 0.40);
+      --flag: #e0796a;
+      --flag-tint: rgba(224, 121, 106, 0.12);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ink: #e4e9eb;
+    --ink-2: #9ba7ae;
+    --ink-3: #6f7c84;
+    --paper: #0d1114;
+    --card: #151b1f;
+    --card-2: #1b2227;
+    --rule: #273137;
+    --rule-soft: #1f272c;
+    --sp: #ddaa4d;
+    --sp-tint: rgba(221, 170, 77, 0.13);
+    --sp-edge: rgba(221, 170, 77, 0.40);
+    --ct: #4cbdb4;
+    --ct-tint: rgba(76, 189, 180, 0.13);
+    --ct-edge: rgba(76, 189, 180, 0.40);
+    --flag: #e0796a;
+    --flag-tint: rgba(224, 121, 106, 0.12);
+  }
+
+  :root[data-theme="light"] {
+    --ink: #171b1f;
+    --ink-2: #4c565e;
+    --ink-3: #7a858d;
+    --paper: #eef2f3;
+    --card: #ffffff;
+    --card-2: #f7f9fa;
+    --rule: #d7dfe2;
+    --rule-soft: #e6ecee;
+    --sp: #9c6c17;
+    --sp-tint: rgba(156, 108, 23, 0.10);
+    --sp-edge: rgba(156, 108, 23, 0.38);
+    --ct: #10716d;
+    --ct-tint: rgba(16, 113, 109, 0.10);
+    --ct-edge: rgba(16, 113, 109, 0.38);
+    --flag: #a2382a;
+    --flag-tint: rgba(162, 56, 42, 0.09);
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 3.5rem 1.5rem 5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 4rem;
+  }
+
+  a { color: inherit; }
+  a:focus-visible,
+  th:focus-visible { outline: 2px solid var(--ct); outline-offset: 3px; }
+
+  /* ---------- shared type ---------- */
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  h1, h2, h3 { text-wrap: balance; }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: clamp(2.1rem, 5.2vw, 3.2rem);
+    line-height: 1.08;
+    letter-spacing: -0.015em;
+    font-weight: 600;
+  }
+
+  h2 {
+    font-family: var(--serif);
+    font-size: clamp(1.4rem, 3vw, 1.85rem);
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    font-weight: 600;
+  }
+
+  h3 {
+    font-size: 1rem;
+    font-weight: 650;
+    letter-spacing: -0.005em;
+  }
+
+  .lede {
+    font-size: 1.1rem;
+    line-height: 1.6;
+    color: var(--ink-2);
+    max-width: 66ch;
+  }
+
+  .prose { max-width: 68ch; color: var(--ink-2); }
+
+  code, .mono { font-family: var(--mono); }
+
+  code {
+    font-size: 0.855em;
+    background: var(--card-2);
+    border: 1px solid var(--rule-soft);
+    border-radius: 3px;
+    padding: 0.08em 0.34em;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+
+  /* ---------- masthead ---------- */
+
+  .masthead {
+    display: flex;
+    flex-direction: column;
+    gap: 1.4rem;
+  }
+
+  .parties {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+    margin-top: 0.6rem;
+  }
+
+  .party {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-top-width: 3px;
+    border-radius: 4px;
+    padding: 1.1rem 1.2rem 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+  }
+
+  .party-sp { border-top-color: var(--sp); }
+  .party-ct { border-top-color: var(--ct); }
+
+  .party-name {
+    font-family: var(--mono);
+    font-size: 0.95rem;
+    font-weight: 600;
+    display: flex;
+    align-items: baseline;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+  }
+
+  .party-sp .party-name { color: var(--sp); }
+  .party-ct .party-name { color: var(--ct); }
+
+  .party-ver {
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    color: var(--ink-3);
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .party-role {
+    font-family: var(--serif);
+    font-size: 1.02rem;
+    font-style: italic;
+    color: var(--ink);
+  }
+
+  .party p { font-size: 0.92rem; color: var(--ink-2); }
+
+  .toc {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.4rem;
+    padding-top: 1.1rem;
+    border-top: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .toc a {
+    color: var(--ink-3);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    padding-bottom: 2px;
+  }
+
+  .toc a:hover,
+  .toc a:focus-visible { color: var(--ct); border-bottom-color: var(--ct); }
+  .toc a.lead { color: var(--ct); border-bottom-color: var(--ct-edge); }
+
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+  /* ---------- section frame ---------- */
+
+  .section {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+
+  .section-head {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    border-top: 1px solid var(--rule);
+    padding-top: 1.1rem;
+  }
+
+  /* ---------- spec table ---------- */
+
+  .table-scroll { overflow-x: auto; }
+
+  table {
+    width: 100%;
+    min-width: 620px;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+  }
+
+  thead th {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-weight: 600;
+    padding: 0 0.9rem 0.6rem;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  thead th:first-child { color: var(--ink-3); padding-left: 0; }
+  .col-sp { color: var(--sp); }
+  .col-ct { color: var(--ct); }
+
+  tbody td {
+    padding: 0.68rem 0.9rem;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+    font-variant-numeric: tabular-nums;
+  }
+
+  tbody td:first-child {
+    padding-left: 0;
+    color: var(--ink-3);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+  }
+
+  tbody tr td:nth-child(2) { background: var(--sp-tint); }
+  tbody tr td:nth-child(3) { background: var(--ct-tint); }
+
+  .num {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 1.02rem;
+  }
+
+  /* ---------- lifecycle rail ---------- */
+
+  .rail-scroll {
+    overflow-x: auto;
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 1.4rem 1.3rem 1.5rem;
+  }
+
+  .rail {
+    display: grid;
+    grid-template-columns: 9.5rem repeat(6, minmax(132px, 1fr));
+    gap: 0.4rem;
+    min-width: 860px;
+  }
+
+  .rail-corner { grid-column: 1; }
+
+  .rail-event {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.02em;
+    color: var(--ink);
+    font-weight: 600;
+    padding: 0 0 0.7rem;
+    border-bottom: 2px solid var(--rule);
+    align-self: end;
+  }
+
+  .rail-event span {
+    display: block;
+    font-weight: 400;
+    color: var(--ink-3);
+    letter-spacing: 0.08em;
+    font-size: 0.63rem;
+    text-transform: uppercase;
+    margin-top: 0.2rem;
+  }
+
+  .rail-label {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    display: flex;
+    align-items: center;
+    padding-right: 0.9rem;
+  }
+
+  .rail-label-sp { color: var(--sp); }
+  .rail-label-ct { color: var(--ct); }
+
+  .cell {
+    border-radius: 3px;
+    padding: 0.55rem 0.6rem;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    line-height: 1.45;
+    min-height: 3.4rem;
+    display: flex;
+    align-items: center;
+  }
+
+  .cell-on-sp {
+    background: var(--sp-tint);
+    border-left: 3px solid var(--sp);
+    color: var(--ink);
+  }
+
+  .cell-on-ct {
+    background: var(--ct-tint);
+    border-left: 3px solid var(--ct);
+    color: var(--ink);
+  }
+
+  .cell-off {
+    border-left: 3px solid var(--rule);
+    background: transparent;
+    color: var(--ink-3);
+    justify-content: center;
+  }
+
+  .rail-note {
+    font-size: 0.88rem;
+    color: var(--ink-2);
+    max-width: 70ch;
+  }
+
+  /* load-in for rail cells */
+  .cell-on-sp, .cell-on-ct { animation: rise 0.5s ease-out both; }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(5px); }
+    to   { opacity: 1; transform: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cell-on-sp, .cell-on-ct { animation: none; }
+  }
+
+  /* ---------- overlap cards ---------- */
+
+  .overlaps {
+    display: flex;
+    flex-direction: column;
+    gap: 1.1rem;
+  }
+
+  .ov {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .ov-head {
+    padding: 1rem 1.2rem 0.85rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.7rem;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+
+  .ov-lanes {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .lane {
+    padding: 1rem 1.2rem 1.15rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .lane-sp { background: var(--sp-tint); }
+  .lane-ct { background: var(--ct-tint); border-left: 1px solid var(--rule-soft); }
+
+  .lane-tag {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+
+  .lane-sp .lane-tag { color: var(--sp); }
+  .lane-ct .lane-tag { color: var(--ct); }
+
+  .lane p { font-size: 0.9rem; color: var(--ink-2); }
+
+  .ov-diff {
+    padding: 0.9rem 1.2rem 1rem;
+    border-top: 1px solid var(--rule-soft);
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .ov-diff .eyebrow { color: var(--ink-3); }
+
+  .ov-diff p {
+    font-family: var(--serif);
+    font-size: 1.06rem;
+    line-height: 1.45;
+    color: var(--ink);
+  }
+
+  @media (max-width: 720px) {
+    .ov-lanes { grid-template-columns: 1fr; }
+    .lane-ct { border-left: 0; border-top: 1px solid var(--rule-soft); }
+  }
+
+  /* ---------- unique columns ---------- */
+
+  .uniques {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 1.1rem;
+    align-items: start;
+  }
+
+  .uniq {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-top-width: 3px;
+    border-radius: 4px;
+    padding: 1.2rem 1.3rem 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .uniq-sp { border-top-color: var(--sp); }
+  .uniq-ct { border-top-color: var(--ct); }
+
+  .uniq-title {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+  }
+
+  .uniq-sp .uniq-title { color: var(--sp); }
+  .uniq-ct .uniq-title { color: var(--ct); }
+
+  .items {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    list-style: none;
+  }
+
+  .items li {
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+    padding-left: 0.9rem;
+    border-left: 2px solid var(--rule);
+  }
+
+  .uniq-sp .items li { border-left-color: var(--sp-edge); }
+  .uniq-ct .items li { border-left-color: var(--ct-edge); }
+
+  .items strong { font-weight: 650; font-size: 0.94rem; }
+  .items span { font-size: 0.88rem; color: var(--ink-2); }
+
+  /* ---------- compose / collide ---------- */
+
+  .stack {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 1.1rem;
+    align-items: start;
+  }
+
+  .box {
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--card);
+    padding: 1.2rem 1.3rem 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .box-flag { border-color: var(--flag-tint); background: var(--flag-tint); }
+  .box-flag .box-title { color: var(--flag); }
+  .box-flag .items li { border-left-color: var(--flag); }
+
+  .box-title {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--ct);
+  }
+
+  /* ---------- quotes & ledger ---------- */
+
+  .quote {
+    border-left: 3px solid var(--sp);
+    background: var(--sp-tint);
+    padding: 0.75rem 1rem;
+    border-radius: 0 3px 3px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .quote p {
+    font-family: var(--serif);
+    font-size: 1.02rem;
+    line-height: 1.45;
+    color: var(--ink);
+  }
+
+  .quote cite {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-style: normal;
+    color: var(--ink-3);
+  }
+
+  .ledger {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+
+  .ledger-row {
+    display: grid;
+    grid-template-columns: 1fr 130px 5rem;
+    gap: 0.8rem;
+    align-items: baseline;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--rule-soft);
+    font-size: 0.88rem;
+  }
+
+  .bar-track {
+    width: 130px;
+    height: 0.5rem;
+    background: var(--rule);
+    border-radius: 2px;
+    align-self: center;
+    overflow: hidden;
+  }
+
+  @media (max-width: 560px) {
+    .ledger-row { grid-template-columns: 1fr 4.5rem; }
+    .bar-track { display: none; }
+  }
+
+  .ledger-row .who { color: var(--ink); }
+  .ledger-row .who em { color: var(--ink-3); font-style: normal; font-size: 0.82rem; }
+
+  .ledger-row .amt {
+    font-family: var(--mono);
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    color: var(--ink);
+  }
+
+  .bar {
+    height: 0.5rem;
+    border-radius: 2px;
+    background: var(--sp);
+    align-self: center;
+  }
+
+  .ledger-total {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding-top: 0.15rem;
+  }
+
+  .verdict {
+    border: 1px solid var(--ct-edge);
+    background: var(--ct-tint);
+    border-radius: 4px;
+    padding: 1.1rem 1.25rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .verdict p { font-size: 0.95rem; color: var(--ink-2); max-width: 74ch; }
+  .verdict p strong { color: var(--ink); }
+  .verdict .box-title { color: var(--ct); }
+
+  /* ---------- durability ladder ---------- */
+
+  .rungs {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .rung {
+    display: grid;
+    grid-template-columns: 1.4rem minmax(9rem, 1fr) 1.6fr;
+    gap: 0.9rem;
+    align-items: baseline;
+    padding: 0.7rem 0.85rem;
+    border-radius: 3px;
+    border-left: 3px solid var(--rule);
+    background: var(--card-2);
+  }
+
+  .rung .n {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .rung .what { font-weight: 650; font-size: 0.92rem; }
+  .rung .eg { color: var(--ink-2); font-size: 0.86rem; }
+  .rung .eg code { white-space: normal; }
+
+  .rung-a { border-left-color: var(--ct); background: var(--ct-tint); }
+  .rung-b { border-left-color: var(--ct-edge); }
+  .rung-e { border-left-color: var(--flag); background: var(--flag-tint); }
+
+  @media (max-width: 640px) {
+    .rung { grid-template-columns: 1.4rem 1fr; }
+    .rung .eg { grid-column: 2; }
+  }
+
+  .principle {
+    border-top: 2px solid var(--ct);
+    border-bottom: 1px solid var(--rule);
+    padding: 1.2rem 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .principle p {
+    font-family: var(--serif);
+    font-size: clamp(1.15rem, 2.6vw, 1.5rem);
+    line-height: 1.35;
+    color: var(--ink);
+    max-width: 40ch;
+    text-wrap: balance;
+  }
+
+  /* ---------- footer ---------- */
+
+  .method {
+    border-top: 1px solid var(--rule);
+    padding-top: 1.1rem;
+    font-size: 0.85rem;
+    color: var(--ink-3);
+    max-width: 72ch;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">Claude Code extensions · comparison · 3 August 2026</p>
+    <h1>One writes the rules down. The other wires them into the harness.</h1>
+    <p class="lede">
+      <strong>superpowers</strong> ships fourteen skill documents and a single hook that tells the model
+      those documents exist. <strong>claudetools</strong> ships one skill document and ten hook scripts
+      across six lifecycle events. Almost every overlap and every gap between the two projects falls out
+      of that one structural difference.
+    </p>
+    <p class="lede">Both, however, are optimizing the same thing — token spend across delegated work —
+      and they reached the same invariant independently. Where they disagree is worth more than where
+      they overlap: <a href="#economics">delegation economics</a>.</p>
+
+    <div class="parties">
+      <div class="party party-sp">
+        <p class="party-name">obra/superpowers <span class="party-ver">v6.2.0</span></p>
+        <p class="party-role">The document layer</p>
+        <p>A methodology library. The unit of delivery is a <code>SKILL.md</code> the model reads and
+          chooses to follow. Covers what process to run — brainstorm, plan, test-first, debug, verify —
+          and which model tier each dispatch deserves.</p>
+      </div>
+      <div class="party party-ct">
+        <p class="party-name">claudetools <span class="party-ver">4 plugins</span></p>
+        <p class="party-role">The control layer</p>
+        <p>A harness library. The unit of delivery is a hook that injects, rewrites, or blocks. Covers who
+          executes the work and what is allowed to reach your context — with the model fixed in the role
+          definition rather than chosen per dispatch.</p>
+      </div>
+    </div>
+
+    <nav class="toc" aria-label="Contents">
+      <a href="#structure">What each contains</a>
+      <a href="#lifecycle">Where each hooks in</a>
+      <a href="#economics" class="lead">Delegation economics</a>
+      <a href="#overlap">Genuine overlap</a>
+      <a href="#alone">What each has alone</a>
+      <a href="#together">Running both</a>
+      <a href="#rationale">Why gates</a>
+    </nav>
+  </header>
+
+  <section class="section" id="structure">
+    <div class="section-head">
+      <p class="eyebrow">What each repo actually contains</p>
+      <h2>Same platform, opposite build</h2>
+    </div>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Property</th>
+            <th scope="col" class="col-sp">superpowers</th>
+            <th scope="col" class="col-ct">claudetools</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>unit of delivery</td>
+            <td>Skill documents</td>
+            <td>Hook scripts</td>
+          </tr>
+          <tr>
+            <td>enforcement</td>
+            <td>Advisory — the model reads and complies</td>
+            <td>Mechanical — injected, rewritten, or denied</td>
+          </tr>
+          <tr>
+            <td>skills</td>
+            <td><span class="num">14</span></td>
+            <td><span class="num">1</span></td>
+          </tr>
+          <tr>
+            <td>agent definitions</td>
+            <td><span class="num">0</span> registered — but three role prompt templates, each requiring
+              an explicit <code>model:</code></td>
+            <td><span class="num">6</span> — five hierarchy roles + one runner</td>
+          </tr>
+          <tr>
+            <td>slash commands</td>
+            <td><span class="num">0</span> — no <code>commands/</code> directory</td>
+            <td><span class="num">3</span></td>
+          </tr>
+          <tr>
+            <td>hook scripts</td>
+            <td><span class="num">1</span></td>
+            <td><span class="num">10</span></td>
+          </tr>
+          <tr>
+            <td>lifecycle events hooked</td>
+            <td><span class="num">1</span> — <code>SessionStart</code></td>
+            <td><span class="num">6</span> — see the rail below</td>
+          </tr>
+          <tr>
+            <td>plugins in repo</td>
+            <td><span class="num">1</span> (+ 10 in a sibling marketplace)</td>
+            <td><span class="num">4</span></td>
+          </tr>
+          <tr>
+            <td>host platforms</td>
+            <td>Claude Code, Codex, Cursor, Kimi, Gemini, opencode</td>
+            <td>Claude Code only</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="section" id="lifecycle">
+    <div class="section-head">
+      <p class="eyebrow">The structural argument</p>
+      <h2>Where each project touches the request lifecycle</h2>
+    </div>
+
+    <p class="rail-note">
+      Every Claude Code plugin intervenes at one or more harness events. superpowers takes exactly one
+      seat — it introduces itself at session start and everything after that is persuasion. claudetools
+      sits at six, including the two that can change outcomes rather than suggest them:
+      <code>PreToolUse</code>, which can deny a call outright, and the same hook's ability to rewrite a
+      dispatch prompt before it leaves.
+    </p>
+
+    <div class="rail-scroll">
+      <div class="rail">
+        <div class="rail-corner"></div>
+        <div class="rail-event">SessionStart<span>context injection</span></div>
+        <div class="rail-event">UserPromptSubmit<span>per-turn injection</span></div>
+        <div class="rail-event">PreToolUse<span>gate &amp; rewrite</span></div>
+        <div class="rail-event">PostToolUse<span>after the edit</span></div>
+        <div class="rail-event">SubagentStart<span>child context</span></div>
+        <div class="rail-event">SubagentStop<span>accounting</span></div>
+
+        <div class="rail-label rail-label-sp">superpowers</div>
+        <div class="cell cell-on-sp">session-start<br>startup | clear | compact</div>
+        <div class="cell cell-off">—</div>
+        <div class="cell cell-off">—</div>
+        <div class="cell cell-off">—</div>
+        <div class="cell cell-off">—</div>
+        <div class="cell cell-off">—</div>
+
+        <div class="rail-label rail-label-ct">claudetools</div>
+        <div class="cell cell-on-ct">all 4 plugins<br>+ resume, fork</div>
+        <div class="cell cell-on-ct">task-gopher</div>
+        <div class="cell cell-on-ct">output-discipline (Bash)<br>task-gopher (Agent&nbsp;rewrite)</div>
+        <div class="cell cell-on-ct">comment-discipline<br>Edit | Write | NotebookEdit</div>
+        <div class="cell cell-on-ct">comment-discipline</div>
+        <div class="cell cell-on-ct">agent-hierarchy<br>token accounting</div>
+      </div>
+    </div>
+
+    <p class="rail-note">
+      One detail worth noting: superpowers matches <code>startup|clear|compact</code>, so its mandate is
+      absent on a <em>resumed</em> session. Every claudetools plugin also matches <code>resume</code>, and
+      two of them match <code>fork</code>. Under both installs, a resumed session keeps your rules and
+      loses theirs.
+    </p>
+  </section>
+
+  <section class="section" id="economics">
+    <div class="section-head">
+      <p class="eyebrow">Deep dive · delegation economics</p>
+      <h2>Both are optimizing token spend. They disagree about how.</h2>
+    </div>
+
+    <p class="prose">
+      The easy reading is that superpowers delegates for focus and claudetools delegates for cost. That
+      reading is wrong. superpowers ships a four-tier model policy with an explicit cost thesis, and its
+      design notes carry per-run dollar figures. The two projects independently arrived at the same
+      invariant, in almost the same words.
+    </p>
+
+    <div class="stack">
+      <div class="quote">
+        <p>“Use the least powerful model that can handle each role to conserve cost and increase
+          speed.”</p>
+        <cite>superpowers · subagent-driven-development/SKILL.md — shipped</cite>
+      </div>
+      <div class="quote" style="border-left-color: var(--ct); background: var(--ct-tint);">
+        <p>“Keep for yourself: ALL reasoning — design decisions, correctness/security judgment,
+          tradeoffs… For a task that needs reasoning, SPLIT it: have the runner gather the raw material
+          and return a compact report, then you reason over the report.”</p>
+        <cite>claudetools · task-gopher directive — shipped</cite>
+      </div>
+    </div>
+
+    <p class="prose">
+      That is convergent evolution, not overlap to be resolved. Two projects reaching the same rule from
+      different directions is evidence the rule is correct. superpowers' internal design notes put the
+      same guardrail more sharply still — “cheapen mechanics, never judgment,” with the requirement that
+      every cheapened decision be shown <em>mechanical</em>: deterministic, scriptable, or cheaply
+      verifiable after the fact. The disagreements are all downstream of the shared rule.
+    </p>
+
+    <div class="overlaps">
+
+      <article class="ov">
+        <div class="ov-head">
+          <h3>Divergence 1 — where the model decision lives</h3>
+          <p class="eyebrow">the sharpest difference</p>
+        </div>
+        <div class="ov-lanes">
+          <div class="lane lane-sp">
+            <p class="lane-tag">superpowers · per dispatch</p>
+            <p>The controller picks a tier every time, from a ladder: mechanical 1–2 file tasks → cheap;
+              multi-file integration → standard; architecture and the final whole-branch review → most
+              capable; reviews scaled to the diff's risk; a stuck fix-loop escalates “at least one tier
+              above the implementer that got stuck.”</p>
+          </div>
+          <div class="lane lane-ct">
+            <p class="lane-tag">claudetools · per role</p>
+            <p>The model is assigned once, to a role, and lives in the agent definition —
+              <code>/hierarchy set reviewer opus</code>, task-gopher hard-pinned to Haiku. The dispatching
+              agent does not choose and cannot forget.</p>
+          </div>
+        </div>
+        <div class="ov-diff">
+          <p class="eyebrow">Why it matters</p>
+          <p>superpowers documents the failure mode itself: an omitted <code>model:</code> “inherits your
+            session's model — often the most capable and most expensive — which silently defeats this
+            section.” A policy written in prose has to be remembered at every dispatch. A policy written
+            in frontmatter does not.</p>
+        </div>
+      </article>
+
+      <article class="ov">
+        <div class="ov-head">
+          <h3>Divergence 2 — how cheap is too cheap</h3>
+          <p class="eyebrow">a direct empirical challenge</p>
+        </div>
+        <div class="ov-lanes">
+          <div class="lane lane-sp">
+            <p class="lane-tag">superpowers · mid-tier floor</p>
+            <p>“<strong>Turn count beats token price.</strong> Wall-clock and context cost scale with how
+              many turns a subagent takes, and the cheapest models routinely take 2–3× the turns on
+              multi-step work — costing more overall.” The cheapest tier is reserved for transcription
+              (the plan already contains the code) and single-file mechanical fixes.</p>
+          </div>
+          <div class="lane lane-ct">
+            <p class="lane-tag">claudetools · unconditional Haiku</p>
+            <p>task-gopher pins the runner to Haiku for all retrieval and execution legwork, with an
+              escape hatch: if the runner returns too little, take it over or re-dispatch <em>once</em>
+              with a sharper order before giving up.</p>
+          </div>
+        </div>
+        <div class="ov-diff">
+          <p class="eyebrow">Who is right</p>
+          <p>Probably both, because the scopes differ. task-gopher's remit — grep, read, run a command,
+            report — is close to what superpowers carves out for the cheapest tier anyway. But the
+            escape hatch is an admission that re-dispatch happens, and a re-dispatch is exactly the
+            2–3× turn multiplier they measured.</p>
+        </div>
+      </article>
+
+    </div>
+
+    <div class="stack">
+      <div class="box">
+        <p class="box-title">DIVERGENCE 3 — WHAT GETS MEASURED</p>
+        <p style="font-size:0.92rem;color:var(--ink-2);max-width:70ch;">
+          superpowers' design spec breaks one plan-execution run down by component. The shape of that
+          breakdown is the most useful thing in either repo for anyone tuning delegation:
+        </p>
+        <div class="ledger">
+          <div class="ledger-row">
+            <span class="who">Controller <em>— session model, opus</em></span>
+            <span class="bar-track"><span class="bar" style="width:100%"></span></span>
+            <span class="amt">$6–7</span>
+          </div>
+          <div class="ledger-row">
+            <span class="who">Implementers <em>— sonnet, 10–13 dispatches</em></span>
+            <span class="bar-track"><span class="bar" style="width:85%"></span></span>
+            <span class="amt">$5–6</span>
+          </div>
+          <div class="ledger-row">
+            <span class="who">Task reviewers <em>— sonnet, 10</em></span>
+            <span class="bar-track"><span class="bar" style="width:20%"></span></span>
+            <span class="amt">$1–1.5</span>
+          </div>
+          <div class="ledger-row">
+            <span class="who">Final review + fixes</span>
+            <span class="bar-track"><span class="bar" style="width:15%"></span></span>
+            <span class="amt">$1</span>
+          </div>
+          <p class="ledger-total"><span>one run, measured config</span><span>≈ $13</span></p>
+        </div>
+        <p style="font-size:0.92rem;color:var(--ink-2);max-width:70ch;">
+          The controller is the single largest line item — driven by “~150 turns × resident context” with
+          a “prompt-immune turn floor (46% thinking/narration).” Not the workers. The workers are the
+          cheap part.
+        </p>
+      </div>
+
+      <div class="verdict">
+        <p class="box-title">WHAT THIS IMPLIES FOR CLAUDETOOLS</p>
+        <p><strong>The measurement validates output-discipline more than it validates the Haiku pin.</strong>
+          If the coordinator's resident context is half the bill, then the highest-value lever is
+          whatever keeps tool output out of the orchestrator — the <code>PreToolUse</code> Bash gate and
+          task-gopher's “dispatch must COMPRESS” rule — not which model runs the grep.</p>
+        <p><strong>“Prompt-immune turn floor” is a warning about directive stacking.</strong> They measured
+          46% of controller turns going to thinking and narration and found it did not respond to prompt
+          changes. claudetools injects four directives at <code>SessionStart</code>; that is a cost
+          hypothesis worth testing rather than assuming.</p>
+        <p><strong>The methodology is the borrowable part.</strong> Blind A/B with a planted-defect quality
+          gate over N=5 runs is a real answer to “did this actually save money, or move it.”
+          <code>/hierarchy usage</code> already collects the spend side at zero model cost; pairing it with
+          a quality gate is the next step, and superpowers has demonstrated the shape.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="overlap">
+    <div class="section-head">
+      <p class="eyebrow">Genuine overlap — three more cases</p>
+      <h2>The same problem, approached on a different axis</h2>
+    </div>
+
+    <div class="overlaps">
+
+      <article class="ov">
+        <div class="ov-head">
+          <h3>Separating the plan from the build</h3>
+        </div>
+        <div class="ov-lanes">
+          <div class="lane lane-sp">
+            <p class="lane-tag">superpowers</p>
+            <p><code>writing-plans</code> produces a document of self-contained 2–5 minute tasks;
+              <code>executing-plans</code> loads it in a fresh session, reviews it critically, and works
+              through it with verification checkpoints.</p>
+          </div>
+          <div class="lane lane-ct">
+            <p class="lane-tag">claudetools</p>
+            <p>The Architect writes a spec file at a dictated path and cannot run anything — no
+              <code>Edit</code>, no <code>Bash</code>. The Implementor reads that spec, and when the spec
+              is silent or wrong it stops and reports upward rather than choosing.</p>
+          </div>
+        </div>
+        <div class="ov-diff">
+          <p class="eyebrow">The difference</p>
+          <p>superpowers separates plan from build <em>in time</em> — two sessions, one artifact between
+            them. claudetools separates them <em>by capability</em>: the planner is denied the tools that
+            would let it start building.</p>
+        </div>
+      </article>
+
+      <article class="ov">
+        <div class="ov-head">
+          <h3>Code review as a dispatched role</h3>
+        </div>
+        <div class="ov-lanes">
+          <div class="lane lane-sp">
+            <p class="lane-tag">superpowers</p>
+            <p><code>requesting-code-review</code> dispatches a reviewer at milestones with hand-crafted
+              context. <code>receiving-code-review</code> covers the other half — verify the feedback is
+              technically correct instead of performing agreement.</p>
+          </div>
+          <div class="lane lane-ct">
+            <p class="lane-tag">claudetools</p>
+            <p>The hierarchy's Reviewer is read-only by construction and never executes — it delegates
+              every test run to the runner. Each finding is classified <em>impl-defect</em> or
+              <em>spec-defect</em>, which routes it back to the Implementor or the Architect.</p>
+          </div>
+        </div>
+        <div class="ov-diff">
+          <p class="eyebrow">The difference</p>
+          <p>superpowers is the only one of the two with anything to say about <em>receiving</em> a
+            review. claudetools is the only one that turns a verdict into a routing decision.</p>
+        </div>
+      </article>
+
+      <article class="ov">
+        <div class="ov-head">
+          <h3>Surviving compaction via SessionStart</h3>
+        </div>
+        <div class="ov-lanes">
+          <div class="lane lane-sp">
+            <p class="lane-tag">superpowers</p>
+            <p>Injects the <code>using-superpowers</code> skill body wrapped in
+              <code>&lt;EXTREMELY_IMPORTANT&gt;</code>, declaring that skills exist and must be invoked
+              before any response — including before asking a clarifying question.</p>
+          </div>
+          <div class="lane lane-ct">
+            <p class="lane-tag">claudetools</p>
+            <p>All four plugins inject at SessionStart, and each injects the rule text itself rather than
+              a pointer to it — the delegation directive, the comment rule, the command-output rules.</p>
+          </div>
+        </div>
+        <div class="ov-diff">
+          <p class="eyebrow">The difference</p>
+          <p>Identical mechanism, opposite payload. superpowers injects a <em>table of contents</em> and
+            spends its budget on discovery; claudetools injects the <em>rules</em> and spends its budget
+            on compliance.</p>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <section class="section" id="alone">
+    <div class="section-head">
+      <p class="eyebrow">No counterpart on the other side</p>
+      <h2>What each one has alone</h2>
+    </div>
+
+    <div class="uniques">
+
+      <div class="uniq uniq-ct">
+        <p class="uniq-title">ONLY IN CLAUDETOOLS</p>
+        <ul class="items">
+          <li>
+            <strong>Hard blocking</strong>
+            <span>A <code>PreToolUse</code> gate denies <code>tail -f</code>, <code>watch</code>, and
+              unfiltered test runs before they execute. superpowers registers no PreToolUse hook at all,
+              so nothing it asks for is enforceable.</span>
+          </li>
+          <li>
+            <strong>Rewriting a dispatch in flight</strong>
+            <span>task-gopher edits the <code>Agent</code> tool's prompt via <code>updatedInput</code> so
+              every subagent carries the directive. An undocumented harness capability with no analogue
+              in superpowers.</span>
+          </li>
+          <li>
+            <strong>Policy that reaches subagents</strong>
+            <span>comment-discipline uses <code>SubagentStart</code>; task-gopher uses the Agent rewrite.
+              superpowers deliberately hands each subagent hand-crafted context and never the session's
+              history — a sound choice for <em>task</em> context, but it leaves standing
+              <em>policy</em> with no channel at all.</span>
+          </li>
+          <li>
+            <strong>Per-role model assignment</strong>
+            <span><code>/hierarchy</code> pins a model to each of the six roles, and
+              <code>SubagentStop</code> records usage per role at zero token cost.</span>
+          </li>
+          <li>
+            <strong>Tool denial as design</strong>
+            <span>Reasoning roles are denied execution; the Reviewer is denied writes. superpowers ships
+              no agent definitions, so it has no place to express this.</span>
+          </li>
+          <li>
+            <strong>Model choice that cannot be omitted</strong>
+            <span>The model lives in the agent definition, not in the dispatch prompt. superpowers warns
+              that an omitted <code>model:</code> "silently defeats" its own cost section — a failure mode
+              that is structurally impossible here.</span>
+          </li>
+          <li>
+            <strong>Context-flood defense</strong>
+            <span>Capture to a file, grep it, report the exit code; background long processes and wait on
+              a line. An entire discipline with no counterpart.</span>
+          </li>
+          <li>
+            <strong>Comment hygiene</strong>
+            <span>Re-injected after every <code>Edit</code>/<code>Write</code>, because the rule decays
+              exactly when the model is mid-diff.</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="uniq uniq-sp">
+        <p class="uniq-title">ONLY IN SUPERPOWERS</p>
+        <ul class="items">
+          <li>
+            <strong>Test-driven development</strong>
+            <span>Red–green–refactor as a mandated cycle: the failing test comes before the
+              implementation. claudetools has no opinion on testing whatsoever.</span>
+          </li>
+          <li>
+            <strong>A brainstorming gate</strong>
+            <span>Required before any creative work — a nine-step pass over intent and requirements
+              before code is touched.</span>
+          </li>
+          <li>
+            <strong>Systematic debugging</strong>
+            <span>Four phases — investigation, pattern analysis, hypothesis testing, implementation —
+              before any fix is proposed.</span>
+          </li>
+          <li>
+            <strong>Verification before completion</strong>
+            <span>Run the command fresh and read the output before claiming anything passes. Evidence
+              before assertion.</span>
+          </li>
+          <li>
+            <strong>Workspace isolation and landing</strong>
+            <span>Worktree detection and setup up front; then merge, PR, or keep-as-is with cleanup
+              once the tests pass.</span>
+          </li>
+          <li>
+            <strong>A meta-skill for authoring skills</strong>
+            <span><code>writing-skills</code> teaches test-driven documentation: baseline the agent's
+              behavior first, then write the reference, then verify compliance changed.</span>
+          </li>
+          <li>
+            <strong>Portability</strong>
+            <span>Manifests for Codex, Cursor, Kimi, Gemini, and opencode. Documents travel between
+              hosts; hooks do not.</span>
+          </li>
+          <li>
+            <strong>Measured cost, not asserted cost</strong>
+            <span>A design spec carrying per-run dollar figures, a component-level cost breakdown, and
+              quality gates over N=5 runs with blind A/B parity. claudetools collects per-role spend at
+              zero model cost; the matching quality gate is open work.</span>
+          </li>
+          <li>
+            <strong>An ecosystem around it</strong>
+            <span>A sibling marketplace with ten plugins — Chrome DevTools access, episodic memory over
+              past sessions, a private journal MCP, a session driver.</span>
+          </li>
+        </ul>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="section" id="together">
+    <div class="section-head">
+      <p class="eyebrow">Running both</p>
+      <h2>Where they compose, and where they fight</h2>
+    </div>
+
+    <div class="stack">
+
+      <div class="box">
+        <p class="box-title">COMPOSES WELL</p>
+        <ul class="items">
+          <li>
+            <strong>verification-before-completion × output-discipline</strong>
+            <span>superpowers demands you run the command and read the output. That is precisely the
+              flood output-discipline gates. Together they produce the right shape: run it, capture it,
+              grep it, report the exit code.</span>
+          </li>
+          <li>
+            <strong>subagent-driven-development × the task-gopher relay</strong>
+            <span>superpowers is right that a subagent should not inherit your session history — but
+              standing policy is not history. The <code>PreToolUse</code> Agent rewrite carries rules to
+              every child without carrying the transcript.</span>
+          </li>
+          <li>
+            <strong>Skills as the what, hooks as the who</strong>
+            <span>Fourteen documents describing a process, plus a control plane deciding which model
+              runs each step and what it may touch. Neither repo covers the other's half.</span>
+          </li>
+          <li>
+            <strong>TDD × the hierarchy</strong>
+            <span>The Implementor is the natural home for red–green–refactor, and the Reviewer's
+              spec-defect classification is a cleaner destination for a failing test than a generic
+              review comment.</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="box box-flag">
+        <p class="box-title">FRICTION TO EXPECT</p>
+        <ul class="items">
+          <li>
+            <strong>Contention for the top of the context</strong>
+            <span>superpowers wraps its injection in <code>&lt;EXTREMELY_IMPORTANT&gt;</code> and demands
+              a skill invocation before any response. task-gopher demands a dispatch first. Two
+              "before you do anything" mandates arriving in the same block.</span>
+          </li>
+          <li>
+            <strong>Two org charts for one question</strong>
+            <span><code>writing-plans</code>/<code>executing-plans</code> and Architect→Implementor are
+              competing answers to the same problem. Running both is redundancy, not depth — pick
+              one and let the other stay uninstalled.</span>
+          </li>
+          <li>
+            <strong>Asymmetric survival on resume</strong>
+            <span>superpowers does not match <code>resume</code>. On a resumed session your directives
+              are present and its mandate is not, so behavior silently diverges from a fresh
+              session.</span>
+          </li>
+          <li>
+            <strong>Skills that ask for denied tools</strong>
+            <span><code>dispatching-parallel-agents</code> assumes the caller can dispatch. Inside an
+              agent-hierarchy reasoning role, that tool may be denied — the skill will ask for something
+              the role cannot do.</span>
+          </li>
+        </ul>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="section" id="rationale">
+    <div class="section-head">
+      <p class="eyebrow">Design rationale</p>
+      <h2>Why gates, and where they stop working</h2>
+    </div>
+
+    <p class="prose">
+      The failure this repo exists to prevent is not disobedience. No model reads “delegate the legwork”
+      and decides to defy it. What happens is <strong>erosion through locally-reasonable exceptions</strong>:
+      this grep is tiny, that file is half in context already, dispatching has overhead, the answer is
+      needed now. Every individual call is defensible. The aggregate is the directive ignored.
+    </p>
+
+    <p class="prose">
+      Prose defends against this badly, because the rationalization feels like judgment from the inside —
+      and judgment is exactly what the model has been told to keep for itself. So the useful question is
+      not “is this rule written down” but <strong>how many times must the model choose to obey it</strong>.
+      That gives a ladder.
+    </p>
+
+    <div class="rungs">
+      <div class="rung rung-a">
+        <span class="n">1</span>
+        <span class="what">Structurally impossible</span>
+        <span class="eg">The decision does not exist to be eroded — model pinned in agent frontmatter,
+          Reviewer denied <code>Write</code>, Architect denied <code>Bash</code>.</span>
+      </div>
+      <div class="rung rung-b">
+        <span class="n">2</span>
+        <span class="what">Hard-denied</span>
+        <span class="eg">Blocked at <code>PreToolUse</code> — output-discipline's Bash gate. Only safe for
+          machine-checkable invariants: <code>tail -f</code> is wrong every time.</span>
+      </div>
+      <div class="rung rung-b">
+        <span class="n">3</span>
+        <span class="what">Checkpoint, with an escape hatch</span>
+        <span class="eg">Interrupted, must be justified, may proceed — task-gopher's strict mode. For
+          rules where the call genuinely needs judgment and a deny would sometimes be wrong.</span>
+      </div>
+      <div class="rung">
+        <span class="n">4</span>
+        <span class="what">Injected directive</span>
+        <span class="eg">Restated at <code>SessionStart</code>, <code>SubagentStart</code>,
+          <code>PostToolUse</code> — survives compaction, but is still re-decided every turn.</span>
+      </div>
+      <div class="rung rung-e">
+        <span class="n">5</span>
+        <span class="what">Prose in a document</span>
+        <span class="eg">Read once, decays with distance and context pressure. A <code>CLAUDE.md</code>
+          paragraph, a <code>SKILL.md</code> section.</span>
+      </div>
+    </div>
+
+    <div class="principle">
+      <p class="eyebrow">The principle underneath</p>
+      <p>A directive is a decision the model must re-make every turn. A structure is a decision made
+        once.</p>
+    </div>
+
+    <p class="prose">
+      Read that way, the strongest work in this repo is not the blocking — it is rung 1. A model pinned in
+      an agent definition is not <em>enforced</em>, it is <strong>unforgettable</strong>: there is no
+      per-dispatch choice left to erode. The gates are the enforcement arm of a larger principle, which is
+      to move policy out of the space of per-turn decisions entirely, and to gate only what has to stay
+      behavioral. <strong>Gate mechanics; nudge judgment.</strong>
+    </p>
+
+    <p class="prose">
+      The strongest independent evidence for this comes from the other side of this comparison. superpowers
+      closes its Model Selection section with a confession about its own medium:
+    </p>
+
+    <div class="quote">
+      <p>“Always specify the model explicitly when dispatching a subagent. An omitted model inherits your
+        session's model — often the most capable and most expensive — <strong>which silently defeats this
+        section</strong>.”</p>
+      <cite>superpowers · subagent-driven-development/SKILL.md</cite>
+    </div>
+
+    <p class="prose">
+      That is a document observing that documents fail, and prescribing more document. Their own
+      measurement found the ceiling directly: a “prompt-immune turn floor” of 46% of controller turns
+      spent on thinking and narration that <em>did not respond to prompt changes</em>. They located the
+      limit of prompt-only control empirically and kept building beneath it.
+    </p>
+
+    <div class="stack">
+      <div class="box box-flag">
+        <p class="box-title">WHERE THIS ARGUMENT STOPS</p>
+        <ul class="items">
+          <li>
+            <strong>Judgment cannot be gated.</strong>
+            <span>“Is this step reasoning or legwork?” is not machine-checkable, which is why task-gopher
+              ships a checkpoint rather than a deny. The thing you most want — good delegation
+              <em>decisions</em> — lives on the nudge side of the line and always will. Hooks compress the
+              rationalization space; they cannot close it.</span>
+          </li>
+          <li>
+            <strong>Every gate is a tax on every turn.</strong>
+            <span>False positives cost real time — this repo already documents one. And each injected
+              directive is resident context on every request, which is the exact line item superpowers
+              measured as the largest cost in their system. Four directives is fine; the drift toward ten
+              is where a control plane starts costing what it saves.</span>
+          </li>
+          <li>
+            <strong>Compliance is demonstrated; efficacy is not.</strong>
+            <span>That the gates fire and change behavior is observable. Whether gated delegation nets out
+              cheaper than good prompts plus nothing is measured nowhere — by either project. Applying the
+              same standard to these plugins that they apply to the model is the open work.</span>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="verdict">
+    <div class="section-head">
+      <p class="eyebrow">The short version</p>
+      <h2>They are not competitors</h2>
+    </div>
+    <p class="prose">
+      Both projects talk about subagents, plans, and review, but superpowers describes those as
+      <em>processes a model should choose to follow</em> and claudetools implements them as
+      <em>constraints a model cannot route around</em>. superpowers would gain enforcement from these
+      hooks; claudetools would gain a methodology it has no opinion about, and a measurement discipline
+      it has not yet applied to itself.
+    </p>
+    <p class="prose" style="margin-top:0.9rem;">
+      Two pieces are genuinely duplicated, and each is a decision rather than a merge: the plan-then-build
+      split (<code>writing-plans</code>/<code>executing-plans</code> versus Architect→Implementor), and
+      the model-tier policy — where the same rule is written twice, once as prose the controller reads at
+      dispatch time and once as a value fixed in an agent definition.
+    </p>
+  </section>
+
+  <footer class="method">
+    <p class="eyebrow">Method</p>
+    <p>claudetools read from the local working tree on 3 August 2026 — agent-hierarchy 0.6.0,
+      comment-discipline 0.3.0, output-discipline 0.1.2, task-gopher 0.7.1. superpowers read from a
+      shallow clone at <code>44c9b2d</code> (2026-07-27), v6.2.0: repo contents,
+      <code>plugin.json</code>, <code>hooks/hooks.json</code>, all fourteen <code>SKILL.md</code>
+      frontmatters, and the sibling <code>obra/superpowers-marketplace</code> manifest.</p>
+    <p>The delegation-economics section reads the shipped
+      <code>skills/subagent-driven-development/SKILL.md</code> — its Model Selection section and dispatch
+      prompt templates — plus <code>skills/requesting-code-review/SKILL.md</code>. The dollar figures come
+      from <code>docs/superpowers/specs/2026-06-10-strict-cost-sdd-design.md</code>, which describes a
+      measured configuration but labels its own proposals “Proposed experiment ladder (not
+      implementation)” — the breakdown is measurement, the ladder above it is not shipped behavior.</p>
+    <p>Both projects move quickly; version numbers above are the fixed point this comparison was drawn
+      against. The claudetools plugins are a work in progress and their designs are expected to change as
+      real-world findings come in — where this page reads a difference as a deliberate choice, treat it as
+      the current state rather than a settled position.</p>
+  </footer>
+
+</div>
+
+</body>
+</html>
