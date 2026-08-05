@@ -91,6 +91,34 @@ handoffs", "stop asking" — or with `/hierarchy flow auto|confirm`. The
 Orchestrator updates the config and honors the new mode immediately; no
 restart.
 
+## The escalation gate: the Ultra-Advisor is yours to authorize
+
+The Ultra-Advisor is the apex of the hierarchy and its most expensive tier, and
+"escalate to the best model" is exactly the judgment an Orchestrator is worst
+placed to make about its own work. So it does not get to decide alone: a
+PreToolUse hook **denies the first Ultra-Advisor dispatch of every session** and
+hands back the question to put to you. You answer once:
+
+- **Yes, rest of session** — escalate now and every later time, no more prompts.
+- **Ask me each time** — escalate now; each later escalation prompts again.
+- **No, not this session** — escalation is blocked; the Orchestrator resolves
+  the question with the Architect or inline and says what that leaves
+  unadjudicated.
+
+The answer is **session-scoped only**. It lives in
+`~/.claude/agent-hierarchy.gate.json`, keyed by session, never in
+`agent-hierarchy.json` — a new session always asks again. A standing "yes" that
+outlived the session it was given in would turn a consent gate into a one-time
+formality, which is the failure this is built to avoid.
+
+Everything else passes through untouched: the gate reads only Ultra-Advisor
+dispatches, and is inert when the hierarchy is disabled. In `confirm` flow the
+gate's prompt replaces the ordinary handoff confirmation for that dispatch, so
+you are asked once, not twice.
+
+Change it any time in plain words — "don't use the ultra advisor", "go ahead and
+escalate whenever" — or with `/hierarchy gate [status|session|each|off|reset]`.
+
 ## Usage tracking: zero tokens to count tokens
 
 A `SubagentStop` hook sums each finished subagent's transcript — token counts
@@ -131,6 +159,7 @@ collector's path derivation broke: that is a bug report, not user error.
 /hierarchy status                   # resolved table + where each value came from
 /hierarchy set <role> <model>       # one role (validated per-role)
 /hierarchy flow [auto|confirm]      # who advances the chain
+/hierarchy gate [status|session|each|off|reset]   # Ultra-Advisor escalation gate (this session)
 /hierarchy usage [day|week|month]   # per-role token report
 /hierarchy on | off                 # toggle without losing the config
 ```
@@ -145,13 +174,16 @@ session model would make the tier decorative). `inherit` means "omit the
 ```
 agents/          one contract per role (frontmatter pins model + tool denies)
 hooks/
-  sessionstart.mjs        injects table + protocol (main session only)
-  subagentstop-usage.mjs  zero-token usage collector
-  usage-report.mjs        standalone reporter
-  lib-config.mjs          config resolution + directive text (run directly for status)
-commands/hierarchy.md     the /hierarchy command
-docs/hierarchy.html       static visual map of roles, lanes, and flow
-tests/                    3 suites, 88 cases (HOME-redirected; real config untouched)
+  sessionstart.mjs           injects table + protocol (main session only)
+  pretooluse-ultra-gate.mjs  gates Ultra-Advisor escalation on the user
+  subagentstop-usage.mjs     zero-token usage collector
+  usage-report.mjs           standalone reporter
+  gate.mjs                   escalation-gate CLI (set/status/reset)
+  lib-config.mjs             config resolution + directive text (run directly for status)
+  lib-gate.mjs               session-scoped gate state
+commands/hierarchy.md        the /hierarchy command
+docs/hierarchy.html          static visual map of roles, lanes, and flow
+tests/                       4 suites, 137 cases (HOME-redirected; real config untouched)
 ```
 
 ## License

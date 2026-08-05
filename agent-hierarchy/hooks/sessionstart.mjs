@@ -36,7 +36,7 @@ if (!isSubagent(input)) {
   if (!resolved.configured) {
     context = buildNudge(resolved);
   } else if (resolved.enabled) {
-    context = buildDirective(resolved);
+    context = buildDirective(resolved, input.session_id);
   }
 
   if (context) {

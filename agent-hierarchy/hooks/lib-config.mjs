@@ -23,7 +23,11 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** Absolute path to the escalation-gate CLI, resolved from this file so it survives wherever the plugin is installed. */
+const GATE_CLI = join(dirname(fileURLToPath(import.meta.url)), "gate.mjs");
 
 /** Config schema version this plugin understands. */
 export const CONFIG_VERSION = 1;
@@ -255,8 +259,28 @@ function roleLines(roles) {
   });
 }
 
+/**
+ * The Ultra-Advisor user gate, appended to protocol item 7.
+ *
+ * The gate itself is enforced by the PreToolUse hook; this text exists so the
+ * Orchestrator recognizes the denial as policy rather than a malfunction, and
+ * so a spoken "stop asking about the advisor" can be honored on the spot the
+ * way the flow switch already is.
+ */
+function gateSentences(sessionId) {
+  const lines = [
+    "USER GATE: a PreToolUse hook DENIES the first Ultra-Advisor dispatch of every session until the user approves it. The denial states the exact question to put to them and the exact command that records their answer — follow it verbatim rather than improvising the wording or skipping the record step. Their answer (allow for this session / ask each time / blocked this session) is session-scoped and resets next session. In \"confirm\" flow that prompt REPLACES item 0's confirmation for that dispatch: ask once, not twice.",
+  ];
+  if (sessionId) {
+    lines.push(
+      `This session's gate id is "${sessionId}". To honor a plain-words request ("don't use the ultra advisor", "stop asking me about it", "go ahead without asking") without waiting for a dispatch, run \`node "${GATE_CLI}" set --session "${sessionId}" --choice session|each|off\`; \`node "${GATE_CLI}" status --session "${sessionId}"\` reports the current answer.`
+    );
+  }
+  return lines.join(" ");
+}
+
 /** The full SessionStart injection for a configured, enabled session. */
-export function buildDirective(resolved) {
+export function buildDirective(resolved, sessionId) {
   const confirm = resolved.handoffs === "confirm";
   const lines = [
     "Agent hierarchy ACTIVE. You are the Orchestrator: decompose, dispatch, synthesize — do not design or implement non-trivial changes yourself.",
@@ -276,7 +300,7 @@ export function buildDirective(resolved) {
     "4. Spec handoff: generate one unique absolute spec path (scratchpad dir + task slug), dictate it in the Architect's prompt, and give the same path to Implementor and Reviewer. Dispatches are self-contained — subagents share no context.",
     "5. Living spec: if the Implementor reports a spec gap or a deviation is agreed, amend the spec file (yourself, or re-dispatch the Architect for design questions) BEFORE the Reviewer runs. The Reviewer always validates against the current spec.",
     "6. Review loop: the Reviewer classifies each finding impl-defect or spec-defect. Impl-defects go back to the Implementor, spec-defects to the Architect. Max 2 round-trips; if findings are still open after that, escalate to Ultra-Advisor rather than looping again, then surface its verdict to the user.",
-    "7. Ultra-Advisor — escalation apex, never a routine step. It reasons and adjudicates; it never implements. Dispatch it ONLY when: the user says the problem is hard, important, or high-stakes, or asks for a second opinion; the Architect reports low confidence or a fork it could not resolve; the review loop hits its cap in item 6; or the change carries outsized blast radius (security, auth, data migration, concurrency, a public interface, anything hard to reverse). Give it the same absolute spec path plus the specific question. Its answer is authoritative: fold it into the spec before the Implementor runs again. Do not escalate merely because a task feels large — size is the Architect's job.",
+    `7. Ultra-Advisor — escalation apex, never a routine step. It reasons and adjudicates; it never implements. Dispatch it ONLY when: the user says the problem is hard, important, or high-stakes, or asks for a second opinion; the Architect reports low confidence or a fork it could not resolve; the review loop hits its cap in item 6; or the change carries outsized blast radius (security, auth, data migration, concurrency, a public interface, anything hard to reverse). Give it the same absolute spec path plus the specific question. Its answer is authoritative: fold it into the spec before the Implementor runs again. Do not escalate merely because a task feels large — size is the Architect's job. ${gateSentences(sessionId)}`,
     "8. Task-Runner: prefer `task-gopher:task-gopher`; if that agent type is unavailable use `agent-hierarchy:task-runner`. task-gopher's on/off toggle controls only its directive, not the agent — delegation works either way.",
     "9. Skills and commands override: a skill mandating a different flow (tdd, diagnose, review) wins over this protocol for its scope.",
     `10. Flow control — handoffs are currently "${resolved.handoffs}"${confirm ? " (ask before each reasoning-role dispatch, per item 0)" : " (you advance the chain yourself and report)"}. The user owns this switch and may flip it AT ANY TIME, in either direction, just by telling you — "ask me before handoffs", "stop asking", or /hierarchy flow auto|confirm. When they do: update the "handoffs" key in the most specific agent-hierarchy.json that exists (project if present, else user) with the Write tool, preserving every other key; confirm the change in one line; and honor the new mode immediately for the rest of this session — do not wait for a restart.`,
@@ -306,6 +330,9 @@ export function statusReport(cwd) {
   out.push(`project config: ${seen.project || `${projectPath || "(unknown cwd)"} (none)`}`);
   out.push(
     `handoff flow:   ${resolved.handoffs} ${resolved.handoffs === "confirm" ? "(ask before each reasoning-role dispatch)" : "(automatic handoffs)"} — from ${resolved.handoffsSource}; switch anytime with /hierarchy flow or by asking the Orchestrator`
+  );
+  out.push(
+    "ultra gate:     the first Ultra-Advisor escalation each session needs your approval — /hierarchy gate to view or change it (session-scoped; resets next session)"
   );
   out.push("");
   out.push("Resolved effective table:");

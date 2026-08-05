@@ -1,5 +1,5 @@
 ---
-description: Assign a model to each agent-hierarchy role, or inspect/toggle the hierarchy. Usage: /hierarchy [init|status|set <role> <model>|on|off|flow [auto|confirm]|usage [day|week|month|all]]
+description: Assign a model to each agent-hierarchy role, or inspect/toggle the hierarchy. Usage: /hierarchy [init|status|set <role> <model>|on|off|flow [auto|confirm]|gate [status|session|each|off|reset]|usage [day|week|month|all]]
 ---
 
 The user ran `/hierarchy` with argument: `$ARGUMENTS`
@@ -210,6 +210,40 @@ them invoke the command.
 
 ---
 
+## `gate [status|session|each|off|reset]`
+
+The Ultra-Advisor escalation gate. It runs on the most expensive model in the
+hierarchy, so a PreToolUse hook denies the first escalation of every session
+until the user has answered for themselves. Their answer is **session-scoped
+only** — it lives in `~/.claude/agent-hierarchy.gate.json`, not in
+`agent-hierarchy.json`, and a new session always asks again. That is deliberate:
+a standing "yes" that outlived the session it was given in would make the gate a
+formality rather than a consent check.
+
+Every form needs this session's gate id, which the injected protocol gives you
+in item 7 ("This session's gate id is ..."). Use the `gate.mjs` path from that
+same line. If item 7 carries no gate id, say so and stop — do not guess one, and
+do not fall back to a different session's id.
+
+- **No argument or `status`**: run
+  `node "<gate.mjs>" status --session "<gate id>"` and report the one-line
+  answer, plus one sentence on what the three choices mean.
+- **With `session`, `each`, or `off`**: run
+  `node "<gate.mjs>" set --session "<gate id>" --choice <value>` and echo the
+  confirmation. Takes effect immediately, for this session only.
+- **With `reset`**: run `node "<gate.mjs>" reset --session "<gate id>"` so the
+  next escalation asks again from scratch.
+- Anything else as the argument: show the valid values and stop.
+
+Like the flow switch, this belongs to the user at any time and in both
+directions. If they say it in plain words ("don't use the ultra advisor",
+"stop asking me about the advisor", "go ahead and escalate whenever"), do what
+this section says without making them invoke the command. Setting `off` blocks
+escalation only — the rest of the chain is untouched, and `/hierarchy off`
+remains the way to stand the whole hierarchy down.
+
+---
+
 ## `usage [day|week|month|all]`
 
 Run the reporter and show its output verbatim in a code block — do not
@@ -242,5 +276,5 @@ Two things to tell the user when relevant:
 ## anything else
 
 Show the usage line:
-`/hierarchy [init|status|set <role> <model>|on|off|flow [auto|confirm]|usage [day|week|month|all]]`,
+`/hierarchy [init|status|set <role> <model>|on|off|flow [auto|confirm]|gate [status|session|each|off|reset]|usage [day|week|month|all]]`,
 then run `status`.
