@@ -27,8 +27,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { REASONING_MODELS, resolveConfig } from "./lib-config.mjs";
@@ -86,6 +86,16 @@ const REASONING_ROLES = ["ultra-advisor", "architect", "reviewer", "implementor"
 
 /** How long `send` waits for the pane's session identity file before refusing to paste. */
 const BOOT_WAIT_SECONDS = 30;
+
+// Symlinks make path equality lie (macOS /var → /private/var), so cwd
+// comparisons go through the real path when it exists.
+function canonicalPath(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolvePath(p);
+  }
+}
 
 // ------------------------------------------------------------------ output
 
@@ -486,7 +496,7 @@ function cmdList(flags) {
     say(`${rec.key}`);
     say(`  agent      ${rec.agent}  (${rec.model || "inherited model"}, ${permissionLine(rec.permission_mode)})`);
     say(`  where      ${orientationPhrase(rec.orientation)}  (tmux attach -t ${rec.key})`);
-    say(`  cwd        ${rec.cwd}`);
+    say(`  cwd        ${rec.cwd}${rec.cwd && canonicalPath(rec.cwd) !== canonicalPath(process.cwd()) ? "   ⚠ not this session's cwd — repo-specific work targets ITS tree" : ""}`);
     say(`  state      ${pending ? `WORKING on ${pending.reqid} since ${pending.sent_at}` : "idle"}${unread ? `, ${unread} UNREAD ${unread === 1 ? "reply" : "replies"} — pick up: pane.mjs wait --key ${rec.key}` : ""}`);
     // Quiet in every non-divergent case (§6.3a): a warning printed for the
     // normal state stops being read.
@@ -514,6 +524,15 @@ async function cmdSend(flags, positional) {
   const resolved = resolveConfig(record.cwd || process.cwd());
   const panes = readPanes(resolved);
   const timeout = Number(flags.timeout) > 0 ? Number(flags.timeout) : panes.timeoutSeconds;
+
+  // A durable agent works in ITS OWN cwd — repo-specific work sent from
+  // another repo silently targets the wrong tree, so the mismatch is stated
+  // up front in every send outcome.
+  if (record.cwd && canonicalPath(record.cwd) !== canonicalPath(process.cwd())) {
+    say(`⚠ ${record.key} is rooted in ${record.cwd}, but this send comes from ${process.cwd()}.`);
+    say(`  Repo-specific work will run against ITS tree, not yours — close and recreate it here if that is wrong.`);
+    say("");
+  }
 
   const existing = readJsonFile(join(dir, "pending"));
   if (existing) {

@@ -815,6 +815,13 @@ JSON
   check "roster: an unread reply is named with its pickup command" 'echo "$ROSTERU" | grep -q "UNREAD reply waiting"'
   rm -f "$WORK/mbox-live"/reply.r-lu.*
 
+  # ---- 0.12.1: an agent rooted in another repo is flagged, not silently used.
+  check "cwd guard: list flags an agent rooted elsewhere" \
+    'node "$H/pane.mjs" list 2>/dev/null | grep -q "not this session'\''s cwd"'
+  check "cwd guard: no flag when cwds match" \
+    '! (cd "$WORK" && node "'$H'/pane.mjs" list 2>/dev/null | grep -q "not this session")'
+  check "cwd guard: send states the mismatch up front" 'grep -q "rooted in" "$WORK/o-sendto"'
+
   # ---- roster (0.9.0): SessionStart names the live durable agent, reaps dead ones.
   reg "$T_PID"
   cat >> "$REG" <<'JSON'

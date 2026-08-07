@@ -142,8 +142,10 @@ and have the user attach with `tmux attach -t <key>` in separate windows.
 
 1. `node "$PANE" list` to find the key.
 2. AskUserQuestion showing: the key, the agent, the model, the permission
-   mode, where it is, a one-line summary of the work, and the first ~100
-   characters of the prompt. If `list` marks the agent's definition as
+   mode, where it is, **its cwd — flagged prominently when it is not this
+   session's cwd** (`list` marks the mismatch; a repo-specific task sent to an
+   agent rooted in another repo silently reviews the wrong tree), a one-line
+   summary of the work, and the first ~100 characters of the prompt. If `list` marks the agent's definition as
    `TWO COPIES DIFFER`, include both paths in the confirmation. Options:
    **Send** / **Edit the prompt first** / **Do it inline instead** /
    **Cancel**. "Do it inline" means you take that role's contract on yourself
