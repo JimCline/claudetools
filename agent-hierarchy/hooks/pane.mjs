@@ -9,6 +9,7 @@
  *   node pane.mjs list  [--json]
  *   node pane.mjs send  --key <key> [--summary <text>] [--timeout <seconds>] [--boot-wait <seconds>]
  *   node pane.mjs peek  --key <key> [--lines <n>]
+ *   node pane.mjs cancel --key <key>
  *   node pane.mjs close --key <key> | --all [--session <id>]
  *   node pane.mjs doctor
  *
@@ -48,6 +49,7 @@ import {
   capturePane,
   closedPaneGroupPids,
   compactRegistry,
+  extractTldr,
   foldRegistry,
   isPaneLive,
   itermAvailable,
@@ -66,12 +68,14 @@ import {
   readJsonFile,
   resolveAgent,
   roleOfAgent,
+  sectionHeadings,
   sendPrompt,
   survivingGroupProcesses,
   tmuxAvailable,
   tmuxPath,
   tmuxSessionExists,
   verifyAndReapLive,
+  wrapPrompt,
   writeJsonAtomic,
 } from "./lib-pane.mjs";
 
@@ -546,11 +550,14 @@ async function cmdSend(flags, positional) {
   const notes = [];
   if (!expectSession) notes.push("the durable agent recorded no session id; the agent_type gate still applies.");
 
-  let pasteText = prompt;
+  // Every delivery is wrapped in the reply-contract envelope; gate E in the
+  // relay enforces the echo, so a human turn typed into the pane mid-request
+  // can never be relayed as this request's answer.
+  let pasteText = wrapPrompt(reqid, prompt);
   if (prompt.length > panes.inlinePromptMaxChars) {
     const taskPath = join(dir, `task.${reqid}.md`);
     writeFileSync(taskPath, prompt);
-    pasteText = `Your task for this turn is in ${taskPath} — read that file and carry it out. Reply per your pane protocol.`;
+    pasteText = wrapPrompt(reqid, `Your task for this turn is in ${taskPath} — read that file and carry it out. Reply per your pane protocol.`);
     notes.push(`prompt was ${prompt.length} chars, delivered as ${taskPath}`);
   }
 
@@ -558,6 +565,7 @@ async function cmdSend(flags, positional) {
   // which a fast pane replies into a missing token and is swallowed.
   writeJsonAtomic(join(dir, "pending"), {
     reqid,
+    echo: true,
     sent_at: new Date().toISOString(),
     from_session: orchestratorId(flags),
     expect_session: expectSession,
@@ -583,9 +591,36 @@ async function cmdSend(flags, positional) {
     const reply = readJsonFile(replyPath);
     if (reply) {
       const elapsed = Math.round((Date.now() - started) / 1000);
-      say(reply.text || "(the pane's final message was empty)");
+      const text = reply.text || "";
+      if (text.length > panes.replyInlineMaxChars) {
+        // The size gate is mechanism, not instruction: once the body prints,
+        // the Orchestrator has already paid for it. Withhold it and hand back
+        // the TL;DR, the path, and the grep targets instead.
+        const bodyPath = join(dir, `reply.${reqid}.md`);
+        writeFileSync(bodyPath, text);
+        const tldr = extractTldr(text);
+        say(`Reply from ${record.key} is ${text.length} chars — over replyInlineMaxChars (${panes.replyInlineMaxChars}), so the body stays on disk, NOT in your context.`);
+        say(`  body: ${bodyPath}`);
+        say("");
+        if (tldr) {
+          say(tldr);
+        } else {
+          say("(the reply has no ## TL;DR section — its first lines:)");
+          say(text.split("\n").slice(0, 10).join("\n"));
+        }
+        const heads = sectionHeadings(text).filter((h) => !/^##\s*TL;DR/i.test(h));
+        if (heads.length) {
+          say("");
+          say(`sections: ${heads.join("  |  ")}`);
+        }
+        say("");
+        say("Do NOT read the whole body by default. Put the choice to the user, or dispatch");
+        say("task-gopher to pull just the named sections you need from the body file.");
+      } else {
+        say(text || "(the durable agent's final message was empty)");
+      }
       say("");
-      say(`— ${record.key} · request ${reqid} · ${elapsed}s · ${(reply.text || "").length} chars`);
+      say(`— ${record.key} · request ${reqid} · ${elapsed}s · ${text.length} chars`);
       for (const n of notes) say(`note: ${n}`);
       flush(0);
     }
@@ -610,6 +645,13 @@ async function cmdSend(flags, positional) {
   say("");
   say("`pending` was left in place: if the agent finishes later the reply still lands in");
   say(`${replyPath}, and \`list\` reports it as an unread reply.`);
+  const unmatchedCount = existsSync(dir) ? readdirSync(dir).filter((f) => f.startsWith("unmatched.")).length : 0;
+  if (unmatchedCount) {
+    say("");
+    say(`${unmatchedCount} unmatched turn(s) are saved in ${dir} — the agent may have answered WITHOUT the`);
+    say(`[ah-reply] line (or a human's question was answered mid-request). Peek at the newest`);
+    say(`unmatched.*.json there; \`pane.mjs cancel --key ${record.key}\` clears the stuck request.`);
+  }
   flush(1);
 }
 
@@ -639,6 +681,33 @@ function cmdPeek(flags, positional) {
   const text = capturePane(record.pane_id, lines);
   if (text === null) fail(`could not capture ${record.key} (${record.pane_id}).`);
   say(text);
+  flush(0);
+}
+
+// --------------------------------------------------------------- cancel
+
+/**
+ * Clear an outstanding request without touching the pane. Needed because gate
+ * E makes a stuck token possible: an agent that answers without the echo line
+ * leaves `pending` in place forever, and `send` refuses seconds sends while it
+ * stands. Works against dead panes too — the mailbox outlives the session.
+ */
+function cmdCancel(flags, positional) {
+  const key = flags.key && flags.key !== true ? String(flags.key) : positional[0];
+  if (!key) fail("cancel needs a key: pane.mjs cancel --key <key>");
+  if (!KEY_RE.test(key)) refuse(`Refusing: "${key}" is not a durable-agent key.`);
+  const rec = foldRegistry().get(key);
+  const dir = (rec && rec.dir) || mailboxDir(key);
+  const pending = readJsonFile(join(dir, "pending"));
+  if (!pending) {
+    say(`${key}: no request is outstanding.`);
+    flush(0);
+  }
+  unlinkSync(join(dir, "pending"));
+  paneLog(dir, { ev: "cancelled", reqid: pending.reqid });
+  say(`${key}: cancelled request ${pending.reqid} (sent ${pending.sent_at || "unknown"}).`);
+  say(`A late reply to it will no longer be relayed (no token). If the agent already answered,`);
+  say(`its text is in ${dir} as an unmatched.*.json or reply.*.json file.`);
   flush(0);
 }
 
@@ -801,6 +870,9 @@ switch (sub) {
   case "peek":
     cmdPeek(flags, positional);
     break;
+  case "cancel":
+    cmdCancel(flags, positional);
+    break;
   case "close":
     cmdClose(flags, positional);
     break;
@@ -808,5 +880,5 @@ switch (sub) {
     cmdDoctor();
     break;
   default:
-    fail("usage: pane.mjs create|open|list|send|peek|close|doctor  (see the header of this file)");
+    fail("usage: pane.mjs create|open|list|send|peek|cancel|close|doctor  (see the header of this file)");
 }

@@ -157,7 +157,44 @@ Decision recorded: **no polling daemon and no MCP server.**
 - Broadcast sends ("ask all durable agents"). One agent per send.
 - E12 (which definition copy `claude --agent` reads) remains open and non-blocking.
 
-## 9. Versioning, tests, rollout
+## 9. Reply-channel hardening (0.10.0)
+
+Frugality is the point of the whole feature — the Orchestrator and every
+durable agent budget tokens — and 0.9.x had two holes: nothing tied a Stop to
+the request it answered (turn-order trust; a human typing into the pane
+mid-request could have their answer relayed as the Orchestrator's reply), and
+nothing capped what a reply could pour into the Orchestrator's context.
+
+- **R1 — request-id echo (gate E in the relay).** `send` stamps
+  `[ah-request <reqid>]` into every delivery; the agent's final message must
+  open with the exact line `[ah-reply <reqid>]`. The relay verifies content,
+  not just identity: no echo or a wrong id → the turn is written to the
+  mailbox as `unmatched.<ts>.json` (evidence, never lost), the token
+  survives, and `ev:"unmatched"` is logged. On a match the echo line is
+  stripped before the reply is written. Pendings without the `echo` flag
+  (pre-0.10.0) relay on turn order as before — cross-version safe.
+- **R2 — the reply contract is stamped, not requested.** The envelope
+  (`wrapPrompt`, tested code) carries: echo the id, final results only, no
+  progress narration, bulk to disk with absolute paths. The Orchestrator
+  never writes contract text by hand; the pane protocol repeats the rules at
+  session scope so they survive the agent's own compaction.
+- **R3 — the size gate is mechanism, not instruction.** `send` withholds any
+  reply body over `panes.replyInlineMaxChars` (default 4000 chars): body to
+  `reply.<reqid>.md` in the mailbox; printed instead are the size, path, the
+  `## TL;DR` section (or first lines), and the `## ` heading list. Instructing
+  the Orchestrator to "check size first" cannot work — the text is in context
+  the moment the tool result returns, so the withholding must happen in the
+  helper.
+- **R4 — greppable reply structure.** Long replies open with `## TL;DR` (one
+  bullet per section, naming the `## ` headings that follow), then `## `
+  sections — so task-gopher can fetch named sections from the body file with
+  a plain awk/sed order and the Orchestrator reasons over bullets, not bodies.
+- **`cancel <key>`** clears a stuck outstanding request (an agent that forgot
+  the echo line leaves `pending` standing forever, and `send` refuses seconds
+  sends while it does). Works against dead panes; the mailbox outlives the
+  session.
+
+## 10. Versioning, tests, rollout
 
 - 0.9.0 in `agent-hierarchy/.claude-plugin/plugin.json` AND `.claude-plugin/marketplace.json`.
 - Tests to add: boot-wait (present/late/never session file, no token on timeout);

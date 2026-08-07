@@ -193,8 +193,21 @@ up side by side; `h` is a horizontal divider, so they stack. Prefer the words.
 **Only the Orchestrator can start a conversation.** The agent has no tool and no
 address for reaching it. When work is sent, a token is left in the agent's
 mailbox and its Stop hook turns its final assistant message into the
-reply; with no token there is no reply. A turn *you* type into the pane is
-therefore never relayed anywhere — that conversation is yours alone.
+reply; with no token there is no reply. Every delivery also carries a request
+id, and the reply must open with that id's `[ah-reply]` echo line — a final
+message without it is saved to the mailbox as an unmatched turn, not relayed,
+and the token survives for the turn that does echo. A turn *you* type into the
+pane is therefore never relayed anywhere, even mid-request — that conversation
+is yours alone.
+
+**Replies are frugal by mechanism, not by promise.** The helper stamps every
+delivery with the reply contract (final results only; bulk to disk; long
+replies open with `## TL;DR` then `## ` sections), and `send` withholds any
+reply body over `panes.replyInlineMaxChars` (default 4000 chars): the
+Orchestrator gets the size, the file path, the TL;DR, and the section list —
+then fetches named sections through task-gopher instead of paying for the
+whole body. An idle durable agent costs zero tokens; a chatty one is capped at
+the boundary.
 
 **Every create and every send asks you first**, regardless of
 `handoffs: "auto"`. A durable agent is a separately-billed interactive session
@@ -288,8 +301,8 @@ stale, with the resync command.
 
 ```json
 { "panes": { "timeoutSeconds": 300, "pollSeconds": 2,
-             "inlinePromptMaxChars": 2000, "iterm2": true,
-             "allowBuiltins": false, "permissionMode": null,
+             "inlinePromptMaxChars": 2000, "replyInlineMaxChars": 4000,
+             "iterm2": true, "allowBuiltins": false, "permissionMode": null,
              "onDefinitionDivergence": "warn",
              "size": { "x": 200, "y": 50 } } }
 ```
@@ -327,7 +340,7 @@ hooks/
   subagentstop-usage.mjs         zero-token usage collector
   stop-pane-relay.mjs            durable-agent reply relay (inert outside a pane)
   usage-report.mjs               standalone reporter
-  pane.mjs                       /durable CLI (create/list/send/peek/close/doctor)
+  pane.mjs                       /durable CLI (create/list/send/peek/cancel/close/doctor)
   gate.mjs                       escalation-gate CLI (set/status/reset)
   lib-config.mjs                 config resolution + directive text (run directly for status)
   lib-gate.mjs                   session-scoped gate state
@@ -337,7 +350,7 @@ commands/durable.md          the /durable command
 docs/hierarchy.html          static visual map of roles, lanes, and flow
 docs/pane-command.md         the pane-mechanics design spec (0.8.0)
 docs/durable-agents.md       the durable-agents spec (0.9.0)
-tests/                       6 suites, 320+ cases (HOME-redirected; real config untouched)
+tests/                       6 suites, 350+ cases (HOME-redirected; real config untouched)
 ```
 
 ## License

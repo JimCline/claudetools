@@ -75,7 +75,32 @@ try {
     process.exit(0);
   }
 
-  const text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
+  let text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
+
+  // Gate E — content. Gates B and D prove WHO answered; nothing above proves
+  // WHICH question was answered. A human typing into the pane mid-request can
+  // make the next Stop an answer to *their* question, from the right agent in
+  // the right session — so `send` stamps `[ah-request <reqid>]` into the
+  // delivered prompt and the pane must open its final message with the line
+  // `[ah-reply <reqid>]`. No echo, or the wrong one → the turn is SAVED as
+  // unmatched (it may be the human's answer, or a real reply from an agent
+  // that forgot the line — either way it is evidence, not a relay) and the
+  // token survives for the turn that does echo. Pendings written before the
+  // envelope existed carry no `echo` flag and relay on turn order as before.
+  if (pending.echo) {
+    const m = /^\s*\[ah-reply ([A-Za-z0-9-]+)\][ \t]*\r?\n?/.exec(text);
+    if (!m || m[1] !== pending.reqid) {
+      const saved = join(dir, `unmatched.${Date.now()}.json`);
+      const tmpU = `${saved}.tmp`;
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(tmpU, JSON.stringify({ reqid_expected: pending.reqid, session_id: input.session_id ?? null, at: new Date().toISOString(), text }));
+      renameSync(tmpU, saved);
+      log({ ev: "unmatched", reqid: pending.reqid, got: m ? m[1] : null, chars: text.length });
+      process.exit(0);
+    }
+    text = text.slice(m[0].length);
+  }
+
   const reply = {
     reqid: pending.reqid,
     answered_at: new Date().toISOString(),
@@ -83,6 +108,7 @@ try {
     agent_type: input.agent_type ?? null,
     transcript_path: input.transcript_path ?? null,
     permission_mode: input.permission_mode ?? null,
+    echoed: Boolean(pending.echo),
     text,
   };
 

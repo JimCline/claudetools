@@ -1,5 +1,5 @@
 ---
-description: Create a durable agent — a long-lived, interactive Claude Code session running one file-backed agent in a tmux pane, which the Orchestrator hands work to instead of re-spawning cold subagents. Usage: /durable create <agent> [<agent>…] [right|below] | list | ask <key> <text> | close <key|all> | doctor
+description: Create a durable agent — a long-lived, interactive Claude Code session running one file-backed agent in a tmux pane, which the Orchestrator hands work to instead of re-spawning cold subagents. Usage: /durable create <agent> [<agent>…] [right|below] | list | ask <key> <text> | cancel <key> | close <key|all> | doctor
 ---
 
 The user ran `/agent-hierarchy:durable` with argument: `$ARGUMENTS`
@@ -35,6 +35,7 @@ PANE="${CLAUDE_PLUGIN_ROOT:-}/hooks/pane.mjs"; [ -f "$PANE" ] || PANE="$(ls -t ~
                                                         create several — one confirmation
 /agent-hierarchy:durable list                           show live durable agents (every session's)
 /agent-hierarchy:durable ask <key|agent> <text…>        send work (user-confirmed)
+/agent-hierarchy:durable cancel <key>                   clear a stuck outstanding request
 /agent-hierarchy:durable close <key|agent>              close one
 /agent-hierarchy:durable close all                      close every one you created
 /agent-hierarchy:durable doctor                         dependency + health check
@@ -45,10 +46,10 @@ orientation word, which applies to all of them. An agent genuinely named
 `right` or `below` is therefore shadowed in last position — put it earlier in
 the batch, or create it on its own.
 
-`create`, `open`, `list`, `ask`, `close`, and `doctor` are **reserved first
-words** (`open` is the older synonym of `create`; both reach the same code). An
-agent genuinely named one of them is shadowed; `/durable create list right` is
-the documented escape.
+`create`, `open`, `list`, `ask`, `cancel`, `close`, and `doctor` are **reserved
+first words** (`open` is the older synonym of `create`; both reach the same
+code). An agent genuinely named one of them is shadowed; `/durable create list
+right` is the documented escape.
 
 ## Orientation: prefer the words
 
@@ -155,9 +156,22 @@ node "$PANE" send --key <key> --summary "<one line>" <<'PROMPT'
 PROMPT
 ```
 
-4. It blocks until the agent replies (default 300s) and prints the reply. Show
-   it verbatim. A prompt over 2000 characters is written to a file in the
-   agent's mailbox and delivered as a pointer, which the output tells you about.
+   Write only the task. The helper stamps the reply contract onto every
+   delivery itself — the `[ah-request <id>]` envelope, the echo requirement,
+   final-results-only, the TL;DR structure — so do **not** add any of that by
+   hand; you would just duplicate it.
+
+4. It blocks until the agent replies (default 300s). A **small reply is
+   printed whole** — show it verbatim. A **large reply is withheld**: the
+   helper writes the body to `reply.<reqid>.md` in the agent's mailbox and
+   prints only its size, the path, the reply's `## TL;DR` section, and the
+   list of `## ` section headings. Do NOT read the body file by default —
+   that would defeat the point. Put it to the user with AskUserQuestion:
+   **Fetch specific sections via task-gopher (Recommended)** — order it to
+   print just the named `## ` sections from the body file — / **Read the
+   whole file into context** / **Leave it on disk**. A prompt over 2000
+   characters is likewise delivered as a file pointer, which the output tells
+   you about.
 
 A send to an agent that has not finished booting waits up to 30s for its
 session identity file, then fails with "has not finished booting" — nothing was
@@ -169,6 +183,13 @@ see whether the agent is sitting on a permission prompt, and leaves the request
 outstanding. Offer: keep waiting (running `send` again is **not** the way — the
 reply still lands on disk; re-run `list`), attach with `tmux attach -t <key>`,
 or close the agent.
+
+If the timeout output mentions **unmatched turns**, the agent (or a human
+typing in the pane) produced a final message that did not carry the request's
+`[ah-reply <id>]` echo line, so the relay saved it to the mailbox instead of
+delivering it. Peek at the newest `unmatched.*.json` there; if the request is
+genuinely dead, `node "$PANE" cancel --key <key>` clears it so a new send can
+go out.
 
 ## Durable means durable
 
@@ -212,8 +233,12 @@ disk with the absolute path in the reply; it may not create durable agents of
 its own. Ordinary subagent dispatch remains correct for it — durable agents
 specifically are what it may not nest.
 
-A turn the **user** types into the pane directly is never relayed to you. That
-conversation is between them and the agent.
+A turn the **user** types into the pane directly is never relayed to you —
+even mid-request. Every delivery carries a request id and the relay only
+accepts a final message that opens with that id's `[ah-reply]` echo line; a
+non-matching turn is saved to the mailbox as `unmatched.*.json`, the token
+survives, and the turn that does echo still gets through. That conversation is
+between them and the agent.
 
 ## Two copies of a definition
 

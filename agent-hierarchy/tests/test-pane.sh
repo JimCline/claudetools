@@ -106,6 +106,60 @@ check "relay: session mismatch writes no reply" '! ls "'$D'"/reply.*.json >/dev/
 check "relay: session mismatch does NOT consume pending" '[ -f "'$D'/pending" ]'
 check "relay: session mismatch logs reason=session_id" 'grep -q "\"reason\":\"session_id\"" "'$D'/log.jsonl"'
 
+# ---- gate E (0.10.0): the echo line ties a Stop to the request it answers.
+#      Pendings WITHOUT the echo flag relay on turn order — cases 2/5/6 above
+#      pin that legacy path, so gate E cannot regress it.
+D="$(mailbox)"
+echo '{"reqid":"r-echo","echo":true,"sent_at":"2026-01-01T00:00:00Z","expect_session":null}' > "$D/pending"
+AGENT_HIERARCHY_PANE_DIR="$D" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
+  relay '{"session_id":"s9","agent_type":"agent-hierarchy:architect","last_assistant_message":"[ah-reply r-echo]\nECHOED BODY"}'
+check "gate E: an echoed reply is relayed" '[ -f "'$D'/reply.r-echo.json" ]'
+check "gate E: the echo line is stripped from the relayed text" \
+  '[ "$(node -e "process.stdout.write(JSON.parse(require(\"fs\").readFileSync(\"'$D'/reply.r-echo.json\",\"utf8\")).text)")" = "ECHOED BODY" ]'
+check "gate E: an echoed reply consumes the token" '[ ! -f "'$D'/pending" ]'
+
+D="$(mailbox)"
+echo '{"reqid":"r-cross","echo":true,"sent_at":"2026-01-01T00:00:00Z","expect_session":null}' > "$D/pending"
+AGENT_HIERARCHY_PANE_DIR="$D" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
+  relay '{"session_id":"s9","agent_type":"agent-hierarchy:architect","last_assistant_message":"answer to the human, no echo line"}'
+check "gate E: a turn without the echo is NOT relayed" '! ls "'$D'"/reply.*.json >/dev/null 2>&1'
+check "gate E: a turn without the echo does NOT consume the token" '[ -f "'$D'/pending" ]'
+check "gate E: the unmatched turn is saved, not lost" 'ls "'$D'"/unmatched.*.json >/dev/null 2>&1'
+check "gate E: logs ev=unmatched" 'grep -q "\"ev\":\"unmatched\"" "'$D'/log.jsonl"'
+AGENT_HIERARCHY_PANE_DIR="$D" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
+  relay '{"session_id":"s9","agent_type":"agent-hierarchy:architect","last_assistant_message":"[ah-reply r-WRONG]\nhijack"}'
+check "gate E: a WRONG echo id is not relayed and keeps the token" \
+  '[ -f "'$D'/pending" ] && ! ls "'$D'"/reply.*.json >/dev/null 2>&1'
+AGENT_HIERARCHY_PANE_DIR="$D" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
+  relay '{"session_id":"s9","agent_type":"agent-hierarchy:architect","last_assistant_message":"[ah-reply r-cross]\nthe real answer"}'
+check "gate E: the correctly echoed turn still gets through afterwards" \
+  '[ "$(node -e "process.stdout.write(JSON.parse(require(\"fs\").readFileSync(\"'$D'/reply.r-cross.json\",\"utf8\")).text)")" = "the real answer" ]'
+
+# ---- envelope + reply-structure helpers (0.10.0)
+check "envelope: wrapPrompt stamps the id, the echo rule, and the structure rule" \
+  'node --input-type=module -e "
+import { wrapPrompt } from \"$H/lib-pane.mjs\";
+const t = wrapPrompt(\"RID\", \"the body\");
+if (!t.includes(\"[ah-request RID]\") || !t.includes(\"[ah-reply RID]\") || !t.includes(\"TL;DR\") || !t.endsWith(\"the body\")) process.exit(1);
+"'
+check "tldr: extractTldr returns exactly the TL;DR section" \
+  '[ "$(node --input-type=module -e "
+import { extractTldr } from \"$H/lib-pane.mjs\";
+process.stdout.write(extractTldr(\"## TL;DR\n- a\n- b\n\n## Rest\nzz\") || \"NULL\");
+")" = "## TL;DR
+- a
+- b" ]'
+check "tldr: extractTldr is null when the section is absent" \
+  '[ "$(node --input-type=module -e "
+import { extractTldr } from \"$H/lib-pane.mjs\";
+process.stdout.write(String(extractTldr(\"no sections here\")));
+")" = "null" ]'
+check "tldr: sectionHeadings lists the grep targets in order" \
+  '[ "$(node --input-type=module -e "
+import { sectionHeadings } from \"$H/lib-pane.mjs\";
+process.stdout.write(sectionHeadings(\"## TL;DR\nx\n## A\ny\n## B\n\").join(\",\"));
+")" = "## TL;DR,## A,## B" ]'
+
 # ================================================= sessionstart pane branch (§8)
 
 start() { echo "$2" | env AGENT_HIERARCHY_PANE_DIR="$1" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
@@ -121,6 +175,8 @@ check "sessionstart pane: never says You are the Orchestrator" '! echo "$P1" | g
 check "sessionstart pane: states the one-channel rule" 'echo "$P1" | grep -q "inbound only"'
 check "sessionstart pane: states artifacts go to disk by path" 'echo "$P1" | grep -q "ABSOLUTE PATH"'
 check "sessionstart pane: forbids nesting durable agents" 'echo "$P1" | grep -q "Do not create durable agents"'
+check "sessionstart pane: states the echo rule" 'echo "$P1" | grep -q "ah-reply"'
+check "sessionstart pane: states the TL;DR structure rule" 'echo "$P1" | grep -q "TL;DR"'
 check "sessionstart pane: records <dir>/session with the session_id" 'grep -q "\"session_id\":\"p1\"" "'$D'/session"'
 
 D2="$(mailbox)"
@@ -525,6 +581,20 @@ O0="$(echo '{"session_id":"od0","cwd":"'$WORK'","tool_name":"Agent","tool_input"
   env -u AGENT_HIERARCHY_PANE_DIR node "$OFFER")"
 check "offer: silent with no registry" '[ -z "$O0" ]'
 
+# ================================================= 0.10.0 — cancel
+
+CD="$HOME/.claude/agent-hierarchy.panes/ah-cnl-arch-1"
+mkdir -p "$CD"
+echo '{"reqid":"r-c","sent_at":"2026-01-01T00:00:00Z"}' > "$CD/pending"
+OUTC="$(pane cancel --key ah-cnl-arch-1)"
+check "cancel: clears the pending token" '[ ! -f "$CD/pending" ]'
+check "cancel: names the cancelled request" 'echo "$OUTC" | grep -q "r-c"'
+check "cancel: logs ev=cancelled" 'grep -q "\"ev\":\"cancelled\"" "$CD/log.jsonl"'
+OUTC2="$(pane cancel --key ah-cnl-arch-1)"
+check "cancel: says so when nothing is outstanding" 'echo "$OUTC2" | grep -q "no request is outstanding"'
+pane cancel --key "not-a-key;id" >/dev/null 2>&1; RC=$?
+check "cancel: refuses a key outside the whitelist with exit 2" '[ "$RC" -eq 2 ]'
+
 # ================================================= test 31 — the cache is never globbed
 
 check "cache: hooks never construct a plugins/cache path" '! grep -nE "plugins/cache" "$H"/*.mjs'
@@ -607,6 +677,42 @@ JSON
   printf 'late bird\n' | node "$H/pane.mjs" send --key ah-panetest-1 --boot-wait 10 --timeout 3 >/dev/null 2>&1
   check "boot-wait: a late identity file unblocks the send" '[ -f "$WORK/mbox-live/pending" ]'
   check "boot-wait: expect_session comes from the late identity file" 'grep -q "\"expect_session\":\"late-sess\"" "$WORK/mbox-live/pending"'
+  rm -f "$WORK/mbox-live/pending"
+
+  # ---- 0.10.0: the reply contract is stamped by the helper, not written by the
+  #      Orchestrator — the envelope must be in the delivery and the pending token.
+  reg "$T_PID"
+  rm -rf "$WORK/mbox-live"; mkdir -p "$WORK/mbox-live"
+  echo '{"session_id":"live-sess"}' > "$WORK/mbox-live/session"
+  printf 'envelope probe\n' | node "$H/pane.mjs" send --key ah-panetest-1 --timeout 4 >/dev/null 2>&1
+  check "envelope: pending carries the echo flag" 'grep -q "\"echo\":true" "$WORK/mbox-live/pending"'
+  check "envelope: the delivery opens with ah-request" 'tmux capture-pane -p -t "$T_PANE" | grep -q "ah-request"'
+  check "envelope: the delivery states the echo rule inline" 'tmux capture-pane -p -t "$T_PANE" | grep -q "ah-reply"'
+  rm -f "$WORK/mbox-live/pending"
+
+  # ---- 0.10.0: the size gate. A reply over replyInlineMaxChars must never
+  #      print its body — TL;DR, path, and section list only.
+  reg "$T_PID"
+  rm -rf "$WORK/mbox-live"; mkdir -p "$WORK/mbox-live"
+  echo '{"session_id":"live-sess"}' > "$WORK/mbox-live/session"
+  (
+    for i in $(seq 1 40); do [ -f "$WORK/mbox-live/pending" ] && break; sleep 0.25; done
+    node -e '
+      const fs = require("fs"), d = process.argv[1];
+      const reqid = JSON.parse(fs.readFileSync(d + "/pending", "utf8")).reqid;
+      const body = "## TL;DR\n- Findings: two issues\n- Appendix: raw data\n\n## Findings\n" +
+        "x".repeat(5000) + "\n\n## Appendix\nzzz\n";
+      fs.writeFileSync(d + "/reply." + reqid + ".json", JSON.stringify({ reqid, text: body }));
+    ' "$WORK/mbox-live"
+  ) &
+  printf 'big reply probe\n' | node "$H/pane.mjs" send --key ah-panetest-1 --timeout 30 > "$WORK/o-size" 2>&1
+  wait
+  check "size gate: the body is withheld" 'grep -q "stays on disk" "$WORK/o-size"'
+  check "size gate: the TL;DR is printed" 'grep -q "Findings: two issues" "$WORK/o-size"'
+  check "size gate: the body itself never prints" '! grep -q "xxxxxxxxxx" "$WORK/o-size"'
+  check "size gate: the section list names the grep targets" 'grep -q "## Appendix" "$WORK/o-size"'
+  check "size gate: points at task-gopher for fetching sections" 'grep -q "task-gopher" "$WORK/o-size"'
+  check "size gate: the full body is on disk" 'grep -q "xxxxxxxxxx" "$WORK/mbox-live/reply."*.md'
   rm -f "$WORK/mbox-live/pending"
 
   # ---- roster (0.9.0): SessionStart names the live durable agent, reaps dead ones.

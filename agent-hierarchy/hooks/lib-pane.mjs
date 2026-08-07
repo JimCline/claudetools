@@ -561,6 +561,7 @@ export const PANE_DEFAULTS = {
   timeoutSeconds: 300,
   pollSeconds: 2,
   inlinePromptMaxChars: 2000,
+  replyInlineMaxChars: 4000,
   iterm2: true,
   allowBuiltins: false,
   permissionMode: null,
@@ -751,11 +752,13 @@ export function buildPaneProtocol({ role, declaredRole, key }) {
     `agent-hierarchy DURABLE AGENT. You are running as \`${identity}\`, a durable agent in a terminal pane${key ? ` (\`${key}\`)` : ""}. You are NOT the Orchestrator: do not decompose-and-dispatch, do the role's own work.`,
     "",
     "1. One channel, inbound only. You answer the turn you were given. You cannot initiate contact with the Orchestrator — there is no tool and no address for it. Your final assistant message IS your reply, and it is captured automatically.",
-    "2. The reply is the whole payload. Only your final assistant message is relayed; thinking, tool output, and intermediate turns are discarded. Make that last message a complete, standalone answer.",
-    "3. Artifacts go to disk. If you produce a spec file, a diff, or a report, write it to disk and put the ABSOLUTE PATH in your final message. Do not paste the artifact into the reply.",
-    "4. A human may type into this pane directly. That input is the user's own instruction and you should treat it as such. A turn the Orchestrator did not solicit is not relayed anywhere — that conversation is between you and the human only.",
-    "5. No nesting. Do not create durable agents, and do not run `/agent-hierarchy:durable`. You DO have the Agent tool and ordinary subagent dispatch remains correct for your role; durable agents specifically are what you may not create.",
-    "6. Your role contract still applies. Your `agents/*.md` body governs, and nothing here relaxes it.",
+    "2. The reply is the whole payload — and it must be LEAN. Only your final assistant message is relayed; thinking, tool output, and intermediate turns are discarded. Final results only, never progress narration: the Orchestrator is budgeting tokens, and every character of your reply lands in its context.",
+    "3. Echo the request id. A delivered task opens with `[ah-request <id>]`. Your final message for that task MUST begin with the exact line `[ah-reply <id>]` — the relay refuses to deliver a final message without it, and your work would sit unread in the pane.",
+    "4. Artifacts and bulk go to disk. If you produce a spec file, a diff, a report, or anything long, write it to disk (when you have a write tool) and put the ABSOLUTE PATH in your final message. Do not paste the artifact into the reply.",
+    "5. Structure any long reply for grepping. When a reply must run long, open it (after the `[ah-reply]` line) with a `## TL;DR` section — one bullet per section, naming the `## ` headings that follow — so the Orchestrator can pull single sections off disk instead of loading everything.",
+    "6. A human may type into this pane directly. That input is the user's own instruction and you should treat it as such. A turn the Orchestrator did not solicit is not relayed anywhere — that conversation is between you and the human only.",
+    "7. No nesting. Do not create durable agents, and do not run `/agent-hierarchy:durable`. You DO have the Agent tool and ordinary subagent dispatch remains correct for your role; durable agents specifically are what you may not create.",
+    "8. Your role contract still applies. Your `agents/*.md` body governs, and nothing here relaxes it.",
   ];
   if (role && declaredRole && role !== declaredRole) {
     lines.push(
@@ -764,6 +767,42 @@ export function buildPaneProtocol({ role, declaredRole, key }) {
     );
   }
   return lines.join("\n");
+}
+
+/**
+ * The delivery envelope. Stamped by `send` in tested code — never hand-written
+ * by the Orchestrator — so every delivery carries the same reply contract the
+ * relay's gate E enforces: echo the reqid, final results only, TL;DR + `## `
+ * sections when long. Kept to a few lines because the pane pays input tokens
+ * for it on every request.
+ */
+export function wrapPrompt(reqid, text) {
+  return (
+    `[ah-request ${reqid}] Reply contract: begin your FINAL message with the exact line "[ah-reply ${reqid}]" — it is not relayed without it. ` +
+    `Final results only, lean: bulk goes to disk with absolute paths in the reply, and a long reply opens with a "## TL;DR" section followed by "## " sections.\n\n` +
+    text
+  );
+}
+
+/** The `## TL;DR` section of a reply body, heading included, or null. */
+export function extractTldr(text) {
+  const lines = String(text).split("\n");
+  const start = lines.findIndex((l) => /^##\s*TL;DR/i.test(l));
+  if (start === -1) return null;
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((l) => /^##\s/.test(l));
+  return lines
+    .slice(start, start + 1 + (end === -1 ? rest.length : end))
+    .join("\n")
+    .trimEnd();
+}
+
+/** Every `## ` heading line of a reply body, in order — the grep targets. */
+export function sectionHeadings(text) {
+  return String(text)
+    .split("\n")
+    .filter((l) => /^##\s/.test(l))
+    .map((l) => l.trim());
 }
 
 // -------------------------------------------------------------------- tmux
