@@ -188,10 +188,14 @@ prints.
 
 ### Permission modes
 
-You are asked to pick one whenever the agent **can execute** — that is, when its
-toolset includes `Bash` or `Edit`. That covers the Implementor and any non-role
-agent you launch. The Architect, Reviewer, Ultra-Advisor, and Task-Runner are
-not asked; they run with normal prompting.
+You are asked to pick one whenever `/pane` **cannot rule out** that the agent
+can execute — when its toolset includes `Bash` or `Edit`, and also when its
+definition is missing, unreadable, or unrestricted. The gate fails safe: it
+asks unless the definition positively proves both `Bash` and `Edit` are
+unavailable, and a non-prompting pane is not proof the agent cannot execute.
+In practice that covers the Implementor and any non-role agent you launch. The
+Architect, Reviewer, Ultra-Advisor, and Task-Runner are not asked; they run
+with normal prompting.
 
 | Mode | What it actually does |
 | :-- | :-- |
@@ -231,17 +235,33 @@ Architect work, and use a pane when the point is to watch and talk to it. The
 pane does keep the `Agent` tool, so it can still delegate the search — that is
 exactly what it did.
 
+### Two copies of a definition
+
+If you develop plugins from a **local-path marketplace** (a
+`"source": "directory"` entry in `known_marketplaces.json`), an agent
+definition can exist twice: once in the installed plugin tree and once in your
+live checkout — and Claude Code may launch the pane from either. `/pane` reads
+**both** copies. When they differ it computes the permission and model policy
+from both and takes the **stricter** answer of each, shows you both paths, and
+warns; set `panes.onDefinitionDivergence: "refuse"` to make it refuse instead.
+There is deliberately no way to silently prefer one copy. When the copies are
+byte-identical — the normal state — it says nothing. `/pane doctor` compares
+the whole `agents/` tree per plugin and tells you when an installed copy is
+stale, with the resync command.
+
 ### Optional config
 
 ```json
 { "panes": { "timeoutSeconds": 300, "pollSeconds": 2,
              "inlinePromptMaxChars": 2000, "iterm2": true,
              "allowBuiltins": false, "permissionMode": null,
+             "onDefinitionDivergence": "warn",
              "size": { "x": 200, "y": 50 } } }
 ```
 
 All keys are optional and the whole block may be absent; it does not change the
-config schema version.
+config schema version. `onDefinitionDivergence` is `"warn"` (default) or
+`"refuse"`.
 
 ## Commands
 

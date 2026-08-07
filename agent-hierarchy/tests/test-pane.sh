@@ -297,6 +297,191 @@ check "refuse: the built-in message points at the Agent tool" 'grep -q "Use the 
 check "refuse: an unknown plugin agent lists what does exist" \
   'shielded open --agent agent-hierarchy:reviewers >/dev/null; grep -q "it defines: architect" "$WORK/err"'
 
+# ================================================= §14.1a — canExecute fails SAFE (test 25)
+
+# The invariant: false ONLY when a definition positively proves both Bash and
+# Edit are unavailable. The empty-frontmatter branch is the one a well-meaning
+# "simplification" would invert.
+ce() { node --input-type=module -e "
+import { canExecute } from '$H/lib-pane.mjs';
+process.stdout.write(String(canExecute(JSON.parse(process.argv[1]))));
+" "$1" ; }
+
+check "canExecute: empty frontmatter fails SAFE (true — always asks)" '[ "$(ce "{}")" = "true" ]'
+check "canExecute: denying Bash+Edit+NotebookEdit rules execution out" \
+  '[ "$(ce "{\"disallowedTools\":[\"Bash\",\"Edit\",\"NotebookEdit\"]}")" = "false" ]'
+check "canExecute: denying Bash alone still asks (Edit remains)" \
+  '[ "$(ce "{\"disallowedTools\":[\"Bash\"]}")" = "true" ]'
+check "canExecute: a read-only allowlist rules execution out" \
+  '[ "$(ce "{\"tools\":[\"Read\",\"Grep\"]}")" = "false" ]'
+check "canExecute: a wildcard allowlist asks" '[ "$(ce "{\"tools\":[\"*\"]}")" = "true" ]'
+
+# ================================================= §6.3a — two sources of truth (tests 26-30)
+
+# A synthetic divergence: a fake directory-sourced marketplace whose checkout
+# and installed cache disagree about agents/x.md. The real trees on this
+# machine are byte-identical today, so the fixture is built, not found.
+DIVROOT="$WORK/div"
+CACHE="$DIVROOT/cache/divplug/1.0.0"
+CHECKOUT="$DIVROOT/checkout"
+mkdir -p "$CACHE/agents" "$CHECKOUT/.claude-plugin" "$CHECKOUT/divplug/agents" "$DIVROOT/ghcache/ghplug/1.0.0/agents"
+cat > "$HOME/.claude/plugins/installed_plugins.json" <<JSON
+{ "version": 2, "plugins": {
+  "agent-hierarchy@claudetools": [
+    { "scope": "user", "installPath": "$PLUGIN", "version": "9.9.9", "lastUpdated": "2026-01-01T00:00:00Z" } ],
+  "divplug@divmarket": [
+    { "scope": "user", "installPath": "$CACHE", "version": "1.0.0", "lastUpdated": "2026-01-01T00:00:00Z" } ],
+  "ghplug@ghmarket": [
+    { "scope": "user", "installPath": "$DIVROOT/ghcache/ghplug/1.0.0", "version": "1.0.0", "lastUpdated": "2026-01-01T00:00:00Z" } ]
+} }
+JSON
+cat > "$HOME/.claude/plugins/known_marketplaces.json" <<JSON
+{ "divmarket": { "source": { "source": "directory", "path": "$CHECKOUT" }, "installLocation": "$CHECKOUT" },
+  "ghmarket":  { "source": { "source": "github", "repo": "x/y" }, "installLocation": "$DIVROOT/ghmarket" } }
+JSON
+goodmanifest() { cat > "$CHECKOUT/.claude-plugin/marketplace.json" <<JSON
+{ "name": "divmarket", "plugins": [ { "name": "divplug", "source": "./divplug", "version": "1.0.0" } ] }
+JSON
+}
+goodmanifest
+restricted_md() { cat > "$1" <<'MD'
+---
+name: x
+disallowedTools:
+  - Bash
+  - Edit
+  - NotebookEdit
+---
+restricted body
+MD
+}
+capable_md() { cat > "$1" <<'MD'
+---
+name: x
+tools:
+  - Bash
+---
+capable body
+MD
+}
+restricted_md "$CACHE/agents/x.md"
+capable_md   "$CHECKOUT/divplug/agents/x.md"
+restricted_md "$DIVROOT/ghcache/ghplug/1.0.0/agents/y.md"
+
+# ---- 26: divergence is detected, both paths surface, and warn continues.
+OUT26="$(pane open --agent divplug:x --orient right --dry-run --cwd "$WORK")"; RC=$?
+check "divergence: dry-run open exits 0 under the default warn" '[ "$RC" -eq 0 ]'
+check "divergence: definition_source is divergent" 'echo "$OUT26" | grep -q "\"definition_source\": \"divergent\""'
+check "divergence: definition_path_live is populated" \
+  'echo "$OUT26" | grep -q "\"definition_path_live\": \"'$CHECKOUT'/divplug/agents/x.md\""'
+check "divergence: both paths appear in the output" \
+  'echo "$OUT26" | grep -q "'$CACHE'/agents/x.md" && echo "$OUT26" | grep -q "'$CHECKOUT'/divplug/agents/x.md"'
+check "divergence: the warning names the resync command" 'echo "$OUT26" | grep -q "plugin marketplace update divmarket"'
+
+# ---- 27: the union resolves by OR, and the answer must not depend on which
+#          side is stale. This is the security test.
+check "divergence union: asks when the CHECKOUT copy can execute" 'echo "$OUT26" | grep -q "permission prompt required: yes"'
+cp "$CACHE/agents/x.md" "$WORK/swap.tmp"
+cp "$CHECKOUT/divplug/agents/x.md" "$CACHE/agents/x.md"
+cp "$WORK/swap.tmp" "$CHECKOUT/divplug/agents/x.md"
+OUT27="$(pane open --agent divplug:x --orient right --dry-run --cwd "$WORK")"
+check "divergence union: asks when the CACHE copy can execute (trees swapped)" \
+  'echo "$OUT27" | grep -q "permission prompt required: yes"'
+check "divergence union: still divergent after the swap" 'echo "$OUT27" | grep -q "\"definition_source\": \"divergent\""'
+
+# ---- 28: identical copies stay QUIET — the normal case must not warn.
+cp "$CACHE/agents/x.md" "$CHECKOUT/divplug/agents/x.md"
+OUT28="$(pane open --agent divplug:x --orient right --dry-run --cwd "$WORK")"
+check "divergence: byte-identical copies report identical" 'echo "$OUT28" | grep -q "\"definition_source\": \"identical\""'
+check "divergence: byte-identical copies emit no divergence warning" '! echo "$OUT28" | grep -qi "they differ"'
+
+# ---- 29: onDefinitionDivergence=refuse exits 2 and names both paths.
+restricted_md "$CACHE/agents/x.md"
+capable_md   "$CHECKOUT/divplug/agents/x.md"
+cp "$CFG" "$WORK/cfg29.bak"
+node -e "
+  const fs=require('fs'); const c=JSON.parse(fs.readFileSync('$CFG','utf8'));
+  c.panes={ onDefinitionDivergence:'refuse' }; fs.writeFileSync('$CFG', JSON.stringify(c));
+"
+pane open --agent divplug:x --orient right --dry-run --cwd "$WORK" >/dev/null; RC=$?
+check "divergence: onDefinitionDivergence=refuse exits 2" '[ "$RC" -eq 2 ]'
+check "divergence: the refusal names both paths" \
+  'grep -q "'$CACHE'/agents/x.md" "$WORK/err" && grep -q "'$CHECKOUT'/divplug/agents/x.md" "$WORK/err"'
+node -e "
+  const fs=require('fs'); const c=JSON.parse(fs.readFileSync('$CFG','utf8'));
+  c.panes={ onDefinitionDivergence:'ignore' }; fs.writeFileSync('$CFG', JSON.stringify(c));
+"
+check "divergence: there is no \"ignore\" value — it warns and stays on warn" \
+  'pane open --agent divplug:x --orient right --dry-run --cwd "$WORK" | grep -q "ignoring panes.onDefinitionDivergence"'
+cp "$WORK/cfg29.bak" "$CFG"
+
+# ---- 30: a non-local marketplace is inert — no live candidate, no warning.
+OUT30="$(pane open --agent ghplug:y --orient right --dry-run --cwd "$WORK")"
+check "divergence: a github marketplace computes no live candidate" 'echo "$OUT30" | grep -q "\"definition_path_live\": null"'
+check "divergence: a github marketplace stays recorded" 'echo "$OUT30" | grep -q "\"definition_source\": \"recorded\""'
+check "divergence: a github marketplace emits no divergence warning" '! echo "$OUT30" | grep -qi "they differ"'
+
+# ---- an unrecognised plugin `source` shape abandons the live candidate
+#      LOUDLY, never silently (§6.3a step 4 was verified on two entries in one
+#      manifest, so unknown shapes are expected someday).
+cat > "$CHECKOUT/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "divmarket", "plugins": [ { "name": "divplug", "source": { "weird": true } } ] }
+JSON
+OUT30b="$(pane open --agent divplug:x --orient right --dry-run --cwd "$WORK")"
+check "divergence: an unrecognised source shape warns rather than abandoning silently" \
+  'echo "$OUT30b" | grep -q "does not recognise"'
+check "divergence: an unrecognised source shape degrades to recorded" \
+  'echo "$OUT30b" | grep -q "\"definition_source\": \"recorded\""'
+goodmanifest
+
+# ---- doctor notices the stale cache, at doctor time (§6.3a).
+DOC="$(pane doctor)"
+check "doctor: compares installed agents/ against the live checkout" 'echo "$DOC" | grep -q "divplug@divmarket"'
+check "doctor: reports the divergent tree as stale with the resync command" \
+  'echo "$DOC" | grep "divplug@divmarket" | grep -q "STALE.*marketplace update divmarket"'
+
+# ================================================= §13.3 — the group kill is guarded (test 32)
+
+# killPane with every process-touching dependency stubbed: the assertions are
+# about WHICH target the guard chooses, and a negative target may appear only
+# when ps confirmed the recorded pid leads its own group and that group is not
+# our own.
+killcase() { node --input-type=module -e "
+import { killPane } from '$H/lib-pane.mjs';
+const [panePid, panePgid, ownPgid] = process.argv.slice(1, 4).map(Number);
+const calls = [];
+let alive = true;
+const res = killPane(
+  { key: 'ah-killtest-1', tmux_session: 'ah-killtest-1', pane_pid: panePid },
+  {
+    readPgid: (pid) => (pid === panePid ? panePgid : ownPgid),
+    ownPgid,
+    kill: (target, sig) => { calls.push(target + ':' + sig); alive = false; },
+    pidAlive: () => alive,
+    sleep: () => {},
+    selfPid: 999999,
+    selfPpid: 999998,
+  }
+);
+process.stdout.write(JSON.stringify({ ok: res.ok, calls, notes: res.notes }));
+" "$1" "$2" "$3" ; }
+
+R32A="$(killcase 4242 777 111)"
+check "group kill: unconfirmed leadership falls back to the single pid" 'echo "$R32A" | grep -q "\"4242:SIGTERM\""'
+check "group kill: unconfirmed leadership never signals a group" '! echo "$R32A" | grep -q -- "-4242"'
+check "group kill: the single-pid fallback says children may survive" 'echo "$R32A" | grep -q "children may survive"'
+R32B="$(killcase 4242 4242 111)"
+check "group kill: a ps-confirmed leader is killed as a GROUP" 'echo "$R32B" | grep -q -- "\"-4242:SIGTERM\""'
+R32C="$(killcase 4242 4242 4242)"
+check "group kill: our own process group is never group-killed" \
+  '! echo "$R32C" | grep -q -- "-4242" && echo "$R32C" | grep -q "\"4242:SIGTERM\""'
+
+# ================================================= test 31 — the cache is never globbed
+
+check "cache: hooks never construct a plugins/cache path" '! grep -nE "plugins/cache" "$H"/*.mjs'
+check "cache: no readdir is rooted at a cache path" '! grep -n "readdirSync" "$H"/*.mjs | grep -i "cache"'
+check "cache: no glob machinery anywhere in hooks" '! grep -nE "globSync|fast-glob|[^a-z]glob\(" "$H"/*.mjs'
+
 # ================================================= §13.4 — no pane discovery
 
 check "no discovery: nothing runs \`tmux ls\` or list-sessions" \
@@ -307,8 +492,13 @@ SENDKEYS=$(grep -c '"send-keys"' "$H"/*.mjs | cut -d: -f2 | paste -sd+ - | bc)
 SENDKEYS_ENTER=$(grep '"send-keys"' "$H"/*.mjs | grep -c '"Enter"')
 check "no discovery: at least one send-keys call site exists to check" '[ "$SENDKEYS" -ge 1 ]'
 check "no discovery: every send-keys call sends only the Enter key" '[ "$SENDKEYS" = "$SENDKEYS_ENTER" ]'
-check "no discovery: kills are never derived from ps or pgrep" \
-  '! grep -nE "\"(pgrep|pkill)\"|spawnSync\(\"ps\"" "$H"/*.mjs'
+check "no discovery: pgrep and pkill are never used" \
+  '! grep -nE "\"(pgrep|pkill)\"" "$H"/*.mjs'
+# §13.3 sanctions exactly two ps uses: the pgid LOOKUP on a recorded pid before
+# a group kill, and doctor's report-only survivor listing. Both carry "pgid=";
+# a ps call without it would be target discovery, which stays banned.
+check "no discovery: every ps invocation is a pgid lookup or the doctor report" \
+  '[ "$(grep -h "\"ps\"" "$H"/*.mjs | grep -cv "pgid=")" = "0" ]'
 
 # ================================================= live tmux: self-send and kill safety
 

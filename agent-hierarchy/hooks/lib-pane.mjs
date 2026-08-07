@@ -29,9 +29,9 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 // ---------------------------------------------------------------- paths
 
@@ -162,6 +162,18 @@ function toolList(value) {
  * commands. `open` asks the user to choose a permission mode for exactly these
  * agents, and says nothing for the rest — an agent that can only read has no
  * decision to make.
+ *
+ * INVARIANT (§14.1a): returns false ONLY when a definition positively
+ * demonstrates that both Bash and Edit are unavailable. Every other input —
+ * empty frontmatter, no `tools` and no `disallowedTools`, an unparseable file,
+ * a built-in with no file at all — returns true, so the permission question is
+ * always asked when execution cannot be ruled out. The final expression reads
+ * like a redundancy and is not: with an empty deny list,
+ * `!denies("Bash") || !denies("Edit")` is true, and "simplifying" it to
+ * `deny.includes("Bash") || deny.includes("Edit")` would invert it and
+ * silently remove the prompt for every unrestricted agent. Test 25 pins all
+ * four branches. Divergent definition pairs (§6.3a) resolve by OR at the call
+ * site: canExecute(recorded) || canExecute(live).
  */
 export function canExecute(frontmatter) {
   const allow = toolList(frontmatter.tools);
@@ -222,8 +234,10 @@ function resolveInstalledPlugin(pluginId) {
   const plugins = (data && data.plugins) || {};
   const records = [];
   for (const [id, list] of Object.entries(plugins)) {
-    if (id.split("@")[0] !== pluginId) continue;
-    for (const rec of Array.isArray(list) ? list : []) records.push(rec);
+    const at = id.indexOf("@");
+    if ((at === -1 ? id : id.slice(0, at)) !== pluginId) continue;
+    const marketplace = at === -1 ? null : id.slice(at + 1);
+    for (const rec of Array.isArray(list) ? list : []) records.push({ ...rec, marketplace });
   }
   if (!records.length) return { error: `no installed plugin named \`${pluginId}\`` };
 
@@ -252,7 +266,71 @@ function resolveInstalledPlugin(pluginId) {
   if (!chosen.installPath || !existsSync(chosen.installPath)) {
     return { error: `installed plugin \`${pluginId}\` has no install path on disk` };
   }
-  return { installPath: chosen.installPath, version: chosen.version };
+  return { installPath: chosen.installPath, version: chosen.version, marketplace: chosen.marketplace };
+}
+
+/**
+ * The live-checkout root for a plugin whose marketplace is directory-sourced
+ * (§6.3a). Under such a marketplace the checkout IS the source tree — exactly
+ * one copy per plugin, no version directories, nothing to choose between — so
+ * computing this does not weaken the never-glob-the-cache rule: every path is
+ * built from named manifest fields, none is discovered by readdir.
+ *
+ * Returns { root, warnings }: `root` is the plugin's directory inside the
+ * checkout, or null when the marketplace is not local-path or the candidate
+ * had to be abandoned. Abandonment is always LOUD (a warning), never silent —
+ * the `source` field was verified as a relative-path string for only two
+ * plugins in one manifest, so an unrecognised shape must degrade visibly, not
+ * quietly, to single-source behaviour.
+ */
+function resolveLiveCandidate(pluginId, marketplace) {
+  const none = { root: null, warnings: [] };
+  if (!marketplace) return none;
+  let known;
+  try {
+    known = JSON.parse(readFileSync(join(homedir(), ".claude", "plugins", "known_marketplaces.json"), "utf8"));
+  } catch {
+    return none;
+  }
+  const entry = known && typeof known === "object" ? known[marketplace] : null;
+  const src = entry && entry.source;
+  if (!src || src.source !== "directory" || typeof src.path !== "string" || !src.path) return none;
+
+  const warnings = [];
+  const root = (typeof entry.installLocation === "string" && entry.installLocation) || src.path;
+  let rootIsDir = false;
+  try {
+    rootIsDir = statSync(root).isDirectory();
+  } catch {
+    /* not on disk — handled below */
+  }
+  if (!rootIsDir) {
+    warnings.push(`marketplace \`${marketplace}\` is directory-sourced but its checkout ${root} is not on disk; policy comes from the installed copy only.`);
+    return { root: null, warnings };
+  }
+  const manifestPath = join(root, ".claude-plugin", "marketplace.json");
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  } catch {
+    warnings.push(`marketplace \`${marketplace}\` is directory-sourced but ${manifestPath} could not be read; policy comes from the installed copy only.`);
+    return { root: null, warnings };
+  }
+  const pluginEntry = (Array.isArray(manifest && manifest.plugins) ? manifest.plugins : []).find((p) => p && p.name === pluginId) || null;
+  const rel = pluginEntry ? pluginEntry.source : undefined;
+  if (typeof rel !== "string" || !rel) {
+    warnings.push(
+      `marketplace \`${marketplace}\` lists \`${pluginId}\` with a plugin source /pane does not recognise (expected a relative path string); policy comes from the installed copy only.`
+    );
+    return { root: null, warnings };
+  }
+  const pluginRoot = resolve(root, rel);
+  const normRoot = resolve(root);
+  if (pluginRoot !== normRoot && !pluginRoot.startsWith(normRoot + sep)) {
+    warnings.push(`marketplace \`${marketplace}\` resolves \`${pluginId}\` to ${pluginRoot}, outside its own checkout; policy comes from the installed copy only.`);
+    return { root: null, warnings };
+  }
+  return { root: pluginRoot, warnings };
 }
 
 /**
@@ -283,12 +361,18 @@ export function resolveAgent(name, cwd) {
     if (hits.length > 1) {
       warnings.push(`two ${scope.source}-scope agents are named \`${name}\`: ${hits[0].path} and ${hits[1].path}. Using the first.`);
     }
+    // Scopes 1 and 2 have exactly one copy of a file by construction; §6.3a
+    // never applies to them.
     return {
       ok: true,
       source: scope.source,
       definitionPath: hits[0].path,
+      definitionPathLive: null,
+      definitionSource: "recorded",
       installPath: null,
+      marketplace: null,
       frontmatter: hits[0].frontmatter,
+      frontmatters: [hits[0].frontmatter],
       warnings,
     };
   }
@@ -304,8 +388,22 @@ export function resolveAgent(name, cwd) {
   if (found.error) return { ok: false, error: found.error };
 
   const agentsDir = join(found.installPath, "agents");
-  const definitionPath = join(agentsDir, `${rest.split(":").join("/")}.md`);
-  if (!existsSync(definitionPath)) {
+  const agentRelPath = `${rest.split(":").join("/")}.md`;
+  const definitionPath = join(agentsDir, agentRelPath);
+
+  // §6.3a: under a directory-sourced marketplace, Claude Code may launch the
+  // pane from the live checkout while installed_plugins.json points at the
+  // cache. Read BOTH copies, prefer neither, and let the caller take the safe
+  // union of every definition-derived policy. Which copy the harness actually
+  // reads (E12) is deliberately not an input here.
+  const live = resolveLiveCandidate(pluginId, found.marketplace);
+  warnings.push(...live.warnings);
+  const definitionPathLive = live.root ? join(live.root, "agents", agentRelPath) : null;
+
+  const recordedExists = existsSync(definitionPath);
+  const liveExists = Boolean(definitionPathLive && existsSync(definitionPathLive));
+
+  if (!recordedExists && !liveExists) {
     let available = [];
     try {
       available = readdirSync(agentsDir)
@@ -320,13 +418,133 @@ export function resolveAgent(name, cwd) {
     };
   }
 
-  let frontmatter = {};
-  try {
-    frontmatter = parseFrontmatter(readFileSync(definitionPath, "utf8"));
-  } catch {
-    warnings.push(`could not read frontmatter from ${definitionPath}`);
+  const readCopy = (path) => {
+    // An unreadable copy is frontmatter {}, never an error: §14.1a's fail-safe
+    // turns that into canExecute === true, so a parse quirk over-prompts
+    // instead of silently granting.
+    try {
+      const buf = readFileSync(path);
+      return { buf, frontmatter: parseFrontmatter(buf.toString("utf8")) };
+    } catch {
+      warnings.push(`could not read frontmatter from ${path}`);
+      return { buf: null, frontmatter: {} };
+    }
+  };
+  const recorded = recordedExists ? readCopy(definitionPath) : null;
+  const liveCopy = liveExists ? readCopy(definitionPathLive) : null;
+
+  let definitionSource;
+  if (!definitionPathLive) {
+    definitionSource = "recorded";
+  } else if (recordedExists && liveExists) {
+    // Byte comparison, and only bytes: mtime must never pick a winner —
+    // installation copies files, so the STALE cache copy carries the LATER
+    // mtime on this machine.
+    const identical = recorded.buf && liveCopy.buf && recorded.buf.equals(liveCopy.buf);
+    definitionSource = identical ? "identical" : "divergent";
+  } else if (recordedExists) {
+    definitionSource = "recorded-only";
+    warnings.push(`the live checkout has no copy of this agent (${definitionPathLive} does not exist); using the installed copy.`);
+  } else {
+    definitionSource = "live-only";
+    warnings.push(`the installed copy ${definitionPath} does not exist; using the live checkout copy at ${definitionPathLive}.`);
   }
-  return { ok: true, source: "plugin", definitionPath, installPath: found.installPath, frontmatter, warnings };
+
+  const frontmatters = [];
+  if (recorded) frontmatters.push(recorded.frontmatter);
+  if (liveCopy && definitionSource !== "identical") frontmatters.push(liveCopy.frontmatter);
+
+  return {
+    ok: true,
+    source: "plugin",
+    definitionPath,
+    definitionPathLive,
+    definitionSource,
+    installPath: found.installPath,
+    marketplace: found.marketplace || null,
+    frontmatter: recorded ? recorded.frontmatter : liveCopy.frontmatter,
+    frontmatters,
+    warnings,
+  };
+}
+
+function listMdFiles(root) {
+  const out = [];
+  const walk = (dir, prefix) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(join(dir, entry.name), rel);
+      else if (entry.isFile() && entry.name.endsWith(".md")) out.push(rel);
+    }
+  };
+  walk(root, "");
+  return out.sort();
+}
+
+/**
+ * `doctor`'s §6.3a check: for every installed plugin whose marketplace is
+ * directory-sourced, compare the installed `agents/` tree against the live
+ * checkout's, byte for byte. A stale cache should be noticed here, at doctor
+ * time — not at `open` time with a user waiting. `agents/` only: hook or
+ * command drift is the platform's business, not /pane's.
+ */
+export function agentsTreeDivergence() {
+  const manifest = join(homedir(), ".claude", "plugins", "installed_plugins.json");
+  let data;
+  try {
+    data = JSON.parse(readFileSync(manifest, "utf8"));
+  } catch {
+    return [];
+  }
+  const reports = [];
+  for (const [id, list] of Object.entries((data && data.plugins) || {})) {
+    const at = id.indexOf("@");
+    if (at === -1) continue;
+    const pluginId = id.slice(0, at);
+    const marketplace = id.slice(at + 1);
+    const rec = (Array.isArray(list) ? list : []).find((r) => r && r.installPath && existsSync(r.installPath));
+    if (!rec) continue;
+    const live = resolveLiveCandidate(pluginId, marketplace);
+    if (!live.root) continue;
+    const installedAgents = join(rec.installPath, "agents");
+    const liveAgents = join(live.root, "agents");
+    if (!existsSync(installedAgents) && !existsSync(liveAgents)) continue;
+    const installed = listMdFiles(installedAgents);
+    const inCheckout = listMdFiles(liveAgents);
+    const differ = [];
+    const onlyInstalled = [];
+    const onlyLive = [];
+    for (const rel of new Set([...installed, ...inCheckout])) {
+      const here = installed.includes(rel);
+      const there = inCheckout.includes(rel);
+      if (here && there) {
+        try {
+          if (!readFileSync(join(installedAgents, rel)).equals(readFileSync(join(liveAgents, rel)))) differ.push(rel);
+        } catch {
+          differ.push(rel);
+        }
+      } else if (here) onlyInstalled.push(rel);
+      else onlyLive.push(rel);
+    }
+    reports.push({
+      pluginId,
+      marketplace,
+      installPath: rec.installPath,
+      liveRoot: live.root,
+      checked: installed.length + onlyLive.length,
+      differ,
+      onlyInstalled,
+      onlyLive,
+      identical: !differ.length && !onlyInstalled.length && !onlyLive.length,
+    });
+  }
+  return reports;
 }
 
 /** The hierarchy role an agent name denotes, anchored `(^|:)role$`, or null. */
@@ -344,8 +562,15 @@ export const PANE_DEFAULTS = {
   iterm2: true,
   allowBuiltins: false,
   permissionMode: null,
+  onDefinitionDivergence: "warn",
   size: { x: 200, y: 50 },
 };
+
+/**
+ * §6.3a deliberately offers no "ignore": silently preferring one copy is the
+ * rejected option, and a config value must not reintroduce it.
+ */
+export const DIVERGENCE_MODES = ["warn", "refuse"];
 
 /**
  * The `panes` block of a resolved agent-hierarchy config, with defaults filled
@@ -373,6 +598,10 @@ export function panesConfig(rawPanes) {
         out.warnings.push(`ignoring panes.permissionMode "${v}" — not one of ${CONFIG_PERMISSION_MODES.join(", ")}.`);
         continue;
       }
+    }
+    if (k === "onDefinitionDivergence" && !DIVERGENCE_MODES.includes(v)) {
+      out.warnings.push(`ignoring panes.onDefinitionDivergence "${v}" — it is "warn" or "refuse" (there is deliberately no "ignore").`);
+      continue;
     }
     out[k] = v;
   }
@@ -416,7 +645,14 @@ export function foldRegistry(path = REGISTRY_PATH) {
     last.set(rec.key, rec);
   }
   const live = new Map();
-  for (const [key, rec] of last) if (rec.ev === "open") live.set(key, rec);
+  for (const [key, rec] of last) {
+    if (rec.ev !== "open") continue;
+    // Records predating the §6.3a fields stay valid: absent means the single
+    // recorded copy, never a rewrite of the log.
+    if (rec.definition_source === undefined) rec.definition_source = "recorded";
+    if (rec.definition_path_live === undefined) rec.definition_path_live = null;
+    live.set(key, rec);
+  }
   return live;
 }
 
@@ -641,18 +877,52 @@ function sleepSync(ms) {
 }
 
 /**
- * Kill a pane's tmux session and then reap its process.
+ * The process-group id of a RECORDED pid. This is a lookup on a pid the
+ * registry captured at creation, never a scan for a target — the distinction
+ * §13.4 rule 1 turns on.
+ */
+export function readPgid(pid) {
+  const res = run("ps", ["-o", "pgid=", "-p", String(pid)]);
+  if (res.status !== 0) return null;
+  const n = parseInt(res.stdout.trim(), 10);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * Kill a pane's tmux session and then reap its process — as a process GROUP
+ * when that is provably safe, as a single pid otherwise.
  *
  * `tmux kill-session` has been observed NOT to take the Claude Code process
- * with it, leaving a billed session running, so the recorded pid is checked
- * and signalled afterwards.
+ * with it, leaving a billed session running, so the recorded pid is signalled
+ * afterwards. E5 measured that the pane's `claude` leads its own process
+ * group, whose only other members are its ~6 MCP-server children — so the
+ * group kill is exactly as wide as the pane, and it is what stops an MCP
+ * server from outliving its parent while holding a port or GPU memory.
+ *
+ * The `pgid === pane_pid` guard is mandatory, not padding: `kill(-N)` names
+ * "the group whose LEADER is N", so if the pane process were not the leader,
+ * `-pane_pid` would address some other group entirely — under pid reuse, an
+ * unrelated tree. The pgid is confirmed by `ps` on every close, never cached,
+ * and the group kill is refused when the group is pane.mjs's own (that group
+ * contains this very process). Every guard failure falls back to the
+ * previously-shipped single-pid kill.
  *
  * Kill safety rails, all mandatory: only a pid the registry recorded at
- * creation is ever signalled (never one derived from `ps`, `pgrep`, or any
- * live scan), never our own pid or parent, and never a session whose name does
- * not look like ours.
+ * creation is ever signalled (never one derived from a live scan), never our
+ * own pid or parent, never a negative target without the same-invocation pgid
+ * confirmation, and never a session whose name does not look like ours.
+ *
+ * `deps` exists so the tests can pin the guard logic without signalling real
+ * processes; production callers pass nothing.
  */
-export function killPane(record) {
+export function killPane(record, deps = {}) {
+  const getPgid = deps.readPgid || readPgid;
+  const signal = deps.kill || ((target, sig) => process.kill(target, sig));
+  const alive = deps.pidAlive || pidAlive;
+  const wait = deps.sleep || sleepSync;
+  const selfPid = deps.selfPid ?? process.pid;
+  const selfPpid = deps.selfPpid ?? process.ppid;
+
   const notes = [];
   if (!record || !KEY_RE.test(record.key || "")) return { ok: false, error: "refusing to kill: key does not match ^ah-" };
   if (!/^ah-/.test(record.tmux_session || "")) return { ok: false, error: "refusing to kill: tmux_session does not match ^ah-" };
@@ -664,26 +934,89 @@ export function killPane(record) {
     notes.push(`no pane_pid was recorded for ${record.key}; not guessing. If a \`claude\` process survives, find it with: ps -ax | grep 'claude --agent'`);
     return { ok: true, notes };
   }
-  if (pid === process.pid || pid === process.ppid) {
+  if (pid === selfPid || pid === selfPpid) {
     return { ok: false, error: `refusing to kill pid ${pid}: it is this process or its parent` };
   }
-  if (!pidAlive(pid)) return { ok: true, notes };
+  if (!alive(pid)) return { ok: true, notes };
+
+  const pgid = getPgid(pid);
+  const ownPgid = deps.ownPgid !== undefined ? deps.ownPgid : getPgid(selfPid);
+  let target = pid;
+  if (!Number.isInteger(pgid) || pgid !== pid) {
+    notes.push(`could not confirm ${pid} leads its own process group (pgid ${pgid ?? "unreadable"}); killed the single pid — MCP-server children may survive.`);
+  } else if (!Number.isInteger(ownPgid)) {
+    notes.push(`could not read this process's own group; killed the single pid — MCP-server children may survive.`);
+  } else if (pgid === ownPgid) {
+    notes.push(`refusing the group kill: ${pid}'s process group is this process's own. Killed the single pid — MCP-server children may survive.`);
+  } else {
+    target = -pid;
+  }
 
   try {
-    process.kill(pid, "SIGTERM");
+    signal(target, "SIGTERM");
   } catch {
     return { ok: true, notes };
   }
-  for (let waited = 0; waited < 3000 && pidAlive(pid); waited += 250) sleepSync(250);
-  if (pidAlive(pid)) {
+  for (let waited = 0; waited < 3000 && alive(pid); waited += 250) wait(250);
+  if (alive(pid)) {
     try {
-      process.kill(pid, "SIGKILL");
+      signal(target, "SIGKILL");
       notes.push(`pane process ${pid} ignored SIGTERM and was killed.`);
     } catch {
       notes.push(`pane process ${pid} could not be killed; kill it by hand.`);
     }
   }
   return { ok: true, notes };
+}
+
+/**
+ * The recorded pane_pids of panes whose most recent registry event is a close.
+ * Doctor uses these to name any group member that outlived its pane (§13.3).
+ */
+export function closedPaneGroupPids(path = REGISTRY_PATH) {
+  const lastEv = new Map();
+  const lastOpen = new Map();
+  for (const line of readRegistryLines(path)) {
+    let rec;
+    try {
+      rec = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!rec || typeof rec.key !== "string") continue;
+    lastEv.set(rec.key, rec.ev);
+    if (rec.ev === "open") lastOpen.set(rec.key, rec);
+  }
+  const out = [];
+  for (const [key, ev] of lastEv) {
+    if (ev === "open") continue;
+    const open = lastOpen.get(key);
+    if (open && Number.isInteger(open.pane_pid) && open.pane_pid > 0) out.push({ key, pane_pid: open.pane_pid });
+  }
+  return out;
+}
+
+/**
+ * Processes whose parent is gone (reparented to pid 1) and whose pgid matches
+ * one of the given recorded pane pids. REPORT ONLY — doctor names these, it
+ * never signals them; the one `ps` table read exists to describe survivors,
+ * never to pick a kill target.
+ */
+export function survivingGroupProcesses(pgids) {
+  const wanted = new Set((pgids || []).map(Number).filter((n) => Number.isInteger(n) && n > 0));
+  if (!wanted.size) return [];
+  const res = run("ps", ["-axo", "pid=,ppid=,pgid=,comm="]);
+  if (res.status !== 0) return [];
+  const out = [];
+  for (const line of res.stdout.split("\n")) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (!m) continue;
+    const pid = parseInt(m[1], 10);
+    const ppid = parseInt(m[2], 10);
+    const pgid = parseInt(m[3], 10);
+    if (wanted.has(pgid) && ppid === 1) out.push({ pid, pgid, comm: m[4].trim() });
+  }
+  return out;
 }
 
 // ------------------------------------------------------------------ iTerm2
@@ -760,7 +1093,11 @@ export function itermSplit(uuid, key, orientation) {
   }
   const res = run("osascript", ["-e", script], { timeout: 5000 });
   if (res.status !== 0) return { ok: false, error: res.stderr || "osascript failed" };
-  return { ok: true, childUuid: res.stdout || null };
+  // E6: a successful split RETURNS the child session id. An empty result means
+  // the UUID walk matched nothing and no split happened, which is a failure to
+  // report, not a success with an unknown child.
+  if (!res.stdout) return { ok: false, error: "no iTerm2 session matched this session's UUID" };
+  return { ok: true, childUuid: res.stdout };
 }
 
 // --------------------------------------------------------------- pane keys

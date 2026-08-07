@@ -39,11 +39,13 @@ import {
   MODEL_RE,
   NO_PROMPT_ROLES,
   PERMISSION_MODE_NOTES,
+  agentsTreeDivergence,
   appendRegistry,
   buildLaunchCommand,
   buildTmuxArgv,
   canExecute,
   capturePane,
+  closedPaneGroupPids,
   compactRegistry,
   foldRegistry,
   isPaneLive,
@@ -63,6 +65,7 @@ import {
   resolveAgent,
   roleOfAgent,
   sendPrompt,
+  survivingGroupProcesses,
   tmuxAvailable,
   tmuxPath,
   writeJsonAtomic,
@@ -160,13 +163,15 @@ function resolveModel(agent, role, flags, resolved) {
  *
  * `--permission-mode` at startup wins over settings AND over the agent
  * definition's own frontmatter, so this is the only place the decision is
- * made. The rule is: ask when the agent can execute, don't ask when it can't.
- * The four reasoning/legwork roles are settled by policy and never asked; the
+ * made. The rule is: ask unless execution can be ruled out (§14.1a — the gate
+ * fails safe, so `executable` is true for unreadable or unrestricted
+ * definitions, and on divergence it is the OR over both copies). The four
+ * reasoning/legwork roles are settled by policy and never asked; the
  * Implementor and any non-role agent whose toolset includes Bash or Edit are
  * always asked, because relaxing oversight for an agent nobody vetted is not
  * /pane's call to make silently.
  */
-function resolvePermissionMode(role, frontmatter, flags, panes) {
+function resolvePermissionMode(role, executable, flags, panes) {
   if (flags["permission-mode"] && flags["permission-mode"] !== true) {
     const mode = String(flags["permission-mode"]);
     if (mode === "bypassPermissions") {
@@ -186,7 +191,7 @@ function resolvePermissionMode(role, frontmatter, flags, panes) {
   if (role && NO_PROMPT_ROLES.includes(role)) {
     return { mode: null, source: "role policy (normal prompting)", askUser: false };
   }
-  if (canExecute(frontmatter)) {
+  if (executable) {
     return { mode: null, source: "unset", askUser: true };
   }
   return { mode: null, source: "read-only agent (normal prompting)", askUser: false };
@@ -266,9 +271,34 @@ function cmdOpen(flags, positional) {
   const builtinAllowed = !found.ok && found.builtin && panes.allowBuiltins;
   if (!found.ok && !builtinAllowed) refuse(`Refusing to open a pane: ${found.error}`);
 
-  const frontmatter = builtinAllowed ? {} : found.frontmatter || {};
+  // Every definition-derived policy below is the conservative union over all
+  // copies on disk (§6.3a): an allowed built-in has no definition, so its one
+  // "copy" is {} and §14.1a's fail-safe makes it execution-capable — which is
+  // the correct outcome and must not be special-cased away.
+  const frontmatters = builtinAllowed ? [{}] : found.frontmatters && found.frontmatters.length ? found.frontmatters : [found.frontmatter || {}];
+  const executable = frontmatters.some((fm) => canExecute(fm));
   const role = roleOfAgent(agent);
   const warnings = [...(found.warnings || []), ...panes.warnings];
+
+  const divergent = !builtinAllowed && found.definitionSource === "divergent";
+  if (divergent && panes.onDefinitionDivergence === "refuse") {
+    refuse(
+      `Refusing to open a pane: two copies of ${agent} are on disk and they differ, and panes.onDefinitionDivergence is "refuse".\n` +
+        `  live checkout   ${found.definitionPathLive}\n` +
+        `  installed copy  ${found.definitionPath}\n` +
+        `Resync with: /plugin marketplace update ${found.marketplace}`
+    );
+  }
+  if (divergent) {
+    warnings.push(
+      `two copies of ${agent} are on disk and they differ.\n` +
+        `  live checkout   ${found.definitionPathLive}\n` +
+        `  installed copy  ${found.definitionPath}\n` +
+        `${found.marketplace} is a local-path marketplace, so Claude Code may launch this pane from either copy. ` +
+        `The permission and model policy was computed from BOTH, taking the stricter answer of each.\n` +
+        `Resync with: /plugin marketplace update ${found.marketplace}`
+    );
+  }
 
   const { model, source: modelSource } = resolveModel(agent, role, flags, resolved);
   if (role && REASONING_ROLES.includes(role) && (model === "haiku" || /^claude-haiku/.test(model || ""))) {
@@ -279,21 +309,21 @@ function cmdOpen(flags, positional) {
     );
   }
 
-  const perm = resolvePermissionMode(role, frontmatter, flags, panes);
+  const perm = resolvePermissionMode(role, executable, flags, panes);
   if (perm.askUser && !dryRun) {
     fail(
-      `This agent can execute (its toolset includes Bash or Edit), so its permission mode is the user's call.\n` +
+      `This agent can execute — its toolset includes Bash or Edit, or its definition does not rule them out — so its permission mode is the user's call.\n` +
         `Ask the user which mode to open \`${agent}\` with, then re-run with --permission-mode <mode>:\n` +
         ARGV_PERMISSION_MODES.map((m) => `  ${m.padEnd(12)} ${PERMISSION_MODE_NOTES[m]}`).join("\n")
     );
   }
 
-  if (frontmatter.initialPrompt) {
+  if (frontmatters.some((fm) => fm.initialPrompt)) {
     warnings.push(
       `\`${agent}\` declares an \`initialPrompt\`, so the pane auto-submits a first turn the instant it opens. That turn is not relayed (no pending token yet), but it costs tokens and may leave the pane mid-work when your first real send arrives.`
     );
   }
-  if (canExecute(frontmatter) && !perm.mode) {
+  if (executable && !perm.mode) {
     warnings.push("This agent can edit files and run commands, so it will hit permission prompts, and nobody is attached to answer them. Keep the pane visible, or attach to it.");
   }
   if (perm.mode === "acceptEdits") {
@@ -342,6 +372,8 @@ function cmdOpen(flags, positional) {
     agent,
     agent_source: builtinAllowed ? "builtin" : found.source,
     definition_path: builtinAllowed ? null : found.definitionPath,
+    definition_path_live: builtinAllowed ? null : found.definitionPathLive || null,
+    definition_source: builtinAllowed ? "builtin" : found.definitionSource || "recorded",
     install_path: builtinAllowed ? null : found.installPath || null,
     model: model || null,
     permission_mode: perm.mode || null,
@@ -398,7 +430,15 @@ function cmdOpen(flags, positional) {
 
   say(`pane       ${key}`);
   say(`agent      ${agent}`);
-  say(`definition ${record.definition_path || "(built-in, no definition file)"}`);
+  if (record.definition_source === "divergent") {
+    say(`definition TWO COPIES DIFFER — policy computed from BOTH (stricter wins)`);
+    say(`  live      ${record.definition_path_live}`);
+    say(`  installed ${record.definition_path}`);
+  } else if (record.definition_source === "live-only") {
+    say(`definition ${record.definition_path_live}`);
+  } else {
+    say(`definition ${record.definition_path || "(built-in, no definition file)"}`);
+  }
   say(`model      ${model || `(inherited — ${modelSource})`}`);
   say(`perms      ${permissionLine(perm.mode)}`);
   say(`where      ${itermNote || orientationPhrase(orientation)}  (tmux attach -t ${key})`);
@@ -433,6 +473,13 @@ function cmdList(flags) {
     say(`  where      ${orientationPhrase(rec.orientation)}  (tmux attach -t ${rec.key})`);
     say(`  cwd        ${rec.cwd}`);
     say(`  state      ${pending ? `WORKING on ${pending.reqid} since ${pending.sent_at}` : "idle"}${unread ? `, ${unread} reply file(s) on disk` : ""}`);
+    // Quiet in every non-divergent case (§6.3a): a warning printed for the
+    // normal state stops being read.
+    if (rec.definition_source === "divergent") {
+      say(`  definition TWO COPIES DIFFER — policy computed from BOTH (stricter wins)`);
+      say(`    live      ${rec.definition_path_live}`);
+      say(`    installed ${rec.definition_path}`);
+    }
   }
   flush(0);
 }
@@ -631,6 +678,37 @@ function cmdDoctor() {
     say("");
     say("ORPHANED PROCESSES — the tmux session is gone but the recorded pid is still alive:");
     for (const rec of orphans) say(`  ${rec.key}: pid ${rec.pane_pid} — close it with \`pane.mjs close --key ${rec.key}\``);
+  }
+
+  // Survivors of CLOSED panes: a process still in a closed pane's group whose
+  // parent is gone is an MCP server that outlived its `claude`. Report only —
+  // doctor never kills without being asked.
+  const closed = closedPaneGroupPids();
+  const survivors = survivingGroupProcesses(closed.map((c) => c.pane_pid));
+  if (survivors.length) {
+    say("");
+    say("SURVIVING PANE-GROUP PROCESSES — a closed pane's process group still has live members");
+    say("(report only; doctor never kills without being asked):");
+    for (const s of survivors) {
+      const owner = closed.find((c) => c.pane_pid === s.pgid);
+      say(`  pid ${s.pid} (${s.comm}) in closed pane group ${s.pgid}${owner ? ` (${owner.key})` : ""}`);
+    }
+  }
+
+  say("");
+  say("agent definitions, installed copy vs live checkout (directory-sourced marketplaces only):");
+  const divs = agentsTreeDivergence();
+  if (!divs.length) say("  nothing to compare — no installed plugin comes from a directory-sourced marketplace.");
+  for (const d of divs) {
+    if (d.identical) {
+      say(`  ${d.pluginId}@${d.marketplace}: identical (${d.checked} file${d.checked === 1 ? "" : "s"})`);
+    } else {
+      const bits = [];
+      if (d.differ.length) bits.push(`${d.differ.length} differ (${d.differ.join(", ")})`);
+      if (d.onlyInstalled.length) bits.push(`${d.onlyInstalled.length} only installed`);
+      if (d.onlyLive.length) bits.push(`${d.onlyLive.length} only in the checkout`);
+      say(`  ${d.pluginId}@${d.marketplace}: STALE — ${bits.join("; ")}. Resync with: /plugin marketplace update ${d.marketplace}`);
+    }
   }
 
   // Mailboxes for keys closed more than 7 days ago are the only thing removed.

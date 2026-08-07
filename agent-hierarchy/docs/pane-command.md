@@ -11,6 +11,23 @@ NEEDS-EVIDENCE result** (§15.1, measured on Claude Code v2.1.223), or an open
 
 ## 0. Revision log
 
+### Revision 3 — 2026-08-06 (post-smoke-test)
+
+Amendments from the first live end-to-end run. The happy path **passed**; the
+same run also exposed a **two-sources-of-truth** defect in agent-definition
+resolution that the pass had concealed. Read this list first if you have seen
+revision 2.
+
+| What changed | Where |
+| :-- | :-- |
+| **E5 and E6 SETTLED**, both by live measurement. `#{pane_pid}` is `claude` itself and is its own **process-group leader**; the iTerm2 AppleScript **does** return the child session id (`701F8E11-663E-4E29-AD53-9458DE5C230A`). | §15.1, §13.3, §12.2, §13.1 |
+| **Teardown now kills the process GROUP**, guarded by a `pgid === pane_pid` check. The single-pid kill left no strays in one clean run, but `claude` spawns ~6 MCP-server children in its own group and one run is not proof. | §13.3 |
+| **NEW DEFECT — `pane.mjs` and Claude Code can read different copies of the same agent definition.** Under a local-path marketplace, hooks resolve from the **live checkout** while `pane.mjs` resolves from `installed_plugins.json`'s cache `installPath`. Policy computed from one copy, applied to an agent the harness resolved from the other. | §6.1, **§6.3a**, §11.3, §13.1, §16 |
+| **Resolution now reads BOTH copies and takes the safe union.** It never silently prefers one, and it shows both in the confirmation when they differ. `installed_plugins.json` remains the **only** way a cache *version* is ever chosen, and the cache is still never globbed. | §6.3a |
+| **The permission gate is inverted to fail SAFE** — prompt unless a definition positively proves execution is denied. This is what makes the divergence non-blocking. | **§14.1a** |
+| **The live smoke test is recorded as a *conditional* pass**, not a verification: it ran under a local-path marketplace, with new hooks, against a cache-resolved definition. | §17.2 |
+| **New: E12** — which copy does `claude --agent` itself read? Verified for hooks, **not** for agent definitions. Deliberately non-blocking. | §15.2 |
+
 ### Revision 2 — 2026-08-06
 
 Amendments folded in from empirical results and user decisions. Read this list
@@ -207,6 +224,9 @@ Consequences:
 - Combined with Q4's model drift (§7.2), a paned role differs from the subagent
   role along **two** axes: model *and* tool surface. Both belong in the
   user-facing docs (§18), not only here.
+- **Revision 3:** this also bounds how much a definition's `tools:` allowlist can
+  ever tell us about a pane's real capability, which is why the permission gate
+  must fail safe rather than trust it. See §14.1a.
 
 ---
 
@@ -227,6 +247,13 @@ Consequences:
 | `agent-hierarchy/plugin.json` | **Edit.** Version bump. §18. |
 | `.claude-plugin/marketplace.json` | **Edit.** Version bump. §18. |
 
+> **Amended, revision 3.** Everything in the table above has now been
+> implemented. Revision 3 adds no new files. Its changes — §6.3a (definition
+> divergence), §14.1a (fail-safe permission gate), §13.3 step 2 (process-group
+> kill), §12.2/§13.1 (E6 settled), §16 (one config key), and tests 25–32 in
+> §17.1b — land in `hooks/lib-pane.mjs`, `hooks/pane.mjs`, `tests/test-pane.sh`,
+> `commands/pane.md`, and `README.md` only.
+
 ### What must NOT change
 
 - The Orchestrator directive text in `lib-config.mjs` `buildDirective()`, other
@@ -242,6 +269,8 @@ Consequences:
 - Behaviour for a **subagent** must remain "inject nothing".
 - Existing state files (`agent-hierarchy.json`, `.usage.jsonl`, `.gate.json`)
   keep their shapes. Pane state is new, separate files.
+- **Revision 3:** `canExecute()`'s fail-safe behaviour on empty frontmatter.
+  See §14.1a — it looks like a redundancy and it is not.
 
 > **Amended, revision 2.** Revision 1 said "the existing `isSubagent()` guard in
 > `sessionstart.mjs` stays exactly as it is." **That is now false** — the guard
@@ -301,10 +330,17 @@ Not for building the prompt (§3). It exists to:
 - **Validate** before launching, so a bad name fails in 50 ms instead of
   spawning a pane that dies silently.
 - **Report** the resolved definition path in the confirmation line, so the user
-  can see *which copy* is being used. (Known hazard: a local-checkout
-  marketplace can disagree with the installed cache.)
-- **Apply model policy** (§7) and **permission policy** (§14.1).
+  can see *which copy* is being used.
+- **Apply model policy** (§7) and **permission policy** (§14.1, §14.1a).
 - **Refuse built-ins** (§6.4) and **detect `initialPrompt`** (§6.5).
+
+> **Amended, revision 3.** Revision 2 carried this as a parenthetical: *"Known
+> hazard: a local-checkout marketplace can disagree with the installed cache."*
+> That hazard has now been **measured**, it is more serious than a display
+> problem, and it has its own section. **Read §6.3a before implementing any of
+> this.** Resolution does not select which agent runs — the harness does that —
+> so a wrong file is not a wrong agent; it is *wrong policy applied to the right
+> agent*, which is the more dangerous shape because nothing looks wrong.
 
 ### 6.2 Resolution order
 
@@ -315,12 +351,15 @@ Mirrors the documented precedence table, highest first. Managed settings and
 | :-- | :-- | :-- |
 | 1 | Project | `<cwd>/.claude/agents/**/*.md` |
 | 2 | User | `~/.claude/agents/**/*.md` |
-| 3 | Plugin | via `~/.claude/plugins/installed_plugins.json` |
+| 3 | Plugin | via `~/.claude/plugins/installed_plugins.json` (**and §6.3a**) |
 
 For scopes 1 and 2, match on the frontmatter `name:` field, **not the
 filename** — the docs are explicit that "The filename doesn't have to match."
 Scan recursively; on a duplicate `name` within one scope, take the
 lexicographically first path and emit a warning naming both.
+
+Scopes 1 and 2 have exactly one copy of a file by construction and are not
+affected by §6.3a.
 
 ### 6.3 Plugin resolution — installed_plugins.json ONLY
 
@@ -367,12 +406,193 @@ Algorithm for an agent name of the form `plugin:agent` or `plugin:sub:agent`:
    `<installPath>/agents/` — that error is what tells the user they typed
    `reviewers` instead of `reviewer`.
 
-Record both `installPath` and the resolved `.md` path in the registry, and echo
-the `.md` path in the confirmation line.
+Call the result the **recorded copy**. Record `installPath` and the resolved
+`.md` path in the registry.
+
+> **Amended, revision 3.** The recorded copy is no longer the whole story, and
+> the confirmation line no longer echoes a single path unconditionally. Continue
+> to **§6.3a**, which is a required part of `open`.
 
 > Note: plugin agent names are namespaced `plugin:agent`, and the bare name does
 > not resolve. Match anchored on `(^|:)name$`, never on a bare substring, or a
 > same-named agent from a different plugin will match too.
+
+### 6.3a Two sources of truth — the divergence rule (NEW, revision 3)
+
+> **This is the defect the live smoke test exposed.** It is not hypothetical and
+> it is not cosmetic.
+
+**What was measured.** `claudetools` is registered in
+`~/.claude/plugins/known_marketplaces.json` as:
+
+```json
+"claudetools": {
+  "source": { "source": "directory", "path": "/Users/jimcline/git/repos/claudetools" },
+  "installLocation": "/Users/jimcline/git/repos/claudetools",
+  "lastUpdated": "2026-07-19T15:00:29.501Z"
+}
+```
+
+— a **local-path marketplace**, whose `installLocation` *is* the working
+checkout. Claude Code resolved this plugin's **hooks** from that checkout: a
+brand-new `hooks/stop-pane-relay.mjs` fired inside a pane even though the cached
+tree contained no such file and no `Stop` entry in its `hooks.json`. Meanwhile
+`installed_plugins.json` records
+
+```
+agent-hierarchy@claudetools → /Users/…/.claude/plugins/cache/claudetools/agent-hierarchy/0.7.0
+```
+
+which is a real directory (not a symlink) and is genuinely behind the checkout.
+`pane.mjs` therefore resolved `…/0.7.0/agents/architect.md` and printed that path
+in its confirmation. **New relay code ran against a cache-resolved definition.**
+
+Four of the ten marketplaces on the development machine use
+`"source": "directory"`. This is not an exotic configuration; it is what every
+plugin author has.
+
+**What the divergence actually endangers.** `claude --agent <plugin:name>` means
+*Claude Code* resolves the agent. `pane.mjs` reading a definition does **not**
+select which agent runs, and cannot. What it drives is **policy**:
+
+| Policy | Reads the definition? | Consequence of reading a stale copy |
+| :-- | :-- | :-- |
+| Validation / built-in refusal (§6.4) | yes — needs *a* file to exist | a rename reads as "no such agent" against the wrong copy. Annoying, safe, self-announcing. |
+| Model policy (§7) | **no** for the five hierarchy roles — `resolveConfig()` is the source. The definition's `model` matters only for non-role agents. | drift on non-role agents only, and §7.2 already documents model drift as an accepted property of panes. |
+| `initialPrompt` warning (§6.5) | yes | a newly-added `initialPrompt` goes unwarned. Token waste, not a safety issue. |
+| **Permission gate (§14.1a / `canExecute`)** | **yes** | **a definition that newly gains `Bash` or `Edit` does not trigger the prompt** — while the pane still gets the capability, because the harness resolved the other copy. This is the security-relevant one, and it is the only one. |
+
+The asymmetry is exact, and the whole design turns on it: reading the *older*
+copy is dangerous **only** in the direction "the newer definition is *more*
+capable." A newer definition that *removes* capability makes the gate
+over-prompt, which is harmless.
+
+**Current state, measured.** `architect.md`, `implementor.md`, and `reviewer.md`
+are **byte-identical** between the checkout and the cached `0.7.0` tree today.
+The drift the smoke test hit was in `hooks/`, not in `agents/`. So the divergence
+is **latent, not active**: the smoke test's policy happened to be correct, by
+coincidence rather than by construction. That is precisely why this is a required
+guard and *not* a release blocker (§18).
+
+#### The decision — read both, prefer neither, take the safe union
+
+Three options were considered. Rejecting two:
+
+- ***Mirror Claude Code's own resolution*** (honour `known_marketplaces.json` the
+  way the harness does). **Rejected.** The precedence is undocumented; we
+  verified it for **hooks** and not for **agent definitions**, which are a
+  different subsystem (→ E12); and a helper that guesses at an internal
+  resolution order fails the same way again the first time the harness changes
+  its mind — only *silently*, because it would then believe it was right. Buying
+  correctness with an unverifiable assumption is how this defect happened.
+- ***Silently prefer one copy.*** **Rejected outright.** Whichever we picked, the
+  confirmation line would assert a definition the pane may not be running under,
+  and the user would have no way to tell. A wrong answer that announces itself is
+  strictly better than a right answer that cannot be checked.
+
+What ships instead:
+
+1. **`installed_plugins.json` remains the ONLY way a cache version is chosen.**
+   §6.3's hard rule is unchanged and unweakened: **never glob
+   `~/.claude/plugins/cache/`.** That rule exists because multiple versions
+   coexist under `…/<plugin>/<version>/` and a glob picks an arbitrary one.
+2. **Additionally**, compute a **live-checkout candidate**, when and only when one
+   exists. *This does not violate rule 1, and the reason is the crux:* a
+   local-path marketplace has **no version directories at all** — the checkout
+   *is* the source tree, exactly one copy per plugin, nothing to choose between.
+   There is no arbitrary pick to make, so the failure the rule guards against
+   cannot occur. Every path below is constructed from named manifest fields; none
+   is discovered by globbing or `readdir`.
+
+#### Resolving the live-checkout candidate — deterministic, no globbing
+
+1. From the plugin id, take its `@<marketplace>` key in `installed_plugins.json`
+   (§6.3 step 2 already found it).
+2. Look that marketplace up in `~/.claude/plugins/known_marketplaces.json`.
+   Treat it as local-path **iff** `source.source === "directory"` **and**
+   `source.path` is a non-empty string. Measured values of `source.source` on
+   this machine: `"directory"`, `"github"`, `"git"`. For `github` and `git` there
+   is exactly one copy and this entire subsection is inert.
+3. `root = installLocation || source.path`. If `root` is not an existing
+   directory, abandon the live candidate (warn once).
+4. Read `<root>/.claude-plugin/marketplace.json` and find the entry in `plugins`
+   whose `name` equals the plugin id. Its `source` field is a **relative path
+   string** — measured: `"source": "./agent-hierarchy"`. If `source` is absent,
+   is not a string, or resolves outside `root` after normalisation, **abandon the
+   live candidate** and record `definition_source: "recorded-only"` with a
+   warning. **Do not guess a layout** — in particular, do not assume
+   `<root>/<pluginId>`; that happens to be right for `claudetools` and is not a
+   documented invariant.
+5. Live candidate = `<root>/<that relative path>/agents/<name path>.md`, using
+   the same `:` → `/` mapping as §6.3 step 4.
+
+#### The rule when the two candidates disagree
+
+Applies to **`open` only**. `send`, `peek`, `close`, and `list` never re-resolve
+a definition — they read the registry record written at creation (§13.4 rule 1).
+
+| Case | Behaviour |
+| :-- | :-- |
+| No live candidate (not a local-path marketplace, or step 3/4 abandoned) | §6.3 exactly as before. `definition_source: "recorded"`. |
+| Both exist, **byte-identical** | No divergence. `definition_source: "identical"`. Display the recorded path only. **Say nothing else** — this is the normal case and it must stay quiet, or the warning becomes noise and stops being read. |
+| Only one of the two exists | Use the one that exists. `definition_source: "recorded-only"` or `"live-only"`. Warn, naming the path that is missing. |
+| Both exist and **differ** | **Divergence** — see below. |
+
+On divergence, all five of these:
+
+1. **Compute every definition-derived policy over BOTH copies and take the
+   conservative result of each:**
+   - `canExecute` → `canExecute(recorded) || canExecute(live)`. If *either* copy
+     can execute, ask.
+   - Haiku-for-a-reasoning-role refusal (§7.1) → refuse if *either* resolves to
+     Haiku.
+   - `initialPrompt` warning (§6.5) → warn if *either* declares it.
+   - Built-in / missing-file refusal (§6.4) → unchanged; by construction a file
+     exists on at least one side.
+
+   **This is what makes E12 non-blocking.** The safe answer does not depend on
+   knowing which copy the harness picked, because the more-capable copy is always
+   one of the two.
+2. **Show both paths in the confirmation** (§11.3), labelled, and say plainly
+   that they differ and what was done about it.
+3. **Record both in the registry** (§13.1) with `definition_source: "divergent"`.
+4. **Never use mtime to pick a winner, or to decide which is "newer".** Measured
+   on this machine, the *cache* copy of `architect.md` has the **later** mtime
+   (Aug 4) than the *checkout* copy (Jul 31), because installation copies files.
+   mtime records when a file was written, not whether its content is current.
+5. **The default action is WARN, not refuse** — `panes.onDefinitionDivergence`
+   (§16), default `"warn"`. Refusing by default would make `/pane` unusable
+   inside the very repository that develops it, where the checkout is ahead of
+   the cache as a matter of ordinary work. **Point 1 is what earns the right to
+   warn rather than refuse**; without the union rule, warn-and-continue would be
+   the silently-prefer-one option wearing a disclaimer. Setting the key to
+   `"refuse"` exits 2 on divergence and names both paths.
+
+The warning must be actionable, not merely alarming:
+
+```
+Note: two copies of agent-hierarchy:architect are on disk and they differ.
+  live checkout   /Users/…/claudetools/agent-hierarchy/agents/architect.md
+  installed copy  /Users/…/cache/claudetools/agent-hierarchy/0.7.0/agents/architect.md
+claudetools is a local-path marketplace, so Claude Code may launch this pane
+from either copy. The permission and model policy shown below was computed
+from BOTH, taking the stricter answer of each.
+Resync with: /plugin marketplace update claudetools
+```
+
+#### `doctor` gains a divergence check
+
+For every entry in `installed_plugins.json` whose marketplace resolves as
+local-path (steps 2–4 above), compare the recorded `<installPath>/agents/` tree
+against the live `<root>/<source>/agents/` tree and report, per plugin: identical
+/ N files differ / M files present on only one side. Name the resync command.
+**This is where a stale cache should be noticed** — at `doctor` time, deliberately
+— not at `open` time under time pressure with a user waiting.
+
+`doctor` compares `agents/` only. Divergence in `hooks/`, `commands/`, or `skills/`
+is real (it is what the smoke test hit) but it is the platform's business, not
+`/pane`'s, and reporting it would put `/pane` in the position of auditing the
+harness.
 
 ### 6.4 Built-ins: REFUSE (policy, not capability)
 
@@ -409,6 +629,11 @@ true, the refusal downgrades to a warning and the registry records
 `agent_source: "builtin"` with a null definition path. Do not implement any
 approximation.
 
+> **Revision 3:** when `allowBuiltins` is true, `canExecute` has no definition to
+> read, so §14.1a's invariant makes it `true` and the permission question is
+> always asked for a built-in. That is the correct outcome and it must not be
+> special-cased away.
+
 ### 6.5 `initialPrompt`
 
 > **Amended, revision 2.** The "frontmatter fallback path" that used to occupy
@@ -426,6 +651,9 @@ Read the resolved definition's frontmatter and act on two fields:
   Do not refuse.
 - **`background: true`** → irrelevant to a top-level session. Ignore.
 
+Under divergence, "the resolved definition's frontmatter" means both copies, per
+§6.3a point 1.
+
 ---
 
 ## 7. Model resolution
@@ -442,6 +670,10 @@ Read the resolved definition's frontmatter and act on two fields:
    `model`, which itself defaults to `inherit`.
 4. **`--model <alias>` on the command line** overrides both. Validate against the
    four aliases plus `^claude-[a-z0-9.-]+$`; refuse anything else.
+
+Note for §6.3a: steps 1 and 2 read `resolveConfig()`, **not** the definition
+file, so the five hierarchy roles' model policy is immune to definition
+divergence entirely. Only step 3 touches the file.
 
 ### 7.1 Haiku is never valid for a reasoning role
 
@@ -896,6 +1128,12 @@ Finding [D]: plugin `hooks.json` **does** load in a fresh/pane session, and
 agent-hierarchy's own `hooks.json`, self-gated on the env var. **No generated
 settings file is needed** — do not build one.
 
+> **Revision 3, and this is the observation that produced §6.3a:** under a
+> local-path marketplace, `${CLAUDE_PLUGIN_ROOT}` resolves to the **live
+> checkout**, not to the `installed_plugins.json` `installPath`. This is how the
+> smoke test's brand-new `stop-pane-relay.mjs` ran at all. It is verified for
+> hooks and **not** for agent definitions (→ E12).
+
 `hooks.json` currently registers `SessionStart`, `PreToolUse`, and
 `SubagentStop`. `Stop` is a fourth, additive entry; do not merge it into the
 `SubagentStop` block.
@@ -1011,7 +1249,7 @@ tmux delete-buffer -b <buf>             # cleanup
 - Plain `send-keys` with embedded newlines submits on the first newline and
   mangles `$`, backticks, and quotes. **It is WRONG for prompts.**
 - Verified round trips: `BANANA 3`, `MANGO 3`, `PANE OK 2` — correct line counts
-  every time.
+  every time. Revision 3: `SMOKE` also round-tripped live in ~2s.
 
 `<buf>` is `ahp-<reqid>`. Delete it after pasting so buffers do not accumulate.
 (`paste-buffer -d` would also work but was not what was verified; keep the
@@ -1048,7 +1286,8 @@ inline pastes are *additionally* allowed — it does not gate this design.
    Written BEFORE the paste, so a fast pane cannot Stop before the token exists.
 7. load-buffer / paste-buffer -p / send-keys Enter / delete-buffer.
 8. Poll <paneDir>/reply.<reqid>.json every 2s until it appears or timeout.
-   (Measured round trip, finding [K]: ~4–7s on Haiku.)
+   (Measured round trip, finding [K]: ~4–7s on Haiku; ~2s live in the §17.2
+   smoke test.)
 9. Print the reply text verbatim, plus reqid, elapsed seconds, and char count.
    If <paneDir>/log.jsonl gained a "foreign" event during the wait, surface it
    — that is the grandchild hazard (§9.3) firing, and it must not look like a
@@ -1057,6 +1296,9 @@ inline pastes are *additionally* allowed — it does not gate this design.
 
 Step 6 before step 7 is required. Writing `pending` after the paste opens a
 window where a very fast pane replies into a missing token and is swallowed.
+
+`send` does **not** re-resolve the agent definition. Everything it needs was
+decided and recorded at `open` time (§6.3a, §13.1).
 
 ### 10.6 Resolving `<key|agent>`
 
@@ -1112,6 +1354,24 @@ Send to pane ah-3f2a91b0-architect-1?
 `perms` is required whenever the resolved mode is anything other than the
 default, and required for the Implementor (`acceptEdits`) always — see §14.1.
 
+> **Amended, revision 3 — the `definition` line was misleading.** It printed one
+> path as though it were authoritative, while a second copy may have been the one
+> the harness launched (§6.3a). Two changes:
+>
+> - **When `definition_source` is `identical`, `recorded`, `recorded-only`, or
+>   `live-only`**, keep the single `definition` line exactly as above. Do not add
+>   noise to the common case.
+> - **When `definition_source` is `divergent`**, replace that single line with
+>   both paths and the §6.3a warning block:
+>
+> ```
+>   definition TWO COPIES DIFFER — policy computed from BOTH (stricter wins)
+>     live      /Users/…/claudetools/agent-hierarchy/agents/architect.md
+>     installed /Users/…/cache/claudetools/agent-hierarchy/0.7.0/agents/architect.md
+> ```
+>
+> The same rule applies to `open`'s own confirmation, not only to `ask`'s.
+
 Options: **Send** / **Edit the prompt first** / **Do it inline instead** /
 **Cancel**. "Do it inline" means the Orchestrator takes that role's contract on
 itself for the step, matching the existing `handoffs: confirm` wording.
@@ -1155,8 +1415,8 @@ anything else. Same for `$KEY` (§9.2), `$MODEL_FLAG` (§7 step 4), and
 feature and it is closed by **whitelist, not by quoting**.
 
 Capture `#{pane_id}` and `#{pane_pid}` **here, at creation** — never rediscover
-them later (§13.4, finding [J]). If `-P -F` does not emit both (E4), fall back to
-`tmux display-message -p -t "$KEY" '#{pane_id} #{pane_pid}'`.
+them later (§13.4, finding [J]). E4 is settled: `-P -F` prints both on one line
+(e.g. `%0 58354`), so the `tmux display-message -p` fallback is not needed.
 
 ### 12.2 iTerm2 is an OPTIONAL presentation layer
 
@@ -1216,9 +1476,20 @@ not hang the command.
 because that is the only stably-addressable target (finding [H]). At the 3rd
 live pane and beyond, add to the confirmation: *"this is pane 3; the
 Orchestrator's pane is getting small — consider `tmux attach` in a separate
-window instead."* If E6 shows the AppleScript can return the new session's id,
-a later amendment can split the previous pane instead; record the child UUID in
-the registry now if it is available, `null` otherwise.
+window instead."*
+
+> **Amended, revision 3 — E6 is SETTLED: the AppleScript does return the child
+> session id.** A live split recorded
+> `iterm_child_uuid: 701F8E11-663E-4E29-AD53-9458DE5C230A`. So
+> `iterm_child_uuid` is now a **required** registry field on a successful split
+> (§13.1), `null` only when the split was skipped or failed.
+>
+> Splitting the *previous* pane instead of the Orchestrator's is therefore
+> unblocked — and it is **explicitly deferred past 0.8.0**. Keep splitting the
+> Orchestrator and keep the pane-3 shrinkage warning. The deferral is deliberate,
+> not an oversight: chained splits need their own decision about what happens
+> when a middle pane is closed and its child UUID becomes the anchor for the
+> next open. Recording the UUID now is what makes that a later, cheap change.
 
 ### 12.3 Non-macOS / non-iTerm2
 
@@ -1243,17 +1514,19 @@ over the log: a key is live iff its most recent event is `open`.
 | `key` | pane key, also the tmux session name |
 | `agent` | as given, e.g. `agent-hierarchy:architect` |
 | `agent_source` | `plugin` \| `project` \| `user` \| `builtin` |
-| `definition_path` | resolved `.md`, or `null` for a built-in |
+| `definition_path` | the **recorded** copy (§6.3), or `null` for a built-in |
+| `definition_path_live` | the **live-checkout** copy (§6.3a), or `null` when the marketplace is not local-path or the candidate was abandoned — *new in revision 3* |
+| `definition_source` | `recorded` \| `identical` \| `divergent` \| `recorded-only` \| `live-only` \| `builtin` (§6.3a) — *new in revision 3* |
 | `install_path` | plugin `installPath`, or `null` |
 | `model` | resolved alias, or `null` when `--model` was omitted |
 | `permission_mode` | resolved mode, or `null` when the flag is omitted (§14.1) |
 | `tmux_session` | == `key` |
 | `pane_id` | `#{pane_id}`, e.g. `%17` — **captured at creation** (finding [H]/[L]) |
-| `pane_pid` | `#{pane_pid}` — **captured at creation**, required for reaping (finding [J]) |
+| `pane_pid` | `#{pane_pid}` — **captured at creation**, required for reaping (finding [J]). E5: this is `claude` itself and leads its own process group. |
 | `cwd` | |
 | `orchestrator_session_id` | hook `session_id` of the launching Orchestrator |
 | `orchestrator_iterm_uuid` | `${ITERM_SESSION_ID#*:}` — **UUID only**, never the `w0t2p0` prefix (finding [H]); `null` off iTerm2 |
-| `iterm_child_uuid` | the created pane's id if AppleScript returns it, else `null` (E6) |
+| `iterm_child_uuid` | the created pane's id — **E6 settled: the AppleScript does return it.** `null` only when the iTerm2 split was skipped or failed. |
 | `orientation` | `"right"` \| `"below"` — words, never a flag and never a letter (§10.2) |
 | `created_at` | ISO 8601 |
 | `dir` | absolute mailbox path |
@@ -1264,6 +1537,11 @@ over the log: a key is live iff its most recent event is `open`.
 **Compaction**, mirroring `pruneUsageFile()`: when the file exceeds 2000 lines,
 rewrite it to a `.tmp` containing only the events of currently-live keys, then
 atomic-rename. Never rewrite in place.
+
+**Adding `definition_path_live` and `definition_source` is additive.** Older
+records lack both; the fold must treat a missing `definition_source` as
+`"recorded"` and a missing `definition_path_live` as `null`, and must not
+invalidate or rewrite an existing log.
 
 ### 13.2 Liveness and pruning
 
@@ -1284,16 +1562,50 @@ Finding [J], found during cleanup: **`tmux kill-session` did NOT reliably kill
 the Claude Code process inside the pane** — an orphaned `claude` survived and had
 to be killed by pid. Without reaping, the feature leaks billed sessions.
 
+> **Amended, revision 3 — E5 is SETTLED and step 2 has changed.** `#{pane_pid}`
+> is the `claude` process itself (`comm=claude`, args = the full command), **not**
+> an intermediate shell, and `claude` is its own **process-group leader**
+> (PGID == `pane_pid`). `pgrep -P <pane_pid>` returns only MCP-server children —
+> roughly six of them (`codebase-memory-mcp`, a `godot-mcp` node, an `hy3d`
+> `uv`/python, `gemini-media-mcp`, a `nano-banana` node, an `sfx-gen` uv/python)
+> — and all of them share that PGID.
+>
+> One live `close` in the §17.2 smoke test left **no** surviving member of the
+> group after the single-pid kill. That is **evidence, not proof**, and it is
+> deliberately *not* what this design rests on.
+
 ```
 1. tmux kill-session -t <key>          (ignore failure — may already be gone)
 2. if pane_pid recorded and kill(pane_pid, 0) succeeds:
-     kill -TERM pane_pid
-     poll every 250ms for 3s
-     if still alive: kill -KILL pane_pid
+     pgid = `ps -o pgid= -p <pane_pid>`, trimmed to an integer
+     if pgid === pane_pid AND pgid !== (pane.mjs's own pgid):
+        target = -pane_pid    ← the process GROUP: claude + its MCP children
+     else:
+        target = pane_pid     ← single pid; report that children may survive
+     kill(target, SIGTERM)
+     poll kill(pane_pid, 0) every 250ms for 3s
+     if still alive: kill(target, SIGKILL)
 3. append {"ev":"close", key, at, reason}
 4. leave the mailbox dir on disk (replies and log.jsonl are the audit trail);
    delete mailbox dirs whose key has been closed for >7 days, at `doctor` time
 ```
+
+**Why the group and not the pid.** The group is exactly
+`{claude} ∪ {its MCP servers}` and nothing else, *because `claude` leads it*. So
+a group kill is not wider than intended — it is precisely as wide as the pane.
+The single-pid kill's failure mode is an MCP server (a `uv`/python or `node`
+process) outliving its parent and holding a port, a model handle, or GPU memory.
+The smoke test suggests that may not happen often; "not often" is not a teardown
+guarantee, and the group kill costs one extra `ps` read.
+
+**Why the `pgid === pane_pid` guard is mandatory, not defensive padding.**
+`kill(-N)` addresses *"the process group whose leader is N"*. If `claude` were
+not the leader, `-pane_pid` would name **some other group entirely**, and under
+pid reuse that could be an unrelated process tree. The guard restricts the group
+kill to the exact case E5 measured and falls back to the previously-specced
+single-pid kill otherwise. The second half of the guard — refusing when the
+pane's pgid equals `pane.mjs`'s own — prevents the pathological case where a
+group kill would take down the Orchestrator's own terminal.
 
 `close --all` closes every key live for **this Orchestrator's
 `orchestrator_session_id`**, not globally. A global sweep belongs in `doctor`,
@@ -1302,17 +1614,21 @@ where it is explicit.
 **Kill safety rails — all mandatory:**
 
 - Only ever kill a pid recorded as `pane_pid` in the registry at creation. Never
-  a pid derived from `ps`, `pgrep`, or any live scan.
+  a pid derived from `ps`, `pgrep`, or any live scan. (The `ps -o pgid=` read
+  above is a *lookup on a recorded pid*, not a scan for a target.)
+- **Never pass a negative argument to `kill` unless `ps` has confirmed
+  `pgid(pane_pid) === pane_pid` on that same invocation.** Do not cache it, do
+  not infer it from a previous `close`.
+- Refuse the group kill if the pane's pgid equals `pane.mjs`'s own pgid.
 - Refuse if `pane_pid === process.pid` or `=== process.ppid`.
 - Refuse if the recorded `tmux_session` does not match `^ah-`.
 - If `pane_pid` was never captured, do **not** guess. Report the orphan and the
   exact command for the user to run.
 
-`#{pane_pid}` may be an intermediate shell rather than `claude` itself, which
-would explain finding [J]'s orphan directly. NEEDS-EVIDENCE **E5** settles it and
-materially changes step 2 (process-group kill vs. direct kill). **Until E5 runs,
-implement step 2 as written and have `doctor` report any surviving `claude`
-whose parent is a dead `ah-*` pane.**
+`doctor` should still report any surviving `claude` whose recorded `ah-*` pane is
+dead, and — new in revision 3 — any surviving MCP-server process whose parent pid
+is gone and whose pgid matches a closed pane's `pane_pid`. Report only; `doctor`
+never kills without being asked.
 
 ### 13.4 The "Tmux Self Drive" shape — design away from it
 
@@ -1331,7 +1647,8 @@ correctness rules as much as security ones:
    the target `pane_id === $TMUX_PANE`, refuse. If the target's
    `iterm_child_uuid` equals the Orchestrator's `orchestrator_iterm_uuid`,
    refuse. Splitting the Orchestrator's iTerm2 session is fine; typing into it
-   never is.
+   never is. (E6 makes `iterm_child_uuid` reliably present, so this second check
+   is now live rather than usually-skipped.)
 4. **The only literal keystroke this feature ever sends is `Enter`.** All content
    goes through `paste-buffer`. This is simultaneously the correctness argument
    (finding [B]) and the security argument (finding [L]), and it should be
@@ -1433,15 +1750,60 @@ go back to the user — do not silently ship an Implementor that still prompts.
 (Note: that documentation claim is from the same unverified-doc source as §2.1
 and should itself be treated as unconfirmed.)
 
+### 14.1a The permission gate must fail SAFE (NEW, revision 3)
+
+§14.1 decides *which mode* to pass. Separately, `open` **asks the user to choose a
+permission mode** for any agent that can execute, and says nothing for read-only
+agents — an agent that can only read has no decision to make. That question is
+answered by `canExecute(frontmatter)` in `lib-pane.mjs`, and it is the single
+place where reading the wrong definition file (§6.3a) turns into a **missing
+safety prompt**.
+
+**The contract, stated as an invariant the Implementor must preserve:**
+
+> `canExecute` returns `false` **only** when a definition positively demonstrates
+> that both `Bash` and `Edit` are unavailable. Every other input — absent
+> frontmatter, absent `tools` *and* `disallowedTools`, an unparseable file, a
+> partial parse, a built-in with no file at all, a divergent pair — returns
+> `true`.
+
+The shipped implementation already satisfies this for the empty case: with
+neither `tools:` nor `disallowedTools:`, `deny` is `[]` and the final expression
+`!denies("Bash") || !denies("Edit")` evaluates to `true`. **That is the invariant,
+not a redundancy to be tidied away.** A future "simplification" to
+`deny.includes("Bash") || deny.includes("Edit")` would invert it and silently
+remove the prompt for every unrestricted agent — which is exactly the class of
+change a reviewer waves through. Test 25 (§17.1b) pins all four branches.
+
+Three consequences:
+
+1. **Divergence resolves by OR**, per §6.3a point 1:
+   `canExecute(recorded) || canExecute(live)`. The stale-definition hazard is
+   dangerous only in the "newer copy is *more* capable" direction, and the newer
+   copy is always one of the two operands.
+2. **A definition that cannot be read is `true`, not an error.** If the file
+   resolves but the frontmatter parse yields nothing usable, ask; do not refuse,
+   and do not skip. Refusing would turn a parse quirk into an outage; skipping
+   would turn it into a silent capability grant.
+3. **§3.1's warning applies here too, and it is the deeper limit.** `--agent`
+   applies the definition's *denials* to whatever toolset a top-level session
+   would otherwise have. A definition's `tools:` **allowlist** therefore
+   describes a subagent's roster, not a guarantee about a pane's. **The gate is a
+   heuristic in principle**; failing safe is what makes a heuristic acceptable
+   here. Do not describe it in `pane.md` or the README as proof that a
+   non-prompting pane cannot execute — say that `/pane` asks whenever it cannot
+   rule execution out.
+
 ---
 
 ## 15. NEEDS-EVIDENCE
 
 ### 15.1 SETTLED — verified 2026-08-06, Claude Code v2.1.223
 
-Verified via `claude -p '…' --agent agent-hierarchy:architect`. These are now
-facts and the spec above is written against them. Kept here as the record of
-what was measured and what it decided.
+Verified via `claude -p '…' --agent agent-hierarchy:architect`, plus the live
+`/pane` smoke test (§17.2) for E4–E6. These are now facts and the spec above is
+written against them. Kept here as the record of what was measured and what it
+decided.
 
 #### E1 — Does `--agent <plugin:agent>` apply real tool restrictions? **YES.** ✅
 
@@ -1476,6 +1838,38 @@ Payload keys: `session_id`, `transcript_path`, `cwd`, `prompt_id`,
 **Decided:** §9 ships unchanged. Register `Stop` only; the `SubagentStop`
 contingency is dead and the existing usage collector is untouched.
 
+#### E4 — Does `tmux new-session -d -P -F '#{pane_id} #{pane_pid}'` print both? **YES.** ✅
+
+Prints both fields on one line, e.g. `%0 58354`.
+
+**Decided:** one call. The `tmux display-message -p` fallback in §12.1 is not
+needed and should not be built.
+
+#### E5 — Is `#{pane_pid}` the `claude` process or an intermediate shell? **The `claude` process, and it leads its own group.** ✅
+
+`ps -o pid,ppid,comm -p <pane_pid>` returned `comm=claude` with the full command
+as args — no intermediate shell. `pgrep -P <pane_pid>` returned only MCP-server
+children (~6 of them). **PGID == `pane_pid`**: `claude` is its own process-group
+leader, and every MCP child shares that PGID.
+
+**Decided:** §13.3 step 2 kills the process **group**, guarded by a
+`pgid === pane_pid` check plus a self-pgid refusal. Separately observed on one
+live `close`: the single-pid kill left no surviving group member. That is
+evidence the leak may be narrow; it is **not** why the group kill ships — one
+clean run does not establish a teardown guarantee, and the guard makes the group
+kill no wider than the pane.
+
+#### E6 — Can the iTerm2 AppleScript return the new session's id? **YES.** ✅
+
+A live split returned the child session id;
+`iterm_child_uuid: 701F8E11-663E-4E29-AD53-9458DE5C230A` was recorded.
+
+**Decided:** `iterm_child_uuid` becomes a required registry field on a successful
+split (§13.1), which also makes §13.4 rule 3's second self-send check live rather
+than usually-skipped. Splitting the *previous* pane instead of the Orchestrator's
+is unblocked but **explicitly deferred past 0.8.0** (§12.2) — the chained-split
+geometry needs its own decision about closing a middle pane.
+
 #### E9 — Do agent teams already deliver this? **WITHDRAWN.** ❌
 
 `claude --help` (230 lines, v2.1.223) has zero matches for "team". The premise
@@ -1483,41 +1877,8 @@ was unsubstantiable. See §2.1. **Q1 closed: build.**
 
 ### 15.2 OPEN
 
-Numbering is stable across revisions — E4–E8 are unchanged from revision 1.
-
-#### E4 — Does `tmux new-session -d -P -F '#{pane_id} #{pane_pid}'` print both?
-
-Run it; capture stdout.
-
-- Prints `%N 12345` → one call, use it.
-- Prints only the session name, or errors → use a second
-  `tmux display-message -p -t <key> '#{pane_id} #{pane_pid}'`.
-
-#### E5 — Is `#{pane_pid}` the `claude` process or an intermediate shell? *(changes §13.3)*
-
-```bash
-ps -o pid,ppid,comm -p <pane_pid>
-pgrep -P <pane_pid>
-```
-
-- **`comm` is `claude`** → §13.3 step 2 as written.
-- **`comm` is `sh`/`zsh` with a `claude` child** → this *is* finding [J]'s
-  orphan. Teardown must kill the process **group** (`kill -- -<pgid>` after
-  `getpgid`) or walk children. Rewrite §13.3 step 2 accordingly.
-
-#### E6 — Can the iTerm2 AppleScript return the new session's id?
-
-```applescript
-tell application "iTerm2"
-  … locate session by UUID …
-  return id of (split vertically with default profile)
-end tell
-```
-
-- **Returns a UUID** → store as `iterm_child_uuid`; a later amendment can split
-  the previous pane instead of shrinking the Orchestrator every time.
-- **Returns nothing / errors** → keep splitting the Orchestrator and keep the
-  pane-3 shrinkage warning (§12.2).
+Numbering is stable across revisions — E7, E8, E10, E11 are unchanged. E4, E5,
+and E6 moved to §15.1 in revision 3. E12 is new in revision 3.
 
 #### E7 — `--permission-mode`: does it exist, what values, and does it apply under `--agent`? **(BLOCKING for §14.1 / Q3)**
 
@@ -1573,21 +1934,61 @@ differ.
 **This does not gate the build.** §12.2 is the last thing to land (§18 ship
 order), so E10 can run at any point before then.
 
-#### E11 — Are `Grep` and `Glob` reachable in a paned Architect? *(new in revision 2; affects §3.1 and the docs)*
+#### E11 — Are `Grep` and `Glob` reachable in a paned Architect? **SETTLED NEGATIVE — they are genuinely absent.** ❌
 
-E1's toolset listing did not include them, and the Architect's own contract calls
-them its instruments. Most likely explanation is tool deferral via `ToolSearch`,
-but that is unverified.
+> **Amended, revision 3.** This ran. Measured on a live paned Architect
+> (`claude --agent agent-hierarchy:architect`, v2.1.223): the pane reported
+> verbatim *"No Grep/Glob tool is exposed to me directly"* and reached its answer
+> by dispatching `task-gopher` and by `Read` instead. They are **absent, not
+> merely deferred behind `ToolSearch`**.
 
-Open a pane running `agent-hierarchy:architect` and ask it to grep for a known
-string in a known file and report the `file:line`.
+**Decided:** §3.1's tool-deferral explanation is **wrong** and must not be
+repeated as fact — keep the structural claim (different base set, same denials),
+drop the deferral hypothesis as the explanation. A paned Architect is materially
+weaker at research than the same Architect as a subagent, and that belongs in the
+README's "Known differences from a subagent" paragraph (§18.3) in bold, together
+with the recommendation to **prefer the subagent path for research-heavy
+Architect work**. The pane does keep the `Agent` tool and can delegate, which is
+how it works around the gap.
 
-- **It succeeds** (directly or after a `ToolSearch`) → §3.1's deferral reading is
-  right; document the difference and move on.
-- **It cannot** → a paned Architect is materially weaker than a subagent
-  Architect, and that belongs in the README's "known differences" paragraph
-  (§7.2) in bold. It may also argue for preferring the subagent path for
-  research-heavy Architect work.
+#### E12 — Which copy of an agent definition does `claude --agent` actually read? *(new in revision 3; affects §6.3a display only)*
+
+Verified for **hooks**: under the local-path `claudetools` marketplace,
+`${CLAUDE_PLUGIN_ROOT}` resolved to the **live checkout** — a brand-new
+`hooks/stop-pane-relay.mjs` fired inside a pane although the cached `0.7.0` tree
+contained neither the file nor a `Stop` entry in its `hooks.json`. **Not**
+verified for **agent definitions**, which are a different plugin subsystem, and
+E1 cannot discriminate because both copies of `architect.md` carry the same
+denials.
+
+**This is deliberately NOT blocking, and that is the point of §6.3a.** The union
+rule makes every policy decision correct without the answer. E12 decides only
+which path `pane.mjs` should *emphasise* in the confirmation.
+
+Experiment:
+
+```
+# in the LIVE CHECKOUT only — do NOT touch the cache copy
+add a distinctive sentinel line to
+  /Users/jimcline/git/repos/claudetools/agent-hierarchy/agents/<some agent>.md
+(e.g. a one-line sentence in the body: "SENTINEL-E12-<random>")
+
+claude -p 'Quote the sentinel line in your own instructions, verbatim, or say NONE' \
+  --agent agent-hierarchy:<that agent>
+
+then revert the sentinel
+```
+
+- **Sentinel appears** → the harness reads the live checkout. Label the live path
+  *"in force"* and the recorded path *"installed"* in §11.3's divergent block.
+- **Sentinel absent (`NONE`)** → the harness reads the cache. Invert the labels.
+- **Either way** the union rule in §6.3a stays. It is what covers the case where
+  a future harness version changes its mind, which is the failure the
+  mirror-the-harness option would have walked into.
+
+Note for whoever runs this: it modifies a tracked file in the checkout. Use a
+scratch agent definition or revert immediately; do not leave a sentinel in a real
+role's body.
 
 ---
 
@@ -1606,6 +2007,7 @@ absent block means all defaults.
     "iterm2": true,
     "allowBuiltins": false,
     "permissionMode": null,
+    "onDefinitionDivergence": "warn",
     "size": { "x": 200, "y": 50 }
   }
 }
@@ -1615,6 +2017,12 @@ absent block means all defaults.
 non-null it applies to every pane, including reasoning roles, and the
 confirmation must show it. It is the only path by which `bypassPermissions` can
 ever be set.
+
+`onDefinitionDivergence` (*new in revision 3*, §6.3a) accepts `"warn"` (default)
+or `"refuse"`. `"warn"` shows both paths and continues with the union-computed
+policy; `"refuse"` exits 2 and names both paths. There is deliberately **no**
+`"ignore"` value and no option to silently prefer one copy — that is the choice
+§6.3a rejects, and offering it as a key would reintroduce it.
 
 `resolveConfig()` must keep accepting configs with **no** `panes` block — this
 is additive and must not bump the config `version` or invalidate existing files.
@@ -1727,13 +2135,79 @@ No tmux and no live Claude session required for any of these:
 24. **Kill safety** — `close` against a registry record whose `pane_pid` is
     `process.pid`. Assert refusal, and that no signal was sent.
 
+*New in revision 3 — tests 25–32. Tests 25 and 27 are the security tests; do not
+let them be dropped as "internal detail".*
+
+25. **`canExecute` fails safe — all four branches** (§14.1a):
+    - frontmatter `{}` (neither `tools` nor `disallowedTools`) → **`true`**.
+      *This is the case a "simplification" would invert.*
+    - `disallowedTools: [Bash, Edit, NotebookEdit]` → `false`.
+    - `disallowedTools: [Bash]` only → `true`.
+    - `tools: ["Read", "Grep"]` → `false`; `tools: ["*"]` → `true`.
+26. **Divergence detected** — build a fake `HOME` containing
+    `known_marketplaces.json` with a `"source": {"source":"directory","path":…}`
+    entry, an `installed_plugins.json` pointing at a fake cache tree, a fake
+    checkout tree with `.claude-plugin/marketplace.json`, and an `agents/x.md`
+    that **differs** between the two trees. Dry-run `open`. Assert: exit 0,
+    `definition_source` is `"divergent"`, **both** paths appear in the output,
+    and `definition_path_live` is populated.
+27. **Divergence resolves by OR** — same fixture; cache copy has
+    `disallowedTools: [Bash, Edit, NotebookEdit]`, checkout copy has
+    `tools: ["Bash"]`. Assert the dry-run reports the agent as
+    execution-capable (the permission question is asked). **Then swap the two
+    trees and assert the identical result.** *This is the security test: the
+    answer must not depend on which side is stale.*
+28. **No divergence stays quiet** — identical `agents/x.md` on both sides.
+    Assert `definition_source` is `"identical"` and that the output contains
+    **no** divergence warning at all.
+29. **`onDefinitionDivergence: "refuse"`** — fixture 26 plus the config key set
+    to `"refuse"`. Assert exit 2 and that both paths are named in the message.
+30. **Non-local marketplace is inert** — `known_marketplaces.json` entry with
+    `"source": {"source":"github", …}`. Assert no live candidate is computed,
+    no divergence warning, `definition_path_live` is `null`, and
+    `definition_source` is `"recorded"`.
+31. **The cache is never globbed** — `grep -nE 'plugins/cache' hooks/*.mjs`.
+    Every hit must be a path *built from* an `installPath` read out of
+    `installed_plugins.json`. Assert there is no `readdir`/glob rooted at
+    `~/.claude/plugins/cache`. *Guards §6.3's hard rule against the new
+    revision-3 code.*
+32. **Group kill is guarded** — `close` against a registry record whose
+    `pane_pid` has `pgid !== pane_pid` (stub the `ps` reader). Assert the
+    single-pid path is taken and that `kill` was **never** called with a
+    negative argument. Repeat with `pgid === pane_pid` and assert the negative
+    argument **is** used. Third case: pgid equal to `pane.mjs`'s own → assert the
+    single-pid path. *Guards §13.3.*
+
 Add both test scripts to whatever runner already invokes the other four.
 
 ### 17.2 Manual — the one live smoke test
 
+> **Amended, revision 3 — this test has now been RUN and it PASSED. Read the
+> caveat before treating the pass as verification.**
+>
+> Verified live on 2026-08-06, full happy path: `doctor` → `open` (tmux session
+> created **and** iTerm2 pane split, `pane_id` and `pane_pid` captured at
+> creation, `iterm_child_uuid` returned per E6) → `send` (prompt on stdin,
+> `pending` token written before the paste, bracketed paste delivered) → relay
+> reply `"SMOKE"` in **~2s** with the pending token cleared → `close` (clean
+> teardown, no surviving processes).
+>
+> **What the pass does NOT establish.** It ran on a machine where `claudetools`
+> is a **local-path marketplace**. The new hooks executed from the live checkout
+> while `pane.mjs` resolved the agent definition out of the cached `0.7.0` tree
+> (§6.3a). Policy was therefore computed from a *different copy* than the one the
+> harness may have launched. It came out correct only because the three role
+> definitions happen to be byte-identical across the two trees today — a
+> coincidence, not a property, and not something a user installing from git
+> shares.
+>
+> **Required before calling the feature verified:** re-run this smoke test after
+> §6.3a and §14.1a land, and run it **once more on a machine (or a fake `HOME`)
+> where the plugin was installed from git**, so the cache is the only copy.
+
 ```
 /agent-hierarchy:pane agent-hierarchy:architect v
-  → confirmation shows agent, definition path, model, perms,
+  → confirmation shows agent, definition path(s), model, perms,
     and "opened to the right"   ← v means SIDE BY SIDE (§10.2)
   → an iTerm2 pane appears IN THE ORCHESTRATOR'S OWN TAB (finding [H])
   → the pane shows an Architect session, not "You are the Orchestrator"
@@ -1741,7 +2215,7 @@ Add both test scripts to whatever runner already invokes the other four.
 /agent-hierarchy:pane ask <key> "Reply with exactly: PANE OK 2"
   → user confirmation appears BEFORE anything is sent
   → the pane shows a [Pasted text] chip, then submits
-  → reply comes back in ~5s, text is exactly "PANE OK 2"
+  → reply comes back in ~2–7s, text is exactly "PANE OK 2"
 
   then, in the pane, the user types "what is 2+2" directly
   → the pane answers the human; NOTHING is relayed to the Orchestrator
@@ -1750,9 +2224,11 @@ Add both test scripts to whatever runner already invokes the other four.
 /agent-hierarchy:pane close <key>
   → tmux session gone
   → ps shows NO surviving `claude` for that pane_pid (finding [J])
+  → ps shows NO surviving MCP-server child in that pane's process group (E5)
 ```
 
-That last line is the one that has bitten before. Check it explicitly.
+The last two lines are the ones that have bitten before. Check both explicitly —
+the MCP-child check is new in revision 3 and is what the group kill exists for.
 
 Also run once, by hand, with no pane involved at all:
 
@@ -1788,6 +2264,28 @@ Why separate:
 The Orchestrator may overrule and bundle; if so, ship straight to `0.8.0` and
 keep `tests/test-sessionstart-agent.sh` as a separate file anyway.
 
+> **Amended, revision 3 — does the divergence defect block the release?**
+>
+> **No, and the guard is not optional.** Stating both halves precisely:
+>
+> - **It does not block**, because the divergence is currently **latent**: the
+>   three role definitions are byte-identical across the two trees today (§6.3a),
+>   and for a user who installs claudetools normally from git there is exactly
+>   one copy and no divergence is possible at all. The affected population is
+>   plugin authors working from a local-path marketplace.
+> - **§6.3a and §14.1a are required content of the second release.** Without
+>   §14.1a's fail-safe inversion, the permission gate can silently skip a prompt
+>   for an agent that gained `Bash` — a security-relevant miss, in a small but
+>   high-agency population, and one nothing in the current code would surface.
+>   With §14.1a landed, the residual consequence is a possibly-misleading printed
+>   path, which §6.3a's dual display closes.
+> - **What IS blocked is the claim.** §17.2's pass may not be described as
+>   verifying the feature until it is re-run per §17.2's amended note. Ship the
+>   code; do not ship the claim.
+>
+> E12 does **not** block: §6.3a is deliberately designed so the release does not
+> need its answer.
+
 ### 18.2 Version bumps
 
 **Required in BOTH files, together** — a plugin change that bumps only one is a
@@ -1796,7 +2294,11 @@ known recurring defect in this repo:
 - `/Users/jimcline/git/repos/claudetools/agent-hierarchy/plugin.json`
 - `/Users/jimcline/git/repos/claudetools/.claude-plugin/marketplace.json`
 
-Both currently read `0.7.0`.
+> **Amended, revision 3.** Revision 2 said "both currently read `0.7.0`." That is
+> now stale: `.claude-plugin/marketplace.json` reads `0.8.0` for
+> `agent-hierarchy`. Before shipping revision 3's changes, **check that
+> `plugin.json` matches**, and if `0.8.0` has already been published, bump both
+> to `0.8.1` rather than re-publishing `0.8.0` with different contents.
 
 *Note for the Implementor:* the original dispatch called this "root
 `marketplace.json`", but the file resolved on disk is at
@@ -1813,9 +2315,18 @@ exists, bump it too — check before committing.
 - the tmux requirement and the `tmux attach -t <key>` escape hatch;
 - a **"Known differences from a subagent"** paragraph carrying §7.2's model
   drift **and** §3.1's tool-surface difference. Q4's answer was "document the
-  drift" — a spec-only note does not discharge it; this paragraph does.
+  drift" — a spec-only note does not discharge it; this paragraph does. Revision
+  3: that paragraph must also carry **E11's settled negative** — a paned
+  Architect has no `Grep` and no `Glob`, so prefer the subagent path for
+  research-heavy Architect work.
 - the per-role permission table (§14.1), including that `acceptEdits` does not
-  cover `Bash`.
+  cover `Bash`;
+- *(revision 3)* one short paragraph on **definition divergence**: if you develop
+  plugins from a local-path marketplace, `/pane` may find two copies of an agent
+  definition; it computes policy from both and takes the stricter answer, shows
+  you both paths, and `/pane doctor` tells you when a cache is stale. State that
+  `/pane` **asks** whenever it cannot rule out that an agent can execute — do not
+  state that a non-prompting pane cannot execute (§14.1a point 3).
 
 Update the `description` string in `hooks/hooks.json` to cover the new `Stop`
 hook and state that it is inert unless `AGENT_HIERARCHY_PANE_DIR` is set. Also
@@ -1829,19 +2340,41 @@ no tmux at all, and are what make the feature *safe*. Land and test them first,
 then §12–§13 (tmux + registry), then §12.2 (iTerm2) last, as the optional layer
 it is. E10 can run any time before that last step.
 
+*Revision 3:* §14.1a is a two-line invariant plus tests and should land **before**
+§6.3a — it is what makes the divergence non-critical, and it is independently
+valuable even if §6.3a slipped. §13.3's group kill is independent of both.
+
 ---
 
 ## 19. Confidence, and what I am NOT settling
 
 **Now resting on measurement, not documentation:** §3 (`--agent`), §8's
-discriminator, §9's `Stop` + `last_assistant_message`. E1–E3 settled all three.
+discriminator, §9's `Stop` + `last_assistant_message`, §12.1's `-P -F` capture,
+§13.3's process-group premise, §12.2's child-UUID return, and §3.1's tool-surface
+difference. E1–E6 and E11 settled all of them.
 
 **Reasonably confident:** the pending-token protocol (§9), the registry and
 teardown shape (§13), the prompt-delivery sequence (§10.4), the tmux/iTerm2 split
-of responsibilities (§12), and the §2.3 rejection of `--tmux` for creation.
+of responsibilities (§12), and the §2.3 rejection of `--tmux` for creation. The
+full happy path has now run end to end (§17.2).
 
 **Lower confidence, flagged:**
 
+- **§6.3a — the divergence rule is new and it is mine.** *Medium-high.* The
+  union rule is sound because it does not depend on E12, and the failure
+  direction is toward over-prompting, which is safe. What I am *less* sure of is
+  step 4 of the live-candidate resolution: I verified `"source": "./agent-hierarchy"`
+  for two plugins in one marketplace manifest, and I am assuming — not
+  verifying — that a relative-path string is the general shape. The spec handles
+  the other shapes by **abandoning** the live candidate rather than guessing,
+  which is the conservative direction, but a marketplace format I have not seen
+  would quietly degrade `/pane` to today's single-source behaviour without
+  saying so. If that matters, the fix is to warn on an unrecognised `source`
+  shape rather than abandon silently.
+- **§14.1a's invariant is stated but not enforced by types.** It lives in one
+  boolean expression that reads like a redundancy. Test 25 is the only thing
+  standing between it and a well-meaning cleanup. If the Reviewer can think of a
+  way to make it structurally obvious rather than test-enforced, take it.
 - **§8.1 — the bug fix touches shipped, shared code.** The `agent_id`
   discriminator is carried as a verified fact from prior sessions, but not
   verified *for SessionStart payloads specifically* by this Architect. If
@@ -1859,8 +2392,12 @@ of responsibilities (§12), and the §2.3 rejection of `--tmux` for creation.
   applies under `--agent`. That is unverified, and the documentation claim
   pointing the other way comes from the same unsubstantiated source as §2.1.
   E7 is blocking.
-- **§13.3 / E5.** Finding [J]'s process leak is still unexplained. If
-  `#{pane_pid}` is a shell, the teardown as specced still leaks.
+- **§13.3 — the group kill is designed, not measured.** E5 settled the *premise*
+  (claude leads its own group; MCP children share the PGID). The single clean
+  `close` observed in §17.2 is weak evidence that the leak may be narrow, and it
+  is **not** evidence that the group kill behaves as intended. Test 32 covers the
+  guard; the actual signal delivery is only covered by §17.2's amended manual
+  check.
 - **§2.1.** I withdrew a section that revision 1 presented as verbatim
   documentation. The lesson generalises: **treat every doc quote in this spec
   that is not backed by an E-item as unverified.** The remaining ones are the
@@ -1879,17 +2416,26 @@ of responsibilities (§12), and the §2.3 rejection of `--tmux` for creation.
   sub-decisions I made on the user's behalf are open as **Q5**.
 - ~~**Q4 — §7.2.** `model: inherit`.~~ **ANSWERED** — allowed; drift documented
   in the README, not only the spec. Applied. (§7.2, §18.3)
-- **Q5 — §14.1, NEW.** Two permission sub-decisions Q3 did not cover, both made
+- **Q5 — §14.1.** Two permission sub-decisions Q3 did not cover, both made
   by the Architect and both cheap to reverse:
   1. **`task-runner` gets normal prompting.** It has `Bash`, which `acceptEdits`
      does not cover, so granting it would widen blast radius while buying almost
      nothing. Confirm, or say what it should get.
   2. **`bypassPermissions` is refusable from the command line, permitted only
      from a config file.** Confirm, or relax.
-- **Q6 — §8.2 case 3, NEW.** Should a hand-launched `claude --agent
+- **Q6 — §8.2 case 3.** Should a hand-launched `claude --agent
   agent-hierarchy:architect` session (no pane) receive the short role notice
   (§8.4), or nothing at all? I chose the notice. Nothing-at-all is the smaller,
   safer diff.
+- **Q7 — §6.3a, NEW (revision 3).** On definition divergence, the default is
+  **warn and continue with the stricter policy**, not refuse
+  (`panes.onDefinitionDivergence`, default `"warn"`). My reasoning: you develop
+  plugins from a local checkout, so divergence is the *normal* state of your own
+  repo and refusing by default would make `/pane` unusable exactly where it is
+  built — while the union rule already removes the safety consequence. **If you
+  would rather `/pane` stop and make you resync, say so and I will flip the
+  default to `"refuse"`.** This is a product-behaviour call and it is yours, not
+  mine; I picked a default rather than block on it.
 
 ### Escalation
 
@@ -1902,3 +2448,12 @@ want adjudicated rather than defaulted. **Escalate at that point with this
 question:** *"A paned Implementor cannot be given `acceptEdits`. What, if
 anything, may an unattended interactive agent be allowed to do without a human
 in the loop — and is a stalling Implementor the correct failure mode instead?"*
+
+**Revision 3 does not raise a second escalation.** I considered whether the
+definition-divergence defect warranted one, given it is security-adjacent, and
+concluded no: the failure direction is bounded (over-prompting), the fix does not
+depend on an unverified assumption, and the residual risk is a display detail
+that E12 closes cheaply. If the Reviewer disagrees with §6.3a's *warn* default or
+with §14.1a's fail-safe framing, that disagreement is worth escalating — those
+are the two judgment calls in this revision that a second opinion would actually
+change.

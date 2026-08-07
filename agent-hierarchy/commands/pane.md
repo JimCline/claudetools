@@ -56,10 +56,13 @@ per-dispatch question. Ask once, not twice.
 1. Run `node "$PANE" open --agent <name> --orient <right|below> --dry-run --session "<your gate id>"`.
    The gate id is the session id the agent-hierarchy directive gave you; pass it
    so `close all` can scope to your own panes.
-2. Read the dry-run output. If it says `permission prompt required: yes`, the
-   agent can execute (its toolset includes `Bash` or `Edit`), and **you must ask
-   the user which permission mode to open it with** before launching. Offer
-   exactly these four, with these descriptions:
+2. Read the dry-run output. If it says `permission prompt required: yes`,
+   `/pane` could not rule out that the agent can execute — its toolset includes
+   `Bash` or `Edit`, or its definition is missing, unreadable, or unrestricted —
+   and **you must ask the user which permission mode to open it with** before
+   launching. The gate fails safe: it asks whenever execution cannot be ruled
+   out, so never present a non-prompting pane as proof the agent cannot
+   execute. Offer exactly these four, with these descriptions:
    - **manual** — prompts for anything beyond reads. Safest; the pane will sit
      and wait if nobody is attached to answer.
    - **acceptEdits** — auto-accepts file edits and safe filesystem commands.
@@ -75,21 +78,27 @@ per-dispatch question. Ask once, not twice.
    `~/.claude/agent-hierarchy.json`.
 3. Put the whole thing to the user with AskUserQuestion: the agent, the resolved
    definition path, the model, the permission mode, and where the pane will
-   land. Then run the same command without `--dry-run`, adding
-   `--permission-mode <their choice>` if one was needed.
+   land. If the dry-run's registry record shows
+   `definition_source: "divergent"`, TWO copies of the definition exist and
+   differ — show **both** paths, labelled, and say the policy was computed from
+   both with the stricter answer winning. Then run the same command without
+   `--dry-run`, adding `--permission-mode <their choice>` if one was needed.
 4. Show the confirmation block verbatim.
 
-If `permission prompt required: no`, skip step 2 — the agent cannot execute, or
-its mode is already settled by policy or config — but still confirm the open.
+If `permission prompt required: no`, skip step 2 — execution was ruled out by
+the definition, or the mode is already settled by policy or config — but still
+confirm the open.
 
 ### Asking
 
 1. `node "$PANE" list` to find the key.
 2. AskUserQuestion showing: the pane key, the agent, the model, the permission
    mode, where it is, a one-line summary of the work, and the first ~100
-   characters of the prompt. Options: **Send** / **Edit the prompt first** /
-   **Do it inline instead** / **Cancel**. "Do it inline" means you take that
-   role's contract on yourself for this step.
+   characters of the prompt. If `list` marks the pane's definition as
+   `TWO COPIES DIFFER`, include both paths in the confirmation. Options:
+   **Send** / **Edit the prompt first** / **Do it inline instead** /
+   **Cancel**. "Do it inline" means you take that role's contract on yourself
+   for this step.
 3. On Send, heredoc the prompt into the helper on **stdin** — never as an
    argument:
 
@@ -140,12 +149,24 @@ not nest.
 A turn the **user** types into the pane directly is never relayed to you. That
 conversation is between them and the pane.
 
+## Two copies of a definition
+
+If the user develops plugins from a local-path marketplace, an agent definition
+can exist twice: the installed copy and the live checkout. `open` reads both;
+when they differ it computes every policy from both, takes the stricter answer
+of each, shows both paths, and warns (set
+`panes.onDefinitionDivergence: "refuse"` to make it refuse instead — there is
+no "ignore"). When the copies are identical it says nothing. `/pane doctor`
+reports any stale installed tree and names the resync command.
+
 ## Requirements
 
 tmux is mandatory; `/pane doctor` reports it, along with whether the optional
 iTerm2 presentation layer is available. Without iTerm2 the pane still runs and
 orientation is inert — the user attaches with `tmux attach -t <key>`, which
-every command prints.
+every command prints. `doctor` also compares installed agent definitions
+against a local-path marketplace's checkout, and names any process that
+outlived a closed pane's process group (report only).
 
 Pick the ONE case matching the argument, run the helper, and show its output
 verbatim.
