@@ -339,6 +339,7 @@ hooks/
   pretooluse-durable-offer.mjs   offers a live idle durable agent instead of a cold subagent, once
   subagentstop-usage.mjs         zero-token usage collector
   stop-pane-relay.mjs            durable-agent reply relay (inert outside a pane)
+  userpromptsubmit-durable-nudge.mjs  unread-reply nudge (backstop for the background wait)
   usage-report.mjs               standalone reporter
   pane.mjs                       /durable CLI (create/list/send/peek/wait/cancel/close/doctor)
   gate.mjs                       escalation-gate CLI (set/status/reset)

@@ -801,6 +801,25 @@ export function extractTldr(text) {
     .trimEnd();
 }
 
+/**
+ * Reply files that have landed but never been presented, newest first. The
+ * `.presented` marker (written by pane.mjs on every pickup path) is what
+ * "unread" means everywhere: list, the roster, and the nudge hook all call
+ * this instead of counting reply files.
+ */
+export function unreadReplies(dir) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((f) => /^reply\..*\.json$/.test(f))
+    .filter((f) => !existsSync(join(dir, f.replace(/\.json$/, ".presented"))))
+    .map((f) => ({
+      file: f,
+      reqid: f.replace(/^reply\./, "").replace(/\.json$/, ""),
+      mtime: statSync(join(dir, f)).mtimeMs,
+    }))
+    .sort((a, b) => b.mtime - a.mtime);
+}
+
 /** Every `## ` heading line of a reply body, in order — the grep targets. */
 export function sectionHeadings(text) {
   return String(text)
@@ -921,9 +940,11 @@ export function durableRoster() {
   const cli = join(dirname(fileURLToPath(import.meta.url)), "pane.mjs");
   const lines = [`Durable agents live right now (query anytime: node "${cli}" list):`];
   for (const rec of live.values()) {
-    const pending = readJsonFile(join(rec.dir || mailboxDir(rec.key), "pending"));
+    const dir = rec.dir || mailboxDir(rec.key);
+    const pending = readJsonFile(join(dir, "pending"));
+    const unread = unreadReplies(dir).length;
     lines.push(
-      `- ${rec.key} — ${rec.agent} (${rec.model || "inherited model"}) — ${pending ? `WORKING on ${pending.reqid} since ${pending.sent_at}` : "idle"} — created ${rec.created_at || "unknown"} by session ${rec.orchestrator_session_id || "unknown"}`
+      `- ${rec.key} — ${rec.agent} (${rec.model || "inherited model"}) — ${pending ? `WORKING on ${pending.reqid} since ${pending.sent_at}` : "idle"}${unread ? ` — ${unread} UNREAD reply waiting (pick it up: node "${cli}" wait --key ${rec.key})` : ""} — created ${rec.created_at || "unknown"} by session ${rec.orchestrator_session_id || "unknown"}`
     );
   }
   lines.push(

@@ -29,6 +29,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { REASONING_MODELS, resolveConfig } from "./lib-config.mjs";
 import {
@@ -75,6 +76,7 @@ import {
   tmuxAvailable,
   tmuxPath,
   tmuxSessionExists,
+  unreadReplies,
   verifyAndReapLive,
   wrapPrompt,
   writeJsonAtomic,
@@ -480,14 +482,12 @@ function cmdList(flags) {
   for (const rec of live.values()) {
     const dir = rec.dir || mailboxDir(rec.key);
     const pending = readJsonFile(join(dir, "pending"));
-    const unread = existsSync(dir)
-      ? readdirSync(dir).filter((f) => /^reply\..*\.json$/.test(f)).length
-      : 0;
+    const unread = unreadReplies(dir).length;
     say(`${rec.key}`);
     say(`  agent      ${rec.agent}  (${rec.model || "inherited model"}, ${permissionLine(rec.permission_mode)})`);
     say(`  where      ${orientationPhrase(rec.orientation)}  (tmux attach -t ${rec.key})`);
     say(`  cwd        ${rec.cwd}`);
-    say(`  state      ${pending ? `WORKING on ${pending.reqid} since ${pending.sent_at}` : "idle"}${unread ? `, ${unread} reply file(s) on disk` : ""}`);
+    say(`  state      ${pending ? `WORKING on ${pending.reqid} since ${pending.sent_at}` : "idle"}${unread ? `, ${unread} UNREAD ${unread === 1 ? "reply" : "replies"} — pick up: pane.mjs wait --key ${rec.key}` : ""}`);
     // Quiet in every non-divergent case (§6.3a): a warning printed for the
     // normal state stops being read.
     if (rec.definition_source === "divergent") {
@@ -594,6 +594,9 @@ async function cmdSend(flags, positional) {
  * alike) goes through here, so a late reply cannot bypass the gate.
  */
 function presentReply(record, dir, reqid, panes, text, elapsed, notes) {
+  // The marker is what "unread" means everywhere (list, roster, nudge hook):
+  // a reply file with no .presented sibling has never been shown to anyone.
+  writeFileSync(join(dir, `reply.${reqid}.presented`), new Date().toISOString());
   if (text.length > panes.replyInlineMaxChars) {
     const bodyPath = join(dir, `reply.${reqid}.md`);
     writeFileSync(bodyPath, text);
@@ -647,7 +650,10 @@ async function awaitReply(record, dir, reqid, timeout, panes, notes) {
   say(`No reply from ${record.key} after ${timeout}s (request ${reqid}).`);
   say("The agent may still be working, or may be sitting on a permission prompt with nobody attached.");
   say("");
-  say(`  Pick the reply up later:  pane.mjs wait --key ${record.key}   (re-polls without sending)`);
+  say(`  Arm the pickup NOW (recommended) — run this as a BACKGROUND Bash task (run_in_background: true):`);
+  say(`    node "${fileURLToPath(import.meta.url)}" wait --key ${record.key} --timeout 3600`);
+  say(`  Background tasks survive the Bash tool's own timeout, it exits the moment the reply`);
+  say(`  lands, and the harness notifies you when it does — nobody has to re-prompt.`);
   say(`  Peek without attaching:   pane.mjs peek --key ${record.key}`);
   say(`  Attach and look:          tmux attach -t ${record.key}`);
   say("");
@@ -684,29 +690,43 @@ async function cmdWait(flags, positional) {
   const record = rec || { key, dir, pane_id: null };
   const resolved = resolveConfig((rec && rec.cwd) || process.cwd());
   const panes = readPanes(resolved);
-  const timeout = Number(flags.timeout) > 0 ? Number(flags.timeout) : panes.timeoutSeconds;
+  // --timeout 0 means no deadline: the background-ear use, where the exit
+  // itself is the notification and giving up early would silence it.
+  const timeout =
+    flags.timeout !== undefined && Number(flags.timeout) === 0
+      ? Infinity
+      : Number(flags.timeout) > 0
+        ? Number(flags.timeout)
+        : panes.timeoutSeconds;
 
   const pending = readJsonFile(join(dir, "pending"));
   if (pending) {
     await awaitReply(record, dir, pending.reqid, timeout, panes, []);
   }
 
-  // No request outstanding: the newest reply file is the one a timed-out send
-  // never presented. Re-presenting is idempotent, so nothing is marked read.
-  const replies = existsSync(dir)
-    ? readdirSync(dir)
-        .filter((f) => /^reply\..*\.json$/.test(f))
-        .map((f) => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime)
-    : [];
-  if (!replies.length) {
-    fail(`${key}: no request is outstanding and no reply files are on disk.`);
+  // No request outstanding: prefer the newest UNREAD reply — the one a
+  // timed-out send never presented — falling back to the newest overall.
+  const unread = unreadReplies(dir);
+  let chosen = unread[0] || null;
+  if (!chosen) {
+    const all = existsSync(dir)
+      ? readdirSync(dir)
+          .filter((f) => /^reply\..*\.json$/.test(f))
+          .map((f) => ({ file: f, reqid: f.replace(/^reply\./, "").replace(/\.json$/, ""), mtime: statSync(join(dir, f)).mtimeMs }))
+          .sort((a, b) => b.mtime - a.mtime)
+      : [];
+    if (!all.length) {
+      fail(`${key}: no request is outstanding and no reply files are on disk.`);
+    }
+    chosen = all[0];
   }
-  const newest = replies[0].f;
-  const reqid = newest.replace(/^reply\./, "").replace(/\.json$/, "");
-  const reply = readJsonFile(join(dir, newest)) || {};
-  say(`${key}: no request is outstanding — presenting the newest reply on disk (request ${reqid}).`);
-  presentReply(record, dir, reqid, panes, reply.text || "", 0, []);
+  if (unread.length > 1) {
+    say(`${unread.length} unread replies were on disk — presenting the newest; the others are now marked seen and their files remain in ${dir}.`);
+  }
+  for (const u of unread) writeFileSync(join(dir, u.file.replace(/\.json$/, ".presented")), new Date().toISOString());
+  const reply = readJsonFile(join(dir, chosen.file)) || {};
+  say(`${key}: no request is outstanding — presenting the newest reply on disk (request ${chosen.reqid}).`);
+  presentReply(record, dir, chosen.reqid, panes, reply.text || "", 0, []);
 }
 
 function countForeign(dir) {

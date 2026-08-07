@@ -635,7 +635,52 @@ check "wait: refuses a key outside the whitelist with exit 2" '[ "$RC" -eq 2 ]'
 echo '{"reqid":"r-w3","echo":true,"sent_at":"2026-01-01T00:00:00Z"}' > "$WD/pending"
 pane wait --key ah-wt-arch-1 --timeout 1 > "$WORK/o-wt" 2>&1; RC=$?
 check "wait: times out gracefully when no reply arrives" '[ "$RC" -eq 1 ] && grep -q "No reply from" "$WORK/o-wt"'
+check "wait timeout: arms the background ear" 'grep -q "run_in_background: true" "$WORK/o-wt"'
+check "wait timeout: prints the ear command verbatim" 'grep -q -- "wait --key ah-wt-arch-1 --timeout 3600" "$WORK/o-wt"'
 rm -f "$WD/pending"
+echo '{"reqid":"r-w5","echo":true,"sent_at":"2026-01-01T00:00:00Z"}' > "$WD/pending"
+node "$H/pane.mjs" wait --key ah-wt-arch-1 --timeout 0 > "$WORK/o-w0" 2>&1 &
+W0PID=$!
+sleep 3
+if kill -0 "$W0PID" 2>/dev/null; then W0ALIVE=1; kill "$W0PID" 2>/dev/null; else W0ALIVE=0; fi
+check "wait: --timeout 0 never gives up on its own" '[ "$W0ALIVE" -eq 1 ] && ! grep -q "No reply" "$WORK/o-w0"'
+rm -f "$WD/pending"
+
+# ================================================= 0.12.0 — finish nudge
+
+check "nudge: presenting writes the presented marker" '[ -f "$WD/reply.r-w2.presented" ]'
+check "nudge: hooks.json registers the UserPromptSubmit hook" \
+  'node -e "const j=JSON.parse(require(\"fs\").readFileSync(\"'$PLUGIN'/hooks/hooks.json\",\"utf8\")); process.exit(Array.isArray(j.hooks.UserPromptSubmit) && JSON.stringify(j).includes(\"userpromptsubmit-durable-nudge\") ? 0 : 1)"'
+UPS="$H/userpromptsubmit-durable-nudge.mjs"
+rm -f "$REG"
+U0="$(echo '{"session_id":"u0","cwd":"'$WORK'"}' | env -u AGENT_HIERARCHY_PANE_DIR node "$UPS")"
+check "nudge hook: silent with no registry" '[ -z "$U0" ]'
+UD="$HOME/.claude/agent-hierarchy.panes/ah-nud-arch-1"
+mkdir -p "$UD"
+cat > "$REG" <<JSON
+{"ev":"open","key":"ah-nud-arch-1","agent":"agent-hierarchy:architect","dir":"$UD"}
+JSON
+U1="$(echo '{"session_id":"u1","cwd":"'$WORK'"}' | env -u AGENT_HIERARCHY_PANE_DIR node "$UPS")"
+check "nudge hook: silent when the agent has no replies" '[ -z "$U1" ]'
+node -e 'require("fs").writeFileSync(process.argv[1] + "/reply.r-n1.json", JSON.stringify({ reqid: "r-n1", text: "NUDGE BODY" }))' "$UD"
+U2="$(echo '{"session_id":"u2","cwd":"'$WORK'"}' | env -u AGENT_HIERARCHY_PANE_DIR node "$UPS")"
+check "nudge hook: an unread reply produces the nudge" 'echo "$U2" | grep -q "ah-nud-arch-1"'
+check "nudge hook: the nudge names the pickup command" 'echo "$U2" | grep -q "wait --key ah-nud-arch-1"'
+check "nudge hook: emitted as additionalContext" 'echo "$U2" | grep -q "hookSpecificOutput"'
+check "nudge hook: never contains reply text" '! echo "$U2" | grep -q "NUDGE BODY"'
+U3="$(echo '{"session_id":"u3","cwd":"'$WORK'"}' | env AGENT_HIERARCHY_PANE_DIR="$UD" node "$UPS")"
+check "nudge hook: a pane session is never nudged" '[ -z "$U3" ]'
+OUTN="$(pane wait --key ah-nud-arch-1)"
+check "nudge: wait picks the unread reply up" 'echo "$OUTN" | grep -q "NUDGE BODY"'
+U4="$(echo '{"session_id":"u4","cwd":"'$WORK'"}' | env -u AGENT_HIERARCHY_PANE_DIR node "$UPS")"
+check "nudge hook: a presented reply stops nudging" '[ -z "$U4" ]'
+mkdir -p "$WORK/off/.claude"
+echo '{ "version": 1, "enabled": false }' > "$WORK/off/.claude/agent-hierarchy.json"
+node -e 'require("fs").writeFileSync(process.argv[1] + "/reply.r-n2.json", JSON.stringify({ reqid: "r-n2", text: "off body" }))' "$UD"
+U5="$(echo '{"session_id":"u5","cwd":"'$WORK'/off"}' | env -u AGENT_HIERARCHY_PANE_DIR node "$UPS")"
+check "nudge hook: silent when the hierarchy is disabled" '[ -z "$U5" ]'
+rm -f "$REG"
+rm -rf "$UD" "$WORK/off"
 
 # ================================================= test 31 — the cache is never globbed
 
@@ -758,6 +803,17 @@ JSON
   check "size gate: points at task-gopher for fetching sections" 'grep -q "task-gopher" "$WORK/o-size"'
   check "size gate: the full body is on disk" 'grep -q "xxxxxxxxxx" "$WORK/mbox-live/reply."*.md'
   rm -f "$WORK/mbox-live/pending"
+
+  # ---- 0.12.0: unread means unpresented, in list and in the roster.
+  reg "$T_PID"
+  check "list: a presented reply is not unread" '! node "$H/pane.mjs" list 2>/dev/null | grep -q "UNREAD"'
+  node -e 'require("fs").writeFileSync(process.argv[1] + "/reply.r-lu.json", JSON.stringify({ reqid: "r-lu", text: "small" }))' "$WORK/mbox-live"
+  check "list: an unpresented reply is unread, with the pickup command" \
+    'node "$H/pane.mjs" list 2>/dev/null | grep -q "1 UNREAD reply — pick up: pane.mjs wait --key ah-panetest-1"'
+  ROSTERU="$(echo '{"session_id":"orchU","cwd":"'$WORK'","source":"startup"}' | \
+    env -u AGENT_HIERARCHY_PANE_DIR -u AGENT_HIERARCHY_PANE_ROLE -u AGENT_HIERARCHY_PANE_KEY node "$H/sessionstart.mjs" 2>/dev/null)"
+  check "roster: an unread reply is named with its pickup command" 'echo "$ROSTERU" | grep -q "UNREAD reply waiting"'
+  rm -f "$WORK/mbox-live"/reply.r-lu.*
 
   # ---- roster (0.9.0): SessionStart names the live durable agent, reaps dead ones.
   reg "$T_PID"

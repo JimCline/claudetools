@@ -187,15 +187,27 @@ then retry.
 
 A timed-out send is the **normal ending for long tasks**, not a failure: it
 prints the last 20 lines of the pane (so the user can see whether the agent is
-sitting on a permission prompt) and leaves the request outstanding. The pickup
-is `node "$PANE" wait --key <key>` — it re-polls for the reply without sending
-anything, presents it through the same size gate, and with no request
-outstanding it re-presents the newest reply file on disk. Run it when you come
-back to that agent, or offer the user: wait now / keep working and collect
-later / attach with `tmux attach -t <key>`. Running `send` again is **not** the
-way (it is refused while the request is outstanding), and never read
-`reply.<reqid>.json` files directly — that hands the full body to your context,
-which is exactly what the size gate exists to prevent.
+sitting on a permission prompt) and leaves the request outstanding. **Arm the
+pickup immediately** — run the exact command the timeout output prints:
+
+```
+node "$PANE" wait --key <key> --timeout 3600
+```
+
+as a **background** Bash task (`run_in_background: true`). Background tasks
+are not subject to the Bash tool's 120s kill, `wait` exits the moment the
+reply lands, and the harness notifies you when it does — the reply arrives as
+a task notification, size-gated, with nobody having to re-prompt. Then carry
+on with other work. (`--timeout 0` waits with no deadline; prefer 3600 so a
+stuck agent eventually produces a "no reply" notification you can act on.)
+
+If you did not arm it, you are still covered twice: `wait --key <key>` run by
+hand picks the reply up any time (with no request outstanding it re-presents
+the newest reply file on disk), and every user turn injects a one-line nudge
+whenever a durable agent has an unread reply. Running `send` again is **not**
+the way (it is refused while the request is outstanding), and never read
+`reply.<reqid>.json` files directly — that hands the full body to your
+context, which is exactly what the size gate exists to prevent.
 
 If the timeout output mentions **unmatched turns**, the agent (or a human
 typing in the pane) produced a final message that did not carry the request's

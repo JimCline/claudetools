@@ -193,6 +193,22 @@ nothing capped what a reply could pour into the Orchestrator's context.
   the echo line leaves `pending` standing forever, and `send` refuses seconds
   sends while it does). Works against dead panes; the mailbox outlives the
   session.
+- **R6 — the finish nudge (0.12.0).** A reply that landed after `send`'s
+  window closed used to sit unnoticed until the user prompted. Two channels
+  close that. Primary: the send-timeout output tells the Orchestrator to arm
+  `wait --key <key> --timeout 3600` as a **background** Bash task — background
+  tasks survive the Bash tool's timeout (verified empirically) and the harness
+  re-invokes the session the moment the task exits, so the size-gated
+  presentation arrives as a task notification with no user prompt. Backstop: a
+  UserPromptSubmit hook injects a one-line nudge at the next user turn
+  whenever any durable agent has an UNREAD reply — `reply.*.json` with no
+  `.presented` marker, the marker being written by `presentReply` on every
+  pickup path, which also upgrades `list`'s "reply files on disk" to a real
+  unread count. The backstop folds the registry raw (no liveness checks — a
+  dead pane's unread reply still matters, and UserPromptSubmit must never
+  spawn tmux). `wait --timeout 0` waits with no deadline. The durable agent's
+  model still initiates nothing: both channels are deterministic
+  harness/helper code reacting to a solicited reply.
 - **`wait <key>` and the harness-kill constraint (0.11.0).** The Bash tool
   kills commands at 120s by default, and a killed `send` prints none of its
   guidance — so `timeoutSeconds` defaults to 80 (worst case 30s boot-wait +
