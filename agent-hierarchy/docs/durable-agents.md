@@ -193,6 +193,16 @@ nothing capped what a reply could pour into the Orchestrator's context.
   the echo line leaves `pending` standing forever, and `send` refuses seconds
   sends while it does). Works against dead panes; the mailbox outlives the
   session.
+- **`wait <key>` and the harness-kill constraint (0.11.0).** The Bash tool
+  kills commands at 120s by default, and a killed `send` prints none of its
+  guidance — so `timeoutSeconds` defaults to 80 (worst case 30s boot-wait +
+  80s poll stays under 120s), long tasks end in a graceful timeout, and the
+  reply is collected later with `wait --key <key>`: with a request
+  outstanding it re-polls for that reqid, with none it re-presents the newest
+  reply file on disk. Both paths run through the same presentation as `send`
+  (size gate included), so a late reply never enters context raw. Raising
+  `--timeout` past ~90 requires passing a matching Bash `timeout` parameter
+  alongside it.
 
 ## 10. Versioning, tests, rollout
 

@@ -595,6 +595,48 @@ check "cancel: says so when nothing is outstanding" 'echo "$OUTC2" | grep -q "no
 pane cancel --key "not-a-key;id" >/dev/null 2>&1; RC=$?
 check "cancel: refuses a key outside the whitelist with exit 2" '[ "$RC" -eq 2 ]'
 
+# ================================================= 0.11.0 — wait
+
+# The Bash tool kills commands at 120s by default; a send that outlives it dies
+# with its guidance unprinted. BOOT_WAIT_SECONDS (30) plus the default poll
+# window must stay under that kill.
+check "wait: default send window survives the Bash tool's 120s kill" \
+  'node --input-type=module -e "
+import { PANE_DEFAULTS } from \"$H/lib-pane.mjs\";
+if (!(30 + PANE_DEFAULTS.timeoutSeconds < 120)) process.exit(1);
+"'
+
+WD="$HOME/.claude/agent-hierarchy.panes/ah-wt-arch-1"
+mkdir -p "$WD"
+echo '{"reqid":"r-w1","echo":true,"sent_at":"2026-01-01T00:00:00Z"}' > "$WD/pending"
+node -e 'require("fs").writeFileSync(process.argv[1] + "/reply.r-w1.json", JSON.stringify({ reqid: "r-w1", text: "WAITED BODY" }))' "$WD"
+OUTW="$(pane wait --key ah-wt-arch-1 --timeout 5)"
+check "wait: presents the reply for the outstanding request" 'echo "$OUTW" | grep -q "WAITED BODY"'
+check "wait: names the request id" 'echo "$OUTW" | grep -q "r-w1"'
+rm -f "$WD/pending"
+OUTW2="$(pane wait --key ah-wt-arch-1)"
+check "wait: with no pending, re-presents the newest reply on disk" 'echo "$OUTW2" | grep -q "WAITED BODY"'
+check "wait: says the request is no longer outstanding" 'echo "$OUTW2" | grep -q "no request is outstanding"'
+sleep 1
+node -e '
+  const fs = require("fs"), d = process.argv[1];
+  const body = "## TL;DR\n- Verdict: ship it\n\n## Verdict\n" + "y".repeat(5000) + "\n";
+  fs.writeFileSync(d + "/reply.r-w2.json", JSON.stringify({ reqid: "r-w2", text: body }));
+' "$WD"
+OUTW3="$(pane wait --key ah-wt-arch-1)"
+check "wait: a late oversized reply still hits the size gate" 'echo "$OUTW3" | grep -q "stays on disk"'
+check "wait: the late body never prints" '! echo "$OUTW3" | grep -q "yyyyyyyyyy"'
+check "wait: the late TL;DR is printed" 'echo "$OUTW3" | grep -q "Verdict: ship it"'
+check "wait: the late body file is on disk" 'grep -q "yyyyyyyyyy" "$WD/reply.r-w2.md"'
+pane wait --key ah-wt2-arch-1 >/dev/null 2>&1; RC=$?
+check "wait: nothing outstanding and nothing on disk is a plain failure" '[ "$RC" -eq 1 ]'
+pane wait --key "bad;key" >/dev/null 2>&1; RC=$?
+check "wait: refuses a key outside the whitelist with exit 2" '[ "$RC" -eq 2 ]'
+echo '{"reqid":"r-w3","echo":true,"sent_at":"2026-01-01T00:00:00Z"}' > "$WD/pending"
+pane wait --key ah-wt-arch-1 --timeout 1 > "$WORK/o-wt" 2>&1; RC=$?
+check "wait: times out gracefully when no reply arrives" '[ "$RC" -eq 1 ] && grep -q "No reply from" "$WORK/o-wt"'
+rm -f "$WD/pending"
+
 # ================================================= test 31 — the cache is never globbed
 
 check "cache: hooks never construct a plugins/cache path" '! grep -nE "plugins/cache" "$H"/*.mjs'
@@ -656,8 +698,10 @@ JSON
   echo '{"session_id":"live-sess"}' > "$WORK/mbox-live/session"
   # Every send in this file passes an explicit short --timeout: the pane is a
   # `sleep`, so nothing ever replies and the 300s default would stall the suite.
-  printf 'hello pane\n' | node "$H/pane.mjs" send --key ah-panetest-1 --timeout 4 >/dev/null 2>&1
+  printf 'hello pane\n' | node "$H/pane.mjs" send --key ah-panetest-1 --timeout 4 > "$WORK/o-sendto" 2>&1
   check "send: writes the pending token before pasting" '[ -f "$WORK/mbox-live/pending" ]'
+  check "send timeout: points at wait for the pickup" 'grep -q "wait --key ah-panetest-1" "$WORK/o-sendto"'
+  check "send timeout: warns against reading reply files raw" 'grep -q "Do NOT read reply files directly" "$WORK/o-sendto"'
   check "send: leaves pending in place on timeout, so a late reply still lands" '[ -f "$WORK/mbox-live/pending" ]'
   check "send: logs ev=sent" 'grep -q "\"ev\":\"sent\"" "$WORK/mbox-live/log.jsonl"'
   check "send: refuses a second send while one is outstanding" \

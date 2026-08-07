@@ -558,7 +558,11 @@ export function roleOfAgent(name) {
 // ------------------------------------------------------------- panes config
 
 export const PANE_DEFAULTS = {
-  timeoutSeconds: 300,
+  // The Bash tool kills commands at 120s by default, and a killed send prints
+  // none of its guidance. Worst case is bootWait (30s) + this poll window, so
+  // the pair must stay under 120 — a longer --timeout needs a longer Bash
+  // timeout passed alongside it.
+  timeoutSeconds: 80,
   pollSeconds: 2,
   inlinePromptMaxChars: 2000,
   replyInlineMaxChars: 4000,

@@ -300,7 +300,7 @@ stale, with the resync command.
 ### Optional config
 
 ```json
-{ "panes": { "timeoutSeconds": 300, "pollSeconds": 2,
+{ "panes": { "timeoutSeconds": 80, "pollSeconds": 2,
              "inlinePromptMaxChars": 2000, "replyInlineMaxChars": 4000,
              "iterm2": true, "allowBuiltins": false, "permissionMode": null,
              "onDefinitionDivergence": "warn",
@@ -340,7 +340,7 @@ hooks/
   subagentstop-usage.mjs         zero-token usage collector
   stop-pane-relay.mjs            durable-agent reply relay (inert outside a pane)
   usage-report.mjs               standalone reporter
-  pane.mjs                       /durable CLI (create/list/send/peek/cancel/close/doctor)
+  pane.mjs                       /durable CLI (create/list/send/peek/wait/cancel/close/doctor)
   gate.mjs                       escalation-gate CLI (set/status/reset)
   lib-config.mjs                 config resolution + directive text (run directly for status)
   lib-gate.mjs                   session-scoped gate state

@@ -1,5 +1,5 @@
 ---
-description: Create a durable agent — a long-lived, interactive Claude Code session running one file-backed agent in a tmux pane, which the Orchestrator hands work to instead of re-spawning cold subagents. Usage: /durable create <agent> [<agent>…] [right|below] | list | ask <key> <text> | cancel <key> | close <key|all> | doctor
+description: Create a durable agent — a long-lived, interactive Claude Code session running one file-backed agent in a tmux pane, which the Orchestrator hands work to instead of re-spawning cold subagents. Usage: /durable create <agent> [<agent>…] [right|below] | list | ask <key> <text> | wait <key> | cancel <key> | close <key|all> | doctor
 ---
 
 The user ran `/agent-hierarchy:durable` with argument: `$ARGUMENTS`
@@ -35,6 +35,7 @@ PANE="${CLAUDE_PLUGIN_ROOT:-}/hooks/pane.mjs"; [ -f "$PANE" ] || PANE="$(ls -t ~
                                                         create several — one confirmation
 /agent-hierarchy:durable list                           show live durable agents (every session's)
 /agent-hierarchy:durable ask <key|agent> <text…>        send work (user-confirmed)
+/agent-hierarchy:durable wait <key>                     pick up a reply after a send timed out
 /agent-hierarchy:durable cancel <key>                   clear a stuck outstanding request
 /agent-hierarchy:durable close <key|agent>              close one
 /agent-hierarchy:durable close all                      close every one you created
@@ -46,9 +47,9 @@ orientation word, which applies to all of them. An agent genuinely named
 `right` or `below` is therefore shadowed in last position — put it earlier in
 the batch, or create it on its own.
 
-`create`, `open`, `list`, `ask`, `cancel`, `close`, and `doctor` are **reserved
-first words** (`open` is the older synonym of `create`; both reach the same
-code). An agent genuinely named one of them is shadowed; `/durable create list
+`create`, `open`, `list`, `ask`, `wait`, `cancel`, `close`, and `doctor` are
+**reserved first words** (`open` is the older synonym of `create`; both reach
+the same code). An agent genuinely named one of them is shadowed; `/durable create list
 right` is the documented escape.
 
 ## Orientation: prefer the words
@@ -161,7 +162,13 @@ PROMPT
    final-results-only, the TL;DR structure — so do **not** add any of that by
    hand; you would just duplicate it.
 
-4. It blocks until the agent replies (default 300s). A **small reply is
+4. It blocks until the agent replies (default 80s — deliberately under the
+   Bash tool's 120s command kill, so the helper always gets to print its own
+   guidance instead of dying mid-poll). **If you raise `--timeout` past ~90,
+   you MUST also pass a Bash `timeout` parameter of at least
+   `(--timeout + 30) × 1000` ms on that tool call**, or the harness kills the
+   command first. For long tasks, don't raise it: let the send time out
+   gracefully and pick the reply up later (step below). A **small reply is
    printed whole** — show it verbatim. A **large reply is withheld**: the
    helper writes the body to `reply.<reqid>.md` in the agent's mailbox and
    prints only its size, the path, the reply's `## TL;DR` section, and the
@@ -178,11 +185,17 @@ session identity file, then fails with "has not finished booting" — nothing wa
 sent and no request is outstanding. Peek or attach to see what it is doing,
 then retry.
 
-If a send times out, it prints the last 20 lines of the pane so the user can
-see whether the agent is sitting on a permission prompt, and leaves the request
-outstanding. Offer: keep waiting (running `send` again is **not** the way — the
-reply still lands on disk; re-run `list`), attach with `tmux attach -t <key>`,
-or close the agent.
+A timed-out send is the **normal ending for long tasks**, not a failure: it
+prints the last 20 lines of the pane (so the user can see whether the agent is
+sitting on a permission prompt) and leaves the request outstanding. The pickup
+is `node "$PANE" wait --key <key>` — it re-polls for the reply without sending
+anything, presents it through the same size gate, and with no request
+outstanding it re-presents the newest reply file on disk. Run it when you come
+back to that agent, or offer the user: wait now / keep working and collect
+later / attach with `tmux attach -t <key>`. Running `send` again is **not** the
+way (it is refused while the request is outstanding), and never read
+`reply.<reqid>.json` files directly — that hands the full body to your context,
+which is exactly what the size gate exists to prevent.
 
 If the timeout output mentions **unmatched turns**, the agent (or a human
 typing in the pane) produced a final message that did not carry the request's

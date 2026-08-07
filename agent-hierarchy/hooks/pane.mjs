@@ -9,6 +9,7 @@
  *   node pane.mjs list  [--json]
  *   node pane.mjs send  --key <key> [--summary <text>] [--timeout <seconds>] [--boot-wait <seconds>]
  *   node pane.mjs peek  --key <key> [--lines <n>]
+ *   node pane.mjs wait  --key <key> [--timeout <seconds>]
  *   node pane.mjs cancel --key <key>
  *   node pane.mjs close --key <key> | --all [--session <id>]
  *   node pane.mjs doctor
@@ -517,7 +518,7 @@ async function cmdSend(flags, positional) {
   const existing = readJsonFile(join(dir, "pending"));
   if (existing) {
     const age = Math.round((Date.now() - Date.parse(existing.sent_at || 0)) / 1000);
-    fail(`durable agent ${record.key} is still working on request ${existing.reqid} (sent ${age}s ago). Wait, or run \`pane.mjs peek --key ${record.key}\`.`);
+    fail(`durable agent ${record.key} is still working on request ${existing.reqid} (sent ${age}s ago). Pick it up with \`pane.mjs wait --key ${record.key}\`, or peek at the pane.`);
   }
 
   const chunks = [];
@@ -583,46 +584,54 @@ async function cmdSend(flags, positional) {
   }
   paneLog(dir, { ev: "sent", reqid, chars: prompt.length });
 
+  await awaitReply(record, dir, reqid, timeout, panes, notes);
+}
+
+/**
+ * Print a reply the frugal way. Bodies over replyInlineMaxChars stay on disk
+ * — the size gate is mechanism, not instruction: once the body prints, the
+ * Orchestrator has already paid for it. Every pickup path (send and wait
+ * alike) goes through here, so a late reply cannot bypass the gate.
+ */
+function presentReply(record, dir, reqid, panes, text, elapsed, notes) {
+  if (text.length > panes.replyInlineMaxChars) {
+    const bodyPath = join(dir, `reply.${reqid}.md`);
+    writeFileSync(bodyPath, text);
+    const tldr = extractTldr(text);
+    say(`Reply from ${record.key} is ${text.length} chars — over replyInlineMaxChars (${panes.replyInlineMaxChars}), so the body stays on disk, NOT in your context.`);
+    say(`  body: ${bodyPath}`);
+    say("");
+    if (tldr) {
+      say(tldr);
+    } else {
+      say("(the reply has no ## TL;DR section — its first lines:)");
+      say(text.split("\n").slice(0, 10).join("\n"));
+    }
+    const heads = sectionHeadings(text).filter((h) => !/^##\s*TL;DR/i.test(h));
+    if (heads.length) {
+      say("");
+      say(`sections: ${heads.join("  |  ")}`);
+    }
+    say("");
+    say("Do NOT read the whole body by default. Put the choice to the user, or dispatch");
+    say("task-gopher to pull just the named sections you need from the body file.");
+  } else {
+    say(text || "(the durable agent's final message was empty)");
+  }
+  say("");
+  say(`— ${record.key} · request ${reqid} · ${elapsed}s · ${text.length} chars`);
+  for (const n of notes) say(`note: ${n}`);
+  flush(0);
+}
+
+async function awaitReply(record, dir, reqid, timeout, panes, notes) {
   const started = Date.now();
   const replyPath = join(dir, `reply.${reqid}.json`);
   const logBefore = countForeign(dir);
   while ((Date.now() - started) / 1000 < timeout) {
-    await sleep(panes.pollSeconds * 1000);
     const reply = readJsonFile(replyPath);
     if (reply) {
-      const elapsed = Math.round((Date.now() - started) / 1000);
-      const text = reply.text || "";
-      if (text.length > panes.replyInlineMaxChars) {
-        // The size gate is mechanism, not instruction: once the body prints,
-        // the Orchestrator has already paid for it. Withhold it and hand back
-        // the TL;DR, the path, and the grep targets instead.
-        const bodyPath = join(dir, `reply.${reqid}.md`);
-        writeFileSync(bodyPath, text);
-        const tldr = extractTldr(text);
-        say(`Reply from ${record.key} is ${text.length} chars — over replyInlineMaxChars (${panes.replyInlineMaxChars}), so the body stays on disk, NOT in your context.`);
-        say(`  body: ${bodyPath}`);
-        say("");
-        if (tldr) {
-          say(tldr);
-        } else {
-          say("(the reply has no ## TL;DR section — its first lines:)");
-          say(text.split("\n").slice(0, 10).join("\n"));
-        }
-        const heads = sectionHeadings(text).filter((h) => !/^##\s*TL;DR/i.test(h));
-        if (heads.length) {
-          say("");
-          say(`sections: ${heads.join("  |  ")}`);
-        }
-        say("");
-        say("Do NOT read the whole body by default. Put the choice to the user, or dispatch");
-        say("task-gopher to pull just the named sections you need from the body file.");
-      } else {
-        say(text || "(the durable agent's final message was empty)");
-      }
-      say("");
-      say(`— ${record.key} · request ${reqid} · ${elapsed}s · ${text.length} chars`);
-      for (const n of notes) say(`note: ${n}`);
-      flush(0);
+      presentReply(record, dir, reqid, panes, reply.text || "", Math.round((Date.now() - started) / 1000), notes);
     }
     const foreignNow = countForeign(dir);
     if (foreignNow > logBefore) {
@@ -631,20 +640,23 @@ async function cmdSend(flags, positional) {
       say(`Inspect ${join(dir, "log.jsonl")}.`);
       flush(1);
     }
+    await sleep(panes.pollSeconds * 1000);
   }
 
-  const tail = capturePane(record.pane_id, 20);
+  const tail = record.pane_id ? capturePane(record.pane_id, 20) : "";
   say(`No reply from ${record.key} after ${timeout}s (request ${reqid}).`);
-  say("The agent may be sitting on a permission prompt with nobody attached.");
+  say("The agent may still be working, or may be sitting on a permission prompt with nobody attached.");
   say("");
-  say(`  Attach and answer it:   tmux attach -t ${record.key}`);
-  say(`  Peek without attaching: pane.mjs peek --key ${record.key}`);
+  say(`  Pick the reply up later:  pane.mjs wait --key ${record.key}   (re-polls without sending)`);
+  say(`  Peek without attaching:   pane.mjs peek --key ${record.key}`);
+  say(`  Attach and look:          tmux attach -t ${record.key}`);
   say("");
   say(`Last 20 lines of the pane:`);
   say(tail || "  (could not capture the pane)");
   say("");
   say("`pending` was left in place: if the agent finishes later the reply still lands in");
-  say(`${replyPath}, and \`list\` reports it as an unread reply.`);
+  say(`${replyPath}, and \`list\` shows the reply file. Do NOT read reply files directly —`);
+  say("`wait` presents them with oversized bodies withheld.");
   const unmatchedCount = existsSync(dir) ? readdirSync(dir).filter((f) => f.startsWith("unmatched.")).length : 0;
   if (unmatchedCount) {
     say("");
@@ -653,6 +665,48 @@ async function cmdSend(flags, positional) {
     say(`unmatched.*.json there; \`pane.mjs cancel --key ${record.key}\` clears the stuck request.`);
   }
   flush(1);
+}
+
+// ---------------------------------------------------------------- wait
+
+/**
+ * Pick up a reply without sending anything — the second half of a send whose
+ * poll window closed. The default window is deliberately shorter than the
+ * Bash tool's 120s command kill, so long tasks end in a graceful timeout and
+ * the reply is collected here, through the same size gate.
+ */
+async function cmdWait(flags, positional) {
+  const key = flags.key && flags.key !== true ? String(flags.key) : positional[0];
+  if (!key) fail("wait needs a key: pane.mjs wait --key <key> [--timeout <seconds>]");
+  if (!KEY_RE.test(key)) refuse(`Refusing: "${key}" is not a durable-agent key.`);
+  const rec = foldRegistry().get(key);
+  const dir = (rec && rec.dir) || mailboxDir(key);
+  const record = rec || { key, dir, pane_id: null };
+  const resolved = resolveConfig((rec && rec.cwd) || process.cwd());
+  const panes = readPanes(resolved);
+  const timeout = Number(flags.timeout) > 0 ? Number(flags.timeout) : panes.timeoutSeconds;
+
+  const pending = readJsonFile(join(dir, "pending"));
+  if (pending) {
+    await awaitReply(record, dir, pending.reqid, timeout, panes, []);
+  }
+
+  // No request outstanding: the newest reply file is the one a timed-out send
+  // never presented. Re-presenting is idempotent, so nothing is marked read.
+  const replies = existsSync(dir)
+    ? readdirSync(dir)
+        .filter((f) => /^reply\..*\.json$/.test(f))
+        .map((f) => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime)
+    : [];
+  if (!replies.length) {
+    fail(`${key}: no request is outstanding and no reply files are on disk.`);
+  }
+  const newest = replies[0].f;
+  const reqid = newest.replace(/^reply\./, "").replace(/\.json$/, "");
+  const reply = readJsonFile(join(dir, newest)) || {};
+  say(`${key}: no request is outstanding — presenting the newest reply on disk (request ${reqid}).`);
+  presentReply(record, dir, reqid, panes, reply.text || "", 0, []);
 }
 
 function countForeign(dir) {
@@ -870,6 +924,9 @@ switch (sub) {
   case "peek":
     cmdPeek(flags, positional);
     break;
+  case "wait":
+    await cmdWait(flags, positional);
+    break;
   case "cancel":
     cmdCancel(flags, positional);
     break;
@@ -880,5 +937,5 @@ switch (sub) {
     cmdDoctor();
     break;
   default:
-    fail("usage: pane.mjs create|open|list|send|peek|cancel|close|doctor  (see the header of this file)");
+    fail("usage: pane.mjs create|open|list|send|peek|wait|cancel|close|doctor  (see the header of this file)");
 }
