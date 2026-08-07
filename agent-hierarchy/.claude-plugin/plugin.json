@@ -1,7 +1,7 @@
 {
   "name": "agent-hierarchy",
   "displayName": "Agent Hierarchy — Role/Model Assignment",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Runs work through a six-role agent hierarchy — Orchestrator, Ultra-Advisor, Architect, Reviewer, Implementor, Task-Runner — with a per-role model you pick once via /hierarchy. A SessionStart hook injects the role→model table and the orchestration protocol so design, implementation, and review stay separated, each step runs on the cheapest model that can do it, and the hardest calls escalate to the Ultra-Advisor. A PreToolUse hook gates escalation on you: the first Ultra-Advisor dispatch of each session is blocked until you approve it, and you choose whether to allow the rest of the session, be asked each time, or block it outright. A SubagentStop hook records every subagent's token usage from its transcript at zero model cost; /hierarchy usage renders per-role session, daily, weekly, and monthly reports. /durable creates durable agents: any file-backed agent as a real interactive Claude Code session in a tmux pane you can watch and type into, which keeps its context across requests — and across your sessions — so repeated work for the same role stops paying the subagent cold-start tax. The Orchestrator delegates to it and gets one reply per request, the agent can never start a conversation, every create and every send asks you first, and the hierarchy knows about them: session start lists the live roster, and a dispatch matching an idle durable agent is offered the cheaper path once.",
   "author": {
     "name": "Jim Cline"

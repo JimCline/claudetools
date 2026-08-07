@@ -1,5 +1,5 @@
 ---
-description: Create a durable agent — a long-lived, interactive Claude Code session running one file-backed agent in a tmux pane, which the Orchestrator hands work to instead of re-spawning cold subagents. Usage: /durable create <agent> [right|below] | list | ask <key> <text> | close <key|all> | doctor
+description: Create a durable agent — a long-lived, interactive Claude Code session running one file-backed agent in a tmux pane, which the Orchestrator hands work to instead of re-spawning cold subagents. Usage: /durable create <agent> [<agent>…] [right|below] | list | ask <key> <text> | close <key|all> | doctor
 ---
 
 The user ran `/agent-hierarchy:durable` with argument: `$ARGUMENTS`
@@ -31,12 +31,19 @@ PANE="${CLAUDE_PLUGIN_ROOT:-}/hooks/pane.mjs"; [ -f "$PANE" ] || PANE="$(ls -t ~
 ```
 /agent-hierarchy:durable create <agent> [right|below]   create one running <agent>
 /agent-hierarchy:durable <agent> [right|below]          same, short form
+/agent-hierarchy:durable create <agent> <agent> […] [right|below]
+                                                        create several — one confirmation
 /agent-hierarchy:durable list                           show live durable agents (every session's)
 /agent-hierarchy:durable ask <key|agent> <text…>        send work (user-confirmed)
 /agent-hierarchy:durable close <key|agent>              close one
 /agent-hierarchy:durable close all                      close every one you created
 /agent-hierarchy:durable doctor                         dependency + health check
 ```
+
+In the batch form, every word after `create` is an agent name except a trailing
+orientation word, which applies to all of them. An agent genuinely named
+`right` or `below` is therefore shadowed in last position — put it earlier in
+the batch, or create it on its own.
 
 `create`, `open`, `list`, `ask`, `close`, and `doctor` are **reserved first
 words** (`open` is the older synonym of `create`; both reach the same code). An
@@ -99,6 +106,35 @@ per-dispatch question. Ask once, not twice.
 If `permission prompt required: no`, skip step 2 — execution was ruled out by
 the definition, or the mode is already settled by policy or config — but still
 confirm the create.
+
+### Creating several at once
+
+`create` with several agent names — `/durable create architect reviewer below`
+— is a batch: the same rules per agent, gathered into ONE confirmation. The
+helper CLI stays one agent per invocation; you run it once per agent.
+
+1. Dry-run each agent in order, collecting everything step 1–2 of "Creating"
+   collects: definition path, model, `permission prompt required`, divergence.
+   If any dry-run refuses (exit 2), report it and drop that agent from the
+   batch — do not silently continue as if it were included.
+2. Ask ONCE with AskUserQuestion: one question confirming the batch — every
+   agent listed by name with its resolved definition, model, and where it will
+   land — plus one permission-mode question (the four modes above) for each
+   agent whose dry-run said `permission prompt required: yes`. AskUserQuestion
+   holds at most 4 questions; a batch needing more splits into further calls,
+   batch confirmation first. This satisfies "every create needs the user's
+   approval": each agent is approved by name, gathered in one question — and
+   in confirm flow it still replaces the handoff question. Ask once, not
+   N times.
+3. On approval, run the creates sequentially without `--dry-run`, adding each
+   agent's chosen `--permission-mode`. Show every confirmation block verbatim.
+4. If a create fails partway, STOP the batch and report both lists: what
+   launched (live and tracked) and what did not. Nothing needs rolling back —
+   each create is registered individually.
+
+Placement: with iTerm2, every split subdivides the same window further, and the
+helper warns at three. For a batch of three or more, offer to skip the splits
+and have the user attach with `tmux attach -t <key>` in separate windows.
 
 ### Asking
 

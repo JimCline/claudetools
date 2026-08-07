@@ -179,6 +179,7 @@ contamination-sensitive work**.
 
 ```
 /agent-hierarchy:durable create <agent> [right|below]  create one running <agent>
+/agent-hierarchy:durable create <agent> <agent> […]    create several — one confirmation
 /agent-hierarchy:durable list                          show live durable agents
 /agent-hierarchy:durable ask <key|agent> <text…>       send work (always confirmed)
 /agent-hierarchy:durable close <key|agent|all>         close

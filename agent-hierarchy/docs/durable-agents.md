@@ -47,6 +47,13 @@ The branch is unmerged, so the rename is free. "Pane" names the presentation;
 - Filenames `pane.mjs` / `lib-pane.mjs` / `stop-pane-relay.mjs` and the `ah-` key
   prefix and registry/mailbox paths are UNCHANGED. The mechanics are genuinely about
   panes, and existing registries must keep folding.
+- Batch create (0.9.1) is a command-file flow, not a CLI verb:
+  `/durable create <a> <b> [orientation]` dry-runs each agent, confirms the whole
+  batch in ONE AskUserQuestion (each agent named, plus a permission-mode question
+  per executing agent — per-create approval, gathered once), then runs N
+  single-agent creates sequentially, stopping and reporting on the first failure.
+  The CLI stays one agent per invocation: launches are cheap, and the
+  confirmations and permission decisions were the real cost of a batch.
 
 ## 3. Awareness hook 1 — SessionStart roster
 
