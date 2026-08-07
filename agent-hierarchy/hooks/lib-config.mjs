@@ -103,15 +103,44 @@ export async function readHookInput() {
 }
 
 /**
- * True for any subagent session. The spec calls out two cases — an
- * `agent-hierarchy:*` agent type (hard recursion suppression, since subagents
- * can nest up to three layers) and any other agent type (a foreign subagent,
- * e.g. `task-gopher:task-gopher`) — and both suppress every injection, so a
- * single non-empty-agent_type test covers them.
+ * True for any subagent session.
+ *
+ * The discriminator is `agent_id`, which only a subagent carries. `agent_type`
+ * is NOT usable for this: a top-level `claude --agent <plugin:name>` session
+ * sets it too (verified on v2.1.223 — its SessionStart payload was
+ * `session_id, transcript_path, cwd, agent_type, hook_event_name, source`,
+ * with no `agent_id`), so testing `agent_type` classifies a genuine main
+ * session as a subagent and suppresses the injection it should receive.
+ *
+ * Both subagent cases suppress every injection: an `agent-hierarchy:*` role
+ * (hard recursion suppression, since subagents can nest up to three layers)
+ * and any foreign subagent such as `task-gopher:task-gopher`.
  */
 export function isSubagent(input) {
+  const id = input && input.agent_id;
+  return typeof id === "string" && id.length > 0;
+}
+
+/**
+ * True for a session that carries an agent identity but is NOT a subagent —
+ * i.e. the main session of a `claude --agent <name>` invocation.
+ */
+export function isTopLevelAgentSession(input) {
   const type = input && input.agent_type;
-  return typeof type === "string" && type.length > 0;
+  return typeof type === "string" && type.length > 0 && !isSubagent(input);
+}
+
+/**
+ * The hierarchy role an `agent_type` names, or null when it names none.
+ *
+ * Matched anchored on `(^|:)role$`, the same matcher the rest of the plugin
+ * uses to identify roles. A foreign `someplugin:architect` therefore reads as
+ * `architect`; that imprecision is accepted, because the text this selects is
+ * generic enough for the false positive to be harmless.
+ */
+export function hierarchyRoleOf(agentType) {
+  if (typeof agentType !== "string" || !agentType) return null;
+  return ROLES.find((role) => agentType === role || agentType.endsWith(`:${role}`)) || null;
 }
 
 export function userConfigPath() {
@@ -315,6 +344,23 @@ export function buildNudge(resolved) {
   const lines = ["agent-hierarchy is installed but not configured — run `/hierarchy init` to assign a model to each role."];
   for (const warning of resolved.warnings) lines.push(warning);
   return lines.join("\n");
+}
+
+/**
+ * The SessionStart injection for a top-level `claude --agent <role>` session.
+ *
+ * Such a session IS the main session, so the Orchestrator directive would
+ * otherwise reach it — and a role told it is the Orchestrator starts
+ * dispatching instead of doing its own work. This says the opposite, in three
+ * sentences. It deliberately carries no role→model table and no protocol: the
+ * role's own `agents/*.md` body is the whole contract here.
+ */
+export function buildRoleSessionNotice(role, agentType) {
+  return [
+    `You are running as \`${agentType}\` as the MAIN session of this Claude Code instance, launched with \`--agent\`.`,
+    "The agent-hierarchy Orchestrator protocol does NOT apply to you: do not decompose-and-dispatch, and do not treat yourself as the top of the chain.",
+    `Your ${ROLE_LABELS[role] || role} contract in \`agents/*.md\` governs.`,
+  ].join(" ");
 }
 
 /** Human-readable resolved table for `/hierarchy status` and the wizard's echo. */

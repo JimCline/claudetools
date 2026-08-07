@@ -152,9 +152,101 @@ columns — a cache-read token is ~10× cheaper, and folding them together would
 flatter nothing. If the report says `(N transcripts not found)`, the
 collector's path derivation broke: that is a bug report, not user error.
 
+## Panes: a role you can watch and talk to
+
+`/pane` launches a file-backed agent as a **real, top-level Claude Code
+session** in its own tmux session — not a subagent. The Orchestrator delegates
+to it and gets an answer back, but you can also watch it work and type into it
+yourself.
+
+```
+/agent-hierarchy:pane <agent> [right|below]     open a pane running <agent>
+/agent-hierarchy:pane list                      show live panes
+/agent-hierarchy:pane ask <key|agent> <text…>   send work (always confirmed)
+/agent-hierarchy:pane close <key|agent|all>     close
+/agent-hierarchy:pane doctor                    dependency + health check
+```
+
+**`right` = side by side, `below` = stacked.** The letters `v` and `h` also
+work, and they name the **divider**: `v` is a vertical divider, so the panes end
+up side by side; `h` is a horizontal divider, so they stack. Prefer the words.
+
+**Only the Orchestrator can start a conversation.** The pane has no tool and no
+address for reaching it. When work is sent, a token is left in the pane's
+mailbox and the pane's Stop hook turns its final assistant message into the
+reply; with no token there is no reply. A turn *you* type into the pane is
+therefore never relayed anywhere — that conversation is yours alone.
+
+**Every open and every send asks you first**, regardless of `handoffs: "auto"`.
+A pane is a separately-billed interactive session driven by keystrokes into your
+terminal; that earns its own confirmation.
+
+**tmux is required** (`brew install tmux`). iTerm2 is an optional presentation
+layer: with it, the pane appears split off your own tab; without it, the pane
+still runs and you attach with `tmux attach -t <key>`, which every command
+prints.
+
+### Permission modes
+
+You are asked to pick one whenever the agent **can execute** — that is, when its
+toolset includes `Bash` or `Edit`. That covers the Implementor and any non-role
+agent you launch. The Architect, Reviewer, Ultra-Advisor, and Task-Runner are
+not asked; they run with normal prompting.
+
+| Mode | What it actually does |
+| :-- | :-- |
+| `manual` | Prompts for anything beyond reads. Will sit and wait if nobody is attached. |
+| `acceptEdits` | Auto-accepts file edits and safe filesystem commands. **Does not cover general `Bash`** — the pane still stalls on a test or build run. |
+| `auto` | No routine prompts, with a background safety classifier. |
+| `dontAsk` | Auto-**denies** anything that would have prompted. Never stalls, but un-preapproved `Bash` silently fails. Not a fix for stalling — a different failure. |
+
+`bypassPermissions` is refused from the command line and available only through
+`panes.permissionMode` in `~/.claude/agent-hierarchy.json`: a config file is a
+deliberate, persistent, reviewable act; a flag typed mid-conversation is not.
+
+A mode passed at startup wins over settings *and* over the agent definition's
+own frontmatter.
+
+### Known differences from a subagent
+
+A paned role may run on a **different model** than the same role would as a
+subagent. It may also have a **different tool surface**. The Orchestrator cannot
+detect either difference, and cannot correct it. Pass `--model` to pin the
+model; there is no equivalent for the tool surface.
+
+The model half has a specific cause: `model: inherit` on a subagent means "the
+model of the main conversation", but a pane *is* a main conversation, so it runs
+on your **default** model rather than whatever the Orchestrator is currently
+using. The tool half is that `--agent` applies the definition's *denials* to
+whatever toolset a top-level session would otherwise have, and that base set is
+not a subagent's base set.
+
+**A paned Architect has no `Grep` and no `Glob`** — measured, not inferred. Asked
+to search a file, a live paned Architect reported "No Grep/Glob tool is exposed
+to me directly" and had to reach the answer by dispatching a subagent and by
+reading the file whole. Its `agents/architect.md` body calls those tools its
+instruments, so **a paned Architect is materially weaker at research than the
+same Architect as a subagent.** Prefer the subagent path for research-heavy
+Architect work, and use a pane when the point is to watch and talk to it. The
+pane does keep the `Agent` tool, so it can still delegate the search — that is
+exactly what it did.
+
+### Optional config
+
+```json
+{ "panes": { "timeoutSeconds": 300, "pollSeconds": 2,
+             "inlinePromptMaxChars": 2000, "iterm2": true,
+             "allowBuiltins": false, "permissionMode": null,
+             "size": { "x": 200, "y": 50 } } }
+```
+
+All keys are optional and the whole block may be absent; it does not change the
+config schema version.
+
 ## Commands
 
 ```
+/agent-hierarchy:pane …             # see "Panes" above
 /hierarchy init                     # wizard: scope, flow mode, model per role
 /hierarchy status                   # resolved table + where each value came from
 /hierarchy set <role> <model>       # one role (validated per-role)
@@ -174,16 +266,21 @@ session model would make the tier decorative). `inherit` means "omit the
 ```
 agents/          one contract per role (frontmatter pins model + tool denies)
 hooks/
-  sessionstart.mjs           injects table + protocol (main session only)
+  sessionstart.mjs           injects the pane protocol, the role notice, or the directive
   pretooluse-ultra-gate.mjs  gates Ultra-Advisor escalation on the user
   subagentstop-usage.mjs     zero-token usage collector
+  stop-pane-relay.mjs        pane reply relay (inert outside a pane)
   usage-report.mjs           standalone reporter
+  pane.mjs                   /pane CLI (open/list/send/peek/close/doctor)
   gate.mjs                   escalation-gate CLI (set/status/reset)
   lib-config.mjs             config resolution + directive text (run directly for status)
   lib-gate.mjs               session-scoped gate state
+  lib-pane.mjs               registry, mailbox, tmux, and iTerm2 primitives
 commands/hierarchy.md        the /hierarchy command
+commands/pane.md             the /pane command
 docs/hierarchy.html          static visual map of roles, lanes, and flow
-tests/                       4 suites, 137 cases (HOME-redirected; real config untouched)
+docs/pane-command.md         the /pane design spec
+tests/                       6 suites, 263 cases (HOME-redirected; real config untouched)
 ```
 
 ## License
