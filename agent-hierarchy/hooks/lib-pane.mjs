@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /**
- * agent-hierarchy — /pane primitives.
+ * agent-hierarchy — durable-agent (/pane) primitives.
  *
- * A pane is a real, interactive, top-level Claude Code session launched with
- * `claude --agent <name>` inside its own detached tmux session, which the user
- * can watch and type into. The Orchestrator delegates to it and gets one reply
- * back per solicited turn.
+ * A durable agent is a real, interactive, top-level Claude Code session
+ * launched with `claude --agent <name>` inside its own detached tmux session
+ * ("pane"), which the user can watch and type into. The Orchestrator delegates
+ * to it and gets one reply back per solicited turn, and its context persists
+ * across sends — and across Orchestrator sessions.
  *
  * Everything mechanical lives here: agent resolution, the append-only
  * registry, the per-pane mailbox, tmux, and the optional iTerm2 presentation
@@ -31,7 +32,8 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------- paths
 
@@ -627,12 +629,7 @@ function readRegistryLines(path = REGISTRY_PATH) {
   }
 }
 
-/**
- * Current state is a FOLD over the append-only log: a key is live iff its most
- * recent event is `open`. Never read-modify-write this file — measured on this
- * plugin's sibling state, that dropped roughly 4 of 12 concurrent writes.
- */
-export function foldRegistry(path = REGISTRY_PATH) {
+function foldLast(path) {
   const last = new Map();
   for (const line of readRegistryLines(path)) {
     let rec;
@@ -644,8 +641,17 @@ export function foldRegistry(path = REGISTRY_PATH) {
     if (!rec || typeof rec.key !== "string") continue;
     last.set(rec.key, rec);
   }
+  return last;
+}
+
+/**
+ * Current state is a FOLD over the append-only log: a key is live iff its most
+ * recent event is `open`. Never read-modify-write this file — measured on this
+ * plugin's sibling state, that dropped roughly 4 of 12 concurrent writes.
+ */
+export function foldRegistry(path = REGISTRY_PATH) {
   const live = new Map();
-  for (const [key, rec] of last) {
+  for (const [key, rec] of foldLast(path)) {
     if (rec.ev !== "open") continue;
     // Records predating the §6.3a fields stay valid: absent means the single
     // recorded copy, never a rewrite of the log.
@@ -654,6 +660,15 @@ export function foldRegistry(path = REGISTRY_PATH) {
     live.set(key, rec);
   }
   return live;
+}
+
+/**
+ * Keys whose most recent event is `launching`: a create crashed (or is
+ * mid-flight) between the tmux launch and its `open` event. Never live; doctor
+ * reports them and reaps the ones with no tmux session behind them.
+ */
+export function launchingKeys(path = REGISTRY_PATH) {
+  return [...foldLast(path).values()].filter((rec) => rec.ev === "launching");
 }
 
 /** Rewrite the log to a temp file holding only live keys' events, then rename. */
@@ -733,13 +748,13 @@ export function recordPaneSession(paneDir, input) {
 export function buildPaneProtocol({ role, declaredRole, key }) {
   const identity = role || declaredRole || "an agent-hierarchy role";
   const lines = [
-    `agent-hierarchy PANE. You are running as \`${identity}\` in an agent-hierarchy pane${key ? ` (\`${key}\`)` : ""}. You are NOT the Orchestrator: do not decompose-and-dispatch, do the role's own work.`,
+    `agent-hierarchy DURABLE AGENT. You are running as \`${identity}\`, a durable agent in a terminal pane${key ? ` (\`${key}\`)` : ""}. You are NOT the Orchestrator: do not decompose-and-dispatch, do the role's own work.`,
     "",
     "1. One channel, inbound only. You answer the turn you were given. You cannot initiate contact with the Orchestrator — there is no tool and no address for it. Your final assistant message IS your reply, and it is captured automatically.",
     "2. The reply is the whole payload. Only your final assistant message is relayed; thinking, tool output, and intermediate turns are discarded. Make that last message a complete, standalone answer.",
     "3. Artifacts go to disk. If you produce a spec file, a diff, or a report, write it to disk and put the ABSOLUTE PATH in your final message. Do not paste the artifact into the reply.",
     "4. A human may type into this pane directly. That input is the user's own instruction and you should treat it as such. A turn the Orchestrator did not solicit is not relayed anywhere — that conversation is between you and the human only.",
-    "5. No nesting. Do not open panes, and do not run `/agent-hierarchy:pane`. You DO have the Agent tool and ordinary subagent dispatch remains correct for your role; panes specifically are what you may not open.",
+    "5. No nesting. Do not create durable agents, and do not run `/agent-hierarchy:durable`. You DO have the Agent tool and ordinary subagent dispatch remains correct for your role; durable agents specifically are what you may not create.",
     "6. Your role contract still applies. Your `agents/*.md` body governs, and nothing here relaxes it.",
   ];
   if (role && declaredRole && role !== declaredRole) {
@@ -827,6 +842,52 @@ export function isPaneLive(record) {
   const panes = run("tmux", ["list-panes", "-t", record.key, "-F", "#{pane_id}"]);
   if (panes.status !== 0) return false;
   return panes.stdout.split("\n").includes(record.pane_id);
+}
+
+/** Whether a tmux session with this key exists at all, the pane check aside. */
+export function tmuxSessionExists(key) {
+  if (!KEY_RE.test(key || "")) return false;
+  return run("tmux", ["has-session", "-t", key]).status === 0;
+}
+
+/**
+ * Fold, then verify each live key against tmux; append a `dead` close for any
+ * that fails. Every read path that answers "what is running?" — list, send,
+ * close, the SessionStart roster, the PreToolUse offer — goes through this, so
+ * cleanup converges at exactly the moments the answer matters and no polling
+ * daemon is needed.
+ */
+export function verifyAndReapLive() {
+  const live = new Map();
+  for (const [key, rec] of foldRegistry()) {
+    if (isPaneLive(rec)) live.set(key, rec);
+    else appendRegistry({ ev: "close", key, at: new Date().toISOString(), reason: "dead" });
+  }
+  return live;
+}
+
+/**
+ * The durable-agent roster appended to an Orchestrator's SessionStart
+ * directive. Null when the registry is absent or holds no live keys, so the
+ * common case costs one existsSync and injects nothing.
+ */
+export function durableRoster() {
+  if (!existsSync(REGISTRY_PATH)) return null;
+  const live = verifyAndReapLive();
+  if (!live.size) return null;
+  const cli = join(dirname(fileURLToPath(import.meta.url)), "pane.mjs");
+  const lines = [`Durable agents live right now (query anytime: node "${cli}" list):`];
+  for (const rec of live.values()) {
+    const pending = readJsonFile(join(rec.dir || mailboxDir(rec.key), "pending"));
+    lines.push(
+      `- ${rec.key} — ${rec.agent} (${rec.model || "inherited model"}) — ${pending ? `WORKING on ${pending.reqid} since ${pending.sent_at}` : "idle"} — created ${rec.created_at || "unknown"} by session ${rec.orchestrator_session_id || "unknown"}`
+    );
+  }
+  lines.push(
+    "A durable agent is a live interactive session that keeps its context between sends, so related follow-up work is cheaper there than in a fresh subagent of the same role. Prefer it for follow-ups it has context for; prefer a subagent for independent work or a clean context.",
+    `Send work through the /agent-hierarchy:durable ask flow — every send needs the user's approval first: node "${cli}" send --key <key> --summary "<one line>"  (prompt on stdin via heredoc).`
+  );
+  return lines.join("\n");
 }
 
 /**

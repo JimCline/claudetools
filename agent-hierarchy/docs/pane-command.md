@@ -519,8 +519,10 @@ What ships instead:
    whose `name` equals the plugin id. Its `source` field is a **relative path
    string** — measured: `"source": "./agent-hierarchy"`. If `source` is absent,
    is not a string, or resolves outside `root` after normalisation, **abandon the
-   live candidate** and record `definition_source: "recorded-only"` with a
-   warning. **Do not guess a layout** — in particular, do not assume
+   live candidate** and record `definition_source: "recorded"` with a
+   warning (abandonment is the no-live-candidate row of the table below;
+   `"recorded-only"` is reserved for a live checkout that exists but lacks this
+   one file). **Do not guess a layout** — in particular, do not assume
    `<root>/<pluginId>`; that happens to be right for `claudetools` and is not a
    documented invariant.
 5. Live candidate = `<root>/<that relative path>/agents/<name path>.md`, using
@@ -1732,9 +1734,10 @@ answer be read as "the Implementor cannot stall."
 
 **Validation, because `$PERM_FLAG` reaches a shell (§12.1).** Whitelist the mode
 against a constant array in `lib-pane.mjs` before interpolation; refuse anything
-else with exit 2. The exact accepted set of `--permission-mode` values is
-**E7** — until E7 reports, the whitelist contains only `acceptEdits` (the one
-value Q3 requires) plus whatever E7 confirms.
+else with exit 2. The exact accepted set of `--permission-mode` values was
+gated on **E7**, which is now settled (§15.2): the shipped argv whitelist is
+`manual`, `acceptEdits`, `auto`, `dontAsk`, with `bypassPermissions`
+config-only.
 
 **`bypassPermissions`:** refuse from the command line unconditionally; permit it
 only via `panes.permissionMode` in a config file. Rationale: a config file is a
@@ -1742,13 +1745,11 @@ deliberate, persistent, reviewable act; a command-line flag typed by a model
 mid-conversation is not. This is the Architect's call, and it is flagged as part
 of **Q5**.
 
-**Whether the flag works at all under `--agent` is E7, and E7 is now BLOCKING**
-for this section: frontmatter `permissionMode` is documented as ignored for
-plugin subagents, and whether that carries over to `--agent` is unknown. If E7
-shows the flag is ignored, Q3's answer is **unimplementable as stated** and must
-go back to the user — do not silently ship an Implementor that still prompts.
-(Note: that documentation claim is from the same unverified-doc source as §2.1
-and should itself be treated as unconfirmed.)
+**Whether the flag works at all under `--agent` was E7, and it is SETTLED**
+(§15.2): `--permission-mode` applies under `--agent` and always wins over
+settings and the definition's own frontmatter, so Q3's answer shipped as
+specced. (The paragraph above stood as written while E7 was open; it is kept
+for the record.)
 
 ### 14.1a The permission gate must fail SAFE (NEW, revision 3)
 
@@ -1880,7 +1881,15 @@ was unsubstantiable. See §2.1. **Q1 closed: build.**
 Numbering is stable across revisions — E7, E8, E10, E11 are unchanged. E4, E5,
 and E6 moved to §15.1 in revision 3. E12 is new in revision 3.
 
-#### E7 — `--permission-mode`: does it exist, what values, and does it apply under `--agent`? **(BLOCKING for §14.1 / Q3)**
+#### E7 — `--permission-mode`: does it exist, what values, and does it apply under `--agent`? **SETTLED (was blocking §14.1 / Q3)**
+
+**Settled during the 0.8.0 build:** the flag exists on v2.1.223 and it
+**applies under `--agent` and always wins** over settings and the definition's
+own frontmatter (doc-verified against the official permission-modes reference,
+not probed live — see the §12-adjacent constraint on permission-boundary
+probing). §14.1's shipped whitelist is `manual`, `acceptEdits`, `auto`,
+`dontAsk`, with `bypassPermissions` config-only. The sub-questions below are
+retained as the record of what was asked.
 
 Three questions, one session:
 

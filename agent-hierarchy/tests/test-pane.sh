@@ -1,5 +1,6 @@
 #!/bin/bash
-# agent-hierarchy /pane — the parts that must hold with no live Claude session.
+# agent-hierarchy durable agents (/durable) — the parts that must hold with no
+# live Claude session.
 #
 # Two properties carry most of the weight here and both are asserted on the
 # emitted OUTPUT, not only on exit codes: the pane cannot initiate (no pending
@@ -114,17 +115,17 @@ start() { echo "$2" | env AGENT_HIERARCHY_PANE_DIR="$1" AGENT_HIERARCHY_PANE_ROL
 #         records its session identity for §9.4's gate D.
 D="$(mailbox)"
 P1="$(start "$D" '{"session_id":"p1","cwd":"'$WORK'","agent_type":"agent-hierarchy:architect","source":"startup"}')"
-check "sessionstart pane: emits the pane protocol" 'echo "$P1" | grep -q "agent-hierarchy PANE"'
+check "sessionstart pane: emits the pane protocol" 'echo "$P1" | grep -q "agent-hierarchy DURABLE AGENT"'
 check "sessionstart pane: says NOT the Orchestrator" 'echo "$P1" | grep -q "You are NOT the Orchestrator"'
 check "sessionstart pane: never says You are the Orchestrator" '! echo "$P1" | grep -q "You are the Orchestrator\\."'
 check "sessionstart pane: states the one-channel rule" 'echo "$P1" | grep -q "inbound only"'
 check "sessionstart pane: states artifacts go to disk by path" 'echo "$P1" | grep -q "ABSOLUTE PATH"'
-check "sessionstart pane: forbids nesting panes" 'echo "$P1" | grep -q "Do not open panes"'
+check "sessionstart pane: forbids nesting durable agents" 'echo "$P1" | grep -q "Do not create durable agents"'
 check "sessionstart pane: records <dir>/session with the session_id" 'grep -q "\"session_id\":\"p1\"" "'$D'/session"'
 
 D2="$(mailbox)"
 P2="$(start "$D2" '{"session_id":"p2","cwd":"'$WORK'","source":"startup"}')"
-check "sessionstart pane: protocol emitted even with no agent_type" 'echo "$P2" | grep -q "agent-hierarchy PANE"'
+check "sessionstart pane: protocol emitted even with no agent_type" 'echo "$P2" | grep -q "agent-hierarchy DURABLE AGENT"'
 
 D3="$(mailbox)"
 echo '{"session_id":"first","agent_type":"agent-hierarchy:architect","at":"x"}' > "$D3/session"
@@ -134,11 +135,11 @@ check "sessionstart pane: session file is first-writer-wins" 'grep -q "\"session
 # ---- 8: the pane branch wins over the subagent branch.
 D="$(mailbox)"
 P3="$(start "$D" '{"session_id":"p3","cwd":"'$WORK'","agent_id":"sub-1","agent_type":"agent-hierarchy:architect"}')"
-check "sessionstart pane: pane branch beats the subagent branch" 'echo "$P3" | grep -q "agent-hierarchy PANE"'
+check "sessionstart pane: pane branch beats the subagent branch" 'echo "$P3" | grep -q "agent-hierarchy DURABLE AGENT"'
 
 # ---- 9: a broken mailbox must not cost the session its protocol.
 P4="$(start "$WORK/no/such/dir/anywhere" '{"session_id":"p4","cwd":"'$WORK'","agent_type":"agent-hierarchy:architect"}')"
-check "sessionstart pane: survives a non-existent mailbox dir" 'echo "$P4" | grep -q "agent-hierarchy PANE"'
+check "sessionstart pane: survives a non-existent mailbox dir" 'echo "$P4" | grep -q "agent-hierarchy DURABLE AGENT"'
 
 # ---- role mismatch is surfaced, not swallowed.
 D="$(mailbox)"
@@ -169,7 +170,7 @@ check "registry: a reopened key keeps its newest record" \
 BEFORE=$(wc -l < "$REG")
 pane list >/dev/null
 check "registry: list prunes dead keys by appending, never rewriting" '[ "$(wc -l < "'$REG'")" -gt "'$BEFORE'" ]'
-check "registry: list reports nothing live once tmux disagrees" '[ "$(pane list)" = "no live panes." ]'
+check "registry: list reports nothing live once tmux disagrees" '[ "$(pane list)" = "no durable agents running." ]'
 rm -f "$REG"
 
 # ================================================= open policy (§7, §10.2, §14.1)
@@ -476,6 +477,54 @@ R32C="$(killcase 4242 4242 4242)"
 check "group kill: our own process group is never group-killed" \
   '! echo "$R32C" | grep -q -- "-4242" && echo "$R32C" | grep -q "\"4242:SIGTERM\""'
 
+# ================================================= 0.9.0 — durable rename + launching fold
+
+check "create: is a synonym for open" \
+  'pane create --agent agent-hierarchy:architect --orient right --dry-run --cwd "$WORK" | grep -q "DRY RUN"'
+pane bogus >/dev/null 2>&1
+check "usage: names create" 'grep -q "create|open" "$WORK/err"'
+
+# F2: the launching event must be on disk BEFORE tmux can run, so a crash
+# between the two never leaves an untracked session.
+LAUNCH_LINE=$(grep -n '"launching"' "$H/pane.mjs" | head -1 | cut -d: -f1)
+OPENTMUX_LINE=$(grep -n 'openTmuxSession(tmuxArgv' "$H/pane.mjs" | head -1 | cut -d: -f1)
+check "launching: the launching event precedes the tmux launch in source" '[ "$LAUNCH_LINE" -lt "$OPENTMUX_LINE" ]'
+
+cat > "$REG" <<'JSON'
+{"ev":"launching","key":"ah-crash-arch-1","agent":"a"}
+{"ev":"launching","key":"ah-mid-arch-1","agent":"a"}
+{"ev":"open","key":"ah-mid-arch-1","agent":"a","pane_id":"%7"}
+JSON
+check "launching: a key stuck at launching is never live" \
+  '[ "$(node --input-type=module -e "import { foldRegistry } from \"$H/lib-pane.mjs\"; process.stdout.write([...foldRegistry(\"$REG\").keys()].join(\",\"))")" = "ah-mid-arch-1" ]'
+DOC2="$(pane doctor)"
+check "launching: doctor reaps a launching key with no tmux session" 'echo "$DOC2" | grep -q "ah-crash-arch-1: no tmux session"'
+check "launching: the reap is an appended close event" 'grep "\"ev\":\"close\"" "$REG" | grep -q "launch-crashed"'
+rm -f "$REG"
+
+# ================================================= 0.9.0 — SessionStart roster
+
+cat > "$REG" <<'JSON'
+{"ev":"open","key":"ah-ghost-arch-1","agent":"agent-hierarchy:architect","pane_id":"%42","tmux_session":"ah-ghost-arch-1"}
+JSON
+R1="$(echo '{"session_id":"orchA","cwd":"'$WORK'","source":"startup"}' | \
+  env -u AGENT_HIERARCHY_PANE_DIR -u AGENT_HIERARCHY_PANE_ROLE -u AGENT_HIERARCHY_PANE_KEY node "$H/sessionstart.mjs" 2>/dev/null)"
+check "roster: a dead-only registry injects no roster" '! echo "$R1" | grep -q "Durable agents live right now"'
+check "roster: the dead key was reaped at session start" 'grep "\"ev\":\"close\"" "$REG" | grep -q "ah-ghost-arch-1"'
+check "roster: the ordinary directive still arrives" 'echo "$R1" | grep -q "Orchestrator"'
+rm -f "$REG"
+R2="$(echo '{"session_id":"orchB","cwd":"'$WORK'","source":"startup"}' | \
+  env -u AGENT_HIERARCHY_PANE_DIR node "$H/sessionstart.mjs" 2>/dev/null)"
+check "roster: no registry file injects no roster" '! echo "$R2" | grep -q "Durable agents live right now"'
+
+# ================================================= 0.9.0 — PreToolUse durable offer (fast paths)
+
+OFFER="$H/pretooluse-durable-offer.mjs"
+rm -f "$REG" "$HOME/.claude/agent-hierarchy.durable-offers.jsonl"
+O0="$(echo '{"session_id":"od0","cwd":"'$WORK'","tool_name":"Agent","tool_input":{"subagent_type":"agent-hierarchy:architect"}}' | \
+  env -u AGENT_HIERARCHY_PANE_DIR node "$OFFER")"
+check "offer: silent with no registry" '[ -z "$O0" ]'
+
 # ================================================= test 31 — the cache is never globbed
 
 check "cache: hooks never construct a plugins/cache path" '! grep -nE "plugins/cache" "$H"/*.mjs'
@@ -532,6 +581,9 @@ JSON
   # ---- send delivers through paste-buffer and leaves a pending token.
   reg "$T_PID"
   mkdir -p "$WORK/mbox-live"
+  # F1 boot gate: sends refuse to paste until the pane's session identity file
+  # exists, so every delivering send in this file plants one first.
+  echo '{"session_id":"live-sess"}' > "$WORK/mbox-live/session"
   # Every send in this file passes an explicit short --timeout: the pane is a
   # `sleep`, so nothing ever replies and the 300s default would stall the suite.
   printf 'hello pane\n' | node "$H/pane.mjs" send --key ah-panetest-1 --timeout 4 >/dev/null 2>&1
@@ -542,6 +594,55 @@ JSON
     'printf x | node "$H/pane.mjs" send --key ah-panetest-1 --timeout 4 >/dev/null 2>&1; [ $? -eq 1 ]'
   check "send: the text actually landed in the pane" 'tmux capture-pane -p -t "$T_PANE" | grep -q "hello pane"'
   rm -f "$WORK/mbox-live/pending"
+
+  # ---- F1 (0.9.0): send refuses to paste before the pane records its identity.
+  reg "$T_PID"
+  rm -rf "$WORK/mbox-live"; mkdir -p "$WORK/mbox-live"
+  printf 'early bird\n' | node "$H/pane.mjs" send --key ah-panetest-1 --boot-wait 0 --timeout 4 >/dev/null 2>"$WORK/ef1"; RC=$?
+  check "boot-wait: send fails when the identity file never appears" '[ "$RC" -eq 1 ]'
+  check "boot-wait: the failure says the agent has not finished booting" 'grep -q "has not finished booting" "$WORK/ef1"'
+  check "boot-wait: no pending token is left behind" '[ ! -f "$WORK/mbox-live/pending" ]'
+  check "boot-wait: nothing was pasted into the pane" '! tmux capture-pane -p -t "$T_PANE" | grep -q "early bird"'
+  ( sleep 1; echo '{"session_id":"late-sess"}' > "$WORK/mbox-live/session" ) &
+  printf 'late bird\n' | node "$H/pane.mjs" send --key ah-panetest-1 --boot-wait 10 --timeout 3 >/dev/null 2>&1
+  check "boot-wait: a late identity file unblocks the send" '[ -f "$WORK/mbox-live/pending" ]'
+  check "boot-wait: expect_session comes from the late identity file" 'grep -q "\"expect_session\":\"late-sess\"" "$WORK/mbox-live/pending"'
+  rm -f "$WORK/mbox-live/pending"
+
+  # ---- roster (0.9.0): SessionStart names the live durable agent, reaps dead ones.
+  reg "$T_PID"
+  cat >> "$REG" <<'JSON'
+{"ev":"open","key":"ah-dead-arch-1","agent":"agent-hierarchy:architect","pane_id":"%99","tmux_session":"ah-dead-arch-1"}
+JSON
+  ROSTER="$(echo '{"session_id":"orchC","cwd":"'$WORK'","source":"startup"}' | \
+    env -u AGENT_HIERARCHY_PANE_DIR -u AGENT_HIERARCHY_PANE_ROLE -u AGENT_HIERARCHY_PANE_KEY node "$H/sessionstart.mjs" 2>/dev/null)"
+  check "roster: names the live durable agent" 'echo "$ROSTER" | grep -q "Durable agents live right now"'
+  check "roster: lists the live key" 'echo "$ROSTER" | grep -q "ah-panetest-1"'
+  check "roster: does not list the dead key" '! echo "$ROSTER" | grep -q "ah-dead-arch-1"'
+  check "roster: the dead key was reaped" 'grep "\"ev\":\"close\"" "$REG" | grep -q "ah-dead-arch-1"'
+
+  # ---- offer hook (0.9.0): deny once per (session, type); the re-run passes.
+  offer() { echo "$1" | env -u AGENT_HIERARCHY_PANE_DIR node "$OFFER" ; }
+  reg "$T_PID"
+  rm -f "$HOME/.claude/agent-hierarchy.durable-offers.jsonl"
+  DISPATCH='{"session_id":"od1","cwd":"'$WORK'","tool_name":"Agent","tool_input":{"subagent_type":"agent-hierarchy:architect"}}'
+  O1="$(offer "$DISPATCH")"
+  check "offer: first dispatch matching a live idle durable agent is denied" 'echo "$O1" | grep -q "\"permissionDecision\":\"deny\""'
+  check "offer: the denial names the durable agent" 'echo "$O1" | grep -q "ah-panetest-1"'
+  check "offer: the denial says the re-run will pass" 'echo "$O1" | grep -q "re-run"'
+  O2="$(offer "$DISPATCH")"
+  check "offer: the identical re-run passes untouched" '[ -z "$O2" ]'
+  check "offer: offers are recorded per session and type" 'grep -q "\"session_id\":\"od1\"" "$HOME/.claude/agent-hierarchy.durable-offers.jsonl"'
+  O3="$(offer '{"session_id":"od2","cwd":"'$WORK'","tool_name":"Agent","tool_input":{"subagent_type":"task-gopher:task-gopher"}}')"
+  check "offer: task-gopher is exempt" '[ -z "$O3" ]'
+  O4="$(offer '{"session_id":"od2","cwd":"'$WORK'","tool_name":"Agent","tool_input":{"subagent_type":"agent-hierarchy:reviewer"}}')"
+  check "offer: no matching durable agent means no deny" '[ -z "$O4" ]'
+  O5="$(echo "$DISPATCH" | env AGENT_HIERARCHY_PANE_DIR="$WORK/mbox-live" node "$OFFER")"
+  check "offer: a pane session is exempt" '[ -z "$O5" ]'
+  echo '{"reqid":"busy","sent_at":"2026-01-01T00:00:00Z"}' > "$WORK/mbox-live/pending"
+  O6="$(offer '{"session_id":"od3","cwd":"'$WORK'","tool_name":"Agent","tool_input":{"subagent_type":"agent-hierarchy:architect"}}')"
+  check "offer: a WORKING durable agent with no idle sibling is not offered" '[ -z "$O6" ]'
+  rm -f "$WORK/mbox-live/pending" "$HOME/.claude/agent-hierarchy.durable-offers.jsonl"
 
   # ---- 24: kill safety. A record whose pane_pid is our own pid is refused,
   #          and no signal reaches it — this script surviving to the next line

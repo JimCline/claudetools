@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
- * agent-hierarchy — /pane helper CLI.
+ * agent-hierarchy — durable-agent helper CLI (/agent-hierarchy:durable).
  *
- *   node pane.mjs open  --agent <name> --orient <right|below>
- *                       [--model <alias>] [--permission-mode <mode>]
- *                       [--cwd <dir>] [--session <id>] [--no-iterm] [--dry-run]
+ *   node pane.mjs create --agent <name> --orient <right|below>
+ *                        [--model <alias>] [--permission-mode <mode>]
+ *                        [--cwd <dir>] [--session <id>] [--no-iterm] [--dry-run]
+ *                        (`open` is the older synonym; both are accepted)
  *   node pane.mjs list  [--json]
- *   node pane.mjs send  --key <key> [--summary <text>] [--timeout <seconds>]
+ *   node pane.mjs send  --key <key> [--summary <text>] [--timeout <seconds>] [--boot-wait <seconds>]
  *   node pane.mjs peek  --key <key> [--lines <n>]
  *   node pane.mjs close --key <key> | --all [--session <id>]
  *   node pane.mjs doctor
@@ -54,6 +55,7 @@ import {
   itermSplit,
   itermSplitScript,
   killPane,
+  launchingKeys,
   mailboxDir,
   makeKey,
   openTmuxSession,
@@ -68,10 +70,15 @@ import {
   survivingGroupProcesses,
   tmuxAvailable,
   tmuxPath,
+  tmuxSessionExists,
+  verifyAndReapLive,
   writeJsonAtomic,
 } from "./lib-pane.mjs";
 
 const REASONING_ROLES = ["ultra-advisor", "architect", "reviewer", "implementor"];
+
+/** How long `send` waits for the pane's session identity file before refusing to paste. */
+const BOOT_WAIT_SECONDS = 30;
 
 // ------------------------------------------------------------------ output
 
@@ -204,15 +211,9 @@ function permissionLine(mode) {
 
 // ----------------------------------------------------------------- liveness
 
-/** Fold, then verify each live key against tmux; append a `dead` close for any that fails. */
+/** The verify-and-reap fold, shared with the SessionStart roster and the PreToolUse offer. */
 function livePanes() {
-  const folded = foldRegistry();
-  const live = new Map();
-  for (const [key, rec] of folded) {
-    if (isPaneLive(rec)) live.set(key, rec);
-    else appendRegistry({ ev: "close", key, at: new Date().toISOString(), reason: "dead" });
-  }
-  return live;
+  return verifyAndReapLive();
 }
 
 /** Accept an exact key, or an agent name when exactly one live pane runs it. */
@@ -221,9 +222,9 @@ function resolveTarget(live, target) {
   const matches = [...live.values()].filter((r) => r.agent === target);
   if (matches.length === 1) return matches[0];
   if (matches.length > 1) {
-    fail(`"${target}" matches ${matches.length} live panes: ${matches.map((m) => m.key).join(", ")}. Name one by key.`);
+    fail(`"${target}" matches ${matches.length} live durable agents: ${matches.map((m) => m.key).join(", ")}. Name one by key.`);
   }
-  fail(`no live pane named "${target}". Run \`pane.mjs list\` to see what is open.`);
+  fail(`no durable agent named "${target}". Run \`pane.mjs list\` to see what is running.`);
   return null;
 }
 
@@ -245,7 +246,7 @@ function refuseSelfTarget(record) {
 
 function cmdOpen(flags, positional) {
   const agent = flags.agent && flags.agent !== true ? String(flags.agent) : positional[0];
-  if (!agent) fail("open needs an agent: pane.mjs open --agent <name> --orient <right|below>");
+  if (!agent) fail("create needs an agent: pane.mjs create --agent <name> --orient <right|below>");
 
   // The whitelist runs before anything else touches this value, because it is
   // interpolated into a command string tmux hands to `sh`.
@@ -262,7 +263,7 @@ function cmdOpen(flags, positional) {
   if (BUILTIN_AGENTS.includes(agent) && !panes.allowBuiltins) {
     refuse(
       `${agent} is a Claude Code built-in with no definition file on disk.\n` +
-        "/pane launches file-backed agents only, because the pane's restrictions\n" +
+        "Durable agents are file-backed agents only, because the pane's restrictions\n" +
         "come from its definition. Use the Agent tool for built-ins."
     );
   }
@@ -408,8 +409,15 @@ function cmdOpen(flags, positional) {
   }
 
   mkdirSync(dir, { recursive: true });
+  // A crash between here and the `open` event must not leave an untracked tmux
+  // session (durable-agents §7 F2): `launching` marks the attempt, the `open`
+  // event supersedes it, and doctor reaps keys stuck at `launching`.
+  appendRegistry({ ev: "launching", key, agent, at: new Date().toISOString(), dir });
   const launched = openTmuxSession(tmuxArgv, key);
-  if (!launched.ok) fail(`could not create the tmux session: ${launched.error}`);
+  if (!launched.ok) {
+    appendRegistry({ ev: "close", key, at: new Date().toISOString(), reason: "launch-failed" });
+    fail(`could not create the tmux session: ${launched.error}`);
+  }
   record.pane_id = launched.paneId;
   record.pane_pid = launched.panePid;
 
@@ -426,9 +434,11 @@ function cmdOpen(flags, positional) {
   compactRegistry();
   paneLog(dir, { ev: "opened", key, agent, model: model || null, permission_mode: perm.mode || null });
 
-  const liveCount = [...foldRegistry().values()].filter((r) => r.orchestrator_iterm_uuid === selfUuid).length;
+  // Scoped to iTerm2 splits from THIS window: without a self uuid the filter
+  // would count every `null === null` record (durable-agents §7 F3).
+  const liveCount = useIterm && selfUuid ? [...foldRegistry().values()].filter((r) => r.orchestrator_iterm_uuid === selfUuid).length : 0;
 
-  say(`pane       ${key}`);
+  say(`durable    ${key}`);
   say(`agent      ${agent}`);
   if (record.definition_source === "divergent") {
     say(`definition TWO COPIES DIFFER — policy computed from BOTH (stricter wins)`);
@@ -445,7 +455,7 @@ function cmdOpen(flags, positional) {
   if (record.pane_pid) say(`process    pane ${record.pane_id}, pid ${record.pane_pid}`);
   for (const w of warnings) say(`WARNING: ${w}`);
   if (useIterm && liveCount >= 3) {
-    say(`NOTE: this is pane ${liveCount}; the Orchestrator's pane is getting small — consider \`tmux attach -t ${key}\` in a separate window instead.`);
+    say(`NOTE: this is durable agent ${liveCount} split off this window; the Orchestrator's pane is getting small — consider \`tmux attach -t ${key}\` in a separate window instead.`);
   }
   flush(0);
 }
@@ -459,7 +469,7 @@ function cmdList(flags) {
     process.exit(0);
   }
   if (!live.size) {
-    say("no live panes.");
+    say("no durable agents running.");
     flush(0);
   }
   for (const rec of live.values()) {
@@ -503,7 +513,7 @@ async function cmdSend(flags, positional) {
   const existing = readJsonFile(join(dir, "pending"));
   if (existing) {
     const age = Math.round((Date.now() - Date.parse(existing.sent_at || 0)) / 1000);
-    fail(`pane ${record.key} is still working on request ${existing.reqid} (sent ${age}s ago). Wait, or run \`pane.mjs peek --key ${record.key}\`.`);
+    fail(`durable agent ${record.key} is still working on request ${existing.reqid} (sent ${age}s ago). Wait, or run \`pane.mjs peek --key ${record.key}\`.`);
   }
 
   const chunks = [];
@@ -512,10 +522,29 @@ async function cmdSend(flags, positional) {
   if (!prompt.trim()) fail("send read an empty prompt from stdin.");
 
   const reqid = randomUUID();
-  const session = readJsonFile(join(dir, "session"));
-  const expectSession = session && typeof session.session_id === "string" ? session.session_id : null;
+
+  // Never paste into a session that has not booted (durable-agents §7 F1). The
+  // identity file is written by the pane's own SessionStart; until it exists
+  // the input box may not exist either — a paste now can be silently lost, and
+  // `expect_session` would be null exactly when gate D matters most.
+  const bootWait = flags["boot-wait"] !== undefined && Number(flags["boot-wait"]) >= 0 ? Number(flags["boot-wait"]) : BOOT_WAIT_SECONDS;
+  let session = readJsonFile(join(dir, "session"));
+  const bootDeadline = Date.now() + bootWait * 1000;
+  while (!session && Date.now() < bootDeadline) {
+    await sleep(1000);
+    session = readJsonFile(join(dir, "session"));
+  }
+  if (!session) {
+    fail(
+      `${record.key} has not finished booting after ${bootWait}s — its session identity file is still missing.\n` +
+        `Nothing was sent and no request is outstanding. Look at it, then retry:\n` +
+        `  Peek:   pane.mjs peek --key ${record.key}\n` +
+        `  Attach: tmux attach -t ${record.key}`
+    );
+  }
+  const expectSession = typeof session.session_id === "string" ? session.session_id : null;
   const notes = [];
-  if (!expectSession) notes.push("the pane has not recorded its session id yet (it may still be booting); the agent_type gate still applies.");
+  if (!expectSession) notes.push("the durable agent recorded no session id; the agent_type gate still applies.");
 
   let pasteText = prompt;
   if (prompt.length > panes.inlinePromptMaxChars) {
@@ -571,7 +600,7 @@ async function cmdSend(flags, positional) {
 
   const tail = capturePane(record.pane_id, 20);
   say(`No reply from ${record.key} after ${timeout}s (request ${reqid}).`);
-  say("The pane may be sitting on a permission prompt with nobody attached.");
+  say("The agent may be sitting on a permission prompt with nobody attached.");
   say("");
   say(`  Attach and answer it:   tmux attach -t ${record.key}`);
   say(`  Peek without attaching: pane.mjs peek --key ${record.key}`);
@@ -579,7 +608,7 @@ async function cmdSend(flags, positional) {
   say(`Last 20 lines of the pane:`);
   say(tail || "  (could not capture the pane)");
   say("");
-  say("`pending` was left in place: if the pane finishes later the reply still lands in");
+  say("`pending` was left in place: if the agent finishes later the reply still lands in");
   say(`${replyPath}, and \`list\` reports it as an unread reply.`);
   flush(1);
 }
@@ -624,7 +653,7 @@ function cmdClose(flags, positional) {
     // where it is explicit.
     targets = [...live.values()].filter((r) => r.orchestrator_session_id === mine);
     if (!targets.length) {
-      say("no live panes opened by this session.");
+      say("no durable agents created by this session.");
       flush(0);
     }
   } else {
@@ -678,6 +707,22 @@ function cmdDoctor() {
     say("");
     say("ORPHANED PROCESSES — the tmux session is gone but the recorded pid is still alive:");
     for (const rec of orphans) say(`  ${rec.key}: pid ${rec.pane_pid} — close it with \`pane.mjs close --key ${rec.key}\``);
+  }
+
+  // Keys stuck at `launching` (durable-agents §7 F2): a create crashed — or is
+  // mid-flight right now — between the tmux launch and its `open` event.
+  const stuck = launchingKeys();
+  if (stuck.length) {
+    say("");
+    say("STUCK AT LAUNCHING — a create recorded its launch but never its open:");
+    for (const rec of stuck) {
+      if (tmuxSessionExists(rec.key)) {
+        say(`  ${rec.key}: a tmux session EXISTS but was never recorded open. A create may be in flight right now; if not, kill it: tmux kill-session -t ${rec.key}`);
+      } else {
+        appendRegistry({ ev: "close", key: rec.key, at: new Date().toISOString(), reason: "launch-crashed" });
+        say(`  ${rec.key}: no tmux session — reaped.`);
+      }
+    }
   }
 
   // Survivors of CLOSED panes: a process still in a closed pane's group whose
@@ -743,6 +788,7 @@ const { flags, positional } = parseArgs(process.argv.slice(2));
 const sub = positional.shift();
 
 switch (sub) {
+  case "create":
   case "open":
     cmdOpen(flags, positional);
     break;
@@ -762,5 +808,5 @@ switch (sub) {
     cmdDoctor();
     break;
   default:
-    fail("usage: pane.mjs open|list|send|peek|close|doctor  (see the header of this file)");
+    fail("usage: pane.mjs create|open|list|send|peek|close|doctor  (see the header of this file)");
 }

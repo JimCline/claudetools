@@ -152,47 +152,81 @@ columns — a cache-read token is ~10× cheaper, and folding them together would
 flatter nothing. If the report says `(N transcripts not found)`, the
 collector's path derivation broke: that is a bug report, not user error.
 
-## Panes: a role you can watch and talk to
+## Durable agents: a role you keep
 
-`/pane` launches a file-backed agent as a **real, top-level Claude Code
-session** in its own tmux session — not a subagent. The Orchestrator delegates
-to it and gets an answer back, but you can also watch it work and type into it
-yourself.
+`/durable` creates a **durable agent**: a file-backed agent running as a
+**real, top-level Claude Code session** in its own tmux pane — not a subagent.
+The Orchestrator hands work to it and gets an answer back, and you can watch it
+work and type into it yourself.
+
+It exists for an observed failure of economics: an Orchestrator fires an
+expensive subagent for one step, then fires a fresh one of the same role for
+the next — and every spawn starts from scratch, re-reading the spec and
+re-paying full input price. A durable agent inverts that:
+
+- **Continuity** — context accumulates across sends; the architect still knows
+  the spec it wrote, so follow-up sends are short.
+- **Cache economics** — a living session's context stays prompt-cached, and an
+  idle durable agent costs zero tokens.
+- **Your lifetime, not the model's** — `create` and `close` are your calls.
+- **Visibility** — each agent works in a terminal pane you can watch,
+  interrupt, and type into; `list` shows idle/WORKING per agent.
+
+The counterweight: durable context drifts, fills, and compacts on the agent's
+own schedule, invisibly to the Orchestrator. The rule is **durable for
+continuity across related tasks; subagent for independent or
+contamination-sensitive work**.
 
 ```
-/agent-hierarchy:pane <agent> [right|below]     open a pane running <agent>
-/agent-hierarchy:pane list                      show live panes
-/agent-hierarchy:pane ask <key|agent> <text…>   send work (always confirmed)
-/agent-hierarchy:pane close <key|agent|all>     close
-/agent-hierarchy:pane doctor                    dependency + health check
+/agent-hierarchy:durable create <agent> [right|below]  create one running <agent>
+/agent-hierarchy:durable list                          show live durable agents
+/agent-hierarchy:durable ask <key|agent> <text…>       send work (always confirmed)
+/agent-hierarchy:durable close <key|agent|all>         close
+/agent-hierarchy:durable doctor                        dependency + health check
 ```
 
 **`right` = side by side, `below` = stacked.** The letters `v` and `h` also
 work, and they name the **divider**: `v` is a vertical divider, so the panes end
 up side by side; `h` is a horizontal divider, so they stack. Prefer the words.
 
-**Only the Orchestrator can start a conversation.** The pane has no tool and no
-address for reaching it. When work is sent, a token is left in the pane's
-mailbox and the pane's Stop hook turns its final assistant message into the
+**Only the Orchestrator can start a conversation.** The agent has no tool and no
+address for reaching it. When work is sent, a token is left in the agent's
+mailbox and its Stop hook turns its final assistant message into the
 reply; with no token there is no reply. A turn *you* type into the pane is
 therefore never relayed anywhere — that conversation is yours alone.
 
-**Every open and every send asks you first**, regardless of `handoffs: "auto"`.
-A pane is a separately-billed interactive session driven by keystrokes into your
-terminal; that earns its own confirmation.
+**Every create and every send asks you first**, regardless of
+`handoffs: "auto"`. A durable agent is a separately-billed interactive session
+driven by keystrokes into your terminal; that earns its own confirmation.
+
+**Durable means durable.** The registry and the agents outlive the session that
+created them: close the conversation, come back tomorrow, and the architect is
+still warm. Discovery is global — `list` finds every session's agents, and any
+session may `ask` any of them (ownership is display metadata, not an ACL);
+`close all` closes only your own. Cleanup needs no daemon: every `list`,
+`send`, `close`, and Orchestrator session start verifies live agents against
+tmux and reaps dead registry entries, so crashes, closed windows, and reboots
+all converge at the next read.
+
+**The hierarchy knows about them.** An Orchestrator's session start injects a
+roster of live durable agents next to the directive, and a subagent dispatch
+whose type matches a live, *idle* durable agent is denied **once** with
+instructions to offer you the durable path — the identical re-run passes, so it
+can never loop. Legwork types (task-gopher/task-runner) are never intercepted;
+continuity is a reasoning-role economy.
 
 **tmux is required** (`brew install tmux`). iTerm2 is an optional presentation
-layer: with it, the pane appears split off your own tab; without it, the pane
+layer: with it, the pane appears split off your own tab; without it, the agent
 still runs and you attach with `tmux attach -t <key>`, which every command
 prints.
 
 ### Permission modes
 
-You are asked to pick one whenever `/pane` **cannot rule out** that the agent
+You are asked to pick one whenever `create` **cannot rule out** that the agent
 can execute — when its toolset includes `Bash` or `Edit`, and also when its
 definition is missing, unreadable, or unrestricted. The gate fails safe: it
 asks unless the definition positively proves both `Bash` and `Edit` are
-unavailable, and a non-prompting pane is not proof the agent cannot execute.
+unavailable, and a non-prompting create is not proof the agent cannot execute.
 In practice that covers the Implementor and any non-role agent you launch. The
 Architect, Reviewer, Ultra-Advisor, and Task-Runner are not asked; they run
 with normal prompting.
@@ -200,7 +234,7 @@ with normal prompting.
 | Mode | What it actually does |
 | :-- | :-- |
 | `manual` | Prompts for anything beyond reads. Will sit and wait if nobody is attached. |
-| `acceptEdits` | Auto-accepts file edits and safe filesystem commands. **Does not cover general `Bash`** — the pane still stalls on a test or build run. |
+| `acceptEdits` | Auto-accepts file edits and safe filesystem commands. **Does not cover general `Bash`** — the agent still stalls on a test or build run. |
 | `auto` | No routine prompts, with a background safety classifier. |
 | `dontAsk` | Auto-**denies** anything that would have prompted. Never stalls, but un-preapproved `Bash` silently fails. Not a fix for stalling — a different failure. |
 
@@ -213,39 +247,39 @@ own frontmatter.
 
 ### Known differences from a subagent
 
-A paned role may run on a **different model** than the same role would as a
+A durable role may run on a **different model** than the same role would as a
 subagent. It may also have a **different tool surface**. The Orchestrator cannot
 detect either difference, and cannot correct it. Pass `--model` to pin the
 model; there is no equivalent for the tool surface.
 
 The model half has a specific cause: `model: inherit` on a subagent means "the
-model of the main conversation", but a pane *is* a main conversation, so it runs
-on your **default** model rather than whatever the Orchestrator is currently
-using. The tool half is that `--agent` applies the definition's *denials* to
-whatever toolset a top-level session would otherwise have, and that base set is
-not a subagent's base set.
+model of the main conversation", but a durable agent *is* a main conversation,
+so it runs on your **default** model rather than whatever the Orchestrator is
+currently using. The tool half is that `--agent` applies the definition's
+*denials* to whatever toolset a top-level session would otherwise have, and
+that base set is not a subagent's base set.
 
-**A paned Architect has no `Grep` and no `Glob`** — measured, not inferred. Asked
-to search a file, a live paned Architect reported "No Grep/Glob tool is exposed
-to me directly" and had to reach the answer by dispatching a subagent and by
-reading the file whole. Its `agents/architect.md` body calls those tools its
-instruments, so **a paned Architect is materially weaker at research than the
-same Architect as a subagent.** Prefer the subagent path for research-heavy
-Architect work, and use a pane when the point is to watch and talk to it. The
-pane does keep the `Agent` tool, so it can still delegate the search — that is
-exactly what it did.
+**A durable Architect has no `Grep` and no `Glob`** — measured, not inferred.
+Asked to search a file, a live durable Architect reported "No Grep/Glob tool is
+exposed to me directly" and had to reach the answer by dispatching a subagent
+and by reading the file whole. Its `agents/architect.md` body calls those tools
+its instruments, so **a durable Architect is materially weaker at research than
+the same Architect as a subagent.** Prefer the subagent path for research-heavy
+Architect work, and use a durable agent when the point is continuity, or to
+watch and talk to it. It does keep the `Agent` tool, so it can still delegate
+the search — that is exactly what it did.
 
 ### Two copies of a definition
 
 If you develop plugins from a **local-path marketplace** (a
 `"source": "directory"` entry in `known_marketplaces.json`), an agent
 definition can exist twice: once in the installed plugin tree and once in your
-live checkout — and Claude Code may launch the pane from either. `/pane` reads
+live checkout — and Claude Code may launch the pane from either. `create` reads
 **both** copies. When they differ it computes the permission and model policy
 from both and takes the **stricter** answer of each, shows you both paths, and
 warns; set `panes.onDefinitionDivergence: "refuse"` to make it refuse instead.
 There is deliberately no way to silently prefer one copy. When the copies are
-byte-identical — the normal state — it says nothing. `/pane doctor` compares
+byte-identical — the normal state — it says nothing. `/durable doctor` compares
 the whole `agents/` tree per plugin and tells you when an installed copy is
 stale, with the resync command.
 
@@ -266,7 +300,7 @@ config schema version. `onDefinitionDivergence` is `"warn"` (default) or
 ## Commands
 
 ```
-/agent-hierarchy:pane …             # see "Panes" above
+/agent-hierarchy:durable …          # see "Durable agents" above
 /hierarchy init                     # wizard: scope, flow mode, model per role
 /hierarchy status                   # resolved table + where each value came from
 /hierarchy set <role> <model>       # one role (validated per-role)
@@ -286,21 +320,23 @@ session model would make the tier decorative). `inherit` means "omit the
 ```
 agents/          one contract per role (frontmatter pins model + tool denies)
 hooks/
-  sessionstart.mjs           injects the pane protocol, the role notice, or the directive
-  pretooluse-ultra-gate.mjs  gates Ultra-Advisor escalation on the user
-  subagentstop-usage.mjs     zero-token usage collector
-  stop-pane-relay.mjs        pane reply relay (inert outside a pane)
-  usage-report.mjs           standalone reporter
-  pane.mjs                   /pane CLI (open/list/send/peek/close/doctor)
-  gate.mjs                   escalation-gate CLI (set/status/reset)
-  lib-config.mjs             config resolution + directive text (run directly for status)
-  lib-gate.mjs               session-scoped gate state
-  lib-pane.mjs               registry, mailbox, tmux, and iTerm2 primitives
+  sessionstart.mjs               injects the pane protocol, the role notice, or the directive (+ durable roster)
+  pretooluse-ultra-gate.mjs      gates Ultra-Advisor escalation on the user
+  pretooluse-durable-offer.mjs   offers a live idle durable agent instead of a cold subagent, once
+  subagentstop-usage.mjs         zero-token usage collector
+  stop-pane-relay.mjs            durable-agent reply relay (inert outside a pane)
+  usage-report.mjs               standalone reporter
+  pane.mjs                       /durable CLI (create/list/send/peek/close/doctor)
+  gate.mjs                       escalation-gate CLI (set/status/reset)
+  lib-config.mjs                 config resolution + directive text (run directly for status)
+  lib-gate.mjs                   session-scoped gate state
+  lib-pane.mjs                   registry, mailbox, tmux, and iTerm2 primitives
 commands/hierarchy.md        the /hierarchy command
-commands/pane.md             the /pane command
+commands/durable.md          the /durable command
 docs/hierarchy.html          static visual map of roles, lanes, and flow
-docs/pane-command.md         the /pane design spec
-tests/                       6 suites, 263 cases (HOME-redirected; real config untouched)
+docs/pane-command.md         the pane-mechanics design spec (0.8.0)
+docs/durable-agents.md       the durable-agents spec (0.9.0)
+tests/                       6 suites, 320+ cases (HOME-redirected; real config untouched)
 ```
 
 ## License

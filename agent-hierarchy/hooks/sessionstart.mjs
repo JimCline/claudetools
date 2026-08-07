@@ -28,7 +28,10 @@
  *     otherwise reach it, but it is NOT the Orchestrator. A top-level
  *     `--agent` session running a non-hierarchy agent deliberately falls
  *     through: it is a legitimate main session that may orchestrate.
- *   - Top-level, configured, enabled  → the directive.
+ *   - Top-level, configured, enabled  → the directive, plus a roster of live
+ *     durable agents when the pane registry holds any (individually guarded,
+ *     like the pane branch — the roster is additive and must never cost the
+ *     session its directive).
  *   - Top-level, no usable config     → a one-line setup nudge.
  *   - Top-level, config with enabled:false → silence (the user opted out;
  *     nudging them to configure would be wrong).
@@ -87,7 +90,16 @@ if (!context && !isSubagent(input)) {
   } else {
     const resolved = resolveConfig(input.cwd || process.cwd());
     if (!resolved.configured) context = buildNudge(resolved);
-    else if (resolved.enabled) context = buildDirective(resolved, input.session_id);
+    else if (resolved.enabled) {
+      context = buildDirective(resolved, input.session_id);
+      try {
+        const { durableRoster } = await import("./lib-pane.mjs");
+        const roster = durableRoster();
+        if (roster) context += "\n\n" + roster;
+      } catch {
+        /* the directive stands on its own */
+      }
+    }
   }
 }
 
