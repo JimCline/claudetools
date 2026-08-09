@@ -1015,6 +1015,70 @@ check "stranded CLI: refuses a key that is not a pane key" \
 check "stranded CLI: is listed in the usage line" \
   'node "$H/pane.mjs" bogus-subcommand 2>&1 | grep -q "stranded"'
 
+# ================================= gate D: session rotation (0.14.0)
+#
+# Gate D used to pin the ONE session id seen at creation, so a /clear in the
+# pane made every later reply look like a hijack and DESTROYED the agent's work.
+# The identity worth pinning is "a session belonging to this pane".
+
+SS() { # enrol a session: SS <dir> <session_id> <source> [agent_type]
+  echo "{\"session_id\":\"$2\",\"cwd\":\"$WORK\",\"source\":\"$3\",\"agent_type\":\"${4:-agent-hierarchy:architect}\"}" \
+    | env AGENT_HIERARCHY_PANE_DIR="$1" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
+      AGENT_HIERARCHY_PANE_KEY="ah-test-architect-1" node "$H/sessionstart.mjs" >/dev/null 2>&1
+}
+ENROLLED() { node --input-type=module -e "import {enrolledSessions as e} from \"$H/lib-pane.mjs\"; process.stdout.write(e(\"$1\").join(\",\"))"; }
+
+D="$(mailbox)"
+SS "$D" "sess-origin" "startup"
+check "gate D: the first session enrols as origin" '[ "$(ENROLLED "'$D'")" = "sess-origin" ]'
+SS "$D" "sess-cleared" "clear"
+check "gate D: a /clear rotation enrols the new id" '[ "$(ENROLLED "'$D'")" = "sess-origin,sess-cleared" ]'
+check "gate D: the origin file is NOT rewritten by a rotation" 'grep -q "\"session_id\":\"sess-origin\"" "'$D'/session"'
+SS "$D" "sess-grandchild" "startup"
+check "gate D: a fresh startup never enrols, however often it runs" \
+  '[ "$(ENROLLED "'$D'")" = "sess-origin,sess-cleared" ]'
+SS "$D" "sess-otherrole" "clear" "some-plugin:notetaker"
+check "gate D: a rotation with the wrong agent_type never enrols" \
+  '[ "$(ENROLLED "'$D'")" = "sess-origin,sess-cleared" ]'
+
+# ---- THE BUG: pending stamped with the OLD id, reply arrives from the rotated
+#      one. This is the case that used to destroy the reply.
+echo '{"reqid":"r-rot","echo":true,"sent_at":"2026-01-01T00:00:00Z","expect_session":"sess-origin"}' > "$D/pending"
+AGENT_HIERARCHY_PANE_DIR="$D" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
+  relay '{"session_id":"sess-cleared","agent_type":"agent-hierarchy:architect","last_assistant_message":"[ah-reply r-rot]\nsurvived the clear"}' >/dev/null
+check "gate D: a reply from a rotated session IS relayed" \
+  '[ "$(node -e "process.stdout.write(JSON.parse(require(\"fs\").readFileSync(\"'$D'/reply.r-rot.json\",\"utf8\")).text)")" = "survived the clear" ]'
+check "gate D: the rotated reply consumes the token" '[ ! -f "'$D'/pending" ]'
+
+# ---- an unenrolled session is still refused, and now KEPT rather than binned.
+echo '{"reqid":"r-hij","echo":true,"sent_at":"2026-01-01T00:00:00Z","expect_session":"sess-cleared"}' > "$D/pending"
+AGENT_HIERARCHY_PANE_DIR="$D" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
+  relay '{"session_id":"sess-grandchild","agent_type":"agent-hierarchy:architect","last_assistant_message":"[ah-reply r-hij]\nnested claude speaking"}' >/dev/null
+check "gate D: an unenrolled session is not relayed" '! [ -f "'$D'/reply.r-hij.json" ]'
+check "gate D: an unenrolled session does not consume the token" '[ -f "'$D'/pending" ]'
+check "gate D: logs ev=foreign reason=session_id" \
+  'grep -q "\"ev\":\"foreign\"" "'$D'/log.jsonl" && grep -q "\"reason\":\"session_id\"" "'$D'/log.jsonl"'
+check "gate D: the rejected turn is QUARANTINED, not destroyed" \
+  'ls "'$D'"/foreign.*.json >/dev/null 2>&1 && cat "'$D'"/foreign.*.json | grep -q "nested claude speaking"'
+check "gate D: the quarantine records what was expected" 'cat "'$D'"/foreign.*.json | grep -q "sess-cleared"'
+check "gate D: a foreign turn is reported as stranded" \
+  '[ "$(node --input-type=module -e "import {strandedTurns as s} from \"$H/lib-pane.mjs\"; process.stdout.write(s(\"'$D'\").filter(t=>t.kind===\"foreign\").length+\"\")")" = "1" ]'
+
+# ---- a mailbox from before the enrolment log still works both ways.
+DL="$(mailbox)"
+echo '{"session_id":"legacy-1","agent_type":"agent-hierarchy:architect","at":"x"}' > "$DL/session"
+echo '{"reqid":"r-leg","echo":true,"sent_at":"2026-01-01T00:00:00Z","expect_session":"legacy-1"}' > "$DL/pending"
+AGENT_HIERARCHY_PANE_DIR="$DL" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
+  relay '{"session_id":"legacy-1","agent_type":"agent-hierarchy:architect","last_assistant_message":"[ah-reply r-leg]\nlegacy ok"}' >/dev/null
+check "gate D legacy: the origin id still relays with no enrolment log" '[ -f "'$DL'/reply.r-leg.json" ]'
+echo '{"reqid":"r-leg2","echo":true,"sent_at":"2026-01-01T00:00:00Z","expect_session":"legacy-1"}' > "$DL/pending"
+AGENT_HIERARCHY_PANE_DIR="$DL" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
+  relay '{"session_id":"legacy-999","agent_type":"agent-hierarchy:architect","last_assistant_message":"[ah-reply r-leg2]\nnope"}' >/dev/null
+check "gate D legacy: a foreign id is still refused with no enrolment log" '! [ -f "'$DL'/reply.r-leg2.json" ]'
+
+check "gate D: currentSession is the NEWEST enrolled id, for send to stamp" \
+  '[ "$(node --input-type=module -e "import {currentSession as c} from \"$H/lib-pane.mjs\"; process.stdout.write(c(\"'$D'\"))")" = "sess-cleared" ]'
+
 # ---- a task delivered as a FILE carries the reply contract IN the file. The
 #      pasted envelope is context, and context is what compaction eats — and a
 #      task big enough to be delivered this way is exactly the one that runs

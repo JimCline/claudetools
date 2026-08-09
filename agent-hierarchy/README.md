@@ -218,6 +218,15 @@ the next-turn nudge, and by a timed-out `wait` — and read with `pane.mjs
 stranded --key <key> --show`. Nothing is auto-relayed: only the Orchestrator
 knows what it asked, so it adjudicates.
 
+**A durable agent survives `/clear`.** The relay checks that a reply comes from
+one of the pane's OWN sessions, and a session id rotates — so the pane enrols
+each new id as it appears, and any enrolled id can answer. What keeps that from
+being a hole is where the rotation came from: the pane's own `/clear`, resume,
+compaction, or fork enrols itself, while a nested `claude` that inherited the
+pane's environment starts fresh and can never enrol. A reply that is refused
+anyway is written to disk and reported as a stranded turn rather than
+discarded.
+
 **Replies are frugal by mechanism, not by promise.** The helper stamps every
 delivery with the reply contract (final results only; bulk to disk; long
 replies open with `## TL;DR` then `## ` sections), and `send` withholds any

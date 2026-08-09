@@ -52,6 +52,7 @@ import {
   capturePane,
   closedPaneGroupPids,
   compactRegistry,
+  currentSession,
   extractTldr,
   foldRegistry,
   isPaneLive,
@@ -574,7 +575,10 @@ async function cmdSend(flags, positional) {
         `  Attach: tmux attach -t ${record.key}`
     );
   }
-  const expectSession = typeof session.session_id === "string" ? session.session_id : null;
+  // The NEWEST enrolled id, not the origin: a pane that has been /clear'd since
+  // creation answers as its current session, and stamping the origin here would
+  // expect an id that no longer exists.
+  const expectSession = currentSession(dir) || (typeof session.session_id === "string" ? session.session_id : null);
   const notes = [];
   if (!expectSession) notes.push("the durable agent recorded no session id; the agent_type gate still applies.");
 
@@ -665,9 +669,12 @@ async function awaitReply(record, dir, reqid, timeout, panes, notes) {
     }
     const foreignNow = countForeign(dir);
     if (foreignNow > logBefore) {
-      say(`A Stop hook fired for ${record.key} from a session that is NOT the pane — a foreign reply was rejected and`);
-      say(`the request is still outstanding. This is the grandchild-hijack gate firing, not a timeout.`);
-      say(`Inspect ${join(dir, "log.jsonl")}.`);
+      say(`A Stop hook fired for ${record.key} from a session this pane has not enrolled — the reply was`);
+      say(`rejected and the request is still outstanding. This is gate D firing, not a timeout.`);
+      say(`The text was SAVED, not lost:  node "${fileURLToPath(import.meta.url)}" stranded --key ${record.key} --show`);
+      say(`Usual causes: a nested \`claude\` answering in the pane's name, or a session rotation this`);
+      say(`pane never recorded (its own /clear enrols itself; one from elsewhere cannot).`);
+      say(`If the pane is genuinely unreachable, close and recreate it. Log: ${join(dir, "log.jsonl")}.`);
       flush(1);
     }
     await sleep(panes.pollSeconds * 1000);
@@ -810,7 +817,13 @@ function cmdStranded(flags, positional) {
   say(`${key}: ${turns.length} stranded turn${turns.length === 1 ? "" : "s"}, newest first. These FINISHED but were never relayed.`);
   say("");
   for (const t of turns) {
-    say(`  ${t.file}   request ${t.reqid || "unknown"}   ${t.kind === "nag" ? "no [ah-reply] line; the retry never came" : "rejected by the reply gate"}`);
+    const why =
+      t.kind === "nag"
+        ? "no [ah-reply] line; the retry never came"
+        : t.kind === "foreign"
+          ? "rejected as a session this pane has not enrolled"
+          : "rejected by the reply gate";
+    say(`  ${t.file}   request ${t.reqid || "unknown"}   ${why}`);
   }
   if (!flags.show) {
     say("");

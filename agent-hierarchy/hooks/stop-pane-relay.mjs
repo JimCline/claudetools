@@ -70,12 +70,43 @@ try {
   // Gate D — belt-and-braces on B, for a grandchild that somehow reports the
   // same agent_type. Neither gate consumes the token: a rejected Stop must
   // leave `pending` in place so the real pane can still answer.
-  if (typeof pending.expect_session === "string" && pending.expect_session && input.session_id !== pending.expect_session) {
-    log({ ev: "foreign", reason: "session_id", expected: pending.expect_session, got: input.session_id ?? null });
+  //
+  // The test is "is this one of THIS PANE's sessions", not "is this the one id
+  // seen at creation". Pinning the creation id meant a `/clear` — which rotates
+  // the id — made every later reply look like a hijack, and the work was
+  // destroyed. Enrolment (lib-pane's enrolSession) is what admits a rotated id
+  // while still shutting out a grandchild, which can only ever report `startup`.
+  let text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
+
+  let enrolled = [];
+  try {
+    const { enrolledSessions } = await import("./lib-pane.mjs");
+    enrolled = enrolledSessions(dir);
+  } catch {
+    enrolled = [];
+  }
+  // With no enrolment data at all — a mailbox this build never wrote — fall
+  // back to the old comparison rather than accepting anything.
+  const known = enrolled.length ? enrolled : pending.expect_session ? [pending.expect_session] : [];
+  if (known.length && !known.includes(input.session_id)) {
+    const saved = join(dir, `foreign.${Date.now()}.json`);
+    const tmpF = `${saved}.tmp`;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      tmpF,
+      JSON.stringify({
+        reqid_expected: pending.reqid,
+        session_id: input.session_id ?? null,
+        expected_sessions: known,
+        agent_type: input.agent_type ?? null,
+        at: new Date().toISOString(),
+        text,
+      })
+    );
+    renameSync(tmpF, saved);
+    log({ ev: "foreign", reason: "session_id", expected: known.join(","), got: input.session_id ?? null, chars: text.length });
     process.exit(0);
   }
-
-  let text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : "";
 
   // Gate E — content. Gates B and D prove WHO answered; nothing above proves
   // WHICH question was answered. A human typing into the pane mid-request can

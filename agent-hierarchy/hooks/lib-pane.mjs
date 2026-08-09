@@ -735,11 +735,98 @@ export function recordPaneSession(paneDir, input) {
     agent_type: (input && input.agent_type) || null,
     at: new Date().toISOString(),
   };
+  let becameOrigin = false;
   try {
     writeFileSync(join(paneDir, "session"), JSON.stringify(record), { flag: "wx" });
+    becameOrigin = true;
   } catch {
     /* already claimed — leave the first writer's record alone */
   }
+  try {
+    enrolSession(paneDir, input, becameOrigin);
+  } catch {
+    /* enrolment is gate D's convenience; never cost the caller its identity write */
+  }
+}
+
+/** SessionStart sources that mean "the same pane, a new session id". */
+const ROTATION_SOURCES = new Set(["clear", "resume", "compact", "fork"]);
+
+/**
+ * Add a session id to the pane's enrolment log, which is what gate D checks.
+ *
+ * Gate D used to pin the ONE id seen at creation, so `/clear` — which rotates
+ * the id — made every later reply look like a hijack, and the agent's work was
+ * discarded. The identity worth pinning is "a session belonging to this pane",
+ * not one value that legitimately rotates.
+ *
+ * `source` is what keeps that honest. A grandchild `claude` inherits this
+ * pane's environment, but it starts fresh, so it reports `startup` and can
+ * never enrol however often it runs; only the pane's own `/clear`, resume,
+ * compaction, or fork reports a rotation. The origin still enrols by
+ * first-writer-wins on the `session` file, so a grandchild cannot claim that
+ * either.
+ *
+ * Known gap: a grandchild launched with --resume AND the pane's own agent_type
+ * would report a rotation source and could enrol. Closing that needs process
+ * lineage (does a Stop hook's ppid chain reach the recorded pane_pid, and does
+ * /clear keep the pid?) — unmeasured, so deliberately not guessed at here.
+ */
+export function enrolSession(paneDir, input, becameOrigin) {
+  const id = input && typeof input.session_id === "string" ? input.session_id : "";
+  if (!id) return false;
+  if (enrolledSessions(paneDir).includes(id)) return false;
+
+  if (!becameOrigin) {
+    if (!ROTATION_SOURCES.has(String(input.source || ""))) return false;
+    if (!existsSync(join(paneDir, "session"))) return false;
+    const declared = process.env.AGENT_HIERARCHY_PANE_ROLE || null;
+    if (declared && input.agent_type !== declared) return false;
+  }
+
+  appendFileSync(
+    join(paneDir, "sessions.jsonl"),
+    JSON.stringify({
+      session_id: id,
+      agent_type: (input && input.agent_type) || null,
+      source: (input && input.source) || null,
+      origin: Boolean(becameOrigin),
+      at: new Date().toISOString(),
+    }) + "\n"
+  );
+  return true;
+}
+
+/**
+ * Every session id this pane has legitimately had, oldest first.
+ *
+ * The origin from `session` is always included, so a mailbox created before the
+ * enrolment log existed keeps relaying instead of rejecting everything.
+ */
+export function enrolledSessions(paneDir) {
+  const ids = [];
+  const origin = readJsonFile(join(paneDir, "session"));
+  if (origin && typeof origin.session_id === "string" && origin.session_id) ids.push(origin.session_id);
+  try {
+    for (const line of readFileSync(join(paneDir, "sessions.jsonl"), "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const rec = JSON.parse(line);
+        if (typeof rec.session_id === "string" && rec.session_id && !ids.includes(rec.session_id)) ids.push(rec.session_id);
+      } catch {
+        /* a torn line loses one id, not the whole log */
+      }
+    }
+  } catch {
+    /* no log yet — the origin alone is the answer */
+  }
+  return ids;
+}
+
+/** The id `send` should stamp as `expect_session`: the newest enrolled, else null. */
+export function currentSession(paneDir) {
+  const ids = enrolledSessions(paneDir);
+  return ids.length ? ids[ids.length - 1] : null;
 }
 
 // -------------------------------------------------------- injected text
@@ -873,6 +960,7 @@ export function unreadReplies(dir) {
  * is the same for both — read it and decide whether it answers the question:
  *   `unmatched.<ts>.json`  the echo gate rejected the turn and gave up
  *   `nag.<reqid>.json`     the echo gate asked for a retry that never came
+ *   `foreign.<ts>.json`    gate D rejected the session as not this pane's
  *
  * The nag kind is what keeps the retry mechanism honest: if a Stop `block` is
  * not honoured in an interactive session, the nag file is still here and still
@@ -881,18 +969,18 @@ export function unreadReplies(dir) {
 export function strandedTurns(dir) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
-    .filter((f) => /^unmatched\..*\.json$/.test(f) || /^nag\..*\.json$/.test(f))
+    .filter((f) => /^unmatched\..*\.json$/.test(f) || /^nag\..*\.json$/.test(f) || /^foreign\..*\.json$/.test(f))
     .map((f) => {
-      const nag = f.startsWith("nag.");
-      let reqid = nag ? f.replace(/^nag\./, "").replace(/\.json$/, "") : null;
-      if (!nag) {
+      const kind = f.startsWith("nag.") ? "nag" : f.startsWith("foreign.") ? "foreign" : "unmatched";
+      let reqid = kind === "nag" ? f.replace(/^nag\./, "").replace(/\.json$/, "") : null;
+      if (kind !== "nag") {
         try {
           reqid = JSON.parse(readFileSync(join(dir, f), "utf8")).reqid_expected ?? null;
         } catch {
           reqid = null;
         }
       }
-      return { file: f, kind: nag ? "nag" : "unmatched", reqid, mtime: statSync(join(dir, f)).mtimeMs };
+      return { file: f, kind, reqid, mtime: statSync(join(dir, f)).mtimeMs };
     })
     .sort((a, b) => b.mtime - a.mtime);
 }
