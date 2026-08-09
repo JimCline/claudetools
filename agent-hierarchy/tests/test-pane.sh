@@ -118,22 +118,81 @@ check "gate E: the echo line is stripped from the relayed text" \
   '[ "$(node -e "process.stdout.write(JSON.parse(require(\"fs\").readFileSync(\"'$D'/reply.r-echo.json\",\"utf8\")).text)")" = "ECHOED BODY" ]'
 check "gate E: an echoed reply consumes the token" '[ ! -f "'$D'/pending" ]'
 
+# ---- gate E, 0.13.0: the gate is unchanged — a human's answer still never
+#      reaches the Orchestrator — but it no longer fails SILENTLY, which used to
+#      strand finished work whenever a compaction took the reqid with it. The
+#      first unechoed turn gets ONE nag carrying the id back; only the turn
+#      after that is filed as unmatched.
 D="$(mailbox)"
 echo '{"reqid":"r-cross","echo":true,"sent_at":"2026-01-01T00:00:00Z","expect_session":null}' > "$D/pending"
-AGENT_HIERARCHY_PANE_DIR="$D" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
-  relay '{"session_id":"s9","agent_type":"agent-hierarchy:architect","last_assistant_message":"answer to the human, no echo line"}'
+NAG_OUT="$(AGENT_HIERARCHY_PANE_DIR="$D" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
+  relay '{"session_id":"s9","agent_type":"agent-hierarchy:architect","last_assistant_message":"answer to the human, no echo line"}')"
 check "gate E: a turn without the echo is NOT relayed" '! ls "'$D'"/reply.*.json >/dev/null 2>&1'
 check "gate E: a turn without the echo does NOT consume the token" '[ -f "'$D'/pending" ]'
-check "gate E: the unmatched turn is saved, not lost" 'ls "'$D'"/unmatched.*.json >/dev/null 2>&1'
-check "gate E: logs ev=unmatched" 'grep -q "\"ev\":\"unmatched\"" "'$D'/log.jsonl"'
-AGENT_HIERARCHY_PANE_DIR="$D" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
-  relay '{"session_id":"s9","agent_type":"agent-hierarchy:architect","last_assistant_message":"[ah-reply r-WRONG]\nhijack"}'
+check "gate E: the first unechoed turn is nagged, not filed" \
+  '[ -f "'$D'/nag.r-cross.json" ] && ! ls "'$D'"/unmatched.*.json >/dev/null 2>&1'
+check "gate E: the nag keeps the turn's text" 'grep -q "answer to the human" "'$D'/nag.r-cross.json"'
+check "gate E: the nag asks the harness to block" 'echo "$NAG_OUT" | grep -q "\"decision\":\"block\""'
+check "gate E: the block reason carries the request id" 'echo "$NAG_OUT" | grep -q "r-cross"'
+check "gate E: the block reason offers the not-a-reply escape" 'echo "$NAG_OUT" | grep -q "ah-not-a-reply"'
+check "gate E: logs ev=nagged" 'grep -q "\"ev\":\"nagged\"" "'$D'/log.jsonl"'
+WRONG_OUT="$(AGENT_HIERARCHY_PANE_DIR="$D" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
+  relay '{"session_id":"s9","agent_type":"agent-hierarchy:architect","last_assistant_message":"[ah-reply r-WRONG]\nhijack"}')"
 check "gate E: a WRONG echo id is not relayed and keeps the token" \
   '[ -f "'$D'/pending" ] && ! ls "'$D'"/reply.*.json >/dev/null 2>&1'
+check "gate E: the second failure is filed as unmatched" 'ls "'$D'"/unmatched.*.json >/dev/null 2>&1'
+check "gate E: logs ev=unmatched" 'grep -q "\"ev\":\"unmatched\"" "'$D'/log.jsonl"'
+check "gate E: one nag per request, never a loop" '! echo "$WRONG_OUT" | grep -q "\"decision\":\"block\""'
+check "gate E: the nag file is folded away once it is filed" '! [ -f "'$D'/nag.r-cross.json" ]'
+check "gate E: the unmatched record keeps BOTH turns of text" \
+  'cat "'$D'"/unmatched.*.json | grep -q "answer to the human" && cat "'$D'"/unmatched.*.json | grep -q "hijack"'
+check "gate E: the unmatched record names why it gave up" \
+  'cat "'$D'"/unmatched.*.json | grep -q "\"reason\":\"already_nagged\""'
 AGENT_HIERARCHY_PANE_DIR="$D" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
   relay '{"session_id":"s9","agent_type":"agent-hierarchy:architect","last_assistant_message":"[ah-reply r-cross]\nthe real answer"}'
 check "gate E: the correctly echoed turn still gets through afterwards" \
   '[ "$(node -e "process.stdout.write(JSON.parse(require(\"fs\").readFileSync(\"'$D'/reply.r-cross.json\",\"utf8\")).text)")" = "the real answer" ]'
+
+# ---- the happy path for the nag: the pane takes the id back and corrects
+#      itself, so nothing is left stranded at all.
+D="$(mailbox)"
+echo '{"reqid":"r-retry","echo":true,"sent_at":"2026-01-01T00:00:00Z","expect_session":null}' > "$D/pending"
+AGENT_HIERARCHY_PANE_DIR="$D" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
+  relay '{"session_id":"s9","agent_type":"agent-hierarchy:architect","last_assistant_message":"finished, but forgot the line"}' >/dev/null
+check "gate E retry: the nag is written" '[ -f "'$D'/nag.r-retry.json" ]'
+AGENT_HIERARCHY_PANE_DIR="$D" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
+  relay '{"session_id":"s9","agent_type":"agent-hierarchy:architect","last_assistant_message":"[ah-reply r-retry]\nthe corrected answer"}' >/dev/null
+check "gate E retry: the corrected turn is relayed" \
+  '[ "$(node -e "process.stdout.write(JSON.parse(require(\"fs\").readFileSync(\"'$D'/reply.r-retry.json\",\"utf8\")).text)")" = "the corrected answer" ]'
+check "gate E retry: the nag is cleared, so nothing reads as stranded" '! [ -f "'$D'/nag.r-retry.json" ]'
+check "gate E retry: no unmatched file is left behind" '! ls "'$D'"/unmatched.*.json >/dev/null 2>&1'
+
+# ---- [ah-not-a-reply]: only the pane knows whether it was answering a human,
+#      so it gets to say so. Filed at once, never relayed, never nagged twice.
+D="$(mailbox)"
+echo '{"reqid":"r-human","echo":true,"sent_at":"2026-01-01T00:00:00Z","expect_session":null}' > "$D/pending"
+DECL_OUT="$(AGENT_HIERARCHY_PANE_DIR="$D" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
+  relay '{"session_id":"s9","agent_type":"agent-hierarchy:architect","last_assistant_message":"[ah-not-a-reply]\nthis one was for the human"}')"
+check "gate E declined: not relayed" '! ls "'$D'"/reply.*.json >/dev/null 2>&1'
+check "gate E declined: the token survives for the real answer" '[ -f "'$D'/pending" ]'
+check "gate E declined: filed immediately, with no nag" \
+  'ls "'$D'"/unmatched.*.json >/dev/null 2>&1 && ! [ -f "'$D'/nag.r-human.json" ]'
+check "gate E declined: no block is requested" '! echo "$DECL_OUT" | grep -q "\"decision\":\"block\""'
+check "gate E declined: the reason is recorded" 'cat "'$D'"/unmatched.*.json | grep -q "\"reason\":\"declined\""'
+check "gate E declined: the marker is stripped from the saved text" \
+  'cat "'$D'"/unmatched.*.json | grep -q "this one was for the human" && ! cat "'$D'"/unmatched.*.json | grep -q "ah-not-a-reply"'
+
+# ---- stop_hook_active is honoured when the harness sends it, but the nag file
+#      above is the guard that actually holds: this field is not in Claude
+#      Code's documented Stop input.
+D="$(mailbox)"
+echo '{"reqid":"r-active","echo":true,"sent_at":"2026-01-01T00:00:00Z","expect_session":null}' > "$D/pending"
+ACT_OUT="$(AGENT_HIERARCHY_PANE_DIR="$D" AGENT_HIERARCHY_PANE_ROLE="agent-hierarchy:architect" \
+  relay '{"session_id":"s9","agent_type":"agent-hierarchy:architect","stop_hook_active":true,"last_assistant_message":"no echo, already resumed once"}')"
+check "gate E: stop_hook_active suppresses the nag" '! echo "$ACT_OUT" | grep -q "\"decision\":\"block\""'
+check "gate E: stop_hook_active files the turn instead" 'ls "'$D'"/unmatched.*.json >/dev/null 2>&1'
+check "gate E: stop_hook_active records itself as the reason" \
+  'cat "'$D'"/unmatched.*.json | grep -q "\"reason\":\"stop_hook_active\""'
 
 # ---- envelope + reply-structure helpers (0.10.0)
 check "envelope: wrapPrompt stamps the id, the echo rule, and the structure rule" \
@@ -196,6 +255,43 @@ check "sessionstart pane: pane branch beats the subagent branch" 'echo "$P3" | g
 # ---- 9: a broken mailbox must not cost the session its protocol.
 P4="$(start "$WORK/no/such/dir/anywhere" '{"session_id":"p4","cwd":"'$WORK'","agent_type":"agent-hierarchy:architect"}')"
 check "sessionstart pane: survives a non-existent mailbox dir" 'echo "$P4" | grep -q "agent-hierarchy DURABLE AGENT"'
+
+# ---- 9b (0.13.0): the OUTSTANDING request id is re-supplied from disk at every
+#      session start. `compact` is in this hook's matcher, so a compaction that
+#      drops the opaque reqid gets it straight back — which is the whole reason
+#      gate E stopped stranding finished work.
+D5="$(mailbox)"
+echo '{"reqid":"r-live","echo":true,"sent_at":"2026-02-02T03:04:05Z","expect_session":null}' > "$D5/pending"
+P5="$(start "$D5" '{"session_id":"p5","cwd":"'$WORK'","agent_type":"agent-hierarchy:architect","source":"compact"}')"
+check "sessionstart pane: injects the outstanding request id" 'echo "$P5" | grep -q "CURRENT REQUEST"'
+check "sessionstart pane: injects the exact echo line to use" 'echo "$P5" | grep -q "\[ah-reply r-live\]"'
+check "sessionstart pane: names when the request was delivered" 'echo "$P5" | grep -q "2026-02-02T03:04:05Z"'
+check "sessionstart pane: points at the on-disk id so recall is never required" \
+  'echo "$P5" | grep -q "AGENT_HIERARCHY_PANE_DIR/pending"'
+
+D6="$(mailbox)"
+P6="$(start "$D6" '{"session_id":"p6","cwd":"'$WORK'","agent_type":"agent-hierarchy:architect","source":"startup"}')"
+check "sessionstart pane: no request outstanding means no CURRENT REQUEST block" \
+  '! echo "$P6" | grep -q "CURRENT REQUEST"'
+
+D7="$(mailbox)"
+printf 'not json at all' > "$D7/pending"
+P7="$(start "$D7" '{"session_id":"p7","cwd":"'$WORK'","agent_type":"agent-hierarchy:architect","source":"compact"}')"
+check "sessionstart pane: a corrupt pending costs the id, never the protocol" \
+  'echo "$P7" | grep -q "agent-hierarchy DURABLE AGENT" && ! echo "$P7" | grep -q "CURRENT REQUEST"'
+
+D8="$(mailbox)"
+echo '{"reqid":"r-nodate","echo":true,"expect_session":null}' > "$D8/pending"
+P8="$(start "$D8" '{"session_id":"p8","cwd":"'$WORK'","agent_type":"agent-hierarchy:architect","source":"compact"}')"
+check "sessionstart pane: a pending with no sent_at prints no undefined" \
+  'echo "$P8" | grep -q "\[ah-reply r-nodate\]" && ! echo "$P8" | grep -q "undefined"'
+
+check "buildPaneProtocol: omitting pending matches passing null exactly" \
+  '[ "$(node --input-type=module -e "import {buildPaneProtocol as b} from \"$H/lib-pane.mjs\";
+     const a=b({role:\"r\",declaredRole:\"r\",key:\"ah-k\"});
+     const c=b({role:\"r\",declaredRole:\"r\",key:\"ah-k\",pending:null});
+     const d=b({role:\"r\",declaredRole:\"r\",key:\"ah-k\",pending:undefined});
+     process.stdout.write(String(a===c && c===d))")" = "true" ]'
 
 # ---- role mismatch is surfaced, not swallowed.
 D="$(mailbox)"
@@ -875,6 +971,69 @@ JSON
 else
   echo "SKIP: tmux not installed — self-send, send, and kill-safety cases not run"
 fi
+
+# ================================================= stranded turns (0.13.0)
+#
+# Finished work that never reached the Orchestrator. The two kinds are reported
+# identically because the Orchestrator's move is the same for both: read it and
+# decide whether it answers the question it asked.
+
+SD="$HOME/.claude/agent-hierarchy.panes/ah-stranded-1"
+mkdir -p "$SD"
+node -e 'const fs=require("fs"), d=process.argv[1];
+  fs.writeFileSync(d+"/nag.r-n1.json", JSON.stringify({reqid:"r-n1",at:"2026-01-01T00:00:00Z",text:"work that was nagged"}));
+  fs.writeFileSync(d+"/unmatched.1700000000000.json", JSON.stringify({reqid_expected:"r-u1",at:"2026-01-02T00:00:00Z",reason:"already_nagged",prior_text:"an earlier attempt",text:"work that was filed"}));' "$SD"
+
+check "stranded: both kinds are reported" \
+  '[ "$(node --input-type=module -e "import {strandedTurns as s} from \"$H/lib-pane.mjs\"; process.stdout.write(String(s(\"'$SD'\").length))")" = "2" ]'
+check "stranded: each kind is labelled" \
+  '[ "$(node --input-type=module -e "import {strandedTurns as s} from \"$H/lib-pane.mjs\"; process.stdout.write(s(\"'$SD'\").map(t=>t.kind).sort().join(\",\"))")" = "nag,unmatched" ]'
+check "stranded: the request id is recovered from both filename and record" \
+  '[ "$(node --input-type=module -e "import {strandedTurns as s} from \"$H/lib-pane.mjs\"; process.stdout.write(s(\"'$SD'\").map(t=>t.reqid).sort().join(\",\"))")" = "r-n1,r-u1" ]'
+check "stranded: a missing directory is empty, not an error" \
+  '[ "$(node --input-type=module -e "import {strandedTurns as s} from \"$H/lib-pane.mjs\"; process.stdout.write(String(s(\"'$WORK'/no/such/mbox\").length))")" = "0" ]'
+
+printf 'not json' > "$SD/unmatched.1700000000001.json"
+check "stranded: a corrupt record still lists, with a null id, rather than throwing" \
+  '[ "$(node --input-type=module -e "import {strandedTurns as s} from \"$H/lib-pane.mjs\"; const t=s(\"'$SD'\"); process.stdout.write(t.length+\":\"+t.filter(x=>x.reqid===null).length)")" = "3:1" ]'
+
+node "$H/pane.mjs" stranded --key ah-stranded-1 > "$WORK/o-str" 2>&1
+check "stranded CLI: lists what is on disk" 'grep -q "3 stranded turns" "$WORK/o-str"'
+check "stranded CLI: says the work finished but was never relayed" 'grep -q "never relayed" "$WORK/o-str"'
+check "stranded CLI: withholds the text until asked" '! grep -q "work that was nagged" "$WORK/o-str"'
+node "$H/pane.mjs" stranded --key ah-stranded-1 --show > "$WORK/o-str2" 2>&1
+check "stranded CLI: --show prints both kinds of turn" \
+  'grep -q "work that was nagged" "$WORK/o-str2" && grep -q "work that was filed" "$WORK/o-str2"'
+check "stranded CLI: --show prints the folded-in earlier attempt too" 'grep -q "an earlier attempt" "$WORK/o-str2"'
+node "$H/pane.mjs" stranded --key ah-stranded-1 --clear > "$WORK/o-str3" 2>&1
+check "stranded CLI: --clear removes them and reports the count" \
+  'grep -q "cleared 3 stranded turns" "$WORK/o-str3" && ! ls "'$SD'"/nag.*.json >/dev/null 2>&1'
+check "stranded CLI: an empty mailbox says so plainly" \
+  'node "$H/pane.mjs" stranded --key ah-stranded-1 2>&1 | grep -q "no stranded turns"'
+check "stranded CLI: refuses a key that is not a pane key" \
+  'node "$H/pane.mjs" stranded --key "../../etc" 2>&1 | grep -q "Refusing"'
+check "stranded CLI: is listed in the usage line" \
+  'node "$H/pane.mjs" bogus-subcommand 2>&1 | grep -q "stranded"'
+
+# ---- the nudge reports stranded turns as their own kind of trouble. An unread
+#      reply means "come and collect it"; a stranded turn means "no reply file
+#      is ever coming", so waiting longer is exactly the wrong move.
+ND="$HOME/.claude/agent-hierarchy.panes/ah-nudge-1"
+mkdir -p "$ND"
+cat >> "$HOME/.claude/agent-hierarchy.panes.jsonl" <<JSON
+{"ev":"open","key":"ah-nudge-1","agent":"agent-hierarchy:architect","pane_id":"%99","pane_pid":1,"tmux_session":"ah-nudge-1","cwd":"$WORK","dir":"$ND","orientation":"right","orchestrator_session_id":"testorch","model":null,"permission_mode":null}
+JSON
+node -e 'const fs=require("fs"), d=process.argv[1];
+  fs.writeFileSync(d+"/nag.r-nudge.json", JSON.stringify({reqid:"r-nudge",at:"2026-01-01T00:00:00Z",text:"the stranded body"}));
+  fs.writeFileSync(d+"/unmatched.1700000000002.json", JSON.stringify({reqid_expected:"r-nudge2",at:"2026-01-01T00:00:00Z",text:"another stranded body"}));' "$ND"
+NUDGE="$(echo '{"session_id":"n1","cwd":"'$WORK'","hook_event_name":"UserPromptSubmit","prompt":"hi"}' | node "$H/userpromptsubmit-durable-nudge.mjs" 2>/dev/null)"
+check "nudge: reports stranded turns" 'echo "$NUDGE" | grep -q "never reached you"'
+check "nudge: counts both kinds together" 'echo "$NUDGE" | grep -q "2 finished turns"'
+check "nudge: the stranded line names the pane it belongs to" \
+  'echo "$NUDGE" | grep "never reached you" | grep -q "ah-nudge-1"'
+check "nudge: points at stranded, not at wait" 'echo "$NUDGE" | grep -q "stranded --key ah-nudge-1"'
+check "nudge: never leaks the stranded text into context" \
+  '! echo "$NUDGE" | grep -q "the stranded body" && ! echo "$NUDGE" | grep -q "another stranded body"'
 
 echo
 echo "passed: $PASS  failed: $FAIL"

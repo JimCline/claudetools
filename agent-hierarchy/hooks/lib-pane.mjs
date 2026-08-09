@@ -746,18 +746,25 @@ export function recordPaneSession(paneDir, input) {
 
 /**
  * The context injected into a pane session at SessionStart. Builds a string and
- * does no I/O, so a broken mailbox cannot cost the session its protocol.
+ * does no I/O, so a broken mailbox cannot cost the session its protocol — the
+ * caller reads the `pending` token and passes it in.
+ *
+ * `pending` carries the OUTSTANDING request, and re-stating its id here is what
+ * makes the reply contract survive compaction: the id is an opaque token with
+ * no semantic content, so a summary drops it, and gate E then rejects a
+ * perfectly good final message. Every session start re-supplies it from disk
+ * rather than trusting context to have carried it.
  *
  * This text owns the top slot of the pane's injected context.
  */
-export function buildPaneProtocol({ role, declaredRole, key }) {
+export function buildPaneProtocol({ role, declaredRole, key, pending }) {
   const identity = role || declaredRole || "an agent-hierarchy role";
   const lines = [
     `agent-hierarchy DURABLE AGENT. You are running as \`${identity}\`, a durable agent in a terminal pane${key ? ` (\`${key}\`)` : ""}. You are NOT the Orchestrator: do not decompose-and-dispatch, do the role's own work.`,
     "",
     "1. One channel, inbound only. You answer the turn you were given. You cannot initiate contact with the Orchestrator — there is no tool and no address for it. Your final assistant message IS your reply, and it is captured automatically.",
     "2. The reply is the whole payload — and it must be LEAN. Only your final assistant message is relayed; thinking, tool output, and intermediate turns are discarded. Final results only, never progress narration: the Orchestrator is budgeting tokens, and every character of your reply lands in its context.",
-    "3. Echo the request id. A delivered task opens with `[ah-request <id>]`. Your final message for that task MUST begin with the exact line `[ah-reply <id>]` — the relay refuses to deliver a final message without it, and your work would sit unread in the pane.",
+    "3. Echo the request id. A delivered task opens with `[ah-request <id>]`. Your final message for that task MUST begin with the exact line `[ah-reply <id>]` — the relay refuses to deliver a final message without it, and your work would sit unread in the pane. You are never required to REMEMBER the id: if you are not certain of it — your context was compacted, or the request scrolled out of view — read it from `$AGENT_HIERARCHY_PANE_DIR/pending` (JSON, field `reqid`). Never invent or approximate it.",
     "4. Artifacts and bulk go to disk. If you produce a spec file, a diff, a report, or anything long, write it to disk (when you have a write tool) and put the ABSOLUTE PATH in your final message. Do not paste the artifact into the reply.",
     "5. Structure any long reply for grepping. When a reply must run long, open it (after the `[ah-reply]` line) with a `## TL;DR` section — one bullet per section, naming the `## ` headings that follow — so the Orchestrator can pull single sections off disk instead of loading everything.",
     "6. A human may type into this pane directly. That input is the user's own instruction and you should treat it as such. A turn the Orchestrator did not solicit is not relayed anywhere — that conversation is between you and the human only.",
@@ -768,6 +775,18 @@ export function buildPaneProtocol({ role, declaredRole, key }) {
     lines.push(
       "",
       `(Note: this pane was opened for \`${declaredRole}\`, but the session reports \`${role}\`. An environment variable reached a session it was not meant for — tell the user.)`
+    );
+  }
+  const reqid = pending && typeof pending.reqid === "string" && pending.reqid ? pending.reqid : null;
+  if (reqid) {
+    const when = pending.sent_at && typeof pending.sent_at === "string" ? ` (delivered ${pending.sent_at})` : "";
+    lines.push(
+      "",
+      `CURRENT REQUEST: \`${reqid}\`${when}. Your final message for this task MUST begin with this exact line, as the very first line, with nothing before it:`,
+      "",
+      `[ah-reply ${reqid}]`,
+      "",
+      "This block is re-supplied from disk at every session start, so a compaction cannot cost you the id. Do not paraphrase, abbreviate, or invent it."
     );
   }
   return lines.join("\n");
@@ -817,6 +836,37 @@ export function unreadReplies(dir) {
       reqid: f.replace(/^reply\./, "").replace(/\.json$/, ""),
       mtime: statSync(join(dir, f)).mtimeMs,
     }))
+    .sort((a, b) => b.mtime - a.mtime);
+}
+
+/**
+ * Finished work that never reached the Orchestrator, newest first.
+ *
+ * Two kinds, deliberately surfaced identically because the Orchestrator's move
+ * is the same for both — read it and decide whether it answers the question:
+ *   `unmatched.<ts>.json`  the echo gate rejected the turn and gave up
+ *   `nag.<reqid>.json`     the echo gate asked for a retry that never came
+ *
+ * The nag kind is what keeps the retry mechanism honest: if a Stop `block` is
+ * not honoured in an interactive session, the nag file is still here and still
+ * reported, so the work surfaces either way.
+ */
+export function strandedTurns(dir) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((f) => /^unmatched\..*\.json$/.test(f) || /^nag\..*\.json$/.test(f))
+    .map((f) => {
+      const nag = f.startsWith("nag.");
+      let reqid = nag ? f.replace(/^nag\./, "").replace(/\.json$/, "") : null;
+      if (!nag) {
+        try {
+          reqid = JSON.parse(readFileSync(join(dir, f), "utf8")).reqid_expected ?? null;
+        } catch {
+          reqid = null;
+        }
+      }
+      return { file: f, kind: nag ? "nag" : "unmatched", reqid, mtime: statSync(join(dir, f)).mtimeMs };
+    })
     .sort((a, b) => b.mtime - a.mtime);
 }
 

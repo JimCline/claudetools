@@ -10,6 +10,7 @@
  *   node pane.mjs send  --key <key> [--summary <text>] [--timeout <seconds>] [--boot-wait <seconds>]
  *   node pane.mjs peek  --key <key> [--lines <n>]
  *   node pane.mjs wait  --key <key> [--timeout <seconds>]
+ *   node pane.mjs stranded --key <key> [--show] [--clear]
  *   node pane.mjs cancel --key <key>
  *   node pane.mjs close --key <key> | --all [--session <id>]
  *   node pane.mjs doctor
@@ -72,6 +73,7 @@ import {
   roleOfAgent,
   sectionHeadings,
   sendPrompt,
+  strandedTurns,
   survivingGroupProcesses,
   tmuxAvailable,
   tmuxPath,
@@ -493,11 +495,16 @@ function cmdList(flags) {
     const dir = rec.dir || mailboxDir(rec.key);
     const pending = readJsonFile(join(dir, "pending"));
     const unread = unreadReplies(dir).length;
+    const stranded = strandedTurns(dir).length;
     say(`${rec.key}`);
     say(`  agent      ${rec.agent}  (${rec.model || "inherited model"}, ${permissionLine(rec.permission_mode)})`);
     say(`  where      ${orientationPhrase(rec.orientation)}  (tmux attach -t ${rec.key})`);
     say(`  cwd        ${rec.cwd}${rec.cwd && canonicalPath(rec.cwd) !== canonicalPath(process.cwd()) ? "   ⚠ not this session's cwd — repo-specific work targets ITS tree" : ""}`);
-    say(`  state      ${pending ? `WORKING on ${pending.reqid} since ${pending.sent_at}` : "idle"}${unread ? `, ${unread} UNREAD ${unread === 1 ? "reply" : "replies"} — pick up: pane.mjs wait --key ${rec.key}` : ""}`);
+    say(
+      `  state      ${pending ? `WORKING on ${pending.reqid} since ${pending.sent_at}` : "idle"}` +
+        `${unread ? `, ${unread} UNREAD ${unread === 1 ? "reply" : "replies"} — pick up: pane.mjs wait --key ${rec.key}` : ""}` +
+        `${stranded ? `, ${stranded} STRANDED ${stranded === 1 ? "turn" : "turns"} (finished but never relayed) — read: pane.mjs stranded --key ${rec.key} --show` : ""}`
+    );
     // Quiet in every non-divergent case (§6.3a): a warning printed for the
     // normal state stops being read.
     if (rec.definition_source === "divergent") {
@@ -682,12 +689,14 @@ async function awaitReply(record, dir, reqid, timeout, panes, notes) {
   say("`pending` was left in place: if the agent finishes later the reply still lands in");
   say(`${replyPath}, and \`list\` shows the reply file. Do NOT read reply files directly —`);
   say("`wait` presents them with oversized bodies withheld.");
-  const unmatchedCount = existsSync(dir) ? readdirSync(dir).filter((f) => f.startsWith("unmatched.")).length : 0;
-  if (unmatchedCount) {
+  const stranded = strandedTurns(dir);
+  if (stranded.length) {
     say("");
-    say(`${unmatchedCount} unmatched turn(s) are saved in ${dir} — the agent may have answered WITHOUT the`);
-    say(`[ah-reply] line (or a human's question was answered mid-request). Peek at the newest`);
-    say(`unmatched.*.json there; \`pane.mjs cancel --key ${record.key}\` clears the stuck request.`);
+    say(`${stranded.length} STRANDED turn(s) are on disk for ${record.key} — the agent FINISHED but its final`);
+    say(`message failed the [ah-reply] gate, so no reply file will ever appear and waiting longer`);
+    say(`cannot help. This is usually a compaction that took the request id with it.`);
+    say(`  Read the work:  node "${fileURLToPath(import.meta.url)}" stranded --key ${record.key} --show`);
+    say(`  Clear the stuck request afterwards:  pane.mjs cancel --key ${record.key}`);
   }
   flush(1);
 }
@@ -756,6 +765,91 @@ function countForeign(dir) {
   } catch {
     return 0;
   }
+}
+
+// ------------------------------------------------------------ stranded
+
+/**
+ * Print finished work that never reached the Orchestrator — a turn that failed
+ * gate E's `[ah-reply <id>]` check, so it sits on disk and no reply file will
+ * ever appear for it.
+ *
+ * This prints and never relays, deliberately. A stranded turn is either an
+ * answer from an agent that lost the request id, or a private answer to a
+ * human who typed into the pane; only the Orchestrator, which knows what it
+ * asked, can tell those apart, and the relay must not guess.
+ */
+function cmdStranded(flags, positional) {
+  const key = flags.key && flags.key !== true ? String(flags.key) : positional[0];
+  if (!key) fail("stranded needs a key: pane.mjs stranded --key <key> [--show] [--clear]");
+  if (!KEY_RE.test(key)) refuse(`Refusing: "${key}" is not a durable-agent key.`);
+  const rec = foldRegistry().get(key);
+  const dir = (rec && rec.dir) || mailboxDir(key);
+  const turns = strandedTurns(dir);
+
+  if (!turns.length) {
+    say(`${key}: no stranded turns — every finished turn reached the Orchestrator.`);
+    flush(0);
+  }
+
+  if (flags.clear) {
+    let cleared = 0;
+    for (const t of turns) {
+      try {
+        unlinkSync(join(dir, t.file));
+        cleared += 1;
+      } catch {
+        /* already gone — the count is what the caller asked for */
+      }
+    }
+    say(`${key}: cleared ${cleared} stranded turn${cleared === 1 ? "" : "s"} from ${dir}.`);
+    flush(0);
+  }
+
+  say(`${key}: ${turns.length} stranded turn${turns.length === 1 ? "" : "s"}, newest first. These FINISHED but were never relayed.`);
+  say("");
+  for (const t of turns) {
+    say(`  ${t.file}   request ${t.reqid || "unknown"}   ${t.kind === "nag" ? "no [ah-reply] line; the retry never came" : "rejected by the reply gate"}`);
+  }
+  if (!flags.show) {
+    say("");
+    say("Add --show to print the text, or --clear to delete these files once you have handled them.");
+    flush(0);
+  }
+
+  const panes = readPanes(resolveConfig((rec && rec.cwd) || process.cwd()));
+  for (const t of turns) {
+    const saved = readJsonFile(join(dir, t.file)) || {};
+    say("");
+    say(`──── ${t.file}  ·  request ${t.reqid || "unknown"}  ·  ${saved.at || "unknown time"}`);
+    const bodies = [
+      ["", saved.text],
+      ["(an earlier attempt at the same request, folded in)", saved.prior_text],
+    ].filter(([, body]) => typeof body === "string" && body.length);
+    if (!bodies.length) {
+      say("(the turn's text was empty)");
+      continue;
+    }
+    for (const [label, body] of bodies) {
+      if (label) say(label);
+      if (body.length > panes.replyInlineMaxChars) {
+        const bodyPath = join(dir, `${t.file.replace(/\.json$/, "")}.md`);
+        writeFileSync(bodyPath, body);
+        say(`${body.length} chars — over replyInlineMaxChars (${panes.replyInlineMaxChars}), so the body stays on disk, NOT in your context.`);
+        say(`  body: ${bodyPath}`);
+        const tldr = extractTldr(body);
+        if (tldr) {
+          say("");
+          say(tldr);
+        }
+      } else {
+        say(body);
+      }
+    }
+  }
+  say("");
+  say(`Clear these once handled:  pane.mjs stranded --key ${key} --clear`);
+  flush(0);
 }
 
 function sleep(ms) {
@@ -966,6 +1060,9 @@ switch (sub) {
   case "wait":
     await cmdWait(flags, positional);
     break;
+  case "stranded":
+    cmdStranded(flags, positional);
+    break;
   case "cancel":
     cmdCancel(flags, positional);
     break;
@@ -976,5 +1073,5 @@ switch (sub) {
     cmdDoctor();
     break;
   default:
-    fail("usage: pane.mjs create|open|list|send|peek|wait|cancel|close|doctor  (see the header of this file)");
+    fail("usage: pane.mjs create|open|list|send|peek|wait|stranded|cancel|close|doctor  (see the header of this file)");
 }

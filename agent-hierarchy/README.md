@@ -195,10 +195,24 @@ address for reaching it. When work is sent, a token is left in the agent's
 mailbox and its Stop hook turns its final assistant message into the
 reply; with no token there is no reply. Every delivery also carries a request
 id, and the reply must open with that id's `[ah-reply]` echo line — a final
-message without it is saved to the mailbox as an unmatched turn, not relayed,
-and the token survives for the turn that does echo. A turn *you* type into the
-pane is therefore never relayed anywhere, even mid-request — that conversation
+message without it is never relayed, and the token survives for the turn that
+does echo. A turn *you* type into the pane is therefore never relayed anywhere, even mid-request — that conversation
 is yours alone.
+
+**The agent is never asked to remember the request id.** An opaque token is
+exactly what a compaction summary drops, so a long task used to end with the
+agent finishing correctly, failing the echo gate, and its work sitting on disk
+while the Orchestrator saw only a timeout. Three things close that: the
+outstanding id is re-injected from the mailbox at every session start — and
+`compact` is in that hook's matcher, so a compaction gets it straight back; the
+protocol tells the agent it can always re-read the id from
+`$AGENT_HIERARCHY_PANE_DIR/pending` rather than recall it; and a final message
+that misses the echo gets one nag naming the id, so the agent can correct itself
+on the spot or declare `[ah-not-a-reply]` if it was answering you rather than
+the Orchestrator. Work that still ends up stranded is reported — by `list`, by
+the next-turn nudge, and by a timed-out `wait` — and read with `pane.mjs
+stranded --key <key> --show`. Nothing is auto-relayed: only the Orchestrator
+knows what it asked, so it adjudicates.
 
 **Replies are frugal by mechanism, not by promise.** The helper stamps every
 delivery with the reply contract (final results only; bulk to disk; long
@@ -338,10 +352,10 @@ hooks/
   pretooluse-ultra-gate.mjs      gates Ultra-Advisor escalation on the user
   pretooluse-durable-offer.mjs   offers a live idle durable agent instead of a cold subagent, once
   subagentstop-usage.mjs         zero-token usage collector
-  stop-pane-relay.mjs            durable-agent reply relay (inert outside a pane)
-  userpromptsubmit-durable-nudge.mjs  unread-reply nudge (backstop for the background wait)
+  stop-pane-relay.mjs            durable-agent reply relay, incl. the one-shot echo nag (inert outside a pane)
+  userpromptsubmit-durable-nudge.mjs  unread-reply + stranded-turn nudge (backstop for the background wait)
   usage-report.mjs               standalone reporter
-  pane.mjs                       /durable CLI (create/list/send/peek/wait/cancel/close/doctor)
+  pane.mjs                       /durable CLI (create/list/send/peek/wait/stranded/cancel/close/doctor)
   gate.mjs                       escalation-gate CLI (set/status/reset)
   lib-config.mjs                 config resolution + directive text (run directly for status)
   lib-gate.mjs                   session-scoped gate state

@@ -65,10 +65,24 @@ try {
   const paneDir = process.env.AGENT_HIERARCHY_PANE_DIR;
   if (paneDir) {
     const { buildPaneProtocol, recordPaneSession } = await import("./lib-pane.mjs");
+    // Separately guarded, and read HERE rather than inside buildPaneProtocol so
+    // an unreadable mailbox costs the session its request id and not its whole
+    // protocol. This read is why the reply contract survives compaction: the
+    // reqid is an opaque token a summary drops, and `compact` is in this hook's
+    // matcher, so every compaction re-supplies it from disk.
+    let pending = null;
+    try {
+      const { readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      pending = JSON.parse(readFileSync(join(paneDir, "pending"), "utf8"));
+    } catch {
+      pending = null;
+    }
     context = buildPaneProtocol({
       role: input.agent_type || process.env.AGENT_HIERARCHY_PANE_ROLE || null,
       declaredRole: process.env.AGENT_HIERARCHY_PANE_ROLE || null,
       key: process.env.AGENT_HIERARCHY_PANE_KEY || null,
+      pending,
     });
     // Separately guarded: a stale env var pointing at a deleted mailbox must
     // not cost the session its protocol injection.
