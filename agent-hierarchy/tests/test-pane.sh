@@ -1015,6 +1015,20 @@ check "stranded CLI: refuses a key that is not a pane key" \
 check "stranded CLI: is listed in the usage line" \
   'node "$H/pane.mjs" bogus-subcommand 2>&1 | grep -q "stranded"'
 
+# ---- a task delivered as a FILE carries the reply contract IN the file. The
+#      pasted envelope is context, and context is what compaction eats — and a
+#      task big enough to be delivered this way is exactly the one that runs
+#      long enough to compact.
+TB="$(node --input-type=module -e "import {taskFileBody as t} from \"$H/lib-pane.mjs\"; process.stdout.write(t(\"r-task\",\"DO THE WORK\"))")"
+check "task file: keeps the prompt itself" 'echo "$TB" | grep -q "DO THE WORK"'
+check "task file: repeats the contract with the LITERAL echo line" 'echo "$TB" | grep -qx "\[ah-reply r-task\]"'
+check "task file: the contract comes AFTER the prompt, where the agent ends up" \
+  '[ "$(echo "$TB" | grep -n "DO THE WORK" | cut -d: -f1)" -lt "$(echo "$TB" | grep -n "^\[ah-reply r-task\]" | cut -d: -f1)" ]'
+check "task file: points at the on-disk id, not at the envelope" 'echo "$TB" | grep -q "AGENT_HIERARCHY_PANE_DIR/pending"'
+check "task file: never tells the agent to recall the id from context" \
+  '! echo "$TB" | grep -qi "envelope"'
+check "task file: restates the lean-reply rules" 'echo "$TB" | grep -q "TL;DR"'
+
 # ---- the nudge reports stranded turns as their own kind of trouble. An unread
 #      reply means "come and collect it"; a stranded turn means "no reply file
 #      is ever coming", so waiting longer is exactly the wrong move.

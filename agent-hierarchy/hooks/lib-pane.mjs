@@ -807,6 +807,33 @@ export function wrapPrompt(reqid, text) {
   );
 }
 
+/**
+ * The body of a task delivered as a FILE rather than pasted inline.
+ *
+ * `wrapPrompt`'s envelope reaches the pane as context, and context is what
+ * compaction eats — so a long task, which is exactly the kind that runs long
+ * enough to compact, could lose its reply contract entirely. The task file is
+ * the one artifact a lost agent re-reads by reflex, so the contract is repeated
+ * at the END of it, where an agent about to write its final message will land.
+ *
+ * The id is written out LITERALLY. An anchor that points at other context
+ * ("the id in this task's envelope") evaporates in precisely the case it exists
+ * to survive; only a durable pointer — this file, or the `pending` token on
+ * disk — is worth anything after a compaction.
+ */
+export function taskFileBody(reqid, prompt) {
+  return (
+    `${prompt}\n\n` +
+    `---\n\n` +
+    `[ah-request ${reqid}] Reply contract for this task. This file is the durable copy — your context is not.\n\n` +
+    `Your FINAL message for this task must begin with this exact line, as the very first line, with nothing before it:\n\n` +
+    `[ah-reply ${reqid}]\n\n` +
+    `Without that line the relay will not deliver your work, and it would sit unread in the pane. ` +
+    `You are never required to remember the id: it is written above, and in \`$AGENT_HIERARCHY_PANE_DIR/pending\` (JSON, field \`reqid\`). ` +
+    `Final results only, lean: bulk goes to disk with absolute paths in the reply, and a long reply opens with a "## TL;DR" section followed by "## " sections.\n`
+  );
+}
+
 /** The `## TL;DR` section of a reply body, heading included, or null. */
 export function extractTldr(text) {
   const lines = String(text).split("\n");

@@ -206,7 +206,11 @@ while the Orchestrator saw only a timeout. Three things close that: the
 outstanding id is re-injected from the mailbox at every session start — and
 `compact` is in that hook's matcher, so a compaction gets it straight back; the
 protocol tells the agent it can always re-read the id from
-`$AGENT_HIERARCHY_PANE_DIR/pending` rather than recall it; and a final message
+`$AGENT_HIERARCHY_PANE_DIR/pending` rather than recall it; a task delivered as a
+file (anything over `panes.inlinePromptMaxChars`) restates the contract at the
+end of that file, literal `[ah-reply <id>]` line included — the pasted envelope
+is context, and a task big enough to arrive this way is exactly the one that
+runs long enough to compact; and a final message
 that misses the echo gets one nag naming the id, so the agent can correct itself
 on the spot or declare `[ah-not-a-reply]` if it was answering you rather than
 the Orchestrator. Work that still ends up stranded is reported — by `list`, by

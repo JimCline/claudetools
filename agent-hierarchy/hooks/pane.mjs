@@ -74,6 +74,7 @@ import {
   sectionHeadings,
   sendPrompt,
   strandedTurns,
+  taskFileBody,
   survivingGroupProcesses,
   tmuxAvailable,
   tmuxPath,
@@ -583,8 +584,8 @@ async function cmdSend(flags, positional) {
   let pasteText = wrapPrompt(reqid, prompt);
   if (prompt.length > panes.inlinePromptMaxChars) {
     const taskPath = join(dir, `task.${reqid}.md`);
-    writeFileSync(taskPath, prompt);
-    pasteText = wrapPrompt(reqid, `Your task for this turn is in ${taskPath} — read that file and carry it out. Reply per your pane protocol.`);
+    writeFileSync(taskPath, taskFileBody(reqid, prompt));
+    pasteText = wrapPrompt(reqid, `Your task for this turn is in ${taskPath} — read that file and carry it out. It restates the reply contract at the end, including the exact [ah-reply] line, so re-read it if your context is compacted.`);
     notes.push(`prompt was ${prompt.length} chars, delivered as ${taskPath}`);
   }
 
