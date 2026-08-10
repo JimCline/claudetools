@@ -5,6 +5,13 @@
 **Status:** FIXED in 0.14.0 — fixes 1, 3 and 4 shipped; fix 2 deferred (see below)
 **Found:** 2026-08-09, while using a durable implementor as a test harness
 
+> **The component this bug belongs to is deprecated and scheduled for removal.**
+> Durable agents were an experiment in keeping a role's session alive between
+> sends; it only ever worked on macOS with iTerm2, and this bug is a fair sample
+> of why the substrate was wrong — a relay pinned to a terminal session's id is
+> fragile in a way a server-side channel would not be. herdr's headless server
+> is the replacement direction. The deferred fix 2 below will not be pursued.
+
 ## Resolution (0.14.0)
 
 Gate D now asks **"is this one of this pane's sessions?"** instead of "is this

@@ -57,6 +57,17 @@ export function isGatedSubagentType(type) {
   return typeof type === "string" && GATED_SUBAGENT_TYPES.includes(type.trim());
 }
 
+/**
+ * True when a SendMessage `to` target names the given expected peer session.
+ * Strips an optional trailing " [ref]" disambiguator (SendMessage accepts
+ * "name" or "name [ref]") before comparing, so both forms match the same peer.
+ */
+export function isGatedPeerTarget(to, expectedName) {
+  if (typeof to !== "string" || !to.trim()) return false;
+  if (typeof expectedName !== "string" || !expectedName) return false;
+  return to.trim().replace(/\s*\[[^\]]*\]\s*$/, "") === expectedName;
+}
+
 /** Read the state file. Any unreadable or malformed state resets to empty rather than throwing. */
 export function readGateState() {
   const path = gatePath();

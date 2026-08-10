@@ -23,7 +23,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Absolute path to the escalation-gate CLI, resolved from this file so it survives wherever the plugin is installed. */
@@ -88,6 +88,21 @@ export const CONFIG_BASENAME = "agent-hierarchy.json";
  * both modes: errands are not handoffs.
  */
 export const HANDOFF_MODES = ["auto", "confirm"];
+
+/**
+ * Roles the Orchestrator should try as a named peer session (SendMessage)
+ * before falling back to spawning a subagent. Ultra-Advisor is included
+ * because pretooluse-ultra-gate.mjs also watches SendMessage calls addressed
+ * to its named peer, so the peer route is gated exactly like the subagent
+ * route — see that file. Task-Runner is excluded: task-gopher is already its
+ * dedicated fast path.
+ */
+export const PEER_ELIGIBLE_ROLES = ["ultra-advisor", "architect", "reviewer", "implementor"];
+
+/** The named-peer-session convention shared by the injected directive and the Ultra-Advisor gate: "<repo-basename>-<role>". */
+export function peerName(repoBasename, role) {
+  return `${repoBasename}-${role}`;
+}
 
 /** Read the hook's stdin JSON payload; returns {} if absent or unparseable. */
 export async function readHookInput() {
@@ -184,6 +199,7 @@ function loadScope(path, scope, warnings) {
  */
 export function resolveConfig(cwd) {
   const warnings = [];
+  const resolvedCwd = resolve(typeof cwd === "string" && cwd ? cwd : process.cwd());
   const userPath = userConfigPath();
   const projectPath = projectConfigPath(cwd);
   const user = loadScope(userPath, "user", warnings);
@@ -212,6 +228,7 @@ export function resolveConfig(cwd) {
       shadowed: [],
       layers,
       warnings,
+      cwd: resolvedCwd,
     };
   }
 
@@ -265,7 +282,7 @@ export function resolveConfig(cwd) {
     }
   }
 
-  return { configured: true, enabled, handoffs, handoffsSource, roles, sources, shadowed, layers, warnings };
+  return { configured: true, enabled, handoffs, handoffsSource, roles, sources, shadowed, layers, warnings, cwd: resolvedCwd };
 }
 
 /** The subagent_type to dispatch for a role, honouring task-runner's `delegate`. */
@@ -276,15 +293,24 @@ export function subagentType(role, entry) {
   return `agent-hierarchy:${role}`;
 }
 
-/** One dispatch line per role. `inherit` renders as "omit the parameter", never as a value. */
-function roleLines(roles) {
+/**
+ * One dispatch line per role. `inherit` renders as "omit the parameter", never
+ * as a value. Peer-eligible roles (see PEER_ELIGIBLE_ROLES) lead with the
+ * named-peer SendMessage route and give the subagent call as the fallback.
+ */
+function roleLines(roles, repoBasename) {
   return ROLES.map((role) => {
     const entry = roles[role];
     const type = subagentType(role, entry);
-    if (entry.model === "inherit") {
-      return `- ${ROLE_LABELS[role]} — Agent(subagent_type:"${type}") — OMIT \`model\` entirely (inherits this session's model). Never pass "inherit" as a value.`;
+    const agentCall =
+      entry.model === "inherit"
+        ? `Agent(subagent_type:"${type}") — OMIT \`model\` entirely (inherits this session's model). Never pass "inherit" as a value.`
+        : `Agent(subagent_type:"${type}", model:"${entry.model}")`;
+    if (!PEER_ELIGIBLE_ROLES.includes(role)) {
+      return `- ${ROLE_LABELS[role]} — ${agentCall}`;
     }
-    return `- ${ROLE_LABELS[role]} — Agent(subagent_type:"${type}", model:"${entry.model}")`;
+    const peer = peerName(repoBasename, role);
+    return `- ${ROLE_LABELS[role]} — peer "${peer}" via SendMessage if it appears in ListAgents (default), else ${agentCall}`;
   });
 }
 
@@ -298,7 +324,7 @@ function roleLines(roles) {
  */
 function gateSentences(sessionId) {
   const lines = [
-    "USER GATE: a PreToolUse hook DENIES the first Ultra-Advisor dispatch of every session until the user approves it. The denial states the exact question to put to them and the exact command that records their answer — follow it verbatim rather than improvising the wording or skipping the record step. Their answer (allow for this session / ask each time / blocked this session) is session-scoped and resets next session. In \"confirm\" flow that prompt REPLACES item 0's confirmation for that dispatch: ask once, not twice.",
+    "USER GATE: a PreToolUse hook DENIES the first Ultra-Advisor dispatch of every session — whether an Agent-tool subagent spawn or a SendMessage to its named peer — until the user approves it. The denial states the exact question to put to them and the exact command that records their answer — follow it verbatim rather than improvising the wording or skipping the record step. Their answer (allow for this session / ask each time / blocked this session) is session-scoped, covers both dispatch routes, and resets next session. In \"confirm\" flow that prompt REPLACES item 0's confirmation for that dispatch: ask once, not twice.",
   ];
   if (sessionId) {
     lines.push(
@@ -311,16 +337,17 @@ function gateSentences(sessionId) {
 /** The full SessionStart injection for a configured, enabled session. */
 export function buildDirective(resolved, sessionId) {
   const confirm = resolved.handoffs === "confirm";
+  const repoBasename = basename(resolved.cwd);
   const lines = [
     "Agent hierarchy ACTIVE. You are the Orchestrator: decompose, dispatch, synthesize — do not design or implement non-trivial changes yourself.",
     "",
-    "Roles (pass `model` on the Agent call; agent frontmatter is only a fallback):",
-    ...roleLines(resolved.roles),
+    'Roles — Ultra-Advisor/Architect/Reviewer/Implementor default to SendMessage-ing that role\'s named peer session ("<repo>-<role>") when ListAgents shows one running (Ultra-Advisor\'s peer route is gated exactly like its subagent route — see item 7); otherwise, and always for Task-Runner, spawn the subagent (pass `model` on the Agent call; agent frontmatter is only a fallback):',
+    ...roleLines(resolved.roles, repoBasename),
     "",
     "Protocol (hard default, not a preference):",
     ...(confirm
       ? [
-          '0. Handoff gate — the user chose to approve each handoff (config handoffs:"confirm"). Before dispatching Ultra-Advisor, Architect, Implementor, or Reviewer — including review-loop re-dispatches — call AskUserQuestion first: name the role, its model, and one line on what you will hand it; offer "Dispatch <role> (Recommended)", "Do it inline yourself", and "Skip this step". Ask per dispatch, not per plan, and never re-ask for a dispatch the user already approved. Legwork (Task-Runner / task-gopher) is exempt — errands are not handoffs. "Do it inline" means you take that role\'s contract on yourself for that step; "Skip" means the step does not happen and you say plainly what that leaves undesigned or unverified.',
+          '0. Handoff gate — the user chose to approve each handoff (config handoffs:"confirm"). Before dispatching Ultra-Advisor, Architect, Implementor, or Reviewer — including review-loop re-dispatches — call ListAgents first to check whether that role\'s named peer session ("<repo>-<role>", per the Roles list above) is present. Then call AskUserQuestion: name the role, its model, and one line on what you will hand it. If the peer is listed, offer "Task peer \\"<name>\\" via SendMessage (Recommended)", "Dispatch <role> subagent instead", "Do it inline yourself", and "Skip this step", in that order. If no such peer is listed, drop the peer option and offer "Dispatch <role> (Recommended)", "Do it inline yourself", and "Skip this step" as before. For Ultra-Advisor specifically, both routes are equally gated by its PreToolUse approval gate in item 7 (it watches SendMessage to the Ultra-Advisor peer the same way it watches the Agent/Task dispatch), so picking the peer option there does not skip the user\'s approval. Ask per dispatch, not per plan, and never re-ask for a dispatch the user already approved. Legwork (Task-Runner / task-gopher) is exempt — errands are not handoffs. "Task peer" means SendMessage to that peer with the same self-contained brief a subagent would get, then wait for its reply the way you would await a subagent\'s completion. "Do it inline" means you take that role\'s contract on yourself for that step; "Skip" means the step does not happen and you say plainly what that leaves undesigned or unverified.',
         ]
       : []),
     "1. Gate: binds the top-level Orchestrator only. Role agents never spawn ultra-advisor/architect/reviewer/implementor. They MAY dispatch task-gopher for legwork — that is not recursion.",

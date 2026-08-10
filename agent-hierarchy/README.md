@@ -81,10 +81,11 @@ config:
 - **`auto`** (default) — the Orchestrator performs handoffs itself and
   reports.
 - **`confirm`** — before every reasoning-role dispatch (including review-loop
-  re-dispatches) it asks first: role, model, what's being handed off —
-  **Dispatch / Do it inline / Skip**, where skipping obliges it to say what
-  goes undesigned or unverified. Legwork dispatches are never gated; errands
-  are not handoffs.
+  re-dispatches) it asks first: role, model, what's being handed off. When
+  that role's named peer session is listed, the options are **Task peer /
+  Dispatch subagent / Do it inline / Skip**; otherwise it's **Dispatch / Do it
+  inline / Skip**. Skipping obliges it to say what goes undesigned or
+  unverified. Legwork dispatches are never gated; errands are not handoffs.
 
 Switch **at any time, in either direction, in plain words** — "ask me before
 handoffs", "stop asking" — or with `/hierarchy flow auto|confirm`. The
@@ -111,10 +112,14 @@ The answer is **session-scoped only**. It lives in
 outlived the session it was given in would turn a consent gate into a one-time
 formality, which is the failure this is built to avoid.
 
-Everything else passes through untouched: the gate reads only Ultra-Advisor
-dispatches, and is inert when the hierarchy is disabled. In `confirm` flow the
-gate's prompt replaces the ordinary handoff confirmation for that dispatch, so
-you are asked once, not twice.
+The gate watches both routes to the role: an `Agent`/`Task` dispatch matched
+by `subagent_type`, and a `SendMessage` matched by its `to` target naming the
+Ultra-Advisor's peer session — so tasking the peer instead of spawning a
+subagent can't sidestep your approval. Everything else passes through
+untouched: a `SendMessage` to any other peer, and the gate is inert when the
+hierarchy is disabled. In `confirm` flow the gate's prompt replaces the
+ordinary handoff confirmation for that dispatch, so you are asked once, not
+twice.
 
 Change it any time in plain words — "don't use the ultra advisor", "go ahead and
 escalate whenever" — or with `/hierarchy gate [status|session|each|off|reset]`.
@@ -152,196 +157,42 @@ columns — a cache-read token is ~10× cheaper, and folding them together would
 flatter nothing. If the report says `(N transcripts not found)`, the
 collector's path derivation broke: that is a bug report, not user error.
 
-## Durable agents: a role you keep
+## Durable agents (retired)
 
-`/durable` creates a **durable agent**: a file-backed agent running as a
-**real, top-level Claude Code session** in its own tmux pane — not a subagent.
-The Orchestrator hands work to it and gets an answer back, and you can watch it
-work and type into it yourself.
+Durable agents were an experiment in keeping a role's Claude Code session alive
+in a tmux pane between sends, so repeated work for the same role could skip the
+subagent cold-start tax — full spec re-read, full briefing re-sent, zero prompt
+cache — every time. The economics behind that idea held. The substrate did not:
+it only ever worked on macOS with iTerm2, and driving a terminal emulator to
+type into a live session proved a fragile way to solve what is really a
+headless-server problem — session ids rotate, relays break on `/clear`, and
+every fix bought another edge case.
 
-It exists for an observed failure of economics: an Orchestrator fires an
-expensive subagent for one step, then fires a fresh one of the same role for
-the next — and every spawn starts from scratch, re-reading the spec and
-re-paying full input price. A durable agent inverts that:
+The feature has been removed. herdr's headless server is the direction being
+explored instead. The design specs and the incident report from the experiment
+are kept for reference in `docs/retired/`.
 
-- **Continuity** — context accumulates across sends; the architect still knows
-  the spec it wrote, so follow-up sends are short.
-- **Cache economics** — a living session's context stays prompt-cached, and an
-  idle durable agent costs zero tokens.
-- **Your lifetime, not the model's** — `create` and `close` are your calls.
-- **Visibility** — each agent works in a terminal pane you can watch,
-  interrupt, and type into; `list` shows idle/WORKING per agent.
+## Handoff dispatch: named peer first, subagent fallback
 
-The counterweight: durable context drifts, fills, and compacts on the agent's
-own schedule, invisibly to the Orchestrator. The rule is **durable for
-continuity across related tasks; subagent for independent or
-contamination-sensitive work**.
+The harness now ships a native way to reach another running session —
+`ListAgents` to see it, `SendMessage` to task it — which is the headless
+mechanism the durable-agents experiment above was reaching for. For
+Ultra-Advisor, Architect, Reviewer, and Implementor, the Orchestrator's
+default is to check `ListAgents` for that role's named peer session (pattern
+`<repo>-<role>`, e.g. `agent-hierarchy-architect`) and `SendMessage` it
+instead of spawning a fresh subagent when one is listed — the same cold-start
+and re-briefing tax the pane experiment was trying to avoid, solved without a
+terminal in the loop. No peer listed, and it spawns the subagent as before.
 
-```
-/agent-hierarchy:durable create <agent> [right|below]  create one running <agent>
-/agent-hierarchy:durable create <agent> <agent> […]    create several — one confirmation
-/agent-hierarchy:durable list                          show live durable agents
-/agent-hierarchy:durable ask <key|agent> <text…>       send work (always confirmed)
-/agent-hierarchy:durable close <key|agent|all>         close
-/agent-hierarchy:durable doctor                        dependency + health check
-```
-
-**`right` = side by side, `below` = stacked.** The letters `v` and `h` also
-work, and they name the **divider**: `v` is a vertical divider, so the panes end
-up side by side; `h` is a horizontal divider, so they stack. Prefer the words.
-
-**Only the Orchestrator can start a conversation.** The agent has no tool and no
-address for reaching it. When work is sent, a token is left in the agent's
-mailbox and its Stop hook turns its final assistant message into the
-reply; with no token there is no reply. Every delivery also carries a request
-id, and the reply must open with that id's `[ah-reply]` echo line — a final
-message without it is never relayed, and the token survives for the turn that
-does echo. A turn *you* type into the pane is therefore never relayed anywhere, even mid-request — that conversation
-is yours alone.
-
-**The agent is never asked to remember the request id.** An opaque token is
-exactly what a compaction summary drops, so a long task used to end with the
-agent finishing correctly, failing the echo gate, and its work sitting on disk
-while the Orchestrator saw only a timeout. Three things close that: the
-outstanding id is re-injected from the mailbox at every session start — and
-`compact` is in that hook's matcher, so a compaction gets it straight back; the
-protocol tells the agent it can always re-read the id from
-`$AGENT_HIERARCHY_PANE_DIR/pending` rather than recall it; a task delivered as a
-file (anything over `panes.inlinePromptMaxChars`) restates the contract at the
-end of that file, literal `[ah-reply <id>]` line included — the pasted envelope
-is context, and a task big enough to arrive this way is exactly the one that
-runs long enough to compact; and a final message
-that misses the echo gets one nag naming the id, so the agent can correct itself
-on the spot or declare `[ah-not-a-reply]` if it was answering you rather than
-the Orchestrator. Work that still ends up stranded is reported — by `list`, by
-the next-turn nudge, and by a timed-out `wait` — and read with `pane.mjs
-stranded --key <key> --show`. Nothing is auto-relayed: only the Orchestrator
-knows what it asked, so it adjudicates.
-
-**A durable agent survives `/clear`.** The relay checks that a reply comes from
-one of the pane's OWN sessions, and a session id rotates — so the pane enrols
-each new id as it appears, and any enrolled id can answer. What keeps that from
-being a hole is where the rotation came from: the pane's own `/clear`, resume,
-compaction, or fork enrols itself, while a nested `claude` that inherited the
-pane's environment starts fresh and can never enrol. A reply that is refused
-anyway is written to disk and reported as a stranded turn rather than
-discarded.
-
-**Replies are frugal by mechanism, not by promise.** The helper stamps every
-delivery with the reply contract (final results only; bulk to disk; long
-replies open with `## TL;DR` then `## ` sections), and `send` withholds any
-reply body over `panes.replyInlineMaxChars` (default 4000 chars): the
-Orchestrator gets the size, the file path, the TL;DR, and the section list —
-then fetches named sections through task-gopher instead of paying for the
-whole body. An idle durable agent costs zero tokens; a chatty one is capped at
-the boundary.
-
-**Every create and every send asks you first**, regardless of
-`handoffs: "auto"`. A durable agent is a separately-billed interactive session
-driven by keystrokes into your terminal; that earns its own confirmation.
-
-**Durable means durable.** The registry and the agents outlive the session that
-created them: close the conversation, come back tomorrow, and the architect is
-still warm. Discovery is global — `list` finds every session's agents, and any
-session may `ask` any of them (ownership is display metadata, not an ACL);
-`close all` closes only your own. Cleanup needs no daemon: every `list`,
-`send`, `close`, and Orchestrator session start verifies live agents against
-tmux and reaps dead registry entries, so crashes, closed windows, and reboots
-all converge at the next read.
-
-**The hierarchy knows about them.** An Orchestrator's session start injects a
-roster of live durable agents next to the directive, and a subagent dispatch
-whose type matches a live, *idle* durable agent is denied **once** with
-instructions to offer you the durable path — the identical re-run passes, so it
-can never loop. Legwork types (task-gopher/task-runner) are never intercepted;
-continuity is a reasoning-role economy.
-
-**tmux is required** (`brew install tmux`). iTerm2 is an optional presentation
-layer: with it, the pane appears split off your own tab; without it, the agent
-still runs and you attach with `tmux attach -t <key>`, which every command
-prints.
-
-### Permission modes
-
-You are asked to pick one whenever `create` **cannot rule out** that the agent
-can execute — when its toolset includes `Bash` or `Edit`, and also when its
-definition is missing, unreadable, or unrestricted. The gate fails safe: it
-asks unless the definition positively proves both `Bash` and `Edit` are
-unavailable, and a non-prompting create is not proof the agent cannot execute.
-In practice that covers the Implementor and any non-role agent you launch. The
-Architect, Reviewer, Ultra-Advisor, and Task-Runner are not asked; they run
-with normal prompting.
-
-| Mode | What it actually does |
-| :-- | :-- |
-| `manual` | Prompts for anything beyond reads. Will sit and wait if nobody is attached. |
-| `acceptEdits` | Auto-accepts file edits and safe filesystem commands. **Does not cover general `Bash`** — the agent still stalls on a test or build run. |
-| `auto` | No routine prompts, with a background safety classifier. |
-| `dontAsk` | Auto-**denies** anything that would have prompted. Never stalls, but un-preapproved `Bash` silently fails. Not a fix for stalling — a different failure. |
-
-`bypassPermissions` is refused from the command line and available only through
-`panes.permissionMode` in `~/.claude/agent-hierarchy.json`: a config file is a
-deliberate, persistent, reviewable act; a flag typed mid-conversation is not.
-
-A mode passed at startup wins over settings *and* over the agent definition's
-own frontmatter.
-
-### Known differences from a subagent
-
-A durable role may run on a **different model** than the same role would as a
-subagent. It may also have a **different tool surface**. The Orchestrator cannot
-detect either difference, and cannot correct it. Pass `--model` to pin the
-model; there is no equivalent for the tool surface.
-
-The model half has a specific cause: `model: inherit` on a subagent means "the
-model of the main conversation", but a durable agent *is* a main conversation,
-so it runs on your **default** model rather than whatever the Orchestrator is
-currently using. The tool half is that `--agent` applies the definition's
-*denials* to whatever toolset a top-level session would otherwise have, and
-that base set is not a subagent's base set.
-
-**A durable Architect has no `Grep` and no `Glob`** — measured, not inferred.
-Asked to search a file, a live durable Architect reported "No Grep/Glob tool is
-exposed to me directly" and had to reach the answer by dispatching a subagent
-and by reading the file whole. Its `agents/architect.md` body calls those tools
-its instruments, so **a durable Architect is materially weaker at research than
-the same Architect as a subagent.** Prefer the subagent path for research-heavy
-Architect work, and use a durable agent when the point is continuity, or to
-watch and talk to it. It does keep the `Agent` tool, so it can still delegate
-the search — that is exactly what it did.
-
-### Two copies of a definition
-
-If you develop plugins from a **local-path marketplace** (a
-`"source": "directory"` entry in `known_marketplaces.json`), an agent
-definition can exist twice: once in the installed plugin tree and once in your
-live checkout — and Claude Code may launch the pane from either. `create` reads
-**both** copies. When they differ it computes the permission and model policy
-from both and takes the **stricter** answer of each, shows you both paths, and
-warns; set `panes.onDefinitionDivergence: "refuse"` to make it refuse instead.
-There is deliberately no way to silently prefer one copy. When the copies are
-byte-identical — the normal state — it says nothing. `/durable doctor` compares
-the whole `agents/` tree per plugin and tells you when an installed copy is
-stale, with the resync command.
-
-### Optional config
-
-```json
-{ "panes": { "timeoutSeconds": 80, "pollSeconds": 2,
-             "inlinePromptMaxChars": 2000, "replyInlineMaxChars": 4000,
-             "iterm2": true, "allowBuiltins": false, "permissionMode": null,
-             "onDefinitionDivergence": "warn",
-             "size": { "x": 200, "y": 50 } } }
-```
-
-All keys are optional and the whole block may be absent; it does not change the
-config schema version. `onDefinitionDivergence` is `"warn"` (default) or
-`"refuse"`.
+Ultra-Advisor's peer route carries the same approval gate as its subagent
+route (see the next section) — the `PreToolUse` hook watches `SendMessage`
+calls addressed to the Ultra-Advisor's named peer, not just `Agent`/`Task`,
+so routing through a peer can't skip your approval. Task-Runner stays
+subagent-only — task-gopher is already its dedicated fast path.
 
 ## Commands
 
 ```
-/agent-hierarchy:durable …          # see "Durable agents" above
 /hierarchy init                     # wizard: scope, flow mode, model per role
 /hierarchy status                   # resolved table + where each value came from
 /hierarchy set <role> <model>       # one role (validated per-role)
@@ -361,24 +212,17 @@ session model would make the tier decorative). `inherit` means "omit the
 ```
 agents/          one contract per role (frontmatter pins model + tool denies)
 hooks/
-  sessionstart.mjs               injects the pane protocol, the role notice, or the directive (+ durable roster)
+  sessionstart.mjs               injects the role notice or the directive
   pretooluse-ultra-gate.mjs      gates Ultra-Advisor escalation on the user
-  pretooluse-durable-offer.mjs   offers a live idle durable agent instead of a cold subagent, once
   subagentstop-usage.mjs         zero-token usage collector
-  stop-pane-relay.mjs            durable-agent reply relay, incl. the one-shot echo nag (inert outside a pane)
-  userpromptsubmit-durable-nudge.mjs  unread-reply + stranded-turn nudge (backstop for the background wait)
   usage-report.mjs               standalone reporter
-  pane.mjs                       /durable CLI (create/list/send/peek/wait/stranded/cancel/close/doctor)
   gate.mjs                       escalation-gate CLI (set/status/reset)
   lib-config.mjs                 config resolution + directive text (run directly for status)
   lib-gate.mjs                   session-scoped gate state
-  lib-pane.mjs                   registry, mailbox, tmux, and iTerm2 primitives
 commands/hierarchy.md        the /hierarchy command
-commands/durable.md          the /durable command
 docs/hierarchy.html          static visual map of roles, lanes, and flow
-docs/pane-command.md         the pane-mechanics design spec (0.8.0)
-docs/durable-agents.md       the durable-agents spec (0.9.0)
-tests/                       6 suites, 350+ cases (HOME-redirected; real config untouched)
+docs/retired/                 durable-agents design specs and incident report — feature removed
+tests/                        (HOME-redirected; real config untouched)
 ```
 
 ## License

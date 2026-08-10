@@ -1,5 +1,14 @@
 # Spec — `/agent-hierarchy:pane`
 
+> **Status: deprecated — scheduled for removal.** This is the substrate spec for
+> what later became durable agents (`durable-agents.md`), and it is kept as a
+> record of the experiment rather than as guidance. The tmux-pane approach only
+> ever worked on macOS with iTerm2, and typing into a live terminal session
+> turned out to be a fragile way to solve what is really a headless-server
+> problem. herdr's headless server is the direction being explored instead. The
+> code still ships and still works; it will be removed in a future release, with
+> no date set.
+
 Design spec for a new command in the `agent-hierarchy` plugin. Written by the
 Architect; implementable with no other context. Nothing in this document has
 been executed by its author — every empirical claim is either a **verified

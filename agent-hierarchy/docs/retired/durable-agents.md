@@ -1,5 +1,17 @@
 # Durable agents — spec (0.9.0)
 
+> **Status: deprecated — scheduled for removal.** This spec is retained as a
+> record of the experiment, not as guidance for new work. Durable agents set out
+> to beat the subagent cold-start tax by keeping one role's session alive in a
+> tmux pane, and the economics argued for in §1 did hold. What did not hold was
+> the substrate: the mechanism only ever worked on macOS with iTerm2, and
+> driving a terminal emulator to type into a live session proved a fragile way
+> to solve what is really a headless-server problem — see
+> `issues/relay-session-rotation.md` for the shape of that fragility. herdr's
+> headless server is the better fit, and that is the direction being explored
+> instead. The implementation still ships and still works; it will be removed in
+> a future release, with no date set.
+
 Reframes `/pane` (0.8.0, spec: `pane-command.md`) as **durable agents**: long-lived,
 top-level, interactive Claude Code sessions the Orchestrator hands work to instead of
 spawning cold subagents. The 0.8.0 machinery is the substrate and is not redesigned

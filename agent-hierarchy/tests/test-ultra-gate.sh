@@ -32,6 +32,14 @@ cli()      { OUT=$(HOME="$FAKEHOME" node "$CLI" "$@" 2>&1); RC=$?; }
 proj_cfg() { printf '%s\n' "$1" > "$PROJ/.claude/agent-hierarchy.json"; }
 clear_all() { rm -f "$GATE_FILE" "$PROJ/.claude/agent-hierarchy.json"; }
 
+# hook_send <session_id> <to> [cwd]
+hook_send() {
+  local sid=$1 to=$2 cwd=${3:-$PROJ}
+  OUT=$(printf '{"session_id":"%s","cwd":"%s","tool_name":"SendMessage","tool_input":{"to":"%s","message":"x"}}' \
+        "$sid" "$cwd" "$to" | HOME="$FAKEHOME" node "$HOOK" 2>&1); RC=$?
+}
+PEER_UA="$(basename "$PROJ")-ultra-advisor"
+
 # The gate must hold for a plain install with no config file at all.
 clear_all
 
@@ -48,6 +56,20 @@ check "non-Agent tool passes through" '[ -z "$OUT" ]'
 OUT=$(printf '{"session_id":"s1","cwd":"%s","tool_name":"Agent","tool_input":{}}' "$PROJ" | HOME="$FAKEHOME" node "$HOOK" 2>&1); RC=$?
 check "Agent call with no subagent_type passes through" '[ -z "$OUT" ]'
 
+# ---- SendMessage: only gated when the target is this repo's Ultra-Advisor peer
+hook_send sm1 "unrelated-peer"
+check "SendMessage to an unrelated peer passes through" '[ -z "$OUT" ]'
+
+hook_send sm1 "$(basename "$PROJ")-architect"
+check "SendMessage to a different role's peer passes through" '[ -z "$OUT" ]'
+
+hook_send sm1 "$PEER_UA"
+check "SendMessage to the Ultra-Advisor peer is gated (first use denied)" 'case "$OUT" in *\"permissionDecision\":\"deny\"*) true;; *) false;; esac'
+check "SendMessage denial records no decision" '[ ! -f "$GATE_FILE" ]'
+
+hook_send sm1 "$PEER_UA [abc123]"
+check "SendMessage target with a trailing [ref] bracket still matches" 'case "$OUT" in *\"permissionDecision\":\"deny\"*) true;; *) false;; esac'
+
 # ---- first use in a session: denied, with the recording command spelled out
 hook s1 "agent-hierarchy:ultra-advisor"
 check "first escalation is denied"          'case "$OUT" in *\"permissionDecision\":\"deny\"*) true;; *) false;; esac'
@@ -58,6 +80,13 @@ check "denial states nothing ran"           'case "$OUT" in *BLOCKED*) true;; *)
 
 # A denial must not itself record anything — the user has not answered yet.
 check "denial records no decision" '[ ! -f "$GATE_FILE" ]'
+
+# ---- a session's approval covers both dispatch routes to the same role
+cli set --session sm1 --choice session
+hook_send sm1 "$PEER_UA"
+check "session approval covers the SendMessage route" '[ -z "$OUT" ]'
+hook sm1 "agent-hierarchy:ultra-advisor"
+check "the same session's approval also covers the Agent-tool route" '[ -z "$OUT" ]'
 
 hook s1 "ultra-advisor"
 check "bare ultra-advisor name is gated too" 'case "$OUT" in *\"permissionDecision\":\"deny\"*) true;; *) false;; esac'

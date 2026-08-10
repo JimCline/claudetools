@@ -14,13 +14,19 @@
  *
  * Inert unless the dispatch is an Ultra-Advisor dispatch and the hierarchy is
  * enabled — every other tool call passes through untouched.
+ *
+ * Covers TWO routes to the same role, so neither can bypass the gate: an
+ * Agent/Task dispatch matched by subagent_type, and a SendMessage matched by
+ * its `to` target naming the Ultra-Advisor's named peer session
+ * ("<repo>-ultra-advisor"). A SendMessage to any other peer — including a
+ * peer for a different hierarchy role — passes through untouched.
  */
 
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
-import { readHookInput, resolveConfig } from "./lib-config.mjs";
-import { getDecision, isGatedSubagentType, normalizeSessionId } from "./lib-gate.mjs";
+import { peerName, readHookInput, resolveConfig } from "./lib-config.mjs";
+import { getDecision, isGatedPeerTarget, isGatedSubagentType, normalizeSessionId } from "./lib-gate.mjs";
 
 const GATE_CLI = join(dirname(fileURLToPath(import.meta.url)), "gate.mjs");
 
@@ -58,7 +64,7 @@ function firstUseReason(sessionId, model) {
     `2. Record the answer by running this command verbatim, with CHOICE replaced by session, each, or off to match what the user picked:`,
     `   ${setCommand(sessionId, "CHOICE")}`,
     ``,
-    `3. On "Yes, rest of session" or "Ask me each time", re-issue the identical Agent call — it will proceed. On "No, not this session", do NOT retry: tell the user plainly how you will handle the question instead (Architect, or inline) and what that leaves unadjudicated.`,
+    `3. On "Yes, rest of session" or "Ask me each time", re-issue the identical dispatch (Agent call or SendMessage) — it will proceed. On "No, not this session", do NOT retry: tell the user plainly how you will handle the question instead (Architect, or inline) and what that leaves unadjudicated.`,
     ``,
     `Do not reword the options, do not record a choice the user did not pick, and do not skip step 2 — without it this gate denies again. If handoff flow is "confirm", this prompt REPLACES item 0's handoff confirmation for this dispatch: ask once, not twice.`,
   ].join("\n");
@@ -82,13 +88,21 @@ function eachTimeReason(model) {
 const input = await readHookInput();
 
 const toolName = input.tool_name;
-if (toolName !== "Agent" && toolName !== "Task") decide(null);
+const isDispatch = toolName === "Agent" || toolName === "Task";
+const isSend = toolName === "SendMessage";
+if (!isDispatch && !isSend) decide(null);
 
 const toolInput = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
-if (!isGatedSubagentType(toolInput.subagent_type)) decide(null);
+const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
+
+// Cheap string checks only, so a SendMessage to some unrelated peer never pays for a config-file read.
+const gated = isDispatch
+  ? isGatedSubagentType(toolInput.subagent_type)
+  : isGatedPeerTarget(toolInput.to, peerName(basename(resolve(cwd)), "ultra-advisor"));
+if (!gated) decide(null);
 
 // A disabled hierarchy has no Ultra-Advisor role to gate.
-const resolved = resolveConfig(input.cwd);
+const resolved = resolveConfig(cwd);
 if (!resolved.enabled) decide(null);
 
 const sessionId = normalizeSessionId(input.session_id);
