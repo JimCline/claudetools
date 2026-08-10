@@ -1,5 +1,6 @@
 ---
 description: Assign a model to each agent-hierarchy role, or inspect/toggle the hierarchy. Usage: /hierarchy [init|status|set <role> <model>|on|off|flow [auto|confirm]|gate [status|session|each|off|reset]|usage [day|week|month|all]]
+argument-hint: "[init|status|set <role> <model>|on|off|flow [auto|confirm]|gate [status|session|each|off|reset]|usage [day|week|month|all]]"
 ---
 
 The user ran `/hierarchy` with argument: `$ARGUMENTS`

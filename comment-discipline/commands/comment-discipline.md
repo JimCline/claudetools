@@ -1,5 +1,6 @@
 ---
 description: Initialize and toggle comment-discipline (no ephemeral comments). Usage: /comment-discipline [init [global|repo]|on|off|status]
+argument-hint: "[init [global|repo]|on|off|status]"
 ---
 
 The user ran `/comment-discipline` with argument: `$ARGUMENTS`

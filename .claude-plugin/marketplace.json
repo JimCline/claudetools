@@ -13,7 +13,7 @@
       "name": "agent-hierarchy",
       "source": "./agent-hierarchy",
       "description": "Runs work through a six-role agent hierarchy — Orchestrator, Ultra-Advisor, Architect, Reviewer, Implementor, Task-Runner — with a per-role model you pick once via /hierarchy. A SessionStart hook injects the role→model table and the orchestration protocol so design, implementation, and review stay separated, each step runs on the cheapest model that can do it, and the hardest calls escalate to the Ultra-Advisor. A PreToolUse hook gates escalation on you: the first Ultra-Advisor dispatch of each session is blocked until you approve it, and you choose whether to allow the rest of the session, be asked each time, or block it outright. A SubagentStop hook records every subagent's token usage from its transcript at zero model cost; /hierarchy usage renders per-role session, daily, weekly, and monthly reports.",
-      "version": "0.18.0",
+      "version": "0.18.1",
       "author": {
         "name": "Jim Cline"
       },
@@ -32,7 +32,7 @@
       "name": "comment-discipline",
       "source": "./comment-discipline",
       "description": "Stops Claude from writing comments that only make sense next to the diff — `// changed from foo to bar`, `// NEW: added validation`, `// for now` — which stop meaning anything once the change merges. A SessionStart hook injects the authoring rule on startup and after compaction; a SubagentStart hook injects it into each subagent as it spawns, backstopped by a PostToolUse hook on the edit tools. Enable per-repo or globally with /comment-discipline.",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "author": {
         "name": "Jim Cline"
       },
@@ -50,7 +50,7 @@
       "name": "output-discipline",
       "source": "./output-discipline",
       "description": "Stops Claude Code from flooding the context window with command output. Blocks streaming/foreground long-running commands before they run and coaches toward background tasks and redirect-then-grep.",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "author": {
         "name": "Jim Cline"
       },
@@ -68,7 +68,7 @@
       "name": "task-gopher",
       "source": "./task-gopher",
       "description": "Dispatches tool-heavy, high-output, and information-gathering work to a cheaper Haiku subagent that carries out explicit orders and returns a compact report, so the main high-reasoning agent spends its expensive tokens on judgment instead of on tool output. Session hooks never reach subagents, so a PreToolUse hook rewrites each Agent dispatch in flight to stamp the directive onto the spawned subagent's prompt. Toggle with /task-gopher.",
-      "version": "0.8.0",
+      "version": "0.8.1",
       "author": {
         "name": "Jim Cline"
       },
@@ -80,6 +80,25 @@
         "delegation",
         "subagent",
         "context-window"
+      ],
+      "category": "productivity"
+    },
+    {
+      "name": "model-banner",
+      "source": "./model-banner",
+      "description": "Renders the current model's name as large, colour-coded ASCII art in the Claude Code status line — sonnet green, opus yellow, fable red, haiku cyan, with a configurable per-model palette, three sizes (5-row block, 3-row thin line-art, 1-row text), and a choice of stacking below or sitting side by side with your existing status line. The status line is the only Claude Code surface that renders real ANSI colour, and a plugin cannot ship one directly, so /model-banner init wires it into your user settings non-destructively: any status-line command you already had is preserved and chained alongside the banner, and /model-banner uninstall puts it back. A silent SessionStart hook keeps the generated launcher pointed at the current plugin version across updates.",
+      "version": "0.1.2",
+      "author": {
+        "name": "Jim Cline"
+      },
+      "license": "MIT",
+      "keywords": [
+        "statusline",
+        "model",
+        "ascii-art",
+        "banner",
+        "color",
+        "ui"
       ],
       "category": "productivity"
     }

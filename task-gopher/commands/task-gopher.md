@@ -1,5 +1,6 @@
 ---
 description: Toggle task-gopher (Haiku delegation), strict mode, and audit report. Usage: /task-gopher [on|off|status|strict [on|off]|report|log clear|relay-exempt [list|add|remove] <agent-type>]
+argument-hint: "[on|off|status|strict [on|off]|report|log clear|relay-exempt [list|add|remove] <agent-type>]"
 ---
 
 The user ran `/task-gopher` with argument: `$ARGUMENTS`
