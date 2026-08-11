@@ -82,25 +82,6 @@
         "context-window"
       ],
       "category": "productivity"
-    },
-    {
-      "name": "model-banner",
-      "source": "./model-banner",
-      "description": "Renders the current model's name as large, colour-coded ASCII art in the Claude Code status line — sonnet green, opus yellow, fable red, haiku cyan, with a configurable per-model palette, three sizes (5-row block, 3-row thin line-art, 1-row text), and a choice of stacking below or sitting side by side with your existing status line. The status line is the only Claude Code surface that renders real ANSI colour, and a plugin cannot ship one directly, so /model-banner init wires it into your user settings non-destructively: any status-line command you already had is preserved and chained alongside the banner, and /model-banner uninstall puts it back. A silent SessionStart hook keeps the generated launcher pointed at the current plugin version across updates.",
-      "version": "0.1.2",
-      "author": {
-        "name": "Jim Cline"
-      },
-      "license": "MIT",
-      "keywords": [
-        "statusline",
-        "model",
-        "ascii-art",
-        "banner",
-        "color",
-        "ui"
-      ],
-      "category": "productivity"
     }
   ]
 }
