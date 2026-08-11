@@ -18,9 +18,9 @@ Config shape (`version` is the schema version, always `1`):
   "version": 1,
   "enabled": true,
   "roles": {
-    "ultra-advisor": { "model": "fable" },
-    "architect":     { "model": "opus" },
-    "reviewer":      { "model": "opus" },
+    "ultra-advisor": { "model": "fable", "dispatch": "peer", "peer": "auto" },
+    "architect":     { "model": "opus", "dispatch": "model" },
+    "reviewer":      { "model": "opus", "dispatch": "peer", "peer": "custom-reviewer-peer" },
     "implementor":   { "model": "inherit" },
     "task-runner":   { "model": "haiku", "delegate": "task-gopher" }
   }
@@ -29,7 +29,17 @@ Config shape (`version` is the schema version, always `1`):
 
 A config written before Ultra-Advisor existed is still valid: a missing
 `ultra-advisor` key resolves to the shipped default (`fable`) with no warning,
-so `version` stays `1`.
+so `version` stays `1`. Same for `dispatch`/`peer`, added later: a role with
+neither key (every config written before this feature existed) resolves to
+`"dispatch": "peer", "peer": "auto"` — the named-peer-session route via the
+`<repo>-<role>` convention, exactly what every role already did by default
+before `dispatch` existed. `dispatch: "model"` (see `architect` above) opts a
+role out of peer routing entirely — always a fresh subagent, never
+SendMessage to a peer even if one with a matching name is running. `peer` is
+only consulted when `dispatch` is `"peer"`: `"auto"` uses the `<repo>-<role>`
+convention name; any other string (see `reviewer` above) is an explicit peer
+session name. `task-runner` has no `dispatch`/`peer` concept — it keeps its
+own `delegate: "task-gopher"` mechanism.
 
 Resolution rules you must respect in everything below:
 
@@ -74,7 +84,7 @@ Pick the ONE case matching the argument:
      "Task-Runner: deferring to task-gopher (already installed)." An existing
      explicit Task-Runner value in the config being prefilled still wins —
      the user chose it once; keep it and say so.
-   - **task-gopher NOT installed** → Task-Runner gets a question in call 2
+   - **task-gopher NOT installed** → Task-Runner gets a question in call 5
      (see below) whose recommended option is installing task-gopher.
 4. **AskUserQuestion call 1 — scope and flow.** Two questions in one call:
    - **Scope**: "User (all repos)" and "Project (this repo, committable)". If a
@@ -88,58 +98,141 @@ Pick the ONE case matching the argument:
      `/hierarchy flow` or just by telling the Orchestrator mid-session — so
      nothing is locked in here. Prefill from an existing config's `handoffs`
      key if present.
-5. **AskUserQuestion call 2 — the four reasoning roles.** One question each for
-   Ultra-Advisor, Architect, Reviewer, and Implementor, all in a single call.
-   That is exactly 4 questions, the hard AskUserQuestion maximum — so
-   Task-Runner never rides along here; it gets its own call in step 6.
-   **Maximum 4 options per question** is also a hard limit, so curate.
-   **Prefill if a config exists at either scope**: use the chosen scope's
-   current values as the first/recommended option for each role, or — if the
-   chosen scope has no config but the other one does — prefill from that one
-   instead, and tell the user which scope you pulled the values from. A role
-   missing from the prefill source — an older config written before that role
-   existed, which is every config predating Ultra-Advisor — uses its shipped
-   default below as the recommended option, not whatever the file happens to
-   contain. With no config anywhere, use these defaults (recommended first):
-   - **Ultra-Advisor** — `fable` (recommended), `opus`. Only two options exist;
-     do not offer `sonnet` or `inherit`. Say what the role is for: the
-     escalation apex, dispatched only for the hardest or highest-stakes calls,
-     so it is rarely used and its per-call cost matters less than its judgment.
-   - **Architect** — `opus` (recommended), `sonnet`, `fable`, `inherit`
-   - **Reviewer** — `opus` (recommended), `sonnet`, `fable`, `inherit`
-   - **Implementor** — `inherit` (recommended — runs on the session model),
-     `sonnet`, `opus`, `fable`
-6. **AskUserQuestion call 3 — Task-Runner. Only when task-gopher is NOT
-   installed** (when it is installed, step 3 already settled this and you ask
-   nothing). One question, options: `Install task-gopher (recommended)`,
-   `haiku`, `sonnet`, `opus`. If they pick the install option: write
-   `{ "model": "haiku", "delegate": "task-gopher" }` and tell them to run
-   `/plugin install task-gopher@claudetools` themselves (you cannot run
-   `/plugin`). Until it is installed, the directive's fallback rule routes
-   Task-Runner work to the bundled `agent-hierarchy:task-runner`, so nothing
-   breaks in the meantime.
+5. **AskUserQuestion call 2 — dispatch route, one question per reasoning
+   role.** Ultra-Advisor, Architect, Reviewer, Implementor, all in a single
+   call — exactly 4 questions, the hard maximum. Header is the short role
+   label (`Advisor` for Ultra-Advisor — its full label is over the 12-char
+   header limit; `Architect`, `Reviewer`, `Implementor` fit as-is). Each
+   question: "How should `<Role>` be dispatched — a named peer session, or
+   always a fresh subagent?" Exactly 2 options:
+   - **"Peer agent (Recommended)"** — SendMessage to a running peer session
+     when one exists; falls back to a subagent when it isn't. This is the
+     existing default behavior every role has had until now.
+   - **"Subagent only"** — always spawn a fresh `agent-hierarchy:<role>`
+     subagent; never route to a peer, even if one with a matching name is
+     running.
 
-   For every question in steps 5 and 6: any other model (including full model
-   IDs, which only work in agent frontmatter, not here) goes through
-   AskUserQuestion's automatic "Other" free-text — validate anything typed
-   there against **that role's** valid values (no `haiku` for reasoning roles;
-   only `fable` or `opus` for `ultra-advisor`) and re-ask rather than writing
-   something invalid.
-7. **Write nothing until the wizard completes.** If the user aborts, cancels, or
-   the role calls do not come back with an answer for every asked role, write
-   no file and say the config was left unchanged.
-8. On completion, write the JSON with the Write tool to the chosen scope's path
-   (`mkdir -p` the `.claude` directory first if needed). Set `"version": 1`,
-   `"enabled": true`, and `"handoffs"` to the flow answer from call 1 ("auto"
-   or "confirm" — write it explicitly even for auto, so the file documents the
-   choice). The Task-Runner entry comes from step 3 or step 6 (auto-assigned or
-   answered); only the task-gopher deferral carries `delegate` — a plain model
-   pick omits it.
-9. **Echo the resolved effective table**, not what you just wrote — run the
-   resolver command above and show its output. If it reports that a project
-   config shadows user-scope values you just set, call that out explicitly:
-   the values you wrote are not the ones in force.
-10. Close with the propagation note: the assignments apply to **this** session
+   **Prefill** the same way as the model-tier call below: pull `dispatch`
+   from the chosen scope's existing config, or the other scope's if the
+   chosen one has none, and say which scope you pulled from. A config with no
+   `dispatch` key at all — every config written before this feature existed —
+   prefills to **"Peer agent"**: that reproduces today's behavior exactly, so
+   upgrading an existing config with no changes is a no-op.
+6. **Gather peer-name work.** From call 2's answers, collect the roles that
+   chose "Peer agent" into a working list. If it's empty, skip straight to
+   step 10 (model tier) — nothing else in steps 6–9 applies. Otherwise call
+   ListAgents **once**, now, before asking anything else. Its result is
+   needed both to decide whether "pick from a list" is offerable in step 7
+   and to build the ranked list in step 8.
+7. **AskUserQuestion call 3 — peer name source, one question per role that
+   chose "Peer agent".** Up to 4 questions (there are only 4 peer-eligible
+   roles, so this never exceeds the cap), one per such role. Header: same
+   short role label as call 2. Question: "How do you want to specify
+   `<Role>`'s peer session?" Options:
+   - **"Use \"`<repo>`-`<role>`\" (Recommended)"** — the standard convention
+     name (`<repo>` = this repo's basename, `<role>` = the role key, e.g.
+     `architect`); the Orchestrator will look for a peer with exactly this
+     name at dispatch time.
+   - **"Pick from a list"** — choose from currently running peer sessions,
+     ranked by how likely they are to be the right one. **Omit this option
+     for a role's question if the ListAgents result from step 6 has fewer
+     than 2 sessions total** — AskUserQuestion needs 2–4 options, and with
+     fewer than 2 real candidates this choice is degenerate; that role's
+     question then has exactly 2 options (convention name, type it in).
+   - **"Type in the exact name"** — enter the exact session name of a peer
+     you already know; it doesn't need to be running right now.
+8. **Resolve "Pick from a list" answers.** For every role that picked it,
+   rank the ListAgents result from step 6 for that specific role, most
+   likely first:
+   1. Exact match: session name equals `<repo>-<role>`.
+   2. Name contains **both** the repo basename **and** a role-match token
+      (`architect`→`architect`; `reviewer`→`reviewer`;
+      `implementor`→`implementor`; `ultra-advisor`→`ultra-advisor` or
+      `advisor`).
+   3. Name contains a role-match token only.
+   4. Name contains the repo basename only.
+   5. Everything else.
+
+   Within a tier, more-recently-started sessions rank higher (ListAgents
+   reports "started X ago"). Take the top 4 — AskUserQuestion's hard option
+   cap — and ask one question per role needing this (bundle into one call,
+   ≤4 questions): header = role label; question = "Pick `<Role>`'s peer
+   session"; each option's label is the peer name, description is its status
+   and "started X ago". AskUserQuestion's automatic "Other" stays available
+   for anything not shown in the top 4.
+9. **Resolve "Type in the exact name" answers.** For every role that picked
+   it, ask directly in your response text — not via AskUserQuestion, which
+   isn't built for pure freeform capture — naming all such roles together in
+   one message (e.g. "What's the exact peer session name for Architect? For
+   Reviewer?"), and take the user's next message as the value(s), trimmed of
+   whitespace. One round-trip for all of them, not one per role.
+10. **AskUserQuestion call 4 — the four reasoning roles' model.** One
+    question each for Ultra-Advisor, Architect, Reviewer, and Implementor,
+    all in a single call — exactly 4 questions, the hard maximum. **Always
+    asked for all four roles regardless of their call-2 dispatch choice**:
+    the model is used both when a role's dispatch is "Subagent only" (its
+    only behavior) and as the **fallback** model when dispatch is "Peer
+    agent" and no peer is present at dispatch time — so it is never dead
+    weight even for a peer-routed role. **Maximum 4 options per question** is
+    also a hard limit, so curate. **Prefill if a config exists at either
+    scope**: use the chosen scope's current values as the first/recommended
+    option for each role, or — if the chosen scope has no config but the
+    other one does — prefill from that one instead, and tell the user which
+    scope you pulled the values from. A role missing from the prefill source
+    — an older config written before that role existed, which is every
+    config predating Ultra-Advisor — uses its shipped default below as the
+    recommended option, not whatever the file happens to contain. With no
+    config anywhere, use these defaults (recommended first):
+    - **Ultra-Advisor** — `fable` (recommended), `opus`. Only two options
+      exist; do not offer `sonnet` or `inherit`. Say what the role is for:
+      the escalation apex, dispatched only for the hardest or highest-stakes
+      calls, so it is rarely used and its per-call cost matters less than its
+      judgment.
+    - **Architect** — `opus` (recommended), `sonnet`, `fable`, `inherit`
+    - **Reviewer** — `opus` (recommended), `sonnet`, `fable`, `inherit`
+    - **Implementor** — `inherit` (recommended — runs on the session model),
+      `sonnet`, `opus`, `fable`
+11. **AskUserQuestion call 5 — Task-Runner. Only when task-gopher is NOT
+    installed** (when it is installed, step 3 already settled this and you
+    ask nothing). One question, options: `Install task-gopher (recommended)`,
+    `haiku`, `sonnet`, `opus`. If they pick the install option: write
+    `{ "model": "haiku", "delegate": "task-gopher" }` and tell them to run
+    `/plugin install task-gopher@claudetools` themselves (you cannot run
+    `/plugin`). Until it is installed, the directive's fallback rule routes
+    Task-Runner work to the bundled `agent-hierarchy:task-runner`, so nothing
+    breaks in the meantime.
+
+    For every question in steps 10 and 11: any other model (including full
+    model IDs, which only work in agent frontmatter, not here) goes through
+    AskUserQuestion's automatic "Other" free-text — validate anything typed
+    there against **that role's** valid values (no `haiku` for reasoning
+    roles; only `fable` or `opus` for `ultra-advisor`) and re-ask rather than
+    writing something invalid. Peer names accepted via "Other" on step 7/8's
+    questions, or typed in directly per step 9, are accepted as **any
+    non-empty string, trimmed** — no format validation, no liveness check
+    against ListAgents.
+12. **Write nothing until the wizard completes.** If the user aborts, cancels,
+    or the role calls do not come back with an answer for every asked role
+    (including peer-name resolution for any role that chose "Peer agent"),
+    write no file and say the config was left unchanged.
+13. On completion, write the JSON with the Write tool to the chosen scope's
+    path (`mkdir -p` the `.claude` directory first if needed). Set
+    `"version": 1`, `"enabled": true`, and `"handoffs"` to the flow answer
+    from call 1 ("auto" or "confirm" — write it explicitly even for auto, so
+    the file documents the choice). For each reasoning role, always write
+    `"dispatch"` explicitly (`"peer"` or `"model"` — write it even when it's
+    the recommended default, same reasoning as `handoffs` always being
+    explicit). When dispatch is `"peer"`, also write `"peer"`: `"auto"` if
+    the convention was chosen, otherwise the picked or typed name. When
+    dispatch is `"model"`, omit `peer` entirely — it isn't applicable. The
+    Task-Runner entry comes from step 3 or step 11 (auto-assigned or
+    answered); only the task-gopher deferral carries `delegate` — a plain
+    model pick omits it.
+14. **Echo the resolved effective table**, not what you just wrote — run the
+    resolver command above and show its output. If it reports that a project
+    config shadows user-scope values you just set, call that out explicitly:
+    the values you wrote are not the ones in force.
+15. Close with the propagation note: the assignments apply to **this** session
     immediately, and other live sessions pick them up at their next start,
     clear, or compaction.
 

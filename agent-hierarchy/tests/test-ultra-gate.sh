@@ -70,6 +70,25 @@ check "SendMessage denial records no decision" '[ ! -f "$GATE_FILE" ]'
 hook_send sm1 "$PEER_UA [abc123]"
 check "SendMessage target with a trailing [ref] bracket still matches" 'case "$OUT" in *\"permissionDecision\":\"deny\"*) true;; *) false;; esac'
 
+# ---- a custom ultra-advisor peer name (config "peer" != "auto") is gated too,
+#      not just the "<repo>-ultra-advisor" convention name — the config-read
+#      fallback path in pretooluse-ultra-gate.mjs must catch it.
+rm -f "$GATE_FILE"
+proj_cfg '{"version":1,"enabled":true,"roles":{"ultra-advisor":{"model":"fable","dispatch":"peer","peer":"custom-ua-peer"}}}'
+hook_send smcustom1 "custom-ua-peer"
+check "SendMessage to a CUSTOM ultra-advisor peer name is gated" 'case "$OUT" in *\"permissionDecision\":\"deny\"*) true;; *) false;; esac'
+
+rm -f "$GATE_FILE"
+hook_send smcustom2 "some-unrelated-peer"
+check "with a custom peer configured, an unrelated SendMessage still passes through" '[ -z "$OUT" ]'
+
+# ---- the hardcoded convention name is still gated even when a custom peer is
+#      configured (safe over-gating direction, not a bypass either way)
+rm -f "$GATE_FILE"
+hook_send smcustom3 "$PEER_UA"
+check "convention name still gated even with a custom peer configured" 'case "$OUT" in *\"permissionDecision\":\"deny\"*) true;; *) false;; esac'
+clear_all
+
 # ---- first use in a session: denied, with the recording command spelled out
 hook s1 "agent-hierarchy:ultra-advisor"
 check "first escalation is denied"          'case "$OUT" in *\"permissionDecision\":\"deny\"*) true;; *) false;; esac'

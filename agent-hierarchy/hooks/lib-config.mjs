@@ -16,6 +16,10 @@
  *   - Missing `version` → treat as 1. A version newer than this plugin
  *     understands → that scope is ignored (with a note); if nothing valid is
  *     left, the session is treated as unconfigured.
+ *   - Peer-eligible roles: missing `dispatch` → "peer" (preserves pre-dispatch-field
+ *     behavior for every config written before it existed). Missing `peer` when
+ *     dispatch is "peer" → "auto" (the "<repo>-<role>" convention). Invalid
+ *     values for either → fall back the same way, with a warning.
  *
  * Run directly (`node lib-config.mjs`) to print the resolved status table for
  * the current working directory — that is what `/hierarchy status` uses.
@@ -99,9 +103,24 @@ export const HANDOFF_MODES = ["auto", "confirm"];
  */
 export const PEER_ELIGIBLE_ROLES = ["ultra-advisor", "architect", "reviewer", "implementor"];
 
+/** Per-role dispatch route: "peer" tries the named peer session first, falling back to a subagent; "model" always spawns a subagent. */
+export const DISPATCH_MODES = ["peer", "model"];
+
 /** The named-peer-session convention shared by the injected directive and the Ultra-Advisor gate: "<repo-basename>-<role>". */
 export function peerName(repoBasename, role) {
   return `${repoBasename}-${role}`;
+}
+
+/**
+ * The peer session name this role's config resolves to, or null when the
+ * resolved `dispatch` is "model" (never route to a peer) or the role isn't
+ * peer-eligible at all.
+ */
+export function resolvedPeerTarget(role, entry, repoBasename) {
+  if (!PEER_ELIGIBLE_ROLES.includes(role)) return null;
+  if (entry.dispatch === "model") return null;
+  if (entry.peer && entry.peer !== "auto") return entry.peer;
+  return peerName(repoBasename, role);
 }
 
 /** Read the hook's stdin JSON payload; returns {} if absent or unparseable. */
@@ -280,6 +299,25 @@ export function resolveConfig(cwd) {
       );
       roles[role] = { ...roles[role], model: ROLE_DEFAULTS[role].model };
     }
+    if (!PEER_ELIGIBLE_ROLES.includes(role)) continue;
+    const rawDispatch = roles[role].dispatch;
+    let dispatch = rawDispatch === undefined ? "peer" : rawDispatch;
+    if (!DISPATCH_MODES.includes(dispatch)) {
+      warnings.push(
+        `agent-hierarchy: dispatch ${JSON.stringify(rawDispatch)} is not valid for role "${role}" (allowed: ${DISPATCH_MODES.join(", ")}) — using "peer".`
+      );
+      dispatch = "peer";
+    }
+    roles[role] = { ...roles[role], dispatch };
+    if (dispatch === "peer") {
+      const rawPeer = roles[role].peer;
+      let peer = rawPeer === undefined ? "auto" : rawPeer;
+      if (typeof peer !== "string" || !peer.trim()) {
+        warnings.push(`agent-hierarchy: peer value for role "${role}" must be a non-empty string — using "auto".`);
+        peer = "auto";
+      }
+      roles[role] = { ...roles[role], peer };
+    }
   }
 
   return { configured: true, enabled, handoffs, handoffsSource, roles, sources, shadowed, layers, warnings, cwd: resolvedCwd };
@@ -295,8 +333,10 @@ export function subagentType(role, entry) {
 
 /**
  * One dispatch line per role. `inherit` renders as "omit the parameter", never
- * as a value. Peer-eligible roles (see PEER_ELIGIBLE_ROLES) lead with the
- * named-peer SendMessage route and give the subagent call as the fallback.
+ * as a value. A role whose resolved dispatch is "peer" (see
+ * `resolvedPeerTarget`) leads with the named-peer SendMessage route and gives
+ * the subagent call as the fallback; a role resolved to "model" — including
+ * every non-peer-eligible role — gets the subagent call alone.
  */
 function roleLines(roles, repoBasename) {
   return ROLES.map((role) => {
@@ -306,10 +346,10 @@ function roleLines(roles, repoBasename) {
       entry.model === "inherit"
         ? `Agent(subagent_type:"${type}") — OMIT \`model\` entirely (inherits this session's model). Never pass "inherit" as a value.`
         : `Agent(subagent_type:"${type}", model:"${entry.model}")`;
-    if (!PEER_ELIGIBLE_ROLES.includes(role)) {
+    const peer = resolvedPeerTarget(role, entry, repoBasename);
+    if (!peer) {
       return `- ${ROLE_LABELS[role]} — ${agentCall}`;
     }
-    const peer = peerName(repoBasename, role);
     return `- ${ROLE_LABELS[role]} — peer "${peer}" via SendMessage if it appears in ListAgents (default), else ${agentCall}`;
   });
 }
@@ -341,13 +381,13 @@ export function buildDirective(resolved, sessionId) {
   const lines = [
     "Agent hierarchy ACTIVE. You are the Orchestrator: decompose, dispatch, synthesize — do not design or implement non-trivial changes yourself.",
     "",
-    'Roles — Ultra-Advisor/Architect/Reviewer/Implementor default to SendMessage-ing that role\'s named peer session ("<repo>-<role>") when ListAgents shows one running (Ultra-Advisor\'s peer route is gated exactly like its subagent route — see item 7); otherwise, and always for Task-Runner, spawn the subagent (pass `model` on the Agent call; agent frontmatter is only a fallback):',
+    "Roles — each role's dispatch route (peer session via SendMessage, or always a spawned subagent) is set per role below; legwork (Task-Runner) always spawns or delegates to task-gopher (pass `model` on the Agent call; agent frontmatter is only a fallback). A role listing a peer target tries SendMessage to it first when ListAgents shows it running (Ultra-Advisor's peer route is gated exactly like its subagent route — see item 7), falling back to the subagent otherwise; a role with no peer target listed always spawns the subagent:",
     ...roleLines(resolved.roles, repoBasename),
     "",
     "Protocol (hard default, not a preference):",
     ...(confirm
       ? [
-          '0. Handoff gate — the user chose to approve each handoff (config handoffs:"confirm"). Before dispatching Ultra-Advisor, Architect, Implementor, or Reviewer — including review-loop re-dispatches — call ListAgents first to check whether that role\'s named peer session ("<repo>-<role>", per the Roles list above) is present. Then call AskUserQuestion: name the role, its model, and one line on what you will hand it. If the peer is listed, offer "Task peer \\"<name>\\" via SendMessage (Recommended)", "Dispatch <role> subagent instead", "Do it inline yourself", and "Skip this step", in that order. If no such peer is listed, drop the peer option and offer "Dispatch <role> (Recommended)", "Do it inline yourself", and "Skip this step" as before. For Ultra-Advisor specifically, both routes are equally gated by its PreToolUse approval gate in item 7 (it watches SendMessage to the Ultra-Advisor peer the same way it watches the Agent/Task dispatch), so picking the peer option there does not skip the user\'s approval. Ask per dispatch, not per plan, and never re-ask for a dispatch the user already approved. Legwork (Task-Runner / task-gopher) is exempt — errands are not handoffs. "Task peer" means SendMessage to that peer with the same self-contained brief a subagent would get, then wait for its reply the way you would await a subagent\'s completion. "Do it inline" means you take that role\'s contract on yourself for that step; "Skip" means the step does not happen and you say plainly what that leaves undesigned or unverified.',
+          '0. Handoff gate — the user chose to approve each handoff (config handoffs:"confirm"). Before dispatching Ultra-Advisor, Architect, Implementor, or Reviewer — including review-loop re-dispatches — check the Roles list above for that role\'s dispatch line: if it names no peer target (subagent-only), skip ListAgents entirely for it and go straight to offering "Dispatch <role> (Recommended)", "Do it inline yourself", and "Skip this step". If it does name a peer target, call ListAgents first to check whether that named session is present. Then call AskUserQuestion: name the role, its model, and one line on what you will hand it. If the peer is listed, offer "Task peer \\"<name>\\" via SendMessage (Recommended)", "Dispatch <role> subagent instead", "Do it inline yourself", and "Skip this step", in that order. If it has a peer target but the peer is not currently listed, drop the peer option for this dispatch and offer "Dispatch <role> (Recommended)", "Do it inline yourself", and "Skip this step" as before. For Ultra-Advisor specifically, both routes are equally gated by its PreToolUse approval gate in item 7 (it watches SendMessage to the Ultra-Advisor peer the same way it watches the Agent/Task dispatch), so picking the peer option there does not skip the user\'s approval. Ask per dispatch, not per plan, and never re-ask for a dispatch the user already approved. Legwork (Task-Runner / task-gopher) is exempt — errands are not handoffs. "Task peer" means SendMessage to that peer with the same self-contained brief a subagent would get, then wait for its reply the way you would await a subagent\'s completion. "Do it inline" means you take that role\'s contract on yourself for that step; "Skip" means the step does not happen and you say plainly what that leaves undesigned or unverified.',
         ]
       : []),
     "1. Gate: binds the top-level Orchestrator only. Role agents never spawn ultra-advisor/architect/reviewer/implementor. They MAY dispatch task-gopher for legwork — that is not recursion.",
@@ -410,10 +450,15 @@ export function statusReport(cwd) {
   out.push("");
   out.push("Resolved effective table:");
   out.push(`  Orchestrator  ${"session model".padEnd(14)} fixed (this session's agent)`);
+  const repoBasename = basename(resolved.cwd);
   for (const role of ROLES) {
     const entry = resolved.roles[role];
     const model = entry.model === "inherit" ? "inherit*" : entry.model;
-    out.push(`  ${ROLE_LABELS[role].padEnd(13)} ${model.padEnd(14)} from ${resolved.sources[role].padEnd(8)} -> ${subagentType(role, entry)}`);
+    const peer = resolvedPeerTarget(role, entry, repoBasename);
+    const dispatch = PEER_ELIGIBLE_ROLES.includes(role) ? (peer ? `dispatch: peer "${peer}"` : "dispatch: subagent-only") : "";
+    out.push(
+      `  ${ROLE_LABELS[role].padEnd(13)} ${model.padEnd(14)} from ${resolved.sources[role].padEnd(8)} -> ${subagentType(role, entry)}${dispatch ? `  [${dispatch}]` : ""}`
+    );
   }
   out.push("");
   out.push("* inherit = omit the `model` parameter on the Agent call (never pass \"inherit\").");

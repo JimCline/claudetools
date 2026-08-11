@@ -17,15 +17,19 @@
  *
  * Covers TWO routes to the same role, so neither can bypass the gate: an
  * Agent/Task dispatch matched by subagent_type, and a SendMessage matched by
- * its `to` target naming the Ultra-Advisor's named peer session
- * ("<repo>-ultra-advisor"). A SendMessage to any other peer — including a
- * peer for a different hierarchy role — passes through untouched.
+ * its `to` target naming the Ultra-Advisor's peer session — normally the
+ * "<repo>-ultra-advisor" convention, but a role's `peer` config value can
+ * name any session explicitly (see `resolvedPeerTarget` in lib-config.mjs),
+ * so a SendMessage that misses the convention-name fast path falls through
+ * to a config read before being cleared. A SendMessage to any other peer —
+ * including a peer for a different hierarchy role — passes through
+ * untouched.
  */
 
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join, resolve } from "node:path";
 
-import { peerName, readHookInput, resolveConfig } from "./lib-config.mjs";
+import { peerName, readHookInput, resolveConfig, resolvedPeerTarget } from "./lib-config.mjs";
 import { getDecision, isGatedPeerTarget, isGatedSubagentType, normalizeSessionId } from "./lib-gate.mjs";
 
 const GATE_CLI = join(dirname(fileURLToPath(import.meta.url)), "gate.mjs");
@@ -94,15 +98,28 @@ if (!isDispatch && !isSend) decide(null);
 
 const toolInput = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
 const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
+const repoBasename = basename(resolve(cwd));
 
-// Cheap string checks only, so a SendMessage to some unrelated peer never pays for a config-file read.
-const gated = isDispatch
+// Cheap string check first, against the shipped "<repo>-ultra-advisor"
+// convention — this alone gates every install that hasn't set a custom peer
+// name, so the common case still never pays for a config-file read. Only a
+// SendMessage that misses this fast path falls through to one, because a
+// custom `peer` value for the ultra-advisor role can only be known by
+// reading the config that holds it. Agent/Task dispatches are matched by
+// subagent_type and never need the fallback.
+let gated = isDispatch
   ? isGatedSubagentType(toolInput.subagent_type)
-  : isGatedPeerTarget(toolInput.to, peerName(basename(resolve(cwd)), "ultra-advisor"));
+  : isGatedPeerTarget(toolInput.to, peerName(repoBasename, "ultra-advisor"));
+
+let resolved = null;
+if (!gated && isSend) {
+  resolved = resolveConfig(cwd);
+  gated = isGatedPeerTarget(toolInput.to, resolvedPeerTarget("ultra-advisor", resolved.roles["ultra-advisor"], repoBasename));
+}
 if (!gated) decide(null);
 
 // A disabled hierarchy has no Ultra-Advisor role to gate.
-const resolved = resolveConfig(cwd);
+resolved ||= resolveConfig(cwd);
 if (!resolved.enabled) decide(null);
 
 const sessionId = normalizeSessionId(input.session_id);

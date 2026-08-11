@@ -82,10 +82,11 @@ config:
   reports.
 - **`confirm`** — before every reasoning-role dispatch (including review-loop
   re-dispatches) it asks first: role, model, what's being handed off. When
-  that role's named peer session is listed, the options are **Task peer /
-  Dispatch subagent / Do it inline / Skip**; otherwise it's **Dispatch / Do it
-  inline / Skip**. Skipping obliges it to say what goes undesigned or
-  unverified. Legwork dispatches are never gated; errands are not handoffs.
+  that role has a peer target configured (see below) and it's listed, the
+  options are **Task peer / Dispatch subagent / Do it inline / Skip**;
+  otherwise it's **Dispatch / Do it inline / Skip**. Skipping obliges it to
+  say what goes undesigned or unverified. Legwork dispatches are never gated;
+  errands are not handoffs.
 
 Switch **at any time, in either direction, in plain words** — "ask me before
 handoffs", "stop asking" — or with `/hierarchy flow auto|confirm`. The
@@ -172,23 +173,36 @@ The feature has been removed. herdr's headless server is the direction being
 explored instead. The design specs and the incident report from the experiment
 are kept for reference in `docs/retired/`.
 
-## Handoff dispatch: named peer first, subagent fallback
+## Handoff dispatch: peer agent vs subagent, set per role
 
-The harness now ships a native way to reach another running session —
+The harness ships a native way to reach another running session —
 `ListAgents` to see it, `SendMessage` to task it — which is the headless
-mechanism the durable-agents experiment above was reaching for. For
-Ultra-Advisor, Architect, Reviewer, and Implementor, the Orchestrator's
-default is to check `ListAgents` for that role's named peer session (pattern
-`<repo>-<role>`, e.g. `agent-hierarchy-architect`) and `SendMessage` it
-instead of spawning a fresh subagent when one is listed — the same cold-start
-and re-briefing tax the pane experiment was trying to avoid, solved without a
-terminal in the loop. No peer listed, and it spawns the subagent as before.
+mechanism the durable-agents experiment above was reaching for. For each of
+Ultra-Advisor, Architect, Reviewer, and Implementor, `/hierarchy init` asks
+for an explicit **`dispatch`** route, stored per role in the config:
+
+- **`"peer"`** (the recommended default, and what every config written
+  before this option existed already did) — check `ListAgents` for that
+  role's peer session and `SendMessage` it instead of spawning a fresh
+  subagent when one is listed, falling back to a subagent when it isn't —
+  the same cold-start and re-briefing tax the pane experiment was trying to
+  avoid, solved without a terminal in the loop. The peer's name is either the
+  `<repo>-<role>` convention (e.g. `agent-hierarchy-architect`) or an
+  explicit name you pick or type during `init` — stored as the role's
+  `"peer"` config value.
+- **`"model"`** — always spawn a fresh subagent for that role; never route to
+  a peer, even if one with a matching name is running.
+
+`/hierarchy init` offers both up front — pick from currently running peers
+(ranked, most-likely-name-match first) or type a name in directly — rather
+than only ever defaulting to the convention name.
 
 Ultra-Advisor's peer route carries the same approval gate as its subagent
 route (see the next section) — the `PreToolUse` hook watches `SendMessage`
 calls addressed to the Ultra-Advisor's named peer, not just `Agent`/`Task`,
-so routing through a peer can't skip your approval. Task-Runner stays
-subagent-only — task-gopher is already its dedicated fast path.
+so routing through a peer can't skip your approval. Task-Runner has no
+`dispatch` concept — it stays subagent-only, with task-gopher as its
+dedicated fast path.
 
 ## Commands
 
