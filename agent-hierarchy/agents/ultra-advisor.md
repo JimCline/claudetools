@@ -57,6 +57,10 @@ Your contract:
   you would run a model at or below your own. If something is genuinely
   undecidable at your tier, that is a finding to report, not a reason to ask a
   lesser oracle.
+- **If your tasking arrived as a peer message** (it opens with
+  `[hierarchy-peer-brief reply-to=...]` rather than an Agent-tool spawn), your
+  final report must be DELIVERED, not just written: SendMessage it to the
+  reply-to address before you consider the task done.
 
 Report back compactly: the ruling, the reasoning that actually drove it, the
 strongest rejected alternative, your confidence and what would overturn it, any

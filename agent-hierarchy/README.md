@@ -204,6 +204,47 @@ so routing through a peer can't skip your approval. Task-Runner has no
 `dispatch` concept — it stays subagent-only, with task-gopher as its
 dedicated fast path.
 
+### The peer must report back — the brief makes it
+
+A subagent's report is **structural**: its final text returns to whatever
+dispatched it, automatically. A peer's report is **voluntary**: it exists only
+if the peer chooses to SendMessage it back, and a peer that finishes the work
+and goes idle without doing so strands whoever tasked it — nothing else
+notices or nudges it.
+
+Every peer brief opens with one machine-parseable line, the sentinel:
+
+```
+[hierarchy-peer-brief reply-to="sender" task="<short-slug>"]
+```
+
+`reply-to="sender"` is the norm: a delivered peer message always arrives
+wrapped as `<cross-session-message from="uds:/..." from-name="...">`, and
+copying that `from` into the reply's `to` is the reliable route — the sender
+is often not discoverable via the peer's own `ListAgents`, so the envelope,
+not the sentinel, is what the reply address actually comes from. Write an
+explicit `reply-to="<name> [ref]"` only to redirect the report to a third
+session. `task` is a short slug that distinguishes concurrent briefs to the
+same peer and gives the reply a subject line.
+
+The injected directive obliges every peer brief to: open with the sentinel;
+carry the same self-contained brief a subagent would get, since the peer
+shares none of the caller's context; end with an explicit report-back order
+naming the exact report expected and stating plainly that the task is not
+complete until that report is sent; and, if no reply arrives and `ListAgents`
+shows the peer idle, ping it once before falling back to a subagent and
+telling the user the peer stalled.
+
+On the peer side, hooks enforce the obligation rather than relying on prose
+alone: a `UserPromptSubmit` hook records an owed reply when a brief's sentinel
+arrives, a `PostToolUse` hook (matching `SendMessage`) marks it resolved once
+the peer sends a reply to the recorded address, and a `Stop` hook blocks the
+peer's turn from ending while a reply is still owed — nudging at most twice
+per obligation before waiving it, so a broken or unresolvable brief can never
+trap a session. State lives in
+`~/.claude/agent-hierarchy.peer-pending.jsonl`, append-only and
+session-scoped like the rest of this plugin's state.
+
 ## Commands
 
 ```
@@ -233,10 +274,15 @@ hooks/
   gate.mjs                       escalation-gate CLI (set/status/reset)
   lib-config.mjs                 config resolution + directive text (run directly for status)
   lib-gate.mjs                   session-scoped gate state
+  lib-peer.mjs                   peer report-back state (sentinel/wrapper parse, JSONL)
+  userpromptsubmit-peer-tracking.mjs   records a peer-brief obligation
+  posttooluse-peer-resolve.mjs         resolves it on a matching SendMessage reply
+  stop-peer-nudge.mjs                  nudges (blocks) until replied or waived
 commands/hierarchy.md        the /hierarchy command
 docs/hierarchy.html          static visual map of roles, lanes, and flow
 docs/retired/                 durable-agents design specs and incident report — feature removed
 tests/                        (HOME-redirected; real config untouched)
+  test-peer-reportback.sh     peer report-back contract: sentinel/wrapper parse, tracking, resolve, nudge/waive
 ```
 
 ## License

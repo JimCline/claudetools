@@ -52,6 +52,10 @@ Your contract:
   routes it to the Architect or Ultra-Advisor. A sideways advisor call makes a
   design decision outside the chain, which is exactly what this role must not
   do.
+- **If your tasking arrived as a peer message** (it opens with
+  `[hierarchy-peer-brief reply-to=...]` rather than an Agent-tool spawn), your
+  final report must be DELIVERED, not just written: SendMessage it to the
+  reply-to address before you consider the task done.
 
 Report back compactly: what you changed (`file:line` or file + one line each),
 the verification you ran and its outcome, any spec gap or deviation and why, and

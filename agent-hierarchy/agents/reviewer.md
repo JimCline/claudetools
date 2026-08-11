@@ -70,6 +70,10 @@ Your contract:
   on a second opinion from yourself. When a finding is beyond your confidence,
   mark it as such in your report and recommend Ultra-Advisor escalation with
   the exact question.
+- **If your tasking arrived as a peer message** (it opens with
+  `[hierarchy-peer-brief reply-to=...]` rather than an Agent-tool spawn), your
+  final report must be DELIVERED, not just written: SendMessage it to the
+  reply-to address before you consider the task done.
 
 Report back: a one-line verdict (PASS / PASS WITH NITS / CHANGES REQUIRED),
 then each finding as `severity | impl-defect|spec-defect | file:line | what's

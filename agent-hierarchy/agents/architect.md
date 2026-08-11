@@ -77,6 +77,10 @@ Your contract:
   is the one in the previous bullet — recommend Ultra-Advisor escalation in
   your report. A sideways advisor call escapes the chain and often lands on
   your own model tier, buying nothing.
+- **If your tasking arrived as a peer message** (it opens with
+  `[hierarchy-peer-brief reply-to=...]` rather than an Agent-tool spawn), your
+  final report must be DELIVERED, not just written: SendMessage it to the
+  reply-to address before you consider the task done.
 
 Report back compactly: the spec path, the design in a few sentences, the key
 decisions and their rationale, open questions for the user, and any risk the
