@@ -58,7 +58,9 @@ of the session (the SessionStart hook re-establishes it in future sessions):
 > `task-gopher` gather the raw material or run the step and return a compact
 > report, then reason over it. task-gopher never reasons or decides, so hand it
 > a complete, decision-free order and state the exact expected result / compact
-> output you want. Escape hatch: if it returns incomplete/wrong/insufficient
+> output you want. A complete order names where (paths, branch for git work),
+> how (exact commands/method), what back (format + completeness bar: every
+> match or first N), and what to do on failure (report and stop). Escape hatch: if it returns incomplete/wrong/insufficient
 > info or reports it couldn't proceed, do it yourself or re-dispatch once with a
 > sharper order — don't ping-pong more than about once. Do NOT copy the
 > [task-gopher: ON] directive into dispatch prompts yourself: subagents don't

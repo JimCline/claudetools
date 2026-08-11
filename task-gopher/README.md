@@ -71,6 +71,33 @@ This is the core contract, enforced in the subagent's own instructions:
 Because the runner won't improvise, the burden is on the orchestrator to hand down
 complete, decision-free orders with the exact expected result.
 
+### Writing orders — the four-part contract
+
+The runner sees nothing but the dispatch prompt — it cannot see the
+orchestrator's context, and it will not fill gaps. Worse, it may not *notice*
+a gap: it runs the order literally, wherever and however it happens to land.
+So every order carries four things:
+
+- **Where** — absolute paths/cwd, and for git-touching work the exact repo and
+  branch/ref. An order that assumes "the branch we're on" runs on whatever is
+  checked out. If a branch is named, the runner verifies it before running and
+  stops on a mismatch; if none is named, it flags the branch it actually ran on.
+- **How** — the exact method: commands, search patterns, files. "Find where X
+  is defined" invites improvisation; "run `grep -rn 'class X' src/`, report
+  every file:line" does not. The runner uses exactly the method given and never
+  substitutes its own; a failed or empty result is reported as the result.
+- **What back** — the report format, a size bound, and the completeness bar
+  (every match vs first N). Compact never means incomplete: the runner returns
+  everything the order asks for, and anything cut to meet a size bound is named
+  and counted, never silently dropped.
+- **What if** — what to do on failure or empty results: almost always "report
+  the exact outcome and stop", never try an alternative method uninvited.
+
+An order the orchestrator can't specify to that level still contains a
+judgment call — the directive tells it to resolve that itself first, because
+handing Haiku an order with room for judgment doesn't delegate the judgment,
+it randomizes it.
+
 ### A dispatch must compress
 
 task-gopher only earns its keep when its **report is smaller than the raw material
@@ -284,7 +311,8 @@ recent bypasses (last 4) — what was run directly:
 - **`agents/task-gopher.md`** — the Haiku runner: read/search/run tools
   (`Read, Grep, Glob, Bash, WebFetch, WebSearch`), no file mutation, prompted to
   execute exact orders only, return the smallest report that fully answers,
-  stop-and-report rather than decide, and never delegate onward.
+  stop-and-report rather than decide, never delegate onward, verify a named
+  branch before running, and never silently truncate.
 - **`hooks/`** — `SessionStart` (startup/resume/clear/**compact**) injects the
   full directive; `UserPromptSubmit` injects a one-line reminder each turn;
   `PreToolUse` enforces the subagent **relay checkpoint** whenever ON and, in
