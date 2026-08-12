@@ -15,13 +15,26 @@
  * and nothing else. Never blocks or alters the prompt — this hook only
  * observes and records; it exits silently either way.
  *
+ * Amendment 2 (interactive peers): a peer session doubles as an interactive
+ * one, and enforcement must fire only on turns the PEER's own tasking work
+ * touches, never on a turn the USER is driving. So, in addition to the brief
+ * detection above, this arms a `{"type":"turn","status":"armed"}` marker
+ * whenever BOTH: the prompt carries a `<cross-session-message>` wrapper at
+ * all (ANY peer delivery — a brief, a ping, an unrelated peer message; this
+ * check is intentionally unanchored, unlike the brief sentinel above), AND
+ * the session has at least one pending obligation afterward — read via
+ * `pendingFor` AFTER the append above, so it also catches an obligation this
+ * very prompt just created. A typed prompt, or a session with no pending
+ * obligations, arms nothing, which is what keeps state growth bounded to
+ * active-obligation windows.
+ *
  * No-ops for subagents (same `agent_id` discriminator as the rest of the
  * plugin) — a subagent is not a peer, and its own SessionStart injection is
  * already suppressed for the same reason.
  */
 
 import { isSubagent, readHookInput } from "./lib-config.mjs";
-import { appendPeerRecord, extractPendingRecord } from "./lib-peer.mjs";
+import { appendPeerRecord, appendTurnMarker, extractPendingRecord, parseWrapper, pendingFor } from "./lib-peer.mjs";
 
 try {
   const input = await readHookInput();
@@ -42,6 +55,10 @@ try {
           status: "pending",
           nudges: 0,
         });
+      }
+
+      if (parseWrapper(prompt) && pendingFor(sessionId).length > 0) {
+        appendTurnMarker(sessionId, "armed");
       }
     }
   }

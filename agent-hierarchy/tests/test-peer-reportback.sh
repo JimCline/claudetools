@@ -186,7 +186,8 @@ eval_peer "P.pendingFor('s9').length"
 check "subagent SendMessage: no-ops, obligation stays pending" '[ "$OUT" = 1 ]'
 
 # =====================================================================
-# 5. Stop hook: block / nudge-count / waive / stop_hook_active / subagent
+# 5. Stop hook: arm/disarm gating (Amendment 2), block / nudge-count / waive /
+#    stop_hook_active / subagent
 # =====================================================================
 reset_state
 stop s-nopending
@@ -194,18 +195,48 @@ check "no pending obligations: allow (no output)" '[ -z "$OUT" ]'
 
 reset_state
 ups s10 "$WELLFORMED"
+eval_peer "P.latestTurnMarker('s10').status"
+check "brief turn arms the marker" '[ "$OUT" = armed ]'
+
 stop s10
-check "1st stop with pending obligation: blocks" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
+check "1st stop, armed by the brief turn: blocks (regression)" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
 check "block reason names the task"      'printf "%s" "$OUT" | grep -q "spec-review"'
 check "block reason names the from_name" 'printf "%s" "$OUT" | grep -q "orchestrator-x"'
 check "block reason gives the reply instruction" 'printf "%s" "$OUT" | grep -q "SendMessage it now with to:"'
 check "block reason names the from address" 'printf "%s" "$OUT" | grep -q "uds:/tmp/cc-socks/12345.sock"'
+eval_peer "P.latestTurnMarker('s10').status"
+check "armed outcome (block) disarms the marker" '[ "$OUT" = disarmed ]'
 
+# ---- disarm is consumed: a second consecutive Stop, with no new peer-delivered
+#      turn in between, allows and does NOT touch the nudge count
 stop s10
-check "2nd stop, still unresolved: blocks again" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
+check "2nd consecutive stop, no new arm: allows (disarm consumed)" '[ -z "$OUT" ]'
+eval_peer "P.pendingFor('s10')[0].nudges"
+check "2nd consecutive stop: nudge count unchanged" '[ "$OUT" = 1 ]'
 
+# ---- a typed prompt (no wrapper) never arms, even with a pending obligation,
+#      so its Stop allows without touching the nudge count either
+ups s10 "a perfectly ordinary typed prompt, not wrapped at all"
+eval_peer "P.latestTurnMarker('s10').status"
+check "typed prompt: does not arm (still disarmed)" '[ "$OUT" = disarmed ]'
 stop s10
-check "3rd stop, still unresolved: waived, allowed (no output)" '[ -z "$OUT" ]'
+check "typed-prompt turn with pending obligation: Stop allows" '[ -z "$OUT" ]'
+eval_peer "P.pendingFor('s10')[0].nudges"
+check "typed-prompt turn: nudge count unchanged" '[ "$OUT" = 1 ]'
+
+# ---- a wrapped non-brief message (a "ping") with a pending obligation re-arms
+ups s10 "$NO_SENTINEL"
+eval_peer "P.latestTurnMarker('s10').status"
+check "ping (wrapped, no sentinel) with pending obligation arms" '[ "$OUT" = armed ]'
+stop s10
+check "ping-armed turn: Stop nudges again (nudge #2)" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
+eval_peer "P.pendingFor('s10')[0].nudges"
+check "nudge count now 2" '[ "$OUT" = 2 ]'
+
+# ---- a second ping re-arms once more; the cap is reached and it is waived
+ups s10 "$NO_SENTINEL"
+stop s10
+check "3rd armed stop: waived, allowed (no output)" '[ -z "$OUT" ]'
 eval_peer "P.pendingFor('s10').length"
 check "waived obligation no longer counts as pending" '[ "$OUT" = 0 ]'
 
@@ -216,6 +247,8 @@ reset_state
 ups s11 "$WELLFORMED"
 stop s11 true
 check "stop_hook_active:true always allows, even with pending obligations" '[ -z "$OUT" ]'
+eval_peer "P.latestTurnMarker('s11').status"
+check "stop_hook_active: disarms the marker too" '[ "$OUT" = disarmed ]'
 
 reset_state
 ups s12 "$WELLFORMED"
@@ -243,6 +276,46 @@ reset_state
 printf 'not json at all\nalso not json\n' > "$STATE_FILE"
 stop s15
 check "state file is ENTIRELY corrupt: fails open, allows" '[ $RC -eq 0 ] && [ -z "$OUT" ]'
+
+# =====================================================================
+# 7. Amendment 2: arm/disarm turn markers — remaining standalone cases
+# =====================================================================
+
+# ---- a typed prompt in a session with NO pending obligations arms nothing
+reset_state
+ups s17 "just a normal typed prompt, no wrapper, no pending obligations at all"
+eval_peer "P.latestTurnMarker('s17')"
+check "typed prompt, no pending obligations: no marker recorded" '[ "$OUT" = null ]'
+
+# ---- marker records do not disturb pendingFor or resolution
+reset_state
+ups s18 "$WELLFORMED"
+eval_peer "P.pendingFor('s18').length"
+check "marker records present: pendingFor still reports exactly one obligation" '[ "$OUT" = 1 ]'
+ptu s18 "uds:/tmp/cc-socks/12345.sock"
+eval_peer "P.pendingFor('s18').length"
+check "marker records present: resolution still works normally" '[ "$OUT" = 0 ]'
+
+# ---- full lifecycle: brief -> nudge#1 -> user turns free -> ping -> nudge#2 -> ping -> waived
+reset_state
+ups s19 "$WELLFORMED"
+stop s19
+check "lifecycle: brief turn nudges (#1)" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
+
+ups s19 "chatting about something unrelated"
+ups s19 "another unrelated typed message"
+stop s19
+check "lifecycle: user turns free, no nudge consumed" '[ -z "$OUT" ]'
+
+ups s19 "$NO_SENTINEL"
+stop s19
+check "lifecycle: ping re-arms, nudges (#2)" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
+
+ups s19 "$NO_SENTINEL"
+stop s19
+check "lifecycle: second ping, cap reached -> waived" '[ -z "$OUT" ]'
+eval_peer "P.pendingFor('s19').length"
+check "lifecycle: obligation waived, no longer pending" '[ "$OUT" = 0 ]'
 
 echo "----"
 echo "SUMMARY: $PASS passed, $FAIL failed"

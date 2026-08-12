@@ -243,7 +243,9 @@ peer's turn from ending while a reply is still owed — nudging at most twice
 per obligation before waiving it, so a broken or unresolvable brief can never
 trap a session. State lives in
 `~/.claude/agent-hierarchy.peer-pending.jsonl`, append-only and
-session-scoped like the rest of this plugin's state.
+session-scoped like the rest of this plugin's state. Enforcement arms only on
+a peer-delivered turn — a brief, a ping, or any other wrapped message — so
+directly chatting with a tasked peer neither triggers a nudge nor spends one.
 
 ## Commands
 

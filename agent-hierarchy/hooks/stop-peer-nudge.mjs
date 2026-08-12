@@ -11,12 +11,26 @@
  * below is written to read sensibly there.
  *
  * Loop guards, all mandatory — this must never trap a session:
- *   - `stop_hook_active: true` always allows immediately, no re-check.
+ *   - `stop_hook_active: true` disarms the turn marker if it is armed, then
+ *     always allows immediately, no re-check.
  *   - Each (session, task, from) obligation is blocked at most MAX_NUDGES
  *     times (tracked via an incrementing `nudges` field re-appended on the
  *     pending record); once exhausted it is marked "waived" and the stop is
  *     allowed even though nothing was ever sent.
  *   - Any read/parse failure anywhere in this hook allows the stop.
+ *
+ * Amendment 2 (interactive peers): a peer session doubles as an interactive
+ * one, so enforcement must fire on the peer's own tasking-related turns, not
+ * on every turn a user happens to chat through while a report is owed — that
+ * would burn the nudge budget on unrelated turns and pressure a premature
+ * reply. The check order is now: subagent -> allow; stop_hook_active ->
+ * disarm-if-armed, allow; no pending obligations -> allow; the session's
+ * latest turn marker (armed by UserPromptSubmit tracking on a peer-delivered
+ * turn — see that hook) is absent or "disarmed" -> allow WITHOUT touching any
+ * nudge count (the user-turn exemption: the user drove this turn, not the
+ * peer); otherwise (armed) -> the existing nudge/waive logic below, and in
+ * EVERY armed outcome (block OR everything-just-waived) the marker is
+ * disarmed, so one armed marker licenses at most one enforcement pass.
  *
  * No-ops (allows) for subagents (same `agent_id` discriminator as the rest of
  * the plugin) — a subagent's report is structural, not something this
@@ -24,7 +38,7 @@
  */
 
 import { isSubagent, readHookInput } from "./lib-config.mjs";
-import { appendPeerRecord, MAX_NUDGES, pendingFor } from "./lib-peer.mjs";
+import { appendPeerRecord, appendTurnMarker, latestTurnMarker, MAX_NUDGES, pendingFor } from "./lib-peer.mjs";
 
 function allow() {
   process.exit(0);
@@ -39,16 +53,29 @@ function owedLine(rec) {
   return `you were tasked as a peer (task ${rec.task}) by ${rec.from_name} and have not sent your report: SendMessage it now with to:"${rec.from}"`;
 }
 
+function disarmIfArmed(sessionId) {
+  const marker = latestTurnMarker(sessionId);
+  if (marker && marker.status === "armed") appendTurnMarker(sessionId, "disarmed");
+}
+
 try {
   const input = await readHookInput();
   if (isSubagent(input)) allow();
-  if (input.stop_hook_active === true) allow();
 
   const sessionId = typeof input.session_id === "string" ? input.session_id : "";
+
+  if (input.stop_hook_active === true) {
+    if (sessionId) disarmIfArmed(sessionId);
+    allow();
+  }
+
   if (!sessionId) allow();
 
   const owed = pendingFor(sessionId);
   if (owed.length === 0) allow();
+
+  const marker = latestTurnMarker(sessionId);
+  if (!marker || marker.status !== "armed") allow(); // user-turn exemption: no nudge count touched
 
   const toNudge = [];
   const now = new Date().toISOString();
@@ -62,6 +89,9 @@ try {
       toNudge.push(updated);
     }
   }
+
+  // Every armed outcome consumes the marker, whether it blocks or everything just got waived.
+  appendTurnMarker(sessionId, "disarmed");
 
   if (toNudge.length === 0) allow();
 
