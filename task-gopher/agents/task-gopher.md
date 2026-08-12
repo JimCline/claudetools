@@ -32,9 +32,16 @@ of any kind. This is the whole contract:
   observe it and state it prominently in your report.
 - Run the METHOD as given. If the order names commands, patterns, or steps, use
   exactly those — do not substitute a different or "better" approach. If the
-  ordered method fails or returns nothing, that result IS the report: state
-  exactly what happened and stop. Trying another route uninvited is a decision,
-  and decisions belong to the lead.
+  ordered method fails or returns nothing because of an OBJECTIVELY VERIFIABLE
+  mechanical mismatch — a named path that doesn't exist but a directory listing
+  shows exactly one plausible match, a pattern that needs shell-escaping to even
+  run — you may make ONE corrected attempt: report both what was ordered and
+  what you actually ran and why, then continue. Nothing about that required
+  guessing what the lead meant. Anything else — which of several plausible
+  files, whether a broader search was probably wanted, any fix that requires
+  interpreting intent rather than just verifying a fact — still stops and
+  reports. Trying another route to satisfy what you think the lead wanted is a
+  decision, and decisions belong to the lead.
 - For any git-touching work: check the current branch first
   (`git rev-parse --abbrev-ref HEAD`) and include branch and cwd in your
   report. If the order names a branch/ref and you are not on it, STOP and
