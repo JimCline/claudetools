@@ -37,14 +37,41 @@ BASE='"version":1,"enabled":true'
 
 # ---- 1. no dispatch/peer keys at all (every config written before this
 #         feature existed) -> resolves to dispatch:"peer", peer:"auto",
-#         reproducing today's behavior exactly. Load-bearing regression guard.
+#         reproducing today's RESOLVED VALUES exactly. Load-bearing regression
+#         guard for the config-resolution rule. The DIRECTIVE TEXT for an
+#         unconfirmed "auto" now points at the one-time PEER NAME CONFIRMATION
+#         flow instead of asserting the convention name silently (Change: the
+#         Orchestrator now confirms a role's peer name with the user once,
+#         even on an exact convention match, rather than trusting it blind).
 clear_cfgs
 proj_cfg "{$BASE,\"roles\":{\"architect\":{\"model\":\"opus\"}}}"
 eval_js "r.roles.architect.dispatch + '|' + r.roles.architect.peer"
 check "no dispatch/peer keys -> peer/auto" '[ "$OUT" = "peer|auto" ]'
 eval_js "L.buildDirective(r)"
+EXPECTED='- Architect — peer name not yet confirmed for this repo (see PEER NAME CONFIRMATION below); resolve it before your first dispatch of this role, then use Agent(subagent_type:"agent-hierarchy:architect", model:"opus") as the fallback once resolved.'
+check "no dispatch/peer keys -> directive line points at PEER NAME CONFIRMATION" 'printf "%s" "$OUT" | grep -qF -- "$EXPECTED"'
+check "no dispatch/peer keys -> directive includes the PEER NAME CONFIRMATION section" 'printf "%s" "$OUT" | grep -q "^PEER NAME CONFIRMATION"'
+check "no dispatch/peer keys -> repo-basename convention shown in the confirmation guidance" 'printf "%s" "$OUT" | grep -qF "proj-<role>"'
+
+# ---- 1b. once EVERY peer-eligible role's peer name is explicitly
+#          confirmed/recorded (peer is a literal string, not "auto"), the
+#          directive goes straight back to asserting the peer route with no
+#          confirmation pointer anywhere — the one-time-only guarantee from
+#          the PEER NAME CONFIRMATION flow. Every peer-eligible role must be
+#          given an explicit peer here: any role left unmentioned still
+#          defaults to dispatch:"peer", peer:"auto" (case 1 above), which
+#          would keep the confirmation section present and defeat this case.
+clear_cfgs
+proj_cfg "{$BASE,\"roles\":{\
+\"ultra-advisor\":{\"model\":\"fable\",\"dispatch\":\"peer\",\"peer\":\"proj-ultra-advisor\"},\
+\"architect\":{\"model\":\"opus\",\"dispatch\":\"peer\",\"peer\":\"proj-architect\"},\
+\"reviewer\":{\"model\":\"opus\",\"dispatch\":\"peer\",\"peer\":\"proj-reviewer\"},\
+\"implementor\":{\"model\":\"inherit\",\"dispatch\":\"peer\",\"peer\":\"proj-implementor\"}\
+}}"
+eval_js "L.buildDirective(r)"
 EXPECTED='- Architect — peer "proj-architect" via SendMessage if it appears in ListAgents (default), else Agent(subagent_type:"agent-hierarchy:architect", model:"opus")'
-check "no dispatch/peer keys -> directive line matches convention peer route" 'printf "%s" "$OUT" | grep -qF -- "$EXPECTED"'
+check "confirmed auto-shaped peer name -> directive line matches convention peer route" 'printf "%s" "$OUT" | grep -qF -- "$EXPECTED"'
+check "all roles confirmed -> no PEER NAME CONFIRMATION section" '! printf "%s" "$OUT" | grep -q "^PEER NAME CONFIRMATION"'
 
 # ---- 2. dispatch:"model" -> no peer mention at all on that role's line,
 #         same shape as a non-peer-eligible role (e.g. task-runner).

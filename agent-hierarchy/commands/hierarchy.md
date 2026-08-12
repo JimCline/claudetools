@@ -41,6 +41,15 @@ convention name; any other string (see `reviewer` above) is an explicit peer
 session name. `task-runner` has no `dispatch`/`peer` concept — it keeps its
 own `delegate: "task-gopher"` mechanism.
 
+A role's `peer` name does not have to be settled through this wizard: this
+document's steps 6-9 below run the settling once, up front. A role that
+reaches a session with `peer` still `"auto"` — never run through `init`, or
+hand-added to the config — gets settled lazily instead, the first time the
+Orchestrator actually needs to dispatch it: the injected protocol's PEER NAME
+CONFIRMATION section walks it through the same ranking, the same
+AskUserQuestion shape, and writes the same recorded value back to config.
+Either path is a one-time question per role per repo, not a per-dispatch one.
+
 Resolution rules you must respect in everything below:
 
 - Merge is **shallow per role**: a role object in the project config replaces the

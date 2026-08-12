@@ -333,10 +333,14 @@ export function subagentType(role, entry) {
 
 /**
  * One dispatch line per role. `inherit` renders as "omit the parameter", never
- * as a value. A role whose resolved dispatch is "peer" (see
- * `resolvedPeerTarget`) leads with the named-peer SendMessage route and gives
- * the subagent call as the fallback; a role resolved to "model" — including
- * every non-peer-eligible role — gets the subagent call alone.
+ * as a value. A peer-eligible role still sitting on the unconfirmed
+ * `peer:"auto"` default gets a pointer to PEER NAME CONFIRMATION instead of a
+ * resolved name — the repo-basename convention is a guess, not a settled
+ * answer, until a user has confirmed it once. A role whose peer name IS
+ * already settled (see `resolvedPeerTarget`) leads with the named-peer
+ * SendMessage route and gives the subagent call as the fallback; a role
+ * resolved to "model" — including every non-peer-eligible role — gets the
+ * subagent call alone.
  */
 function roleLines(roles, repoBasename) {
   return ROLES.map((role) => {
@@ -346,6 +350,9 @@ function roleLines(roles, repoBasename) {
       entry.model === "inherit"
         ? `Agent(subagent_type:"${type}") — OMIT \`model\` entirely (inherits this session's model). Never pass "inherit" as a value.`
         : `Agent(subagent_type:"${type}", model:"${entry.model}")`;
+    if (PEER_ELIGIBLE_ROLES.includes(role) && entry.dispatch === "peer" && entry.peer === "auto") {
+      return `- ${ROLE_LABELS[role]} — peer name not yet confirmed for this repo (see PEER NAME CONFIRMATION below); resolve it before your first dispatch of this role, then use ${agentCall} as the fallback once resolved.`;
+    }
     const peer = resolvedPeerTarget(role, entry, repoBasename);
     if (!peer) {
       return `- ${ROLE_LABELS[role]} — ${agentCall}`;
@@ -374,16 +381,41 @@ function gateSentences(sessionId) {
   return lines.join(" ");
 }
 
+/**
+ * Guidance appended once, only when at least one peer-eligible role's config
+ * still has `peer:"auto"` — its peer session name has never been confirmed
+ * for this repo. Mirrors the ranking `/hierarchy init` steps 6-8 already use,
+ * applied lazily at first dispatch instead of only during the wizard, so a
+ * role never run through `init` (or hand-added to the config) still gets its
+ * peer name settled once rather than guessed at on every dispatch forever.
+ */
+function peerConfirmationParagraph(repoBasename) {
+  return [
+    'PEER NAME CONFIRMATION — a role listed above as "peer name not yet confirmed" has a `peer:"auto"` config that has never been settled for this repo. Resolve it ONCE, the first time you actually need to dispatch that role, before dispatching:',
+    `1. Call ListAgents. Look for an exact match on "${repoBasename}-<role>" first (the repo-basename convention).`,
+    "2. If nothing matches and you know this session's own display name (from the UI, or the user has told you), also try \"<that name's prefix>-<role>\" — some setups name peer sessions off a shared custom prefix rather than the repo directory name.",
+    '3. Rank whatever ListAgents shows: (a) exact match on the expected name, (b) contains both the expected prefix and a role-match token ("architect", "reviewer", "implementor", "ultra-advisor"/"advisor"), (c) role-match token only, (d) prefix only, (e) everything else — the same tiers `/hierarchy init` uses.',
+    '4. Ask the user via AskUserQuestion — even an exact match gets this one-time confirmation, never assume it silently. Offer: confirm the top candidate (if any), "pick from a list" of up to the top 4 ranked candidates when 2 or more exist, "type in the exact name", and "no peer — always use a subagent for this role".',
+    '5. Record the answer immediately with the Write tool, editing the most specific `.claude/agent-hierarchy.json` that already exists (project if present, else user), replacing only that role\'s object: `peer:"<confirmed-name>"` (keeping `dispatch:"peer"`) for a confirmed name, or `dispatch:"model"` with `peer` omitted for "no peer" — preserving every other key and role. Say in one line what you recorded and where.',
+    "6. Proceed with THIS dispatch using the resolved route. Every later dispatch of this role in this repo uses the recorded value — you never ask again unless the user changes it via `/hierarchy` or the config file.",
+  ].join("\n");
+}
+
 /** The full SessionStart injection for a configured, enabled session. */
 export function buildDirective(resolved, sessionId) {
   const confirm = resolved.handoffs === "confirm";
   const repoBasename = basename(resolved.cwd);
+  const needsPeerConfirmation = ROLES.some(
+    (role) =>
+      PEER_ELIGIBLE_ROLES.includes(role) && resolved.roles[role].dispatch === "peer" && resolved.roles[role].peer === "auto"
+  );
   const lines = [
     "Agent hierarchy ACTIVE. You are the Orchestrator: decompose, dispatch, synthesize — do not design or implement non-trivial changes yourself.",
     "",
     "Roles — each role's dispatch route (peer session via SendMessage, or always a spawned subagent) is set per role below; legwork (Task-Runner) always spawns or delegates to task-gopher (pass `model` on the Agent call; agent frontmatter is only a fallback). A role listing a peer target tries SendMessage to it first when ListAgents shows it running (Ultra-Advisor's peer route is gated exactly like its subagent route — see item 7), falling back to the subagent otherwise; a role with no peer target listed always spawns the subagent:",
     ...roleLines(resolved.roles, repoBasename),
     "",
+    ...(needsPeerConfirmation ? [peerConfirmationParagraph(repoBasename), ""] : []),
     "PEER BRIEF CONTRACT — a peer session is an independent Claude session: unlike a subagent, NOTHING returns its result to you automatically, and a peer that finishes the work will go idle without telling you unless the brief itself obliges it to report. Every SendMessage that tasks a role peer must therefore:",
     '- Open with the sentinel line `[hierarchy-peer-brief reply-to="sender" task="<short-slug>"]`. reply-to="sender" means: the peer replies to the address in the delivery envelope — your message arrives wrapped as `<cross-session-message from="...">`, and copying that `from` into the reply\'s `to` is the reliable route (the sender is often NOT in the peer\'s ListAgents, so never rely on that). Write an explicit `reply-to="<name> [ref]"` only to redirect the report to a third session.',
     "- Carry the same self-contained brief a subagent would get (spec path, task, constraints) — the peer shares none of your context.",
@@ -397,7 +429,7 @@ export function buildDirective(resolved, sessionId) {
         ]
       : []),
     "1. Gate: binds the top-level Orchestrator only. Role agents never spawn ultra-advisor/architect/reviewer/implementor. They MAY dispatch task-gopher for legwork — that is not recursion.",
-    "2. Scope: the chain governs changes. Analysis, debugging, and research go to Architect (design reasoning) or Task-Runner (retrieval) alone — no Reviewer without a diff.",
+    "2. Scope: the chain governs changes. Analysis, debugging, and research go to Architect (design reasoning) or Task-Runner (retrieval) alone — no Reviewer without a diff. Never dispatch Architect or Ultra-Advisor for a task whose deliverable is only writing, recording, or persisting something you already know — a memory entry, a status note, a file update with no open design question in it. That has no reasoning content: do it yourself, or hand the mechanical write to Task-Runner or Implementor. Dispatch Architect/Ultra-Advisor for the reasoning that produces new judgment, never for the write step alone.",
     "3. Tiers: trivial (one blind Edit, no verification — typo, config value) → do it yourself. Determined (the request fixes the spec; no design choices left) → Implementor, then Reviewer. Everything else → Architect → spec → Implementor → Reviewer, with Ultra-Advisor inserted ahead of the Architect when one of item 7's triggers fires.",
     "4. Spec handoff: generate one unique absolute spec path (scratchpad dir + task slug), dictate it in the Architect's prompt, and give the same path to Implementor and Reviewer. Dispatches are self-contained — subagents share no context.",
     "5. Living spec: if the Implementor reports a spec gap or a deviation is agreed, amend the spec file (yourself, or re-dispatch the Architect for design questions) BEFORE the Reviewer runs. The Reviewer always validates against the current spec.",
