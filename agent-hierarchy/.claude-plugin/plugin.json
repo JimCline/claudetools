@@ -1,7 +1,7 @@
 {
   "name": "agent-hierarchy",
   "displayName": "Agent Hierarchy — Role/Model Assignment",
-  "version": "0.22.0",
+  "version": "0.23.0",
   "description": "Runs work through a six-role agent hierarchy — Orchestrator, Ultra-Advisor, Architect, Reviewer, Implementor, Task-Runner — with a per-role model you pick once via /hierarchy. A SessionStart hook injects the role→model table and the orchestration protocol so design, implementation, and review stay separated, each step runs on the cheapest model that can do it, and the hardest calls escalate to the Ultra-Advisor. A PreToolUse hook gates escalation on you: the first Ultra-Advisor dispatch of each session is blocked until you approve it, and you choose whether to allow the rest of the session, be asked each time, or block it outright. A SubagentStop hook records every subagent's token usage from its transcript at zero model cost; /hierarchy usage renders per-role session, daily, weekly, and monthly reports.",
   "author": {
     "name": "Jim Cline"
