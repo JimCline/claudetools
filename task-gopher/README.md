@@ -112,6 +112,91 @@ what does that code look like?"* — not *"send me all of foo.ts."* If you can't
 a compact expected output smaller than the source, narrow it or do it yourself.
 The gopher's own prompt backs this up: it distills rather than pasting whole files.
 
+## The runner never destroys, and never publishes
+
+A runner that makes no judgments must not be allowed to take actions that
+*require* one. The dangerous shape is not a runner deciding to delete something
+— it is a runner whose ordered command **fails**, reaching for a bigger hammer
+to make it succeed. `git worktree remove` becomes `git worktree remove
+--force`, and the safety that just refused was the only thing standing between
+the order and the work it destroyed.
+
+So a PreToolUse guard classifies every `Bash` command the runner makes and, per
+pipeline stage, **asks you to approve it** — the risk is yours, so the
+acceptance has to be yours too. What it intercepts:
+
+- **Destruction** — `rm -rf`/`rm -f`, `git reset --hard`, `git clean -fdx`,
+  `git worktree remove`/`prune`, `git branch -D`, `git restore`,
+  `git checkout --`, `git rebase`, `git commit --amend`, `git stash drop`,
+  history rewrites, `find -delete`, in-place `sed -i`, recursive
+  `chmod`/`chown`, `rsync --delete`, `dd`, `shred`, `docker`/`kubectl`/`helm`
+  teardown, `terraform destroy`/`apply`, `dropdb`, SQL `DROP`/`TRUNCATE`.
+- **Anything that leaves the machine** — `git push`, `gh pr`/`issue`/`release`
+  writes, `npm`/`cargo`/`gem`/`poetry` publish, write-method `curl`.
+
+The guard runs whether or not the delegation directive is toggled on, because
+the agent stays dispatchable either way — and it applies **only** to
+task-gopher. Nobody else's hands are tied.
+
+### Why it asks you and not the lead
+
+The obvious shortcut is to let the dispatching model authorize the command:
+it's the expensive reasoner, it has the context, and it would save you an
+interruption. It is still the wrong answer. One model vouching for another is
+not informed consent — it is the same failure one level up, and the thing being
+risked (your work, your repo, your production database) is not the model's to
+risk.
+
+So the guard asks **every time**, including when the lead pre-authorized the
+command. The authorization is not ignored; it appears *inside* the prompt as
+context, so you can see that the lead intended this:
+
+```
+Reinstall dependencies in /Users/me/proj.
+ALLOW-DESTRUCTIVE: rm -rf /Users/me/proj/node_modules
+Then run `npm install` and report the exit code.
+```
+
+→ the prompt tells you the runner wants `rm -rf /Users/me/proj/node_modules`,
+that the runner cannot judge whether that is correct, and that its lead vouched
+for this exact command. You still decide.
+
+Verbatim matching is what makes that disclosure trustworthy: a different path
+is a different command, and a command merely *mentioned* in the order's prose
+grants nothing.
+
+### When nobody is at the keyboard
+
+A prompt is worthless in an unattended run, so the guard checks the session's
+`permission_mode` first. In `default`, `acceptEdits`, and `plan` it asks. In
+`auto`, `dontAsk`, and `bypassPermissions` — modes that exist precisely to stop
+asking — no prompt would reach a person, so it **denies** instead, and says so
+in the denial. An `ALLOW-DESTRUCTIVE` line is the only release there, which is
+what it is really for: pre-committing to a specific command in a run you won't
+be watching.
+
+If the payload carries no permission mode at all, that counts as unaskable too.
+The guard never gambles that someone is watching.
+
+### Guard modes
+
+`~/.claude/task-gopher.guard` holds one word; absent means `ask`.
+
+| mode | behavior |
+| --- | --- |
+| `ask` *(default)* | prompt you every time; deny where no prompt can reach you |
+| `block` | never prompt — hard-deny, releasable only by `ALLOW-DESTRUCTIVE` |
+| `off` | no guard |
+
+Set it with `/task-gopher guard ask|block|off`.
+
+### What it does not catch
+
+Pattern matching is not a shell parser. A command hidden in a variable, a
+base64 blob, or a script file that does the deleting will get through — this
+stops improvisation, not an adversary. Prompts, denials, and authorized runs
+are all written to the audit log; `/task-gopher report` prints them.
+
 ## Who may delegate — the tier gate
 
 Delegation is gated by **model tier, not by position in the agent tree**: *any*

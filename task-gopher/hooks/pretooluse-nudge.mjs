@@ -47,6 +47,21 @@
  * task-gopher itself are exempt at the top of the script, so the runner never
  * pays it.
  *
+ * DESTRUCTIVE GUARD (active whenever the plugin is INSTALLED, on or off): the
+ * runner's own Bash calls are classified, and any stage that destroys local
+ * state or leaves the machine raises a permission prompt so a PERSON accepts
+ * the risk. It asks every time — including when the lead pre-authorized the
+ * command with an `ALLOW-DESTRUCTIVE:` line, which appears IN the prompt as
+ * context rather than skipping it, because one model vouching for another is
+ * not informed consent. Where no prompt can reach a human (guard set to
+ * `block`, or a permission mode like bypassPermissions/dontAsk/auto), it falls
+ * back to denying unless that written authorization exists.
+ *
+ * Unlike everything else here it does not respect the ON toggle, because the
+ * agent stays dispatchable when the delegation directive is off — and a runner
+ * with unrestricted `rm -rf` is exactly as dangerous either way. See
+ * destructive.mjs.
+ *
  * HONEST LIMITS: the checkpoint cannot verify the agent *genuinely*
  * reconsidered — a re-run always passes. And the relay depends on the harness
  * honoring `updatedInput` on the Agent tool; if a future version stops doing
@@ -60,11 +75,14 @@
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { cannotDispatch } from "./agent-tools.mjs";
+import { askMessage, classify, denyMessage, isAllowed, recordAllowances } from "./destructive.mjs";
 import {
   FULL_DIRECTIVE,
   LOG_FILE,
   NUDGE_FILE,
   SENTINEL,
+  canAskHuman,
+  guardMode,
   isEnabled,
   isStrict,
   isTaskGopherAgent,
@@ -121,6 +139,20 @@ const deny = (reason) => {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
+        permissionDecisionReason: reason,
+      },
+    })
+  );
+  process.exit(0);
+};
+
+/** Hand the decision to the user. The reason text is what they see in the dialog. */
+const ask = (reason) => {
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "ask",
         permissionDecisionReason: reason,
       },
     })
@@ -318,16 +350,78 @@ function nudgeMessage(payload, bypasses) {
 }
 
 try {
-  if (!isEnabled()) allow();
-
   const raw = readFileSync(0, "utf8");
   if (!raw.trim()) allow();
 
   const payload = JSON.parse(raw);
-  if (isTaskGopherAgent(payload)) allow(); // never gate the gopher's own tool use
-
   const pid = typeof payload.prompt_id === "string" ? payload.prompt_id : "";
   const aid = typeof payload.agent_id === "string" ? payload.agent_id : "";
+  const sid = typeof payload.session_id === "string" ? payload.session_id : "";
+
+  // Runs before the ON check: the guard protects against the agent, not against
+  // the directive, and the agent exists whenever the plugin is installed.
+  if (isTaskGopherAgent(payload)) {
+    const mode = guardMode();
+    if (payload.tool_name === "Bash" && mode !== "off") {
+      const hits = classify(payload?.tool_input?.command);
+      if (hits.length) {
+        const detail = hits.map((h) => h.stage).join(" ; ").slice(0, 300);
+        const labels = hits.map((h) => h.label);
+        const preauthorized = hits.every((h) => isAllowed(sid, h.stage));
+
+        // ASK, even when the lead pre-authorized. A lead's ALLOW-DESTRUCTIVE
+        // line is one model vouching for another; the risk is the user's to
+        // accept, so the authorization becomes CONTEXT IN the prompt rather
+        // than a way around it.
+        if (mode === "ask" && canAskHuman(payload)) {
+          logEvent({ pid, aid, event: "destructive-ask", tool: "Bash", detail, labels, preauthorized });
+          ask(askMessage(hits, preauthorized));
+        }
+
+        // Either the guard is set to block outright, or the session runs in a
+        // permission mode where no prompt reaches anyone. Both fall back to the
+        // lead's written authorization as the only remaining release.
+        if (!preauthorized) {
+          const unaskable = mode === "ask" ? payload.permission_mode || "unknown" : "";
+          logEvent({
+            pid,
+            aid,
+            event: "destructive-blocked",
+            tool: "Bash",
+            detail,
+            labels,
+            why: unaskable ? `no-human:${unaskable}` : "guard-mode:block",
+          });
+          deny(denyMessage(hits, unaskable));
+        }
+        logEvent({ pid, aid, event: "destructive-allowed", tool: "Bash", detail });
+      }
+    }
+    allow(); // otherwise never gate the gopher's own tool use
+  }
+
+  // Authorization is recorded before the ON check for the same reason the guard
+  // runs there — a guard that is live while the plugin is off needs a release
+  // valve that is live too.
+  if (payload.tool_name === "Agent" || payload.tool_name === "Task") {
+    const t = payload.tool_input || {};
+    const st = typeof t.subagent_type === "string" ? t.subagent_type : "";
+    if (st.includes("task-gopher")) {
+      const authorized = recordAllowances(sid, t.prompt);
+      if (authorized.length) {
+        logEvent({
+          pid,
+          aid,
+          event: "destructive-allowance",
+          tool: payload.tool_name,
+          detail: authorized.join(" ; ").slice(0, 300),
+        });
+      }
+    }
+  }
+
+  if (!isEnabled()) allow();
+
   const key = contextKey(payload);
 
   if (payload.tool_name === "Agent" || payload.tool_name === "Task") {

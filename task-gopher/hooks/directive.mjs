@@ -52,9 +52,61 @@ export function readRelayExempt() {
 
 
 /**
+ * How the destructive guard resolves a destructive or outward-facing command
+ * from the runner. File contents, not existence — three states need three
+ * values, and the marker-file idiom only carries two.
+ *
+ * - `ask` (DEFAULT, and what the plugin exists to do): raise a permission
+ *   prompt so a PERSON decides. The runner cannot judge the risk and neither
+ *   can its lead — an agent authorizing an agent is not informed consent.
+ * - `block`: hard-deny, releasable only by the lead's written
+ *   ALLOW-DESTRUCTIVE line. Correct for unattended runs where no one is at the
+ *   keyboard to answer a prompt.
+ * - `off`: no guard at all.
+ */
+export const GUARD_FILE = join(homedir(), ".claude", "task-gopher.guard");
+
+export function guardMode() {
+  try {
+    const v = readFileSync(GUARD_FILE, "utf8").trim().toLowerCase();
+    if (v === "block" || v === "off" || v === "ask") return v;
+  } catch {
+    // absent or unreadable -> the default
+  }
+  return "ask";
+}
+
+/**
+ * Permission modes in which a prompt actually reaches a human. `auto`,
+ * `dontAsk`, and `bypassPermissions` all exist precisely to stop asking, and
+ * the hook docs do not say what becomes of an `ask` decision inside them — an
+ * `ask` that is silently auto-approved would be the exact failure this guard
+ * exists to prevent, so those modes fall back to denying instead.
+ *
+ * An ABSENT mode is treated as unaskable for the same reason: if the payload
+ * cannot tell us a person is reachable, we do not gamble that one is.
+ * (Modes per the hook docs: default, plan, acceptEdits, auto, dontAsk,
+ * bypassPermissions.)
+ */
+const ASKABLE_PERMISSION_MODES = new Set(["default", "acceptEdits", "plan"]);
+
+export function canAskHuman(input) {
+  const mode = input && input.permission_mode;
+  return typeof mode === "string" && ASKABLE_PERMISSION_MODES.has(mode);
+}
+
+/**
+ * Commands the lead has explicitly authorized the runner to execute despite the
+ * destructive guard, one `sessionId\tcommand` per line. Written when a dispatch
+ * carrying `ALLOW-DESTRUCTIVE:` lines goes out; read when the runner's Bash call
+ * is classified. See destructive.mjs.
+ */
+export const ALLOW_FILE = join(homedir(), ".claude", "task-gopher.allow");
+
+/**
  * Append-only JSONL audit log. Checkpoint/bypass lines require strict mode;
- * dispatch and relay-ok/relay-injected lines are written whenever the plugin
- * is ON.
+ * dispatch, relay-ok/relay-injected, and destructive-guard lines are written
+ * whenever the plugin is installed.
  */
 export const LOG_FILE = join(homedir(), ".claude", "task-gopher.log");
 
@@ -149,6 +201,8 @@ export const FULL_DIRECTIVE = [
   "- WHAT IF: what to do on failure or an empty result — almost always \"report the exact error/empty outcome and stop\". Never leave it free to try an alternative method uninvited.",
   "If you cannot fill in all four, the step still contains a judgment call — resolve it yourself FIRST, then dispatch. Handing Haiku an order with room for judgment does not delegate the judgment; it randomizes it.",
   "",
+  'DESTRUCTIVE AND OUTWARD-FACING WORK IS NOT THE RUNNER\'S. A PreToolUse guard intercepts any Bash stage from task-gopher that destroys local state (`rm -rf`, `git reset --hard`, `git clean -fd`, `git worktree remove`, `git branch -D`, `git rebase`, `git restore`, `docker`/`kubectl`/`terraform` teardown, in-place `sed -i`) or that leaves the machine (`git push`, `gh pr`/`release` writes, `npm publish`, `curl -X POST`), and asks THE USER to approve it. Neither the runner nor you can consent on their behalf, so do not plan around the prompt: assume a person will be interrupted and decide. If you believe a specific destructive command is right, you may state so with a line reading "ALLOW-DESTRUCTIVE: <the exact command>" in the dispatch prompt — that is a recommendation shown to the user in the prompt, NOT a bypass, and it becomes the release only where no one can be asked (unattended runs). Prefer running destructive steps yourself over authorizing them.',
+  "",
   "Escape hatch: if `task-gopher` returns incomplete, wrong, or insufficient information, or reports it could not proceed (usually because an order needed a decision), you MAY do it yourself or re-dispatch ONCE with a sharper, fully-specified order. Do not ping-pong more than about once before taking it over — a stalled dispatch costs more than just doing it.",
   "",
   "Relay is automatic — do NOT copy this directive into subagent prompts yourself. Subagents do not inherit it, so a PreToolUse hook stamps it onto dispatch prompts in flight, skipping the ones that would be wasted: task-gopher itself, and any agent whose tool list gives it no Agent/Task tool to dispatch with. Writing it out by hand would just spend your own output tokens on something the harness already did.",
@@ -156,4 +210,4 @@ export const FULL_DIRECTIVE = [
 
 /** Compact per-turn reminder — injected at UserPromptSubmit to keep the behavior alive. */
 export const SHORT_REMINDER =
-  "[task-gopher: ON] If you are Sonnet-tier or higher (any agent, top-level or subagent): by DEFAULT dispatch tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders, and keep reasoning for yourself. A complete order names WHERE (paths, branch for git work), HOW (exact commands/method), WHAT BACK (format + every-match-or-first-N completeness), and WHAT IF (on failure: report and stop) — the runner fills no gaps and may not notice them. Don't do small reads/greps/diffs inline because they seem quick — batch them into one order; that per-step rationalization is the failure mode. Order NARROW queries (grep/answer/summary that come back smaller than the source), never \"read the whole file and send it back\" — if you need a full file, read it yourself. If you are Haiku-tier or have no Agent tool, ignore this. Escape hatch: take it over if the runner fails or returns too little. Don't copy this directive into subagent prompts — a hook stamps it onto the dispatches that can use it automatically.";
+  "[task-gopher: ON] If you are Sonnet-tier or higher (any agent, top-level or subagent): by DEFAULT dispatch tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders, and keep reasoning for yourself. A complete order names WHERE (paths, branch for git work), HOW (exact commands/method), WHAT BACK (format + every-match-or-first-N completeness), and WHAT IF (on failure: report and stop) — the runner fills no gaps and may not notice them. Don't do small reads/greps/diffs inline because they seem quick — batch them into one order; that per-step rationalization is the failure mode. Order NARROW queries (grep/answer/summary that come back smaller than the source), never \"read the whole file and send it back\" — if you need a full file, read it yourself. If you are Haiku-tier or have no Agent tool, ignore this. Destructive and outward-facing commands (rm -rf, git reset --hard/clean/worktree remove/branch -D/rebase, push, publish, PR writes, infra teardown) from the runner are intercepted by a guard that asks THE USER to approve them — you cannot consent for them, so prefer doing those steps yourself rather than dispatching them. Escape hatch: take it over if the runner fails or returns too little. Don't copy this directive into subagent prompts — a hook stamps it onto the dispatches that can use it automatically.";

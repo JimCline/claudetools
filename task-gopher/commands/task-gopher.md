@@ -1,6 +1,6 @@
 ---
-description: Toggle task-gopher (Haiku delegation), strict mode, and audit report. Usage: /task-gopher [on|off|status|strict [on|off]|report|log clear|relay-exempt [list|add|remove] <agent-type>]
-argument-hint: "[on|off|status|strict [on|off]|report|log clear|relay-exempt [list|add|remove] <agent-type>]"
+description: Toggle task-gopher (Haiku delegation), strict mode, the destructive guard, and audit report. Usage: /task-gopher [on|off|status|strict [on|off]|report|log clear|guard [ask|block|off|status]|allow [list|clear]|relay-exempt [list|add|remove] <agent-type>]
+argument-hint: "[on|off|status|strict [on|off]|report|log clear|guard [ask|block|off|status]|allow [list|clear]|relay-exempt [list|add|remove] <agent-type>]"
 ---
 
 The user ran `/task-gopher` with argument: `$ARGUMENTS`
@@ -16,6 +16,17 @@ task-gopher uses these files under `~/.claude/`:
   whose definition file declares a `tools:` list without `Agent`/`Task`; this file
   covers the ones it cannot read, notably SDK-defined agents that have no file on
   disk. Exempting an agent that CAN dispatch just means it stops being told to.
+- `task-gopher.guard` — how the destructive guard resolves a destructive or
+  outward-facing Bash command from the runner. Contents, not existence: `ask`
+  (default when the file is absent — prompt the USER to approve, every time),
+  `block` (hard-deny), or `off`. The guard is NOT part of the on/off toggle: it
+  is live whenever the plugin is installed, since the runner stays dispatchable
+  while the delegation directive is off.
+- `task-gopher.allow` — commands the lead has vouched for, one
+  `sessionId<TAB>command` per line, written when a dispatch prompt carries an
+  `ALLOW-DESTRUCTIVE: <exact command>` line. In `ask` mode this does NOT skip
+  the prompt — it is disclosed inside it. It becomes the actual release only in
+  `block` mode, or where the permission mode means no prompt can reach a human.
 
 Pick the ONE case matching the argument and run its command with the Bash tool:
 
@@ -34,6 +45,18 @@ Pick the ONE case matching the argument and run its command with the Bash tool:
   Show its output verbatim to the user; do not summarize or re-run any retrievals yourself.
 - **`log clear`** (wipe the audit log): run
   `rm -f ~/.claude/task-gopher.log && echo "task-gopher: audit log cleared"`
+- **`guard`** / `guard status`:
+  `M=ask; [ -f ~/.claude/task-gopher.guard ] && M=$(tr -d "[:space:]" < ~/.claude/task-gopher.guard); case "$M" in ask|block|off) ;; *) M="ask (unrecognized value, using default)";; esac; echo "task-gopher destructive guard: $M"`
+- **`guard ask`** (prompt the user to approve every destructive/outward command):
+  `mkdir -p ~/.claude && printf 'ask\n' > ~/.claude/task-gopher.guard && echo "task-gopher guard: ASK (you approve each one)"`
+- **`guard block`** (never prompt; hard-deny unless the lead wrote ALLOW-DESTRUCTIVE):
+  `mkdir -p ~/.claude && printf 'block\n' > ~/.claude/task-gopher.guard && echo "task-gopher guard: BLOCK"`
+- **`guard off`** (no guard at all — the runner may destroy and publish freely):
+  `mkdir -p ~/.claude && printf 'off\n' > ~/.claude/task-gopher.guard && echo "task-gopher guard: OFF (runner is unrestricted)"`
+- **`allow list`** (show the destructive-guard authorizations recorded so far):
+  `if [ -s ~/.claude/task-gopher.allow ]; then cat ~/.claude/task-gopher.allow; else echo "no ALLOW-DESTRUCTIVE authorizations recorded"; fi`
+- **`allow clear`** (revoke them all):
+  `rm -f ~/.claude/task-gopher.allow && echo "task-gopher: destructive authorizations cleared"`
 - **`relay-exempt`** / `relay-exempt list`:
   `if [ -s ~/.claude/task-gopher.relay-exempt ]; then echo "relay-exempt:"; grep -v '^\s*\(#\|$\)' ~/.claude/task-gopher.relay-exempt; else echo "relay-exempt: (empty — no user exemptions)"; fi`
 - **`relay-exempt add <agent-type>`** (use the exact namespaced `subagent_type`,

@@ -53,6 +53,9 @@ function main() {
   const relayOk = events.filter((e) => e.event === "relay-ok");
   const relayInjected = events.filter((e) => e.event === "relay-injected");
   const relaySkipped = events.filter((e) => e.event === "relay-skip");
+  const blocked = events.filter((e) => e.event === "destructive-blocked");
+  const authorized = events.filter((e) => e.event === "destructive-allowed");
+  const asked = events.filter((e) => e.event === "destructive-ask");
   const turns = new Set(events.map((e) => e.pid).filter(Boolean)).size;
 
   // Only dispatches from turns the strict gate actually saw count toward the
@@ -102,6 +105,28 @@ function main() {
       .map(([r, n]) => `${r} ${n}`)
       .join(", ");
     console.log(`relay skipped:   ${relaySkipped.length} dispatches to agents that can't delegate (${reasons})`);
+  }
+
+  // The guard's own trail. Interceptions are shown in full rather than counted:
+  // each one is a command the runner was about to run and could not judge,
+  // which is the single most useful thing this log holds. The ask count is what
+  // the guard cost a human in interruptions — if it climbs, the leads are
+  // dispatching destructive work instead of running it themselves.
+  if (blocked.length || authorized.length || asked.length) {
+    console.log(
+      `destructive guard: ${asked.length} put to you for approval, ${blocked.length} denied outright, ` +
+        `${authorized.length} run under an explicit ALLOW-DESTRUCTIVE`
+    );
+    const preauth = asked.filter((a) => a.preauthorized).length;
+    if (preauth) {
+      console.log(`  (${preauth} of those prompts carried a lead's ALLOW-DESTRUCTIVE recommendation)`);
+    }
+    for (const b of [...asked, ...blocked].slice(-RECENT)) {
+      const labels = Array.isArray(b.labels) ? ` [${b.labels.join(", ")}]` : "";
+      const what = b.event === "destructive-ask" ? "asked" : "blocked";
+      const why = b.why ? ` (${b.why})` : "";
+      console.log(`  - ${what}: ${b.detail || "?"}${labels}${why}`);
+    }
   }
 
   const recent = bypasses.slice(-RECENT);
