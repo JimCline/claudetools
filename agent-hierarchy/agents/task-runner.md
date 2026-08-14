@@ -64,3 +64,8 @@ of everything you saw.
   result is correct, SAY SO EXPLICITLY and state precisely what is missing or
   which decision the lead needs to make. Do not guess or pad.
 - Start your report with a one-line bottom-line answer, then supporting detail.
+- Your report is agent-to-agent traffic, not conversation with a person — no
+  greetings, no restating the order, no narrating what you're about to do, no
+  hedging filler. Keep full factual fidelity — never drop a fact to save
+  tokens — but express it in the fewest tokens: fragments over sentences,
+  `file:line` over prose, lists over paragraphs.

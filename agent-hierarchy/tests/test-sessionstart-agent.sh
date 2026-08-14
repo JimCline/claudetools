@@ -40,28 +40,28 @@ classify() { # <field> <value> -> "true"/"false" from the named predicate
 
 # ---- 1-3: the discriminator itself
 check "isSubagent: agent_id set -> true" \
-  '[ "$(classify "{\"agent_id\":\"a1\",\"agent_type\":\"agent-hierarchy:architect\"}" isSubagent)" = true ]'
+  '[ "$(classify "{\"agent_id\":\"a1\",\"agent_type\":\"ah:architect\"}" isSubagent)" = true ]'
 # This is the bug. It must fail against the pre-fix code.
 check "isSubagent: agent_type set, no agent_id -> FALSE" \
-  '[ "$(classify "{\"agent_type\":\"agent-hierarchy:architect\"}" isSubagent)" = false ]'
+  '[ "$(classify "{\"agent_type\":\"ah:architect\"}" isSubagent)" = false ]'
 check "isSubagent: neither set -> false" \
   '[ "$(classify "{\"session_id\":\"s1\"}" isSubagent)" = false ]'
 check "isTopLevelAgentSession: agent_type only -> true" \
-  '[ "$(classify "{\"agent_type\":\"agent-hierarchy:architect\"}" isTopLevelAgentSession)" = true ]'
+  '[ "$(classify "{\"agent_type\":\"ah:architect\"}" isTopLevelAgentSession)" = true ]'
 check "isTopLevelAgentSession: agent_id too -> false" \
-  '[ "$(classify "{\"agent_id\":\"a1\",\"agent_type\":\"agent-hierarchy:architect\"}" isTopLevelAgentSession)" = false ]'
+  '[ "$(classify "{\"agent_id\":\"a1\",\"agent_type\":\"ah:architect\"}" isTopLevelAgentSession)" = false ]'
 check "hierarchyRoleOf: anchored on (^|:)role\$" \
-  '[ "$(classify "{\"agent_type\":\"agent-hierarchy:architect\"}" hierarchyRoleOf)" = architect ]'
+  '[ "$(classify "{\"agent_type\":\"ah:architect\"}" hierarchyRoleOf)" = architect ]'
 check "hierarchyRoleOf: non-role -> null" \
   '[ "$(classify "{\"agent_type\":\"some-plugin:notetaker\"}" hierarchyRoleOf)" = null ]'
 check "hierarchyRoleOf: substring must not match" \
   '[ "$(classify "{\"agent_type\":\"some-plugin:architecture\"}" hierarchyRoleOf)" = null ]'
 
 # ---- 4: top-level --agent running a hierarchy role -> the role notice
-ROLE_OUT="$(start "{\"session_id\":\"s4\",\"cwd\":\"$TMP\",\"agent_type\":\"agent-hierarchy:architect\",\"source\":\"startup\",\"hook_event_name\":\"SessionStart\"}")"
+ROLE_OUT="$(start "{\"session_id\":\"s4\",\"cwd\":\"$TMP\",\"agent_type\":\"ah:architect\",\"source\":\"startup\",\"hook_event_name\":\"SessionStart\"}")"
 check "top-level --agent role: emits something" '[ -n "$ROLE_OUT" ]'
 check "top-level --agent role: says MAIN session" 'echo "$ROLE_OUT" | grep -q "MAIN session"'
-check "top-level --agent role: names the agent_type" 'echo "$ROLE_OUT" | grep -q "agent-hierarchy:architect"'
+check "top-level --agent role: names the agent_type" 'echo "$ROLE_OUT" | grep -q "ah:architect"'
 check "top-level --agent role: NOT told it is the Orchestrator" '! echo "$ROLE_OUT" | grep -q "You are the Orchestrator"'
 check "top-level --agent role: no role->model table" '! echo "$ROLE_OUT" | grep -q "Agent(subagent_type:"'
 check "top-level --agent role: no pane/relay talk" '! echo "$ROLE_OUT" | grep -qiE "pane|relay"'
@@ -84,7 +84,7 @@ check "ordinary session: output is byte-identical to the resolver's own text" '[
 check "non-hierarchy --agent session: byte-identical to an ordinary session" '[ "$FOREIGN_OUT" = "$ORDINARY_OUT" ]'
 
 # ---- 6b: a subagent gets nothing at all
-SUB_OUT="$(start "{\"session_id\":\"s6\",\"cwd\":\"$TMP\",\"agent_id\":\"a6\",\"agent_type\":\"agent-hierarchy:implementor\",\"hook_event_name\":\"SessionStart\"}")"
+SUB_OUT="$(start "{\"session_id\":\"s6\",\"cwd\":\"$TMP\",\"agent_id\":\"a6\",\"agent_type\":\"ah:implementor\",\"hook_event_name\":\"SessionStart\"}")"
 check "subagent: no output at all" '[ -z "$SUB_OUT" ]'
 
 # ---- 7: one stdout write site (§8.2a trap 1)

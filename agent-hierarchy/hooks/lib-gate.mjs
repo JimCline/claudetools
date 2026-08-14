@@ -37,7 +37,7 @@ export const GATE_CHOICE_LABELS = {
 };
 
 /** Subagent types this gate covers. The bare name does not resolve as a dispatch target, but gating it too costs nothing. */
-export const GATED_SUBAGENT_TYPES = ["agent-hierarchy:ultra-advisor", "ultra-advisor"];
+export const GATED_SUBAGENT_TYPES = ["ah:ultra-advisor", "agent-hierarchy:ultra-advisor", "ultra-advisor"];
 
 /** Cap on retained sessions. Entries are pruned oldest-first on write. */
 export const MAX_SESSIONS = 50;

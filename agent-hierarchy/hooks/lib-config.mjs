@@ -146,7 +146,7 @@ export async function readHookInput() {
  * with no `agent_id`), so testing `agent_type` classifies a genuine main
  * session as a subagent and suppresses the injection it should receive.
  *
- * Both subagent cases suppress every injection: an `agent-hierarchy:*` role
+ * Both subagent cases suppress every injection: an `ah:*` role
  * (hard recursion suppression, since subagents can nest up to three layers)
  * and any foreign subagent such as `task-gopher:task-gopher`.
  */
@@ -328,7 +328,7 @@ export function subagentType(role, entry) {
   if (role === "task-runner" && entry && entry.delegate === "task-gopher") {
     return "task-gopher:task-gopher";
   }
-  return `agent-hierarchy:${role}`;
+  return `ah:${role}`;
 }
 
 /**
@@ -435,7 +435,7 @@ export function buildDirective(resolved, sessionId) {
     "5. Living spec: if the Implementor reports a spec gap or a deviation is agreed, amend the spec file (yourself, or re-dispatch the Architect for design questions) BEFORE the Reviewer runs. The Reviewer always validates against the current spec.",
     "6. Review loop: the Reviewer classifies each finding impl-defect or spec-defect. Impl-defects go back to the Implementor, spec-defects to the Architect. Max 2 round-trips; if findings are still open after that, escalate to Ultra-Advisor rather than looping again, then surface its verdict to the user.",
     `7. Ultra-Advisor — escalation apex, never a routine step. It reasons and adjudicates; it never implements. Dispatch it ONLY when: the user says the problem is hard, important, or high-stakes, or asks for a second opinion; the Architect reports low confidence or a fork it could not resolve; the review loop hits its cap in item 6; or the change carries outsized blast radius (security, auth, data migration, concurrency, a public interface, anything hard to reverse). Give it the same absolute spec path plus the specific question. Its answer is authoritative: fold it into the spec before the Implementor runs again. Do not escalate merely because a task feels large — size is the Architect's job. ${gateSentences(sessionId)}`,
-    "8. Task-Runner: prefer `task-gopher:task-gopher`; if that agent type is unavailable use `agent-hierarchy:task-runner`. task-gopher's on/off toggle controls only its directive, not the agent — delegation works either way.",
+    "8. Task-Runner: prefer `task-gopher:task-gopher`; if that agent type is unavailable use `ah:task-runner`. task-gopher's on/off toggle controls only its directive, not the agent — delegation works either way.",
     "9. Skills and commands override: a skill mandating a different flow (tdd, diagnose, review) wins over this protocol for its scope.",
     `10. Flow control — handoffs are currently "${resolved.handoffs}"${confirm ? " (ask before each reasoning-role dispatch, per item 0)" : " (you advance the chain yourself and report)"}. The user owns this switch and may flip it AT ANY TIME, in either direction, just by telling you — "ask me before handoffs", "stop asking", or /hierarchy flow auto|confirm. When they do: update the "handoffs" key in the most specific agent-hierarchy.json that exists (project if present, else user) with the Write tool, preserving every other key; confirm the change in one line; and honor the new mode immediately for the rest of this session — do not wait for a restart.`,
     "11. Evidence loop — YOU keep the roles in their lanes. The Architect reasons and designs; it never executes — no tests, builds, or experiments, direct or via a runner (Bash is denied to it). (a) Dispatch it with design questions only: never fold \"and verify it works\" into an Architect prompt. (b) When its report or spec carries NEEDS-EVIDENCE items, route that gruntwork to the Implementor (write/run/measure, at implementation rates; Task-Runner for a pure run-and-report), then re-dispatch the Architect with the results and the same spec path. (c) The Reviewer likewise reasons only: it reads diffs itself (read-only git is its instrument) but MUST delegate every execution — suites, builds, repro scripts — to task-gopher and judge the compact report; its Bash is for inspection, never for running. (d) If any role's report shows it did another role's work — an Architect that ran tests, a Reviewer that ran a suite itself, an Implementor that redesigned — do not accept that part: note the overstep, and route the work to the role that owns it. Reasoning-tier tokens buy judgment, not gruntwork; enforcing that split is YOUR job, not the roles' goodwill.",

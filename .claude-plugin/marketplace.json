@@ -10,10 +10,10 @@
   },
   "plugins": [
     {
-      "name": "agent-hierarchy",
+      "name": "ah",
       "source": "./agent-hierarchy",
-      "description": "Runs work through a six-role agent hierarchy — Orchestrator, Ultra-Advisor, Architect, Reviewer, Implementor, Task-Runner — with a per-role model you pick once via /hierarchy. A SessionStart hook injects the role→model table and the orchestration protocol so design, implementation, and review stay separated, each step runs on the cheapest model that can do it, and the hardest calls escalate to the Ultra-Advisor. A PreToolUse hook gates escalation on you: the first Ultra-Advisor dispatch of each session is blocked until you approve it, and you choose whether to allow the rest of the session, be asked each time, or block it outright. A SubagentStop hook records every subagent's token usage from its transcript at zero model cost; /hierarchy usage renders per-role session, daily, weekly, and monthly reports.",
-      "version": "0.25.0",
+      "description": "Routes work through a six-role agent hierarchy — Orchestrator, Ultra-Advisor, Architect, Reviewer, Implementor, Task-Runner — each on the model priced for its job, with Ultra-Advisor escalation gated on your approval and zero-token usage tracking. See README for the full mechanics.",
+      "version": "0.27.0",
       "author": {
         "name": "Jim Cline"
       },
@@ -67,8 +67,8 @@
     {
       "name": "task-gopher",
       "source": "./task-gopher",
-      "description": "Dispatches tool-heavy, high-output, and information-gathering work to a cheaper Haiku subagent that carries out explicit orders and returns a compact report, so the main high-reasoning agent spends its expensive tokens on judgment instead of on tool output. Session hooks never reach subagents, so a PreToolUse hook rewrites each Agent dispatch in flight to stamp the directive onto the spawned subagent's prompt. Toggle with /task-gopher.",
-      "version": "0.10.0",
+      "description": "Dispatches tool-heavy, high-output, and information-gathering work to a cheaper Haiku subagent that carries out explicit orders and returns a compact report, so the main high-reasoning agent spends its expensive tokens on judgment instead of on tool output. Session hooks never reach subagents, so a PreToolUse hook rewrites each Agent dispatch in flight to stamp the directive onto the spawned subagent's prompt. The same hook intercepts destructive and outward-facing commands from the runner — it cannot judge whether destroying something is right — and asks YOU to approve each one, since no model can accept that risk on your behalf; it denies instead when the permission mode means no prompt reaches a person. Toggle with /task-gopher.",
+      "version": "0.12.0",
       "author": {
         "name": "Jim Cline"
       },
