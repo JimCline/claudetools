@@ -9,19 +9,23 @@
  * the orchestrator records the answer with `msg.mjs route <value> --session
  * <id>` and re-issues. The one-shot record is `{type:"route-ask",
  * session_id}` — once made, later dispatches never ask again this session,
- * even unanswered (they fall through to the "prefer-peers" default).
+ * even unanswered (they fall through to the "peers" default).
  *
- * Once a route is known (session record > config `route` > "prefer-peers"
+ * Once a route is known (session record > config `route` > "peers"
  * default — see `effectiveRoute` in lib-hier.mjs), it is enforced silently:
  *   - `subagents`: every Agent/Task spawn passes; a SendMessage peer brief is
  *     denied (route says never use peers this session).
  *   - `peers`: an Agent/Task spawn is denied while ANY live instance of that
- *     role exists (brief it instead); allowed — with an informational
- *     `systemMessage` and no `permissionDecision` — when none is live
- *     (nothing to route to).
+ *     role exists (brief it instead). When none is live, the FIRST such
+ *     dispatch for that role this session is ALSO denied once, asking the
+ *     user (via AskUserQuestion) whether to fall back to a subagent for that
+ *     specific role; the identical re-issue then passes regardless of the
+ *     answer — this is a reminder gate, not an enforced no. Record:
+ *     `{type:"peer-fallback-ask", session_id, role}`.
  *   - `prefer-peers`: an Agent/Task spawn is denied only while a live
- *     instance is NOT busy; allowed when every live instance is busy or none
- *     is live.
+ *     instance is NOT busy; allowed — without asking — when every live
+ *     instance is busy or none is live (the user already opted into silent
+ *     subagent fallback by choosing this route).
  * Every enforcement deny is ONE-SHOT per (session, role, route): the
  * identical re-issue passes, but a mid-session route change re-arms the
  * deny for the new route. Record: `{type:"route-deny", session_id, role,
@@ -86,10 +90,10 @@ function askReason(ros, sessionId) {
   return [
     `agent-hierarchy: choose this session's dispatch route before tasking roles. Live peers: ${liveBits.length ? liveBits.join(" | ") : "none"}.`,
     "Ask the user with AskUserQuestion, exactly these options in this order:",
-    '  "Prefer peer agents, fall back to subagents (Recommended)" — reuse a live peer when one is free; spawn only when none is.',
-    '  "Peer agents only" — never spawn a roster subagent; wait or tell the user when no peer is free.',
+    '  "Peer agents only (Recommended)" — never spawn a roster subagent; when no live peer exists for a role, ask before falling back to a subagent for that role.',
+    '  "Prefer peer agents, fall back to subagents" — reuse a live peer when one is free; spawn without asking when none is.',
     '  "Subagents only" — ignore peers entirely this session.',
-    `Record it: node "$CLAUDE_PLUGIN_ROOT/hooks/msg.mjs" route <prefer-peers|peers|subagents> --session ${sessionId}`,
+    `Record it: node "$CLAUDE_PLUGIN_ROOT/hooks/msg.mjs" route <peers|prefer-peers|subagents> --session ${sessionId}`,
     "Then re-issue this exact dispatch. Say in one line what you recorded.",
   ].join("\n");
 }
@@ -100,6 +104,10 @@ function subagentsDenyReason() {
 
 function peersDenyReason(role, live) {
   return `agent-hierarchy: route is peers this session — live instance(s) for ${ROLE_LABELS[role]}: ${live.map(describeInstance).join("; ")}. SendMessage it (set to_name) instead of spawning, or change route with msg.mjs route.`;
+}
+
+function peerFallbackAskReason(role) {
+  return `agent-hierarchy: route is peers this session, but no live instance of ${ROLE_LABELS[role]} exists to route to. Ask the user with AskUserQuestion: "No live ${ROLE_LABELS[role]} peer is available — spawn a subagent for this role instead?", options "Yes, spawn a subagent (Recommended)" and "No, wait — I'll start the peer myself". If yes, re-issue this exact dispatch. If no, do not dispatch — wait for the peer to come up or tell the user you're blocked on ${ROLE_LABELS[role]}.`;
 }
 
 function preferPeersDenyReason(role, live) {
@@ -158,7 +166,7 @@ try {
         appendGate(dir, { type: "route-ask", session_id: sessionId });
         decide("deny", askReason(getRoster(), sessionId));
       }
-      // already asked this session and still unanswered: fall through, enforce the "prefer-peers" default
+      // already asked this session and still unanswered: fall through, enforce the "peers" default
     }
     const route = routeInfo.value;
     const alreadyDenied = hasGate(dir, (r) => r.type === "route-deny" && r.session_id === sessionId && r.role === role && r.route === route);
@@ -177,7 +185,12 @@ try {
             decide("deny", peersDenyReason(role, live));
           }
         } else {
-          decide(null, null, `agent-hierarchy: route is peers this session, but no live instance of ${ROLE_LABELS[role]} exists — spawning the subagent (nothing to route to).`);
+          const askedFallback = hasGate(dir, (r) => r.type === "peer-fallback-ask" && r.session_id === sessionId && r.role === role);
+          if (!askedFallback) {
+            appendGate(dir, { type: "peer-fallback-ask", session_id: sessionId, role });
+            decide("deny", peerFallbackAskReason(role));
+          }
+          decide(null, null, `agent-hierarchy: route is peers this session, no live instance of ${ROLE_LABELS[role]} exists, and the user was already asked this session — spawning the subagent.`);
         }
       } else if (route === "prefer-peers") {
         const free = live.filter((i) => !i.busy);

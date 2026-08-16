@@ -415,7 +415,7 @@ SendMessage observations.
 ## `route [peers|subagents|prefer-peers]`
 
 No argument: print this session's current dispatch route and where it came
-from (session answer, config, or the `prefer-peers` default):
+from (session answer, config, or the `peers` default):
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs" route --session "$CLAUDE_SESSION_ID" --plain --cwd "$(pwd)"
@@ -424,11 +424,13 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs" route --session "$CLAUDE_SESSION_ID" 
 With an argument: record it as this session's answer, then offer to also
 persist it as the config `route` key (edit the file that currently defines
 the config, project scope if both exist, same rule as `set`) so future
-sessions never have to ask. `peers` never spawns a roster subagent for a role
-with a live peer — SendMessage it instead; `subagents` never routes to a peer;
-`prefer-peers` (the default) uses a live, free peer when one exists and falls
-back to a subagent otherwise. A `pretooluse-route-gate.mjs` PreToolUse gate
-asks this question once per session before the first roster dispatch, then
+sessions never have to ask. `peers` (the default) never spawns a roster
+subagent for a role with a live peer — SendMessage it instead — and when no
+peer is live for a role, asks once per role before falling back to a
+subagent for it; `subagents` never routes to a peer; `prefer-peers` uses a
+live, free peer when one exists and falls back to a subagent silently,
+without asking, otherwise. A `pretooluse-route-gate.mjs` PreToolUse gate asks
+this question once per session before the first roster dispatch, then
 enforces the answer silently — each enforcement deny is one-shot per
 (session, role), so an identical re-issued dispatch always passes.
 

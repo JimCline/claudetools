@@ -410,14 +410,14 @@ export function recordRoute(dir, sessionId, value) {
 
 /**
  * The dispatch route in effect: session answer > config `route` key >
- * "prefer-peers" default. `{value, source}` where source is
+ * "peers" default. `{value, source}` where source is
  * "session"|"config"|"default".
  */
 export function effectiveRoute(dir, resolved, sessionId) {
   const sess = sessionRouteRecord(dir, sessionId);
   if (sess) return { value: sess.value, source: "session" };
   if (resolved && resolved.route) return { value: resolved.route, source: "config" };
-  return { value: "prefer-peers", source: "default" };
+  return { value: "peers", source: "default" };
 }
 
 // ---------------------------------------------------------------- roster

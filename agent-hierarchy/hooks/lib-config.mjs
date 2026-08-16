@@ -40,13 +40,15 @@ export const MSGS_MODES = ["required", "off"];
 
 /**
  * Session dispatch-routing preference for peer-eligible roles: "peers" (never
- * spawn a roster subagent), "subagents" (never route to a peer), or
- * "prefer-peers" (peer when one is live and free, else subagent — the
- * default when nothing has decided). Unlike `msgs`/`handoffs`, an unset
- * config value is NOT normalized to a default here — `resolveConfig` returns
- * `route: null` when no layer sets it, because "unset" and "explicitly
- * prefer-peers" are different states to `pretooluse-route-gate.mjs`: only the
- * former asks the user once per session.
+ * spawn a roster subagent — the default when nothing has decided; when no
+ * live peer exists for a role, the gate asks once per role before allowing a
+ * subagent fallback), "subagents" (never route to a peer), or "prefer-peers"
+ * (peer when one is live and free, else subagent, without asking). Unlike
+ * `msgs`/`handoffs`, an unset config value is NOT normalized to a default
+ * here — `resolveConfig` returns `route: null` when no layer sets it, because
+ * "unset" and "explicitly peers" are different states to
+ * `pretooluse-route-gate.mjs`: only the former asks the user once per session
+ * which route to use at all.
  */
 export const ROUTE_VALUES = ["peers", "subagents", "prefer-peers"];
 
@@ -475,7 +477,7 @@ function peerConfirmationParagraph(repoBasename) {
 function protocolItems1214(resolved, hierDir, model, route, sessionId) {
   const dirText = hierDir || "<hierarchy dir>";
   const routeText = route ? `${route.value} (from ${route.source})` : "not yet chosen — your first roster dispatch will ask";
-  const routeCmd = `node "${MSG_CLI}" route <peers|subagents|prefer-peers>${sessionId ? ` --session ${sessionId}` : ""}`;
+  const routeCmd = `node "${MSG_CLI}" route <peers|prefer-peers|subagents>${sessionId ? ` --session ${sessionId}` : ""}`;
   const t = tierOf(model);
   const roleTierText = `Architect ${resolved.roles.architect.model}(${tierOf(resolved.roles.architect.model) ?? "?"}), Ultra-Advisor ${resolved.roles["ultra-advisor"].model}(${tierOf(resolved.roles["ultra-advisor"].model) ?? "?"})`;
   const tierOpen =

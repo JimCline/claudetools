@@ -57,17 +57,20 @@ set_route() { # <session> <value>
 gate "$(PROJ="$PROJ" payload s1 Agent agent-hierarchy:reviewer 'review it')"
 check "route unset: first reviewer spawn denied with the ask prompt" 'denied'
 check "ask prompt: exact three options, in order" \
-  'case "$OUT" in *"Prefer peer agents, fall back to subagents (Recommended)"*"Peer agents only"*"Subagents only"*) true;; *) false;; esac'
-check "ask prompt: names the record command with --session" 'echo "$OUT" | grep -q "msg.mjs" && echo "$OUT" | grep -q "route <prefer-peers|peers|subagents>" && echo "$OUT" | grep -q -- "--session s1"'
+  'case "$OUT" in *"Peer agents only (Recommended)"*"Prefer peer agents, fall back to subagents"*"Subagents only"*) true;; *) false;; esac'
+check "ask prompt: names the record command with --session" 'echo "$OUT" | grep -q "msg.mjs" && echo "$OUT" | grep -q "route <peers|prefer-peers|subagents>" && echo "$OUT" | grep -q -- "--session s1"'
 check "one-shot: route-ask recorded in gates.jsonl" 'grep -q "\"type\":\"route-ask\"" "$GATES" && grep -q "\"session_id\":\"s1\"" "$GATES"'
 gate "$(PROJ="$PROJ" payload s1 Agent agent-hierarchy:architect 'design it')"
-check "still unanswered, same session: no second ask (falls through to prefer-peers default, no live architect: allowed)" 'allowed'
+check "still unanswered, same session: no second route-ask (falls through to peers default); no live architect: asks the per-role fallback question instead" \
+  'denied && echo "$OUT" | grep -q "Architect" && echo "$OUT" | grep -q "spawn a subagent"'
+gate "$(PROJ="$PROJ" payload s1 Agent agent-hierarchy:architect 'design it')"
+check "peers default, no live architect: fallback re-issue passes (one-shot spent)" 'allowed_with_note'
 gate "$(PROJ="$PROJ" payload s8 Agent task-gopher:task-gopher 'run tests')"
 check "task-gopher dispatch: not a roster dispatch, never asked" 'allowed'
 
 # ---- 2: msg.mjs route CLI
 OUT=$(HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node "$MSG" route --session s2 --cwd "$PROJ" --plain 2>&1); RC=$?
-check "route --session, no value: prints the default (prefer-peers, source default)" 'echo "$OUT" | grep -q "prefer-peers" && echo "$OUT" | grep -q "default"'
+check "route --session, no value: prints the default (peers, source default)" 'echo "$OUT" | grep -q "^peers" && echo "$OUT" | grep -q "default"'
 set_route s2 peers
 OUT=$(HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node "$MSG" route --session s2 --cwd "$PROJ" --plain 2>&1); RC=$?
 check "route --session, no value after recording: prints recorded value + session source" 'echo "$OUT" | grep -q "^peers" && echo "$OUT" | grep -q "session"'
@@ -115,7 +118,8 @@ check "subagents: identical re-issue passes (one-shot spent)" 'allowed'
 gate "$(PROJ="$PROJ" payload s4 Agent agent-hierarchy:reviewer 'review it')"
 check "subagents: Agent spawn always allowed, even with a live peer" 'allowed'
 
-# ---- 5: peers route — denies spawn while live, allows (with note) when none
+# ---- 5: peers route — denies spawn while live; when none is live, asks once
+# per role before allowing the subagent fallback, then allows (with note)
 set_route s5 peers
 gate "$(PROJ="$PROJ" payload s5 Agent agent-hierarchy:reviewer 'review it')"
 check "peers, live instances exist: spawn denied, names candidates" 'denied && echo "$OUT" | grep -q "rev-a" && echo "$OUT" | grep -q "rev-b"'
@@ -123,7 +127,11 @@ gate "$(PROJ="$PROJ" payload s5 Agent agent-hierarchy:reviewer 'review it')"
 check "peers: identical re-issue passes (one-shot spent)" 'allowed'
 set_route s5b peers
 gate "$(PROJ="$PROJ" payload s5b Agent agent-hierarchy:implementor 'implement it')"
-check "peers, no live instance for the role: spawn allowed with a systemMessage explaining why" 'allowed_with_note'
+check "peers, no live instance for the role: first attempt denied, asks whether to fall back to a subagent" \
+  'denied && echo "$OUT" | grep -q "Implementor" && echo "$OUT" | grep -q "spawn a subagent"'
+check "one-shot: peer-fallback-ask recorded in gates.jsonl" 'grep -q "\"type\":\"peer-fallback-ask\"" "$GATES" && grep -q "\"session_id\":\"s5b\"" "$GATES"'
+gate "$(PROJ="$PROJ" payload s5b Agent agent-hierarchy:implementor 'implement it')"
+check "peers, no live instance, already asked this session: re-issue allowed with a systemMessage explaining why" 'allowed_with_note'
 check "F1: the note carries no permissionDecision key (an allow would auto-approve the tool call)" \
   '[ $RC -eq 0 ] && echo "$OUT" | grep -q "systemMessage" && ! echo "$OUT" | grep -q "permissionDecision"'
 
