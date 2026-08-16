@@ -247,6 +247,75 @@ session-scoped like the rest of this plugin's state. Enforcement arms only on
 a peer-delivered turn — a brief, a ping, or any other wrapped message — so
 directly chatting with a tasked peer neither triggers a nudge nor spends one.
 
+## Message files, roster, tier rule
+
+Three mechanisms (0.29.0) move inter-agent traffic out of context windows and
+into files, and stop two quietly expensive dispatch mistakes.
+
+**Message files.** Every role dispatch rides a request file, and every report
+rides a response file, under the hierarchy runtime dir (`<git
+root>/.claude/hierarchy/msgs/`, or `~/.claude/hierarchy/<repo>/` outside a
+repo; `AGENT_HIERARCHY_DIR` overrides both — the dir self-gitignores).
+`hooks/msg.mjs new` is the only way a file is born: it stamps flat
+frontmatter (`id`, `type`, `to`/`from`, optional `to_name`/`from_name`,
+`parent`, `reason`) and a fixed `## [N] key` skeleton — requests carry
+tldr/goal/context/constraints/files/acceptance/want_back, responses carry
+tldr/status/changes/evidence/gaps/open_questions. In-band, only a pointer
+travels: `[hierarchy-msg <abs path>]`. A PreToolUse gate denies a role
+dispatch (Agent/Task, or a SendMessage peer brief) whose text lacks a valid
+pointer; a SubagentStop gate blocks — once — a role subagent whose final
+message lacks the matching response pointer; the peer report-back tracker
+demands the same pointer in a peer's reply. The token math is the caveat: the
+protocol saves context only when readers index (`grep -n '^## \['`) and Read
+sections selectively — a role that Reads the whole file pays what inline text
+would have cost, plus the file-writing overhead. `msgs: "off"` in the config
+turns the whole protocol off.
+
+**Peer roster.** `peers.jsonl` in the same dir is ground truth for which peer
+sessions exist: peer-session SessionStart/SessionEnd hooks write `up`/`down`
+(with the session pid — liveness is `kill(pid, 0)`), and a PostToolUse hook
+records `seen`/`briefed` from ListAgents output and sent briefs (fresh within
+30 minutes counts as live). A role may have several instances — config `peer`
+accepts an array — and open briefs are split per instance by `to_name`
+(unassigned briefs count against every instance).
+
+**Routing preference.** One question per session, not one per role: the first
+dispatch that would task a peer-eligible role (Architect, Ultra-Advisor,
+Reviewer, Implementor) is denied once with an `AskUserQuestion` prompt —
+`peers` (never spawn a subagent), `subagents` (never route to a peer), or
+`prefer-peers` (peer when one is live and free, else subagent — the default).
+`msg.mjs route <value> --session <id>` records the answer; a config `route`
+key means never ask. After that, enforcement is silent and per (session,
+role) one-shot — the identical re-issue passes: `subagents` denies a
+SendMessage peer brief; `peers` denies a subagent spawn while any live
+instance exists (and allows it, with a note, when none does); `prefer-peers`
+denies a spawn only while a live instance is free (not busy). `handoffs:
+"confirm"`'s per-dispatch question (item 0) still asks whether to hand off at
+all, but its peer-vs-subagent options are filtered by the route so the same
+choice is never asked twice. Task-Runner/task-gopher are exempt — errands are
+not roster dispatches.
+
+**Tier rule.** Dispatching an advisor role (Architect, Ultra-Advisor) at or
+below the session's own model tier (haiku < sonnet < opus < fable) is
+consulting yourself at double cost, so the gate denies it — once — unless the
+request file's `reason:` says why (`context`, `second-opinion`, `parallel`).
+
+Cross-repo limitation: peers in different repos resolve different hierarchy
+dirs and therefore share no roster or messages; point `AGENT_HIERARCHY_DIR`
+at the same directory in both sessions if you need them joined.
+
+**Verified payloads** (Claude Code v2.1.233, probed during the 0.29.0 build):
+SessionStart and PreToolUse hook input carries no `model` field and no
+`CLAUDE_MODEL` env var, so the tier gate is inert unless the model is
+supplied on the dispatch, via env, or from a cached record — the directive
+uses the "model unknown" wording. SubagentStop DOES carry
+`last_assistant_message` and `agent_transcript_path` (fixture committed under
+`tests/fixtures/`), which is what the response gate reads. In every hook,
+`process.ppid` equals env `CLAUDE_PID` and is the live claude session
+process, so roster liveness checks that pid. SessionEnd payloads carry no
+`agent_type`, so a peer's `down` record is matched by `session_id` against
+its earlier `up`.
+
 ## Commands
 
 ```
@@ -256,6 +325,10 @@ directly chatting with a tasked peer neither triggers a nudge nor spends one.
 /hierarchy flow [auto|confirm]      # who advances the chain
 /hierarchy gate [status|session|each|off|reset]   # Ultra-Advisor escalation gate (this session)
 /hierarchy usage [day|week|month]   # per-role token report
+/hierarchy msgs [open|closed|all]   # list message-file exchanges
+/hierarchy msgs off|required        # toggle the message-file protocol
+/hierarchy peers                    # live peer roster
+/hierarchy sweep [days]             # archive old closed exchanges
 /hierarchy on | off                 # toggle without losing the config
 ```
 
@@ -280,6 +353,13 @@ hooks/
   userpromptsubmit-peer-tracking.mjs   records a peer-brief obligation
   posttooluse-peer-resolve.mjs         resolves it on a matching SendMessage reply
   stop-peer-nudge.mjs                  nudges (blocks) until replied or waived
+  lib-hier.mjs                   runtime dir, message files, roster, tier (0.29.0)
+  msg.mjs                        message-file CLI (new/list/index/sweep/roster)
+  pretooluse-msg-gate.mjs        role dispatches must carry a request pointer
+  pretooluse-route-gate.mjs      roster gate (live peer first) + tier gate
+  subagentstop-msg-nudge.mjs     role subagents must return a response pointer
+  posttooluse-roster.mjs         seen/briefed roster records from ListAgents/SendMessage
+  sessionend-roster.mjs          peer session down records
 commands/hierarchy.md        the /hierarchy command
 docs/hierarchy.html          static visual map of roles, lanes, and flow
 docs/retired/                 durable-agents design specs and incident report — feature removed

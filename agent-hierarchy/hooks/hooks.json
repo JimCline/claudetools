@@ -1,5 +1,5 @@
 {
-  "description": "agent-hierarchy — SessionStart injects the resolved role→model table and the orchestration protocol on startup, resume, clear, fork, and post-compaction (so it survives compaction). It classifies the session three ways: a subagent (agent_id set) gets nothing, which is the intent here, since role agents carry their own instructions in agents/*.md and an Implementor that starts orchestrating would defeat the hierarchy; a top-level `claude --agent <hierarchy role>` session gets a short notice that it is NOT the Orchestrator; everything else gets the ordinary directive. The discriminator is agent_id, not agent_type — a top-level --agent session sets agent_type too, so testing it misclassifies a genuine main session as a subagent. Silent when the config sets enabled:false; with no config at all it emits a one-line nudge to run /hierarchy init. PreToolUse runs the ultra gate on Agent/Task/SendMessage: it holds Ultra-Advisor escalation for the user, whether dispatched as a subagent or via SendMessage to its named peer session — the first dispatch of each session is denied with instructions to put the decision to the user and record their answer (allow this session / ask each time / blocked this session) via hooks/gate.mjs; the answer is session-scoped and lives in ~/.claude/agent-hierarchy.gate.json. Every other tool call, and every SendMessage not addressed to the Ultra-Advisor's peer, passes through untouched. SubagentStop runs the usage collector: it sums the finished subagent's transcript (token counts the harness already logged) into ~/.claude/agent-hierarchy.usage.jsonl — plain node, zero model cost — which /hierarchy usage or hooks/usage-report.mjs renders as session/day/week/month reports. UserPromptSubmit also tracks the peer report-back contract: a delivered prompt carrying a `[hierarchy-peer-brief reply-to=\"...\" task=\"...\"]` sentinel inside its `<cross-session-message>` wrapper records a pending obligation in ~/.claude/agent-hierarchy.peer-pending.jsonl. PostToolUse (matcher SendMessage) resolves that obligation once a reply is sent to the recorded address, its name, or an explicit third-party reply-to. Stop blocks the session's turn from ending while an obligation is still owed, nudging at most twice before waiving it and allowing the stop regardless — fail-open throughout, and inert for subagents, exactly like the other hooks above. Enforcement arms only on a peer-delivered turn: UserPromptSubmit also arms a per-session turn marker whenever a wrapped message (a brief, a ping, or anything else carrying the cross-session-message envelope) leaves a pending obligation behind, and Stop's nudge/waive logic runs only on an armed turn, disarming it afterward either way — so a user directly chatting with a tasked peer neither triggers a nudge nor spends one.",
+  "description": "agent-hierarchy — SessionStart injects the resolved role→model table and the orchestration protocol on startup, resume, clear, fork, and post-compaction (so it survives compaction). It classifies the session three ways: a subagent (agent_id set) gets nothing, which is the intent here, since role agents carry their own instructions in agents/*.md and an Implementor that starts orchestrating would defeat the hierarchy; a top-level `claude --agent <hierarchy role>` session gets a short notice that it is NOT the Orchestrator; everything else gets the ordinary directive. The discriminator is agent_id, not agent_type — a top-level --agent session sets agent_type too, so testing it misclassifies a genuine main session as a subagent. Silent when the config sets enabled:false; with no config at all it emits a one-line nudge to run /hierarchy init. PreToolUse runs the ultra gate on Agent/Task/SendMessage: it holds Ultra-Advisor escalation for the user, whether dispatched as a subagent or via SendMessage to its named peer session — the first dispatch of each session is denied with instructions to put the decision to the user and record their answer (allow this session / ask each time / blocked this session) via hooks/gate.mjs; the answer is session-scoped and lives in ~/.claude/agent-hierarchy.gate.json. Every other tool call, and every SendMessage not addressed to the Ultra-Advisor's peer, passes through untouched. SubagentStop runs the usage collector: it sums the finished subagent's transcript (token counts the harness already logged) into ~/.claude/agent-hierarchy.usage.jsonl — plain node, zero model cost — which /hierarchy usage or hooks/usage-report.mjs renders as session/day/week/month reports. UserPromptSubmit also tracks the peer report-back contract: a delivered prompt carrying a `[hierarchy-peer-brief reply-to=\"...\" task=\"...\"]` sentinel inside its `<cross-session-message>` wrapper records a pending obligation in ~/.claude/agent-hierarchy.peer-pending.jsonl. PostToolUse (matcher SendMessage) resolves that obligation once a reply is sent to the recorded address, its name, or an explicit third-party reply-to. Stop blocks the session's turn from ending while an obligation is still owed, nudging at most twice before waiving it and allowing the stop regardless — fail-open throughout, and inert for subagents, exactly like the other hooks above. Enforcement arms only on a peer-delivered turn: UserPromptSubmit also arms a per-session turn marker whenever a wrapped message (a brief, a ping, or anything else carrying the cross-session-message envelope) leaves a pending obligation behind, and Stop's nudge/waive logic runs only on an armed turn, disarming it afterward either way — so a user directly chatting with a tasked peer neither triggers a nudge nor spends one. Three more mechanisms since 0.29.0, all fail-open and inert for subagents. Message files: PreToolUse (same Agent|Task|SendMessage matcher, after the ultra gate) runs the msg gate — a role dispatch (Agent spawn of architect/implementor/reviewer/ultra-advisor, or a SendMessage carrying the peer-brief sentinel) must carry `[hierarchy-msg <abs request path>]` naming an existing request file under `<hierarchy dir>/msgs/` whose `to:` matches the role, else it is denied with the msg.mjs command to write one; SubagentStop runs the response nudge — a hierarchy role subagent briefed by file whose final message lacks `[hierarchy-msg <response path>]` is blocked ONCE (per agent_id, recorded in gates.jsonl) with instructions to write its response file; the peer-side resolver likewise requires the response pointer when the obligation was recorded with one. Peer roster: a top-level `--agent <role>` session appends `up` at SessionStart and `down` at SessionEnd (hooks/sessionend-roster.mjs) to `<hierarchy dir>/peers.jsonl`; PostToolUse on ListAgents|SendMessage (hooks/posttooluse-roster.mjs) records `seen` (parsed from the ListAgents listing, role-matching names only) and `briefed`; Routing preference: PreToolUse (hooks/pretooluse-route-gate.mjs, third in the chain) asks ONCE per session, before the first Agent/Task/SendMessage dispatch of a peer-eligible role, which of peers/subagents/prefer-peers (default) to use — denying that first dispatch with an AskUserQuestion prompt and a `msg.mjs route <value> --session <id>` command to record the answer; a config `route` key skips the ask entirely. Once known, it enforces silently and ONCE per (session, role): `subagents` denies a SendMessage peer brief; `peers` denies an Agent/Task spawn while any live instance of that role exists (allowing it, with a systemMessage, when none does); `prefer-peers` denies a spawn only while a live instance is free. Tier rule: the same route gate denies ONCE per session and role when the session model is known, the target is Architect or Ultra-Advisor at or below the session's tier, and the request file carries no `reason:` (with `msgs:\"off\"` the denial text drops the `reason:` instruction, since there is no request file to carry it). SessionStart appends a HIERARCHY STATE block (open exchanges, roster, tier line) on every matcher including compact, and sweeps closed exchanges older than 7 days on startup. `msgs:\"off\"` in agent-hierarchy.json disables the two message gates; the CLI and the state listing stay.",
   "hooks": {
     "SessionStart": [
       {
@@ -19,6 +19,14 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-ultra-gate.mjs\""
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-msg-gate.mjs\""
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-route-gate.mjs\""
           }
         ]
       }
@@ -30,6 +38,10 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/subagentstop-usage.mjs\""
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/subagentstop-msg-nudge.mjs\""
           }
         ]
       }
@@ -54,6 +66,15 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/posttooluse-peer-resolve.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "ListAgents|SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/posttooluse-roster.mjs\""
+          }
+        ]
       }
     ],
     "Stop": [
@@ -63,6 +84,17 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-peer-nudge.mjs\""
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/sessionend-roster.mjs\""
           }
         ]
       }

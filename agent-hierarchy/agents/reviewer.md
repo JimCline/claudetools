@@ -80,6 +80,14 @@ Your contract:
   about to do, no hedging filler. Keep full factual fidelity — never drop a
   fact to save tokens — but express it in the fewest tokens: fragments over
   sentences, `file:line` over prose, lists over paragraphs.
+- **BRIEF INTAKE / REPORT via message files.** When your brief is a file — the
+  dispatch carries `[hierarchy-msg <path>]` — run `grep -n '^## \[' <path>`
+  for the index and Read only the sections you need. To report, write the
+  response with the plugin's msg CLI (`msg.mjs new --type response --id <id>
+  --to <from> --from reviewer`, id and from come from the request's
+  frontmatter) and fill it: bullets, no prose, status first. Your final
+  message is `[hierarchy-msg <response path>]` plus the status bullet —
+  nothing else.
 
 Report back: a one-line verdict (PASS / PASS WITH NITS / CHANGES REQUIRED),
 then each finding as `severity | impl-defect|spec-defect | file:line | what's

@@ -20,11 +20,18 @@ check() {
 unset AGENT_HIERARCHY_PANE_DIR AGENT_HIERARCHY_PANE_ROLE AGENT_HIERARCHY_PANE_KEY
 
 # A throwaway cwd with no project config, so the resolver sees a stable world.
+# HOME and the hierarchy runtime dir are redirected: the hook now writes roster
+# and state files at SessionStart, and those must never touch real state.
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+TMP="$(cd "$TMP" && pwd -P)"
+FAKEHOME="$TMP/home"
+HD="$TMP/hier"
+PROJ="$TMP/proj"
+mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude"
 
 start() { # payload JSON on stdin -> hook stdout
-  echo "$1" | node "$H/sessionstart.mjs" 2>/dev/null
+  echo "$1" | HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node "$H/sessionstart.mjs" 2>/dev/null
 }
 
 classify() { # <field> <value> -> "true"/"false" from the named predicate
@@ -65,13 +72,15 @@ check "top-level --agent role: names the agent_type" 'echo "$ROLE_OUT" | grep -q
 check "top-level --agent role: NOT told it is the Orchestrator" '! echo "$ROLE_OUT" | grep -q "You are the Orchestrator"'
 check "top-level --agent role: no role->model table" '! echo "$ROLE_OUT" | grep -q "Agent(subagent_type:"'
 check "top-level --agent role: no pane/relay talk" '! echo "$ROLE_OUT" | grep -qiE "pane|relay"'
+check "top-level --agent role: peer msg-protocol addendum" 'echo "$ROLE_OUT" | grep -q "hierarchy-msg"'
+check "top-level --agent role: up roster record written" 'grep -q "\"status\":\"up\"" "$HD/peers.jsonl" && grep -q "\"role\":\"architect\"" "$HD/peers.jsonl"'
 
 # ---- 5 + 6a: a non-hierarchy --agent session and an ordinary session agree,
-#      and both match what the builders produce for this cwd (the pre-change
-#      behaviour of the only path this change does not touch).
+#      and both match what the builders produce for this cwd. Unconfigured cwd
+#      -> the nudge, with no state block.
 ORDINARY_OUT="$(start "{\"session_id\":\"sX\",\"cwd\":\"$TMP\",\"hook_event_name\":\"SessionStart\",\"source\":\"startup\"}")"
 FOREIGN_OUT="$(start "{\"session_id\":\"sX\",\"cwd\":\"$TMP\",\"agent_type\":\"some-plugin:notetaker\",\"hook_event_name\":\"SessionStart\",\"source\":\"startup\"}")"
-EXPECTED="$(node --input-type=module -e "
+EXPECTED="$(HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node --input-type=module -e "
   import { buildDirective, buildNudge, resolveConfig } from '$H/lib-config.mjs';
   const resolved = resolveConfig('$TMP');
   let context = null;
@@ -82,6 +91,32 @@ EXPECTED="$(node --input-type=module -e "
 
 check "ordinary session: output is byte-identical to the resolver's own text" '[ "$ORDINARY_OUT" = "$EXPECTED" ]'
 check "non-hierarchy --agent session: byte-identical to an ordinary session" '[ "$FOREIGN_OUT" = "$ORDINARY_OUT" ]'
+check "unconfigured cwd: nudge carries no state block" '! echo "$ORDINARY_OUT" | grep -q "HIERARCHY STATE"'
+
+# ---- 5b: configured + enabled -> directive + HIERARCHY STATE block, and the
+#      whole output is byte-identical to the builders given the same extras.
+cat > "$PROJ/.claude/agent-hierarchy.json" <<EOF
+{ "version": 1, "enabled": true, "roles": { "reviewer": { "model": "opus", "dispatch": "model" } } }
+EOF
+CONF_OUT="$(start "{\"session_id\":\"sC\",\"cwd\":\"$PROJ\",\"hook_event_name\":\"SessionStart\",\"source\":\"startup\"}")"
+check "configured session: directive present" 'echo "$CONF_OUT" | grep -q "Agent hierarchy ACTIVE"'
+check "configured session: HIERARCHY STATE block appended" 'echo "$CONF_OUT" | grep -q "HIERARCHY STATE" && echo "$CONF_OUT" | grep -q "open exchanges:" && echo "$CONF_OUT" | grep -q "tier:"'
+check "configured session: message-protocol items 12-14 in directive" 'echo "$CONF_OUT" | grep -q "MESSAGE FILES" && echo "$CONF_OUT" | grep -q "PEER ROSTER" && echo "$CONF_OUT" | grep -q "TIER RULE"'
+CONF_EXPECTED="$(HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node --input-type=module -e "
+  import { basename } from 'node:path';
+  import { buildDirective, resolveConfig } from '$H/lib-config.mjs';
+  import { buildStateBlock, effectiveRoute, ensureHierarchyDir, sessionModel } from '$H/lib-hier.mjs';
+  const resolved = resolveConfig('$PROJ');
+  const dir = ensureHierarchyDir('$PROJ');
+  const model = sessionModel({ session_id: 'sC' }, dir);
+  const route = effectiveRoute(dir, resolved, 'sC');
+  let context = buildDirective(resolved, 'sC', { hierDir: dir, model, route });
+  context += '\n\n' + buildStateBlock(dir, resolved, basename(resolved.cwd), model, 'sC', route);
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } }));
+")"
+check "configured session: byte-identical to buildDirective(extra) + state block" '[ "$CONF_OUT" = "$CONF_EXPECTED" ]'
+COMPACT_OUT="$(start "{\"session_id\":\"sC\",\"cwd\":\"$PROJ\",\"hook_event_name\":\"SessionStart\",\"source\":\"compact\"}")"
+check "compact source: state block re-injected" 'echo "$COMPACT_OUT" | grep -q "HIERARCHY STATE"'
 
 # ---- 6b: a subagent gets nothing at all
 SUB_OUT="$(start "{\"session_id\":\"s6\",\"cwd\":\"$TMP\",\"agent_id\":\"a6\",\"agent_type\":\"agent-hierarchy:implementor\",\"hook_event_name\":\"SessionStart\"}")"

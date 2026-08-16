@@ -37,7 +37,8 @@
  * contract governs.
  */
 
-import { isSubagent, readHookInput } from "./lib-config.mjs";
+import { isSubagent, MSG_CLI, readHookInput } from "./lib-config.mjs";
+import { parseMsgFilename } from "./lib-hier.mjs";
 import { appendPeerRecord, appendTurnMarker, latestTurnMarker, MAX_NUDGES, pendingFor } from "./lib-peer.mjs";
 
 function allow() {
@@ -50,7 +51,11 @@ function block(reason) {
 }
 
 function owedLine(rec) {
-  return `you were tasked as a peer (task ${rec.task}) by ${rec.from_name} and have not sent your report: SendMessage it now with to:"${rec.from}"`;
+  const base = `you were tasked as a peer (task ${rec.task}) by ${rec.from_name} and have not sent your report: SendMessage it now with to:"${rec.from}"`;
+  if (!rec.msg) return base;
+  const meta = parseMsgFilename(rec.msg);
+  const id = meta ? meta.id : "<id>";
+  return `${base} — your reply must carry [hierarchy-msg <response path>] — write it with node "${MSG_CLI}" new --type response --id ${id}`;
 }
 
 function disarmIfArmed(sessionId) {

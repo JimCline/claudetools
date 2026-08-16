@@ -1,6 +1,6 @@
 ---
 description: Assign a model to each hierarchy role, or inspect/toggle the hierarchy.
-argument-hint: "[init|status|set <role> <model>|on|off|flow [auto|confirm]|gate [status|session|each|off|reset]|usage [day|week|month|all]]"
+argument-hint: "[init|status|set <role> <model>|on|off|flow [auto|confirm]|gate [status|session|each|off|reset]|usage [day|week|month|all]|msgs [open|closed|all|off|required]|peers|route [peers|subagents|prefer-peers]|sweep [days]]"
 ---
 
 The user ran `/hierarchy` with argument: `$ARGUMENTS`
@@ -376,8 +376,78 @@ Two things to tell the user when relevant:
 
 ---
 
+## `msgs [open|closed|all]`
+
+List message-file exchanges. Run and show verbatim in a code block:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs" list --plain <--open|--closed|--all per the argument; default open> --cwd "$(pwd)"
+```
+
+Each line is `id  to  slug  age  state`. The files live under the hierarchy
+runtime dir (`<git root>/.claude/hierarchy/msgs/`, or
+`~/.claude/hierarchy/<repo>/msgs/` outside a repo; `AGENT_HIERARCHY_DIR`
+overrides both) — point the user there if they want to read one.
+
+## `msgs off` / `msgs required`
+
+Toggle the message-file protocol. Set the top-level `msgs` key in the config
+JSON (same scope rules as `set`: edit the file that currently defines the
+config, project scope if both exist) to `"off"` or `"required"`, then confirm
+the new value. `"required"` is the default when the key is absent: role
+dispatches must carry a `[hierarchy-msg <request path>]` pointer or a
+PreToolUse gate denies them. `"off"` disables the msg gate and the response
+nudge; the route and tier gates are unaffected.
+
+## `peers`
+
+Show the live peer roster. Run and show verbatim in a code block:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs" roster --plain --cwd "$(pwd)"
+```
+
+One line per known instance: `role: name  live|stale  how  age ago  [busy]
+[task=...]  open=N`. Ground truth is `peers.jsonl` in the hierarchy runtime
+dir, fed by peer-session SessionStart/SessionEnd hooks and by ListAgents /
+SendMessage observations.
+
+## `route [peers|subagents|prefer-peers]`
+
+No argument: print this session's current dispatch route and where it came
+from (session answer, config, or the `prefer-peers` default):
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs" route --session "$CLAUDE_SESSION_ID" --plain --cwd "$(pwd)"
+```
+
+With an argument: record it as this session's answer, then offer to also
+persist it as the config `route` key (edit the file that currently defines
+the config, project scope if both exist, same rule as `set`) so future
+sessions never have to ask. `peers` never spawns a roster subagent for a role
+with a live peer — SendMessage it instead; `subagents` never routes to a peer;
+`prefer-peers` (the default) uses a live, free peer when one exists and falls
+back to a subagent otherwise. A `pretooluse-route-gate.mjs` PreToolUse gate
+asks this question once per session before the first roster dispatch, then
+enforces the answer silently — each enforcement deny is one-shot per
+(session, role), so an identical re-issued dispatch always passes.
+
+## `sweep [days]`
+
+Archive closed exchanges older than N days (default 7). Run and show the
+count:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs" sweep --plain --days <N or omit> --cwd "$(pwd)"
+```
+
+Closed request/response pairs move to `msgs/archive/`; open exchanges are
+never touched. The same sweep runs silently at session startup.
+
+---
+
 ## anything else
 
 Show the usage line:
-`/hierarchy [init|status|set <role> <model>|on|off|flow [auto|confirm]|gate [status|session|each|off|reset]|usage [day|week|month|all]]`,
+`/hierarchy [init|status|set <role> <model>|on|off|flow [auto|confirm]|gate [status|session|each|off|reset]|usage [day|week|month|all]|msgs [open|closed|all|off|required]|peers|route [peers|subagents|prefer-peers]|sweep [days]]`,
 then run `status`.

@@ -1,0 +1,23 @@
+{
+  "session_id": "4b6cc8f2-6653-4010-b009-a6c1e3a4d8ac",
+  "transcript_path": "/Users/jimcline/.claude/projects/-private-tmp-claude-501--Users-jimcline-git-repos-claudetools-111a5e5e-f115-4964-9fe7-0c2c7427aa3a-scratchpad-probe/4b6cc8f2-6653-4010-b009-a6c1e3a4d8ac.jsonl",
+  "cwd": "/private/tmp/claude-501/-Users-jimcline-git-repos-claudetools/111a5e5e-f115-4964-9fe7-0c2c7427aa3a/scratchpad/probe",
+  "prompt_id": "1f2de5f3-9976-4e9e-93d3-fc3649fb1e46",
+  "permission_mode": "default",
+  "agent_id": "a446cc31f7b3292b2",
+  "agent_type": "general-purpose",
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/Users/jimcline/.claude/projects/-private-tmp-claude-501--Users-jimcline-git-repos-claudetools-111a5e5e-f115-4964-9fe7-0c2c7427aa3a-scratchpad-probe/4b6cc8f2-6653-4010-b009-a6c1e3a4d8ac/subagents/agent-a446cc31f7b3292b2.jsonl",
+  "last_assistant_message": "OK",
+  "background_tasks": [
+    {
+      "id": "a446cc31f7b3292b2",
+      "type": "subagent",
+      "status": "running",
+      "description": "Test agent call",
+      "agent_type": "general-purpose"
+    }
+  ],
+  "session_crons": []
+}

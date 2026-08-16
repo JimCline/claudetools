@@ -223,6 +223,14 @@
     <div class="card"><h3>Everything else</h3><p><span class="tag">Architect → spec → Implementor → Reviewer.</span> Ultra-Advisor is inserted only when a trigger fires: unresolved fork, low confidence, stalled review loop, outsized blast radius, or the user says it matters.</p></div>
   </div>
 
+  <h2>Comms — files, roster, tier (0.29.0)</h2>
+  <div class="cards">
+    <div class="card"><h3>Message files</h3><p>Every dispatch rides a request file and every report a response file (<code>msg.mjs new</code>, fixed <code>## [N]</code> skeleton, flat frontmatter) under the hierarchy runtime dir; in-band only the pointer <code>[hierarchy-msg &lt;path&gt;]</code> travels. Gates deny a role dispatch without a valid request pointer and block a role's final message without the matching response pointer. Saves context only if readers index and Read selectively.</p></div>
+    <div class="card"><h3>Peer roster</h3><p><code>peers.jsonl</code> is ground truth for live peer sessions — <span class="tag">up/down</span> from the peer's own hooks (pid liveness), <span class="tag">seen/briefed</span> from ListAgents and sent briefs.</p></div>
+    <div class="card"><h3>Routing preference</h3><p>One <code>AskUserQuestion</code> per session — <span class="tag">peers</span>, <span class="tag">subagents</span>, or <span class="tag">prefer-peers</span> (default) — asked once before the first roster dispatch, then enforced silently and one-shot per (session, role); the identical re-issue always passes. <code>msg.mjs route &lt;value&gt;</code> records it; a config <code>route</code> key skips the ask.</p></div>
+    <div class="card"><h3>Tier rule</h3><p>Dispatching an advisor role at or below the session's own model tier is consulting yourself at double cost — denied once unless the request file states a <code>reason:</code> (<code>context</code>, <code>second-opinion</code>, <code>parallel</code>).</p></div>
+  </div>
+
   <h2>Flow control — who advances the chain</h2>
   <div class="cards">
     <div class="card"><h3><code>handoffs: "auto"</code> (default)</h3><p>The Orchestrator performs handoffs itself and reports as it goes.</p></div>

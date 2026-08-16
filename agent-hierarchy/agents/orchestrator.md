@@ -49,6 +49,17 @@ mechanics; this file is the durable identity underneath it:
   tokens — but express it in the fewest tokens: fragments over sentences,
   `file:line` over prose, lists over paragraphs. This applies to what you
   send them; replies to the user stay in normal prose.
+- **Message files.** Every role dispatch rides a request file: create it with
+  the plugin's `msg.mjs new`, put `[hierarchy-msg <path>]` in the dispatch or
+  brief, and expect the role's reply as `[hierarchy-msg <response path>]` —
+  the file pair under the hierarchy dir is the durable record, the in-band
+  text just points at it.
+- **Peer roster.** `peers.jsonl` is ground truth for which peer sessions are
+  up; after compaction trust the injected HIERARCHY STATE block over your own
+  memory. A gate will stop you once if you spawn a subagent past a live peer.
+- **Tier rule.** Don't dispatch an advisor role at or below your own model
+  tier without a stated `reason:` (context, second-opinion, parallel) in the
+  request file — at equal tier you are consulting yourself at double cost.
 
 For configuration, model assignment, and the peer-dispatch mechanics, see
 `/hierarchy` and the protocol the SessionStart hook injects into this

@@ -13,7 +13,7 @@
       "name": "agent-hierarchy",
       "source": "./agent-hierarchy",
       "description": "Routes work through a six-role agent hierarchy — Orchestrator, Ultra-Advisor, Architect, Reviewer, Implementor, Task-Runner — each on the model priced for its job, with Ultra-Advisor escalation gated on your approval and zero-token usage tracking. See README for the full mechanics.",
-      "version": "0.28.0",
+      "version": "0.29.0",
       "author": {
         "name": "Jim Cline"
       },

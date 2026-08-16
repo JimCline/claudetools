@@ -13,7 +13,10 @@
  * the Stop hook can hold the session to its report-back obligation. No
  * sentinel (the overwhelming majority of prompts) costs one failed regex test
  * and nothing else. Never blocks or alters the prompt — this hook only
- * observes and records; it exits silently either way.
+ * observes and records; it exits silently either way. A brief that also
+ * carries `[hierarchy-msg <request path>]` records that path as `msg` on the
+ * obligation, which then resolves only against a reply carrying the matching
+ * response pointer (see posttooluse-peer-resolve.mjs).
  *
  * Amendment 2 (interactive peers): a peer session doubles as an interactive
  * one, and enforcement must fire only on turns the PEER's own tasking work
@@ -34,6 +37,7 @@
  */
 
 import { isSubagent, readHookInput } from "./lib-config.mjs";
+import { extractMsgToken } from "./lib-hier.mjs";
 import { appendPeerRecord, appendTurnMarker, extractPendingRecord, parseWrapper, pendingFor } from "./lib-peer.mjs";
 
 try {
@@ -45,12 +49,14 @@ try {
     if (sessionId && prompt) {
       const rec = extractPendingRecord(prompt);
       if (rec) {
+        const msg = extractMsgToken(prompt);
         appendPeerRecord({
           session_id: sessionId,
           from: rec.from,
           from_name: rec.from_name,
           reply_to: rec.reply_to,
           task: rec.task,
+          ...(msg ? { msg } : {}),
           ts: new Date().toISOString(),
           status: "pending",
           nudges: 0,

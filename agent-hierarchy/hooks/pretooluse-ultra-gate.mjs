@@ -19,7 +19,8 @@
  * Agent/Task dispatch matched by subagent_type, and a SendMessage matched by
  * its `to` target naming the Ultra-Advisor's peer session — normally the
  * "<repo>-ultra-advisor" convention, but a role's `peer` config value can
- * name any session explicitly (see `resolvedPeerTarget` in lib-config.mjs),
+ * name any session explicitly — or several (see `resolvedPeerTargets` in
+ * lib-config.mjs; any of them is gated),
  * so a SendMessage that misses the convention-name fast path falls through
  * to a config read before being cleared. A SendMessage to any other peer —
  * including a peer for a different hierarchy role — passes through
@@ -29,7 +30,7 @@
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join, resolve } from "node:path";
 
-import { peerName, readHookInput, resolveConfig, resolvedPeerTarget } from "./lib-config.mjs";
+import { peerName, readHookInput, resolveConfig, resolvedPeerTargets } from "./lib-config.mjs";
 import { getDecision, isGatedPeerTarget, isGatedSubagentType, normalizeSessionId } from "./lib-gate.mjs";
 
 const GATE_CLI = join(dirname(fileURLToPath(import.meta.url)), "gate.mjs");
@@ -114,7 +115,7 @@ let gated = isDispatch
 let resolved = null;
 if (!gated && isSend) {
   resolved = resolveConfig(cwd);
-  gated = isGatedPeerTarget(toolInput.to, resolvedPeerTarget("ultra-advisor", resolved.roles["ultra-advisor"], repoBasename));
+  gated = resolvedPeerTargets("ultra-advisor", resolved.roles["ultra-advisor"], repoBasename).some((name) => isGatedPeerTarget(toolInput.to, name));
 }
 if (!gated) decide(null);
 
