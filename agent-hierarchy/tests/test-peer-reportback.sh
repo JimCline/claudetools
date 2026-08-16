@@ -99,7 +99,7 @@ check "confirm-mode directive contains PEER BRIEF CONTRACT" 'printf "%s" "$OUT" 
 check "confirm-mode item 0 references the PEER BRIEF CONTRACT" 'printf "%s" "$OUT" | grep -q "must follow the PEER BRIEF CONTRACT above"'
 clear_cfgs
 
-eval_js "L.buildRoleSessionNotice('architect', 'ah:architect')"
+eval_js "L.buildRoleSessionNotice('architect', 'agent-hierarchy:architect')"
 check "role-session notice carries the reply-to obligation" 'printf "%s" "$OUT" | grep -q "hierarchy-peer-brief reply-to=..."'
 check "role-session notice says the task is not finished until delivered" 'printf "%s" "$OUT" | grep -q "not finished until you have sent your report back"'
 

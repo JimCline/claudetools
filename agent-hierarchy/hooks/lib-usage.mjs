@@ -32,7 +32,6 @@ export const PRUNE_TO = 30_000;
  */
 export function roleFor(agentType) {
   if (typeof agentType !== "string" || !agentType) return "other";
-  if (agentType.startsWith("ah:")) return agentType.slice("ah:".length);
   if (agentType.startsWith("agent-hierarchy:")) return agentType.slice("agent-hierarchy:".length);
   if (agentType === "task-gopher:task-gopher" || agentType === "task-gopher") return "task-runner";
   return "other";

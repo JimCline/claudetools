@@ -44,7 +44,7 @@ PEER_UA="$(basename "$PROJ")-ultra-advisor"
 clear_all
 
 # ---- passthrough: the gate is inert for everything that is not an Ultra-Advisor dispatch
-hook s1 "ah:implementor"
+hook s1 "agent-hierarchy:implementor"
 check "implementor dispatch passes through" '[ -z "$OUT" ]'
 
 hook s1 "task-gopher:task-gopher"
@@ -90,7 +90,7 @@ check "convention name still gated even with a custom peer configured" 'case "$O
 clear_all
 
 # ---- first use in a session: denied, with the recording command spelled out
-hook s1 "ah:ultra-advisor"
+hook s1 "agent-hierarchy:ultra-advisor"
 check "first escalation is denied"          'case "$OUT" in *\"permissionDecision\":\"deny\"*) true;; *) false;; esac'
 check "denial names AskUserQuestion"        'case "$OUT" in *AskUserQuestion*) true;; *) false;; esac'
 check "denial carries the set command"      'case "$OUT" in *"gate.mjs\\\" set --session \\\"s1\\\" --choice CHOICE"*) true;; *) false;; esac'
@@ -104,39 +104,39 @@ check "denial records no decision" '[ ! -f "$GATE_FILE" ]'
 cli set --session sm1 --choice session
 hook_send sm1 "$PEER_UA"
 check "session approval covers the SendMessage route" '[ -z "$OUT" ]'
-hook sm1 "ah:ultra-advisor"
+hook sm1 "agent-hierarchy:ultra-advisor"
 check "the same session's approval also covers the Agent-tool route" '[ -z "$OUT" ]'
 
 hook s1 "ultra-advisor"
 check "bare ultra-advisor name is gated too" 'case "$OUT" in *\"permissionDecision\":\"deny\"*) true;; *) false;; esac'
 
-hook s1 "ah:ultra-advisor" Task
+hook s1 "agent-hierarchy:ultra-advisor" Task
 check "legacy Task tool name is gated"       'case "$OUT" in *\"permissionDecision\":\"deny\"*) true;; *) false;; esac'
 
 # ---- choice: allow for the rest of the session
 cli set --session s1 --choice session
 check "set session exits 0"        '[ $RC -eq 0 ]'
 check "set session confirms"       'case "$OUT" in *"rest of this session"*) true;; *) false;; esac'
-hook s1 "ah:ultra-advisor"
+hook s1 "agent-hierarchy:ultra-advisor"
 check "allowed session passes through"    '[ -z "$OUT" ]'
-hook s1 "ah:ultra-advisor"
+hook s1 "agent-hierarchy:ultra-advisor"
 check "allowance is not one-shot"         '[ -z "$OUT" ]'
 
 # ---- scoping: one session's answer never speaks for another
-hook s2 "ah:ultra-advisor"
+hook s2 "agent-hierarchy:ultra-advisor"
 check "a different session still asks"    'case "$OUT" in *\"permissionDecision\":\"deny\"*"has no decision on record"*) true;; *) false;; esac'
 
 # ---- choice: ask before each escalation
 cli set --session s2 --choice each
-hook s2 "ah:ultra-advisor"
+hook s2 "agent-hierarchy:ultra-advisor"
 check "each-time yields ask"              'case "$OUT" in *\"permissionDecision\":\"ask\"*) true;; *) false;; esac'
-hook s2 "ah:ultra-advisor"
+hook s2 "agent-hierarchy:ultra-advisor"
 check "each-time asks again next time"    'case "$OUT" in *\"permissionDecision\":\"ask\"*) true;; *) false;; esac'
 check "ask reason names the model"        'case "$OUT" in *fable*) true;; *) false;; esac'
 
 # ---- choice: blocked for this session
 cli set --session s3 --choice off
-hook s3 "ah:ultra-advisor"
+hook s3 "agent-hierarchy:ultra-advisor"
 check "off yields deny"                   'case "$OUT" in *\"permissionDecision\":\"deny\"*) true;; *) false;; esac'
 check "off says do not retry"             'case "$OUT" in *"Do not retry"*) true;; *) false;; esac'
 check "off does not re-prompt"            'case "$OUT" in *AskUserQuestion*) false;; *) true;; esac'
@@ -144,7 +144,7 @@ check "off does not re-prompt"            'case "$OUT" in *AskUserQuestion*) fal
 # ---- reset returns a session to unasked
 cli reset --session s1
 check "reset exits 0" '[ $RC -eq 0 ]'
-hook s1 "ah:ultra-advisor"
+hook s1 "agent-hierarchy:ultra-advisor"
 check "reset session asks again"          'case "$OUT" in *"has no decision on record"*) true;; *) false;; esac'
 
 # ---- CLI status
@@ -160,7 +160,7 @@ check "bare status is newest-first"          'case "$OUT" in *s3*s2*) true;; *) 
 # ---- CLI rejects garbage rather than storing it
 cli set --session s9 --choice yes-please
 check "unknown choice exits non-zero" '[ $RC -ne 0 ]'
-hook s9 "ah:ultra-advisor"
+hook s9 "agent-hierarchy:ultra-advisor"
 check "rejected choice stored nothing" 'case "$OUT" in *"has no decision on record"*) true;; *) false;; esac'
 cli set --session s9
 check "missing --choice exits non-zero" '[ $RC -ne 0 ]'
@@ -170,16 +170,16 @@ check "missing --session exits non-zero" '[ $RC -ne 0 ]'
 # ---- corrupt state fails closed (asks) rather than silently allowing
 cli set --session s10 --choice session
 printf 'not json at all' > "$GATE_FILE"
-hook s10 "ah:ultra-advisor"
+hook s10 "agent-hierarchy:ultra-advisor"
 check "corrupt gate file falls back to asking" 'case "$OUT" in *"has no decision on record"*) true;; *) false;; esac'
 rm -f "$GATE_FILE"
 
 # ---- a disabled hierarchy has no role to gate
 proj_cfg '{"version":1,"enabled":false}'
-hook s11 "ah:ultra-advisor"
+hook s11 "agent-hierarchy:ultra-advisor"
 check "enabled:false passes through" '[ -z "$OUT" ]'
 proj_cfg '{"version":1,"enabled":true,"roles":{"ultra-advisor":{"model":"opus"}}}'
-hook s11 "ah:ultra-advisor"
+hook s11 "agent-hierarchy:ultra-advisor"
 check "re-enabled hierarchy gates again" 'case "$OUT" in *\"permissionDecision\":\"deny\"*) true;; *) false;; esac'
 check "denial names the configured model" 'case "$OUT" in *opus*) true;; *) false;; esac'
 

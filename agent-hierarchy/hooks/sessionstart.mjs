@@ -7,7 +7,7 @@
  * which model each role runs on and how to route work through the chain.
  *
  * Gating, in this order:
- *   - Subagent (`agent_id` set) → inject NOTHING. `ah:*` role
+ *   - Subagent (`agent_id` set) → inject NOTHING. `agent-hierarchy:*` role
  *     agents must never receive the protocol, since subagents can nest and an
  *     Implementor that starts orchestrating defeats the hierarchy; foreign
  *     subagents such as `task-gopher:task-gopher` should not pay for it

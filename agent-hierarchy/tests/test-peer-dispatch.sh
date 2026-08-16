@@ -48,7 +48,7 @@ proj_cfg "{$BASE,\"roles\":{\"architect\":{\"model\":\"opus\"}}}"
 eval_js "r.roles.architect.dispatch + '|' + r.roles.architect.peer"
 check "no dispatch/peer keys -> peer/auto" '[ "$OUT" = "peer|auto" ]'
 eval_js "L.buildDirective(r)"
-EXPECTED='- Architect — peer name not yet confirmed for this repo (see PEER NAME CONFIRMATION below); resolve it before your first dispatch of this role, then use Agent(subagent_type:"ah:architect", model:"opus") as the fallback once resolved.'
+EXPECTED='- Architect — peer name not yet confirmed for this repo (see PEER NAME CONFIRMATION below); resolve it before your first dispatch of this role, then use Agent(subagent_type:"agent-hierarchy:architect", model:"opus") as the fallback once resolved.'
 check "no dispatch/peer keys -> directive line points at PEER NAME CONFIRMATION" 'printf "%s" "$OUT" | grep -qF -- "$EXPECTED"'
 check "no dispatch/peer keys -> directive includes the PEER NAME CONFIRMATION section" 'printf "%s" "$OUT" | grep -q "^PEER NAME CONFIRMATION"'
 check "no dispatch/peer keys -> repo-basename convention shown in the confirmation guidance" 'printf "%s" "$OUT" | grep -qF "proj-<role>"'
@@ -69,7 +69,7 @@ proj_cfg "{$BASE,\"roles\":{\
 \"implementor\":{\"model\":\"inherit\",\"dispatch\":\"peer\",\"peer\":\"proj-implementor\"}\
 }}"
 eval_js "L.buildDirective(r)"
-EXPECTED='- Architect — peer "proj-architect" via SendMessage if it appears in ListAgents (default), else Agent(subagent_type:"ah:architect", model:"opus")'
+EXPECTED='- Architect — peer "proj-architect" via SendMessage if it appears in ListAgents (default), else Agent(subagent_type:"agent-hierarchy:architect", model:"opus")'
 check "confirmed auto-shaped peer name -> directive line matches convention peer route" 'printf "%s" "$OUT" | grep -qF -- "$EXPECTED"'
 check "all roles confirmed -> no PEER NAME CONFIRMATION section" '! printf "%s" "$OUT" | grep -q "^PEER NAME CONFIRMATION"'
 
@@ -80,7 +80,7 @@ proj_cfg "{$BASE,\"roles\":{\"architect\":{\"model\":\"opus\",\"dispatch\":\"mod
 eval_js "L.buildDirective(r)"
 check "dispatch:model -> Architect line has no peer mention" \
   '! printf "%s" "$OUT" | grep "^- Architect" | grep -q "peer"'
-EXPECTED='- Architect — Agent(subagent_type:"ah:architect", model:"opus")'
+EXPECTED='- Architect — Agent(subagent_type:"agent-hierarchy:architect", model:"opus")'
 check "dispatch:model -> Architect line is bare Agent() call" 'printf "%s" "$OUT" | grep -qF -- "$EXPECTED"'
 
 # ---- 3. dispatch:"peer", explicit peer name -> that name is used instead of

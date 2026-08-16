@@ -117,7 +117,7 @@ Pick the ONE case matching the argument:
    - **"Peer agent (Recommended)"** — SendMessage to a running peer session
      when one exists; falls back to a subagent when it isn't. This is the
      existing default behavior every role has had until now.
-   - **"Subagent only"** — always spawn a fresh `ah:<role>`
+   - **"Subagent only"** — always spawn a fresh `agent-hierarchy:<role>`
      subagent; never route to a peer, even if one with a matching name is
      running.
 
@@ -208,7 +208,7 @@ Pick the ONE case matching the argument:
     `{ "model": "haiku", "delegate": "task-gopher" }` and tell them to run
     `/plugin install task-gopher@claudetools` themselves (you cannot run
     `/plugin`). Until it is installed, the directive's fallback rule routes
-    Task-Runner work to the bundled `ah:task-runner`, so nothing
+    Task-Runner work to the bundled `agent-hierarchy:task-runner`, so nothing
     breaks in the meantime.
 
     For every question in steps 10 and 11: any other model (including full
