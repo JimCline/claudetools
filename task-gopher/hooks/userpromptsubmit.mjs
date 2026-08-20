@@ -9,14 +9,14 @@
  * UserPromptSubmit never fires for subagents — they receive the directive via
  * the relay gate in pretooluse-nudge.mjs instead. The reminder's own tier gate
  * means only Sonnet-tier-or-higher agents act on it. Silent when OFF, and
- * silent inside task-gopher itself.
+ * silent inside either gopher.
  */
 
-import { SHORT_REMINDER, isEnabled, isTaskGopherAgent, readHookInput } from "./directive.mjs";
+import { SHORT_REMINDER, isEnabled, isGopherAgent, readHookInput } from "./directive.mjs";
 
 const input = await readHookInput();
 
-if (isEnabled() && !isTaskGopherAgent(input)) {
+if (isEnabled() && !isGopherAgent(input)) {
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {

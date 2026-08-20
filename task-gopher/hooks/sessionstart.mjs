@@ -8,14 +8,14 @@
  * for subagents — they receive the directive via the relay gate in
  * pretooluse-nudge.mjs instead. The directive's own tier gate means only
  * Sonnet-tier-or-higher agents act on it. Silent when OFF, and silent inside
- * task-gopher itself (it must never dispatch to task-gopher).
+ * either gopher.
  */
 
-import { FULL_DIRECTIVE, isEnabled, isTaskGopherAgent, readHookInput } from "./directive.mjs";
+import { FULL_DIRECTIVE, isEnabled, isGopherAgent, readHookInput } from "./directive.mjs";
 
 const input = await readHookInput();
 
-if (isEnabled() && !isTaskGopherAgent(input)) {
+if (isEnabled() && !isGopherAgent(input)) {
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {

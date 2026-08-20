@@ -137,8 +137,8 @@ export async function readHookInput() {
  * tier). So the hook cannot read the tier; the tier gate lives in the directive
  * text itself, where each agent self-excludes if it is Haiku-tier.
  *
- * The one thing the hooks CAN do reliably is skip task-gopher itself by name
- * (`agent_type` carries the subagent's name), so no gate ever fires inside the
+ * The one thing the hooks CAN do reliably is skip either gopher itself by name
+ * (`agent_type` carries the subagent's name), so no gate ever fires inside a
  * recursion-prone runner. Substring match tolerates the plugin-scoped form
  * (e.g. "task-gopher:task-gopher"). Note the injection hooks (SessionStart,
  * UserPromptSubmit) only ever run for the MAIN session — they never fire for
@@ -155,9 +155,42 @@ export async function readHookInput() {
  * payload shape in the CLI (function `Uf`, the base hook-input builder) when
  * upgrading. Track: https://code.claude.com/docs/en/hooks
  */
-export function isTaskGopherAgent(input) {
-  const type = input && input.agent_type;
-  return typeof type === "string" && type.includes("task-gopher");
+
+/**
+ * The runner agents this plugin ships, and which one a name refers to.
+ *
+ * ORDER IS LOAD-BEARING. The plugin-scoped form of the reasoning runner is
+ * "task-gopher:smart-gopher" — the PLUGIN half is literally "task-gopher", so a
+ * task-gopher-first test classifies every smart-gopher as the Haiku runner. That
+ * is invisible for a boolean gate and wrong where it matters most: the
+ * permission dialog, which names the agent asking to destroy something. Most
+ * specific name first.
+ *
+ * Substring rather than equality, matching the existing convention: the harness
+ * may hand us the bare name or the plugin-scoped one, and both must match.
+ * Known looseness (accept, do not fix): a user agent named
+ * `my-smart-gopher-helper` would match. This is exactly the looseness the
+ * existing code already had with `task-gopher`, it fails toward *more* guarding
+ * rather than less, and tightening it would break the bare-vs-namespaced
+ * tolerance this depends on.
+ */
+const GOPHER_KINDS = ["smart-gopher", "task-gopher"];
+
+/** "smart-gopher" | "task-gopher" | null */
+export function gopherKind(name) {
+  if (typeof name !== "string" || !name) return null;
+  for (const kind of GOPHER_KINDS) if (name.includes(kind)) return kind;
+  return null;
+}
+
+/** Which runner is this hook firing inside, if any? Reads `agent_type`. */
+export function agentGopherKind(input) {
+  return gopherKind(input && input.agent_type);
+}
+
+/** Is this hook firing inside either runner? */
+export function isGopherAgent(input) {
+  return agentGopherKind(input) !== null;
 }
 
 /**
@@ -194,6 +227,8 @@ export const FULL_DIRECTIVE = [
   "",
   '`task-gopher` is a PURE task-runner: it never reasons, decides, or fills gaps, and it makes no design/correctness/security calls. It will STOP and report back if an order is ambiguous rather than guess. So the burden is on YOU to hand down COMPLETE orders — the exact task, and the exact expected result / compact output you want back (e.g. "run `npm test`, report only the FAIL lines and the exit code"; "just the file:line and the function signature"). Never dispatch a step that would require the runner to make a choice. It cannot see your context — every order must be self-contained.',
   "",
+  'TWO RUNNERS — PICK ONE. `task-gopher` (Haiku) runs orders you can fully specify. `smart-gopher` (Sonnet, subagent_type "task-gopher:smart-gopher") is the escalation target for delegated work that genuinely needs judgment: which of several plausible files or call sites is the right one, reconciling evidence that disagrees across a tree, a summary that needs an editorial cut ("what is actually wrong with this module"), or a multi-step task whose later steps depend on what the earlier ones find. Reach for it at exactly two moments: when you are about to do tool-heavy work YOURSELF only because you cannot write a decision-free order for it, and when task-gopher has already STOPPED on a gap that is a judgment call rather than a missing fact. It is NOT a general upgrade — it spends Sonnet tokens, so anything you can specify exactly still goes to task-gopher, and a gap that is merely an underspecified order should be re-dispatched to task-gopher with the gap filled in. It is also NOT a way to offload YOUR decisions: design, architecture, correctness, security and scope stay with you. smart-gopher returns a reasoned compact report and hands any such call back, the same way task-gopher hands back a gap. It cannot dispatch subagents, so it is the end of the chain.',
+  "",
   "ORDER CONTRACT — every dispatch prompt must spell out all four of these, because the runner sees nothing but the prompt and will not fill gaps (worse: it may not NOTICE a gap — it will run the order literally, wherever and however it happens to land):",
   "- WHERE: absolute paths/cwd, and for any git-touching work the exact repo and branch/ref. An order that assumes \"the branch we're on\" runs on whatever is checked out in the runner's cwd. Name the branch and the runner verifies it before running; leave it out and nobody checks anything.",
   '- HOW: the exact method — commands, search patterns, files — not just the goal. "Find where X is defined" invites improvisation; "run `grep -rn \'class X\' src/`, report every file:line" does not. If a step could be done more than one way and the difference matters, make the choice in the order.',
@@ -201,13 +236,13 @@ export const FULL_DIRECTIVE = [
   "- WHAT IF: what to do on failure or an empty result — almost always \"report the exact error/empty outcome and stop\". Never leave it free to try an alternative method uninvited.",
   "If you cannot fill in all four, the step still contains a judgment call — resolve it yourself FIRST, then dispatch. Handing Haiku an order with room for judgment does not delegate the judgment; it randomizes it.",
   "",
-  'DESTRUCTIVE AND OUTWARD-FACING WORK IS NOT THE RUNNER\'S. A PreToolUse guard intercepts any Bash stage from task-gopher that destroys local state (`rm -rf`, `git reset --hard`, `git clean -fd`, `git worktree remove`, `git branch -D`, `git rebase`, `git restore`, `docker`/`kubectl`/`terraform` teardown, in-place `sed -i`) or that leaves the machine (`git push`, `gh pr`/`release` writes, `npm publish`, `curl -X POST`), and asks THE USER to approve it. Neither the runner nor you can consent on their behalf, so do not plan around the prompt: assume a person will be interrupted and decide. If you believe a specific destructive command is right, you may state so with a line reading "ALLOW-DESTRUCTIVE: <the exact command>" in the dispatch prompt — that is a recommendation shown to the user in the prompt, NOT a bypass, and it becomes the release only where no one can be asked (unattended runs). Prefer running destructive steps yourself over authorizing them.',
+  'DESTRUCTIVE AND OUTWARD-FACING WORK IS NOT THE RUNNER\'S. A PreToolUse guard intercepts any Bash stage from EITHER runner (task-gopher or smart-gopher) that destroys local state (`rm -rf`, `git reset --hard`, `git clean -fd`, `git worktree remove`, `git branch -D`, `git rebase`, `git restore`, `docker`/`kubectl`/`terraform` teardown, in-place `sed -i`) or that leaves the machine (`git push`, `gh pr`/`release` writes, `npm publish`, `curl -X POST`), and asks THE USER to approve it. Neither the runner nor you can consent on their behalf, so do not plan around the prompt: assume a person will be interrupted and decide. If you believe a specific destructive command is right, you may state so with a line reading "ALLOW-DESTRUCTIVE: <the exact command>" in the dispatch prompt — that is a recommendation shown to the user in the prompt, NOT a bypass, and it becomes the release only where no one can be asked (unattended runs). Prefer running destructive steps yourself over authorizing them. smart-gopher is guarded identically — its extra reasoning does not buy it any more authority over irreversible or outward-facing work.',
   "",
   "Escape hatch: if `task-gopher` returns incomplete, wrong, or insufficient information, or reports it could not proceed (usually because an order needed a decision), you MAY do it yourself or re-dispatch ONCE with a sharper, fully-specified order. Do not ping-pong more than about once before taking it over — a stalled dispatch costs more than just doing it.",
   "",
-  "Relay is automatic — do NOT copy this directive into subagent prompts yourself. Subagents do not inherit it, so a PreToolUse hook stamps it onto dispatch prompts in flight, skipping the ones that would be wasted: task-gopher itself, and any agent whose tool list gives it no Agent/Task tool to dispatch with. Writing it out by hand would just spend your own output tokens on something the harness already did.",
+  "Relay is automatic — do NOT copy this directive into subagent prompts yourself. Subagents do not inherit it, so a PreToolUse hook stamps it onto dispatch prompts in flight, skipping the ones that would be wasted: either gopher (neither dispatches onward), and any agent whose tool list gives it no Agent/Task tool to dispatch with. Writing it out by hand would just spend your own output tokens on something the harness already did.",
 ].join("\n");
 
 /** Compact per-turn reminder — injected at UserPromptSubmit to keep the behavior alive. */
 export const SHORT_REMINDER =
-  "[task-gopher: ON] If you are Sonnet-tier or higher (any agent, top-level or subagent): by DEFAULT dispatch tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders, and keep reasoning for yourself. A complete order names WHERE (paths, branch for git work), HOW (exact commands/method), WHAT BACK (format + every-match-or-first-N completeness), and WHAT IF (on failure: report and stop) — the runner fills no gaps and may not notice them. Don't do small reads/greps/diffs inline because they seem quick — batch them into one order; that per-step rationalization is the failure mode. Order NARROW queries (grep/answer/summary that come back smaller than the source), never \"read the whole file and send it back\" — if you need a full file, read it yourself. If you are Haiku-tier or have no Agent tool, ignore this. Destructive and outward-facing commands (rm -rf, git reset --hard/clean/worktree remove/branch -D/rebase, push, publish, PR writes, infra teardown) from the runner are intercepted by a guard that asks THE USER to approve them — you cannot consent for them, so prefer doing those steps yourself rather than dispatching them. Escape hatch: take it over if the runner fails or returns too little. Don't copy this directive into subagent prompts — a hook stamps it onto the dispatches that can use it automatically.";
+  "[task-gopher: ON] If you are Sonnet-tier or higher (any agent, top-level or subagent): by DEFAULT dispatch tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders, and keep reasoning for yourself. A complete order names WHERE (paths, branch for git work), HOW (exact commands/method), WHAT BACK (format + every-match-or-first-N completeness), and WHAT IF (on failure: report and stop) — the runner fills no gaps and may not notice them. Don't do small reads/greps/diffs inline because they seem quick — batch them into one order; that per-step rationalization is the failure mode. Order NARROW queries (grep/answer/summary that come back smaller than the source), never \"read the whole file and send it back\" — if you need a full file, read it yourself. If an order genuinely cannot be made decision-free — which of several files, a summary needing an editorial cut, steps that depend on what earlier steps find — dispatch `task-gopher:smart-gopher` (Sonnet, reasons but cannot dispatch onward) rather than doing it yourself; design and security calls still stay with you. If you are Haiku-tier or have no Agent tool, ignore this. Destructive and outward-facing commands (rm -rf, git reset --hard/clean/worktree remove/branch -D/rebase, push, publish, PR writes, infra teardown) from the runner are intercepted by a guard that asks THE USER to approve them — you cannot consent for them, so prefer doing those steps yourself rather than dispatching them. Escape hatch: take it over if the runner fails or returns too little. Don't copy this directive into subagent prompts — a hook stamps it onto the dispatches that can use it automatically.";

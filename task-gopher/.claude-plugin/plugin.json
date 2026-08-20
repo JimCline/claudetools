@@ -1,8 +1,8 @@
 {
   "name": "task-gopher",
   "displayName": "Task Gopher — Haiku Delegation",
-  "version": "0.12.0",
-  "description": "Dispatches tool-heavy, high-output, and information-gathering work to a cheaper Haiku subagent that carries out explicit orders and returns a compact report, so the main high-reasoning agent spends its expensive tokens on judgment instead of on tool output. Session hooks never reach subagents, so a PreToolUse hook rewrites each Agent dispatch in flight to stamp the directive onto the spawned subagent's prompt. The same hook intercepts destructive and outward-facing commands from the runner — it cannot judge whether destroying something is right — and asks YOU to approve each one, since no model can accept that risk on your behalf; it denies instead when the permission mode means no prompt reaches a person. Toggle with /task-gopher.",
+  "version": "0.13.0",
+  "description": "Dispatches tool-heavy, high-output, and information-gathering work to a cheaper Haiku subagent that carries out explicit orders and returns a compact report, so the main high-reasoning agent spends its expensive tokens on judgment instead of on tool output. Session hooks never reach subagents, so a PreToolUse hook rewrites each Agent dispatch in flight to stamp the directive onto the spawned subagent's prompt. The same hook intercepts destructive and outward-facing commands from the runner — it cannot judge whether destroying something is right — and asks YOU to approve each one, since no model can accept that risk on your behalf; it denies instead when the permission mode means no prompt reaches a person. A second bundled runner, `smart-gopher`, is the Sonnet-tier escalation target for delegated work that genuinely needs judgment — it reasons about the work, cannot dispatch subagents of its own, and is covered by the same destructive guard, because reasoning ability is not authority over irreversible actions. Toggle with /task-gopher.",
   "author": {
     "name": "Jim Cline"
   },

@@ -81,11 +81,12 @@ import {
   LOG_FILE,
   NUDGE_FILE,
   SENTINEL,
+  agentGopherKind,
   canAskHuman,
+  gopherKind,
   guardMode,
   isEnabled,
   isStrict,
-  isTaskGopherAgent,
   readRelayExempt,
 } from "./directive.mjs";
 
@@ -359,8 +360,9 @@ try {
   const sid = typeof payload.session_id === "string" ? payload.session_id : "";
 
   // Runs before the ON check: the guard protects against the agent, not against
-  // the directive, and the agent exists whenever the plugin is installed.
-  if (isTaskGopherAgent(payload)) {
+  // the directive, and both agents exist whenever the plugin is installed.
+  const runnerKind = agentGopherKind(payload);
+  if (runnerKind) {
     const mode = guardMode();
     if (payload.tool_name === "Bash" && mode !== "off") {
       const hits = classify(payload?.tool_input?.command);
@@ -374,8 +376,8 @@ try {
         // accept, so the authorization becomes CONTEXT IN the prompt rather
         // than a way around it.
         if (mode === "ask" && canAskHuman(payload)) {
-          logEvent({ pid, aid, event: "destructive-ask", tool: "Bash", detail, labels, preauthorized });
-          ask(askMessage(hits, preauthorized));
+          logEvent({ pid, aid, event: "destructive-ask", agent: runnerKind, tool: "Bash", detail, labels, preauthorized });
+          ask(askMessage(hits, preauthorized, runnerKind));
         }
 
         // Either the guard is set to block outright, or the session runs in a
@@ -387,32 +389,41 @@ try {
             pid,
             aid,
             event: "destructive-blocked",
+            agent: runnerKind,
             tool: "Bash",
             detail,
             labels,
             why: unaskable ? `no-human:${unaskable}` : "guard-mode:block",
           });
-          deny(denyMessage(hits, unaskable));
+          deny(denyMessage(hits, unaskable, runnerKind));
         }
-        logEvent({ pid, aid, event: "destructive-allowed", tool: "Bash", detail });
+        logEvent({ pid, aid, event: "destructive-allowed", agent: runnerKind, tool: "Bash", detail });
       }
     }
-    allow(); // otherwise never gate the gopher's own tool use
+    allow(); // otherwise never gate either runner's own tool use
   }
 
   // Authorization is recorded before the ON check for the same reason the guard
   // runs there — a guard that is live while the plugin is off needs a release
   // valve that is live too.
+  //
+  // HONEST LIMIT: allowances are session-keyed, not agent-keyed (destructive.mjs
+  // documents why — the child's agent_id does not exist yet when the dispatch is
+  // stamped). An ALLOW-DESTRUCTIVE line written for one gopher releases the same
+  // command for the OTHER gopher too, for the rest of the session. Fixing that
+  // needs per-agent keying, which is impossible at stamp time.
   if (payload.tool_name === "Agent" || payload.tool_name === "Task") {
     const t = payload.tool_input || {};
     const st = typeof t.subagent_type === "string" ? t.subagent_type : "";
-    if (st.includes("task-gopher")) {
+    const kind = gopherKind(st);
+    if (kind) {
       const authorized = recordAllowances(sid, t.prompt);
       if (authorized.length) {
         logEvent({
           pid,
           aid,
           event: "destructive-allowance",
+          agent: kind,
           tool: payload.tool_name,
           detail: authorized.join(" ; ").slice(0, 300),
         });
@@ -428,12 +439,14 @@ try {
     const t = payload.tool_input || {};
     const st = typeof t.subagent_type === "string" ? t.subagent_type : "";
 
-    // A dispatch to task-gopher is the desired outcome: never rewritten, and it
+    // A dispatch to either gopher is the desired outcome: never rewritten (they
+    // cannot dispatch onward, so the directive would be pure waste), and it
     // resets the strict-mode consecutive-bypass streak (reward good behavior).
-    if (st.includes("task-gopher")) {
+    const target = gopherKind(st);
+    if (target) {
       if (key) {
         appendState(key + RESET);
-        logEvent({ pid, aid, event: "dispatch", tool: payload.tool_name, detail: st });
+        logEvent({ pid, aid, event: "dispatch", agent: target, tool: payload.tool_name, detail: st });
       }
       allow();
     }

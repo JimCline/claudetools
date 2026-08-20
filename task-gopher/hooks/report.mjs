@@ -16,7 +16,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { LOG_FILE } from "./directive.mjs";
+import { LOG_FILE, gopherKind } from "./directive.mjs";
 
 const RECENT = Number(process.argv[2]) || 12;
 
@@ -63,6 +63,14 @@ function main() {
   const strictPids = new Set([...checkpoints, ...bypasses].map((e) => e.pid).filter(Boolean));
   const strictDispatches = dispatches.filter((d) => strictPids.has(d.pid));
 
+  // `e.agent` fallback matters: logs written by earlier versions have no `agent`
+  // field, and the report must not misreport historical lines. Falling back to
+  // the `detail` substring (which holds the subagent_type) reads them correctly;
+  // `gopherKind` already tests smart-gopher before task-gopher (see directive.mjs).
+  const agentOf = (e) => e.agent || gopherKind(e.detail) || "task-gopher";
+  const smartDispatches = dispatches.filter((d) => agentOf(d) === "smart-gopher");
+  const cheapDispatches = dispatches.filter((d) => agentOf(d) === "task-gopher");
+
   const ratio = strictDispatches.length
     ? (bypasses.length / strictDispatches.length).toFixed(2)
     : `∞ (${bypasses.length} bypasses, 0 strict-turn dispatches)`;
@@ -87,7 +95,10 @@ function main() {
   console.log(`turns logged:   ${turns}  (${strictPids.size} saw the strict gate)`);
   console.log(`checkpoints:    ${checkpoints.length}  (times the strict gate blocked)`);
   console.log(`bypasses:       ${bypasses.length}  (direct retrievals done anyway)`);
-  console.log(`dispatches:     ${dispatches.length}  (delegations to task-gopher; ${strictDispatches.length} in strict-gated turns)`);
+  console.log(
+    `dispatches:     ${dispatches.length}  (${cheapDispatches.length} task-gopher, ${smartDispatches.length} smart-gopher; ` +
+      `${strictDispatches.length} in strict-gated turns)`
+  );
   console.log(`bypass/dispatch ratio: ${ratio}  (strict-gated turns only; lower is better)`);
   if (toolBreakdown) console.log(`bypassed tools: ${toolBreakdown}`);
   if (relayOk.length || relayInjected.length || relaySkipped.length) {
@@ -125,7 +136,7 @@ function main() {
       const labels = Array.isArray(b.labels) ? ` [${b.labels.join(", ")}]` : "";
       const what = b.event === "destructive-ask" ? "asked" : "blocked";
       const why = b.why ? ` (${b.why})` : "";
-      console.log(`  - ${what}: ${b.detail || "?"}${labels}${why}`);
+      console.log(`  - ${what} [${agentOf(b)}]: ${b.detail || "?"}${labels}${why}`);
     }
   }
 

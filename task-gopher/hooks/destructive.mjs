@@ -1,18 +1,29 @@
 /**
  * task-gopher — destructive-action guard.
  *
- * task-gopher is a Haiku runner with no Edit or Write tool, so `Bash` is the
- * only channel through which it can destroy anything. It is also, by design,
+ * Covers BOTH bundled runners, task-gopher and smart-gopher, identically. For
+ * task-gopher — a Haiku runner with no Edit or Write tool — `Bash` is the only
+ * channel through which it can destroy anything, and it is also, by design,
  * the agent LEAST equipped to judge whether destroying something is correct:
  * the whole contract is "execute the order, make no decisions". An order that
  * merely fails is the dangerous case — the runner reaches for a bigger hammer
  * to make it succeed, and `git worktree remove` becomes
  * `git worktree remove --force`.
  *
+ * smart-gopher CAN reason, but reasoning ability is not authority over an
+ * irreversible or outward-facing action — that risk is still not the runner's
+ * to accept on someone's behalf, so the same guard applies to it unchanged.
+ * Note smart-gopher also has `Edit`/`Write`, which this guard does NOT cover —
+ * `hooks.json`'s PreToolUse matcher is `Read|Grep|Glob|Bash|Agent|Task`, so an
+ * Edit/Write call never reaches this hook at all. That gap is accepted for v1
+ * (see the smart-gopher spec §11); it means a tracked file can be overwritten
+ * or truncated with no guard involvement, though `git reset --hard` /
+ * `git checkout --` — the recovery path's own undo — are still guarded.
+ *
  * So the guard is mechanical rather than advisory: a stage of a Bash command
  * that destroys local state, or that leaves this machine (push, publish, PR,
- * write-request), is DENIED when the caller is task-gopher, whatever the
- * prompt talked it into.
+ * write-request), is DENIED when the caller is task-gopher or smart-gopher,
+ * whatever the prompt talked it into.
  *
  * AUTHORIZATION. The lead can pre-authorize a specific command by putting a
  * marker line in the dispatch prompt:
@@ -293,23 +304,47 @@ export function isAllowed(sessionId, stage) {
 }
 
 /**
+ * How each runner is described to the human in the permission dialog. The
+ * second line is the load-bearing one: task-gopher genuinely cannot judge, while
+ * smart-gopher can — and telling the user otherwise at the moment they accept an
+ * irreversible risk would be a lie in the worst possible place. What is true of
+ * BOTH is that neither has the authority to accept the risk on the user's
+ * behalf, and that is what the smart-gopher line says instead.
+ */
+const RUNNER = {
+  "task-gopher": {
+    who: "the Haiku runner",
+    caveat:
+      "task-gopher is a task-runner that makes no judgments — it cannot tell whether this is correct here, and it may have reached for it to make a failing command succeed.",
+  },
+  "smart-gopher": {
+    who: "the reasoning runner",
+    caveat:
+      "smart-gopher can reason about a task, but reasoning ability is not authority: it cannot accept an irreversible or outward-facing risk on your behalf, and it may have concluded this was necessary from a partial view of your work.",
+  },
+};
+
+const runnerInfo = (kind) => RUNNER[kind] || RUNNER["task-gopher"];
+
+/**
  * The permission-prompt text. Written AT THE HUMAN, and it has one job: make
  * the risk legible in the two seconds someone spends on a dialog. So it leads
  * with the command, names who wants to run it, and says plainly that no model
  * in the chain is qualified to vouch for it.
  */
-export function askMessage(hits, preauthorized) {
+export function askMessage(hits, preauthorized, kind = "task-gopher") {
+  const { who, caveat } = runnerInfo(kind);
   const destructiveHit = hits.some((h) => h.kind === "destructive");
   const what = hits.map((h) => `${h.stage}   (${h.label})`).join("\n");
   const lines = [
-    `task-gopher — the Haiku runner wants to run a ${destructiveHit ? "DESTRUCTIVE" : "an outward-facing"} command:`,
+    `${kind} — ${who} wants to run a ${destructiveHit ? "DESTRUCTIVE" : "an outward-facing"} command:`,
     "",
     what,
     "",
     destructiveHit
       ? "This can destroy work that is not recoverable."
       : "This sends something off this machine.",
-    "task-gopher is a task-runner that makes no judgments — it cannot tell whether this is correct here, and it may have reached for it to make a failing command succeed.",
+    caveat,
   ];
   if (preauthorized) {
     lines.push(
@@ -322,12 +357,12 @@ export function askMessage(hits, preauthorized) {
 }
 
 /**
- * The deny text. Written AT the runner: it is Haiku, and it must not improvise.
+ * The deny text. Written AT the runner: it must not improvise.
  * `unaskableMode` is set when the guard WANTED to ask a human and could not,
  * which is a different situation from a deliberate hard block and has to read
  * that way to whoever finds it in the transcript.
  */
-export function denyMessage(hits, unaskableMode) {
+export function denyMessage(hits, unaskableMode, kind = "task-gopher") {
   const destructiveHit = hits.some((h) => h.kind === "destructive");
   const what = hits.map((h) => `- \`${h.stage}\` — ${h.label}`).join("\n");
   const why = unaskableMode
@@ -337,7 +372,7 @@ export function denyMessage(hits, unaskableMode) {
       ]
     : [];
   return [
-    `task-gopher — BLOCKED: ${destructiveHit ? "destructive" : "outward-facing"} command.`,
+    `${kind} — BLOCKED: ${destructiveHit ? "destructive" : "outward-facing"} command.`,
     "",
     "You are the runner, not the decision-maker, and this command " +
       (destructiveHit

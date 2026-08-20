@@ -39,6 +39,20 @@ other_bash() { # <command>
   printf '{"tool_name":"Bash","prompt_id":"p1","session_id":"sD","tool_input":{"command":%s}}' "$(json "$1")"
 }
 
+# A Bash call made BY the reasoning runner. Same guard, different agent_type.
+smart_bash() { # <command> [session_id]
+  printf '{"tool_name":"Bash","agent_type":"task-gopher:smart-gopher","prompt_id":"p1","session_id":"%s","tool_input":{"command":%s}}' \
+    "${2:-sS}" "$(json "$1")"
+}
+smart_bash_mode() { # <command> <permission_mode> [session_id]
+  printf '{"tool_name":"Bash","agent_type":"task-gopher:smart-gopher","permission_mode":"%s","prompt_id":"p1","session_id":"%s","tool_input":{"command":%s}}' \
+    "$2" "${3:-sS}" "$(json "$1")"
+}
+smart_dispatch() { # <prompt> [session_id]
+  printf '{"tool_name":"Agent","prompt_id":"p1","session_id":"%s","tool_input":{"subagent_type":"task-gopher:smart-gopher","prompt":%s}}' \
+    "${2:-sS}" "$(json "$1")"
+}
+
 # A dispatch TO the runner, whose prompt may carry authorization lines.
 dispatch() { # <prompt> [session_id]
   printf '{"tool_name":"Agent","prompt_id":"p1","session_id":"%s","tool_input":{"subagent_type":"task-gopher:task-gopher","prompt":%s}}' \
@@ -285,6 +299,43 @@ check "plugin.json and marketplace.json agree on the version ($PV vs $MV)" \
 # ---- 16. real config must be untouched
 REAL_ALLOW_POST=0; [ -f "$REAL_ALLOW" ] && REAL_ALLOW_POST=1
 check "test wrote no allowance into the real HOME" "[ $REAL_ALLOW_PRE -eq $REAL_ALLOW_POST ]"
+
+# ---- 17. smart-gopher: same guard, and the D8-D11 group is the regression test
+# for the "task-gopher:smart-gopher" substring collision (§2 of the spec) — a
+# task-gopher-first test would misclassify every smart-gopher dispatch as the
+# Haiku runner, which is invisible for a boolean gate but wrong in the one place
+# it matters most: the permission dialog.
+run_hook "$(smart_bash 'rm -rf /Users/x/proj/dist')"
+check "D1: guard live for smart-gopher regardless of plugin toggle" is_deny
+
+touch "$FAKEHOME/.claude/task-gopher.enabled"
+
+run_hook "$(smart_bash 'git push origin main')"
+check "D2: smart-gopher outward-facing command denied" is_deny
+run_hook "$(smart_bash 'git worktree remove --force ../wt')"
+check "D3: smart-gopher destructive command denied" is_deny
+run_hook "$(smart_bash 'npm test | tail -20')"
+check "D4: smart-gopher benign work never gated" is_allow
+run_hook "$(smart_bash_mode 'rm -rf /Users/x/proj/node_modules' default)"
+check "D5: smart-gopher destructive command asks when a human is reachable" is_ask
+run_hook "$(smart_bash_mode 'rm -rf /Users/x/proj/node_modules' bypassPermissions)"
+check "D6: smart-gopher denied outright with nobody to ask" is_deny
+
+run_hook "$(smart_dispatch 'ALLOW-DESTRUCTIVE: rm -rf /Users/x/proj/node_modules')"
+run_hook "$(smart_bash_mode 'rm -rf /Users/x/proj/node_modules' bypassPermissions)"
+check "D7: the release valve works for smart-gopher" is_allow
+
+run_hook "$(smart_bash_mode 'rm -rf /Users/x/proj/dist' default)"
+check "D8: naming — dialog names smart-gopher" "printf '%s' \"\$OUT\" | grep -q 'smart-gopher'"
+check "D9: naming, negative — the ordering trap does not misname it" "! printf '%s' \"\$OUT\" | grep -q 'the Haiku runner'"
+check "D10: honesty — the caveat must not lie about a Sonnet agent" "! printf '%s' \"\$OUT\" | grep -q 'makes no judgments'"
+
+run_hook "$(gopher_bash_mode 'rm -rf /Users/x/proj/dist' default)"
+check "D11: task-gopher's own dialog is unchanged (asks)" is_ask
+check "D11: task-gopher's own dialog is unchanged (names the Haiku runner)" "printf '%s' \"\$OUT\" | grep -q 'the Haiku runner'"
+
+run_hook "$(other_bash 'rm -rf /Users/x/proj/dist')"
+check "D12: an ordinary agent is still untouched" is_allow
 
 echo "----"
 echo "SUMMARY: $PASS passed, $FAIL failed"

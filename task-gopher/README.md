@@ -30,6 +30,10 @@ a bundled `task-gopher` subagent (pinned to `model: haiku`) for:
   "list the callers of Y", "summarize module Z", reading or searching across many
   files.
 
+The plugin ships a second bundled agent, `smart-gopher` (pinned to `model: sonnet`)
+— the escalation target for delegated work that genuinely needs judgment along
+the way, not just execution. See "When to escalate to smart-gopher" below.
+
 The main agent keeps everything that needs reasoning — design decisions,
 correctness and security judgment, tradeoffs, and writing/editing code. For a
 task that needs reasoning, it **splits** the work: task-gopher runs the step or
@@ -54,6 +58,11 @@ skill/command override (e.g. a GitHub worker that owns the MCP connection) wins 
 that's a deliberate exception, not a violation.
 
 ## task-gopher is a runner, never a decider
+
+...and smart-gopher is a decider about the *work*, never about the *project*. It
+reasons about which file/call-site is meant, whether evidence disagrees, what a
+confusing module actually does — and hands back design, architecture, security,
+and scope calls to the lead exactly the way task-gopher hands back a gap.
 
 This is the core contract, enforced in the subagent's own instructions:
 
@@ -135,8 +144,18 @@ acceptance has to be yours too. What it intercepts:
   writes, `npm`/`cargo`/`gem`/`poetry` publish, write-method `curl`.
 
 The guard runs whether or not the delegation directive is toggled on, because
-the agent stays dispatchable either way — and it applies **only** to
-task-gopher. Nobody else's hands are tied.
+the agent stays dispatchable either way — and it applies to **both bundled
+runners, task-gopher and smart-gopher**. Nobody else's hands are tied.
+
+**Known gap:** the guard only sees `Bash`. `smart-gopher` also has `Edit`/`Write`
+(see "task-gopher is a runner, never a decider" above), and `hooks.json`'s
+`PreToolUse` matcher is `Read|Grep|Glob|Bash|Agent|Task` — an `Edit`/`Write` call
+never reaches this hook at all. That means smart-gopher can overwrite or truncate
+a tracked file with no guard involvement. This is accepted for v1: git is the
+recovery path for tracked files, and `git reset --hard` / `git checkout --` are
+themselves guarded, so an *un-doable* edit still requires a guarded Bash command
+downstream. Widening the guard to `Edit`/`Write` with a path-based classifier is
+real follow-up work, not something bolted on here.
 
 ### Why it asks you and not the lead
 
@@ -236,6 +255,21 @@ capability tier. There is no "reasoning index" exposed to hooks.) So the hook
 > the hook would suppress injection for Haiku-tier agents directly. Tracked as a
 > `TODO(hard-gate)` in `hooks/directive.mjs`.
 
+`smart-gopher` is itself Sonnet-tier, so by the tier gate alone it would be a
+legal dispatcher. What actually stops it from dispatching onward is its
+frontmatter's `disallowedTools: Agent, Task` — not the tier gate, which governs
+who may dispatch *to* a gopher, not what a gopher can do once dispatched.
+
+## When to escalate to smart-gopher
+
+Reach for `smart-gopher` at exactly two moments: when you are about to do
+tool-heavy work yourself only because you cannot write a decision-free order for
+it, and when task-gopher has already stopped on a gap that is a judgment call
+rather than a missing fact. It is not a general upgrade — anything you can
+specify exactly still goes to task-gopher — and it is not a way to offload your
+own design, correctness, security, or scope decisions, which stay with you
+either way.
+
 ### Escape hatch
 
 Dispatching isn't a trap. If task-gopher returns incomplete, wrong, or
@@ -271,7 +305,8 @@ runs**. Whenever the plugin is ON (strict not required):
 - Because `PreToolUse` also fires inside a subagent's own loop, a subagent
   dispatching a grandchild gets the same rewrite. The chain is automatic and
   depends on no model's cooperation.
-- **Skipped:** dispatches *to* task-gopher (they are the point), built-in
+- **Skipped:** dispatches to either bundled gopher (they are the point, and
+  neither can dispatch onward), built-in
   subagents without the `Agent` tool (`Explore`, `Plan`, `statusline-setup`,
   `output-style-setup`), and any prompt already carrying the `[task-gopher: ON]`
   sentinel near the top — a hand-pasted directive isn't duplicated. That check

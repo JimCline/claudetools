@@ -415,6 +415,43 @@ grep -q 'copy the full \[task-gopher: ON\] directive block verbatim' "$PLUGIN/co
   && { FAIL=$((FAIL+1)); echo "FAIL: command doc still tells agents to hand-copy the directive"; } \
   || { PASS=$((PASS+1)); echo "PASS: command doc describes the automatic relay"; }
 
+# ---- smart-gopher: dispatches to it are never stamped, and the guard's naming
+# trap (task-gopher:smart-gopher contains BOTH "smart-gopher" and "task-gopher")
+# must resolve to smart-gopher, most-specific-first.
+run_hook "$(payload "$DISPATCH_NOSENT" s1 task-gopher:smart-gopher)"
+check "R1: dispatch to smart-gopher never stamped" is_allow
+check "R2: dispatch logged as event dispatch" "grep -q '\"event\":\"dispatch\"' \"$FAKEHOME/.claude/task-gopher.log\""
+check "R2: dispatch logged with agent smart-gopher" "grep -q '\"agent\":\"smart-gopher\"' \"$FAKEHOME/.claude/task-gopher.log\""
+
+run_hook "$(payload "$DISPATCH_NOSENT" s2 smart-gopher)"
+check "R3: bare unnamespaced smart-gopher not stamped" is_allow
+
+# ---- R4: dispatch to smart-gopher resets the strict streak (mirrors the t4 sequence)
+READ_P4='{"tool_name":"Read","prompt_id":"t4b","tool_input":{"file_path":"/x"}}'
+run_hook "$READ_P4"
+check "R4: strict turn-start checkpoint" is_deny
+run_hook "$READ_P4"
+run_hook "$(payload "$DISPATCH_NOSENT" t4b task-gopher:smart-gopher)"
+check "R4: dispatch to smart-gopher allowed" is_allow
+run_hook "$READ_P4"
+check "R4: dispatch to smart-gopher reset the streak (Read allowed, no escalate)" is_allow
+
+# ---- R5: smart-gopher's own tool use is never checkpointed
+INSIDE_SMART='{"tool_name":"Read","prompt_id":"t4b","agent_type":"task-gopher:smart-gopher","tool_input":{"file_path":"/x"}}'
+run_hook "$INSIDE_SMART"
+check "R5: inside smart-gopher, Read never checkpointed" is_allow
+
+# ---- R6/R7: unrelated names still get stamped; the match is not *gopher*-loose
+run_hook "$(payload "$DISPATCH_NOSENT" s3 general-purpose)"
+check "R6: general-purpose still stamped" is_inject
+run_hook "$(payload "$DISPATCH_NOSENT" s4 smartish-helper)"
+check "R7: smartish-helper (unrelated name) still stamped" is_inject
+
+# ---- R8: dispatch TO task-gopher itself still logs the right agent kind
+run_hook "$(payload "$DISPATCH_NOSENT" s5 task-gopher:task-gopher)"
+check "R8: dispatch to task-gopher never stamped" is_allow
+check "R8: dispatch logged with agent task-gopher" "grep -q '\"agent\":\"task-gopher\"' \"$FAKEHOME/.claude/task-gopher.log\""
+
 echo "----"
 echo "SUMMARY: $PASS passed, $FAIL failed"
 [ $FAIL -eq 0 ]
