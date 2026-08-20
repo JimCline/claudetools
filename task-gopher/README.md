@@ -270,6 +270,29 @@ specify exactly still goes to task-gopher — and it is not a way to offload you
 own design, correctness, security, or scope decisions, which stay with you
 either way.
 
+### The smart-gopher gate
+
+Least-privilege-first is enforced, not just advised. A `PreToolUse` hook
+checkpoints each **distinct** dispatch to `smart-gopher`: it denies the
+attempt with a nudge to confirm task-gopher genuinely couldn't do it, the
+same "re-run to proceed" shape as the strict retrieval checkpoint. Unlike
+that checkpoint, this one:
+
+- fires **once per exact request**, not once per turn — the *identical*
+  retry goes straight through for good, but any **other** smart-gopher
+  prompt, even later in the same session, gets its own fresh checkpoint.
+  Passing the gate buys trust for that one request, not a session-wide pass;
+- matches on the **exact prompt text** (hashed, not stored raw) — a
+  trivially reworded retry is a different request and gets re-challenged.
+  That fails toward more checkpointing, not less;
+- does **not** require strict mode — it runs whenever the plugin is ON;
+- only ever gates dispatches **to smart-gopher**. task-gopher dispatches are
+  never checkpointed this way.
+
+It's a speed bump, not a hard wall: it can't verify the agent genuinely
+reconsidered, only that it paused once per request. `smart-gate-checkpoint`
+lines in the audit log are the record of when it fired.
+
 ### Escape hatch
 
 Dispatching isn't a trap. If task-gopher returns incomplete, wrong, or
@@ -435,9 +458,10 @@ recent bypasses (last 4) — what was run directly:
   branch before running, and never silently truncate.
 - **`hooks/`** — `SessionStart` (startup/resume/clear/**compact**) injects the
   full directive; `UserPromptSubmit` injects a one-line reminder each turn;
-  `PreToolUse` enforces the subagent **relay checkpoint** whenever ON and, in
-  strict mode, adds the escalating retrieval checkpoint — both write the audit
-  log; `report.mjs` renders that log. All hooks are no-ops when the plugin is
+  `PreToolUse` enforces the subagent **relay checkpoint** whenever ON, the
+  per-request **smart-gopher gate**, and, in strict mode, the escalating
+  retrieval checkpoint — all three write the audit log; `report.mjs` renders
+  that log. All hooks are no-ops when the plugin is
   OFF, and no-ops inside task-gopher itself. See "Who may delegate" for the tier
   gate and "Reaching subagents" for the relay.
 - **`commands/task-gopher.md`** — the on/off/status/toggle/strict/report/log-clear

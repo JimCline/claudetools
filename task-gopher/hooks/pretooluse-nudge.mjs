@@ -47,6 +47,19 @@
  * task-gopher itself are exempt at the top of the script, so the runner never
  * pays it.
  *
+ * SMART-GOPHER GATE (active whenever the plugin is ON): each DISTINCT
+ * smart-gopher dispatch prompt is checkpointed once per session — denied with
+ * a nudge to reconsider whether task-gopher could do it instead — then the
+ * IDENTICAL retry of that exact prompt goes straight through permanently. Any
+ * OTHER smart-gopher prompt, even later in the same session, gets its own
+ * fresh checkpoint: passing the gate buys trust for that one exact request,
+ * not a blanket pass for the rest of the session. Keyed on a hash of the
+ * prompt text, not the raw text, to keep the state log compact regardless of
+ * order length. Unlike strict mode's checkpoint this needs no strict flag,
+ * and unlike the turn-scoped checkpoint it never re-fires on the SAME request
+ * once passed. Dispatches TO task-gopher are never gated this way; only
+ * smart-gopher escalations are.
+ *
  * DESTRUCTIVE GUARD (active whenever the plugin is INSTALLED, on or off): the
  * runner's own Bash calls are classified, and any stage that destroys local
  * state or leaves the machine raises a permission prompt so a PERSON accepts
@@ -62,16 +75,24 @@
  * with unrestricted `rm -rf` is exactly as dangerous either way. See
  * destructive.mjs.
  *
- * HONEST LIMITS: the checkpoint cannot verify the agent *genuinely*
- * reconsidered — a re-run always passes. And the relay depends on the harness
+ * HONEST LIMITS: neither the strict checkpoint nor the smart-gopher gate can
+ * verify the agent *genuinely* reconsidered — a re-run always passes, and for
+ * the smart-gopher gate that pass is permanent for that EXACT prompt text.
+ * Matching is exact, not fuzzy: a trivially reworded retry (whitespace, a
+ * changed word) is a different request and gets its own checkpoint — that
+ * fails toward MORE checkpointing, never less, so it is a nuisance rather
+ * than a hole. The gate also fails open with no session_id to scope it (same
+ * convention as the strict checkpoint's turn key). And the relay depends on the harness
  * honoring `updatedInput` on the Agent tool; if a future version stops doing
  * so, delivery fails SILENTLY (the dispatch still succeeds, the subagent just
- * never sees the directive). Neither ever fires inside task-gopher itself.
+ * never sees the directive). None of the three ever fire inside either gopher
+ * itself.
  *
  * Fails open on any error, unknown shape, or unwritable state — a broken gate
  * must never brick tools or block a dispatch.
  */
 
+import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { cannotDispatch } from "./agent-tools.mjs";
@@ -327,6 +348,35 @@ function appendState(line) {
   }
 }
 
+/**
+ * Per-request one-shot key for the smart-gopher escalation gate, in the same
+ * NUDGE_FILE log as the turn-scoped checkpoint keys. Scoped to (session,
+ * exact prompt text) via a hash, not the raw prompt, so one long order
+ * doesn't bloat the log and two DIFFERENT prompts never collide by prefix.
+ * The leading "SMARTGATE|" tag guarantees no collision with a `contextKey`
+ * triple regardless of pipe count — a turn key never starts with that tag.
+ */
+function smartGateKey(sid, prompt) {
+  const digest = createHash("sha256")
+    .update(typeof prompt === "string" ? prompt : "")
+    .digest("hex")
+    .slice(0, 16);
+  return `SMARTGATE|${sid}|${digest}`;
+}
+
+function smartGateMessage(prompt) {
+  const preview = typeof prompt === "string" ? prompt.slice(0, 120) : "";
+  return [
+    "task-gopher: smart-gopher gate — new request, first attempt.",
+    "",
+    `You're about to dispatch smart-gopher for: "${preview}". Before you do: could task-gopher (Haiku) do this instead?`,
+    "",
+    "Reach for smart-gopher only when you cannot write a decision-free order for task-gopher, or when task-gopher already stopped on a genuine judgment gap — not because it seems more capable or the task merely touches several files.",
+    "",
+    "If you've considered that and smart-gopher is still the right call, RE-RUN the IDENTICAL dispatch to proceed. This checkpoints per distinct request, not per session: the exact same prompt goes straight through from here on, but any OTHER smart-gopher dispatch — even later in this same session — gets its own fresh checkpoint.",
+  ].join("\n");
+}
+
 function nudgeMessage(payload, bypasses) {
   const what =
     payload.tool_name === "Bash"
@@ -444,6 +494,28 @@ try {
     // resets the strict-mode consecutive-bypass streak (reward good behavior).
     const target = gopherKind(st);
     if (target) {
+      // Least-privilege-first: each DISTINCT smart-gopher prompt gets a
+      // one-shot checkpoint, same speed-bump philosophy as the strict
+      // retrieval checkpoint but scoped to (session, exact prompt), not the
+      // turn, and independent of strict mode. task-gopher is never gated
+      // this way. A different prompt is a different request — no blanket
+      // session-wide pass.
+      if (target === "smart-gopher" && sid) {
+        const gateKey = smartGateKey(sid, t.prompt);
+        if (!readLines().includes(gateKey)) {
+          if (appendState(gateKey)) {
+            logEvent({
+              pid,
+              aid,
+              event: "smart-gate-checkpoint",
+              tool: payload.tool_name,
+              detail: typeof t.prompt === "string" ? t.prompt.slice(0, 160) : "",
+            });
+            deny(smartGateMessage(t.prompt));
+          }
+          // appendState failed (unwritable state) -> fail open, fall through
+        }
+      }
       if (key) {
         appendState(key + RESET);
         logEvent({ pid, aid, event: "dispatch", agent: target, tool: payload.tool_name, detail: st });

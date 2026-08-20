@@ -5,7 +5,9 @@
  * Reads the append-only JSONL log written by pretooluse-nudge.mjs and prints a
  * human-readable summary: how often the strict checkpoint fired, how many
  * direct retrievals were bypassed (and what they were), how many times the
- * agent dispatched to task-gopher, and how the subagent relay behaved. Because
+ * agent dispatched to task-gopher vs. smart-gopher, how often the
+ * smart-gopher gate checkpointed a distinct escalation request, and how the
+ * subagent relay behaved. Because
  * dispatch/relay lines are written whenever the plugin is ON while
  * checkpoint/bypass lines require strict mode, the bypass-to-dispatch ratio is
  * computed only over dispatches from strict-gated turns — otherwise
@@ -56,6 +58,7 @@ function main() {
   const blocked = events.filter((e) => e.event === "destructive-blocked");
   const authorized = events.filter((e) => e.event === "destructive-allowed");
   const asked = events.filter((e) => e.event === "destructive-ask");
+  const smartGateCheckpoints = events.filter((e) => e.event === "smart-gate-checkpoint");
   const turns = new Set(events.map((e) => e.pid).filter(Boolean)).size;
 
   // Only dispatches from turns the strict gate actually saw count toward the
@@ -100,6 +103,12 @@ function main() {
       `${strictDispatches.length} in strict-gated turns)`
   );
   console.log(`bypass/dispatch ratio: ${ratio}  (strict-gated turns only; lower is better)`);
+  if (smartDispatches.length || smartGateCheckpoints.length) {
+    console.log(
+      `smart-gopher gate: ${smartGateCheckpoints.length} checkpoint(s) fired ` +
+        `(once per distinct request, independent of strict mode)`
+    );
+  }
   if (toolBreakdown) console.log(`bypassed tools: ${toolBreakdown}`);
   if (relayOk.length || relayInjected.length || relaySkipped.length) {
     console.log(

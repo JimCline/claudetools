@@ -452,6 +452,48 @@ run_hook "$(payload "$DISPATCH_NOSENT" s5 task-gopher:task-gopher)"
 check "R8: dispatch to task-gopher never stamped" is_allow
 check "R8: dispatch logged with agent task-gopher" "grep -q '\"agent\":\"task-gopher\"' \"$FAKEHOME/.claude/task-gopher.log\""
 
+# ---- SMART-GOPHER GATE: least-privilege-first, enforced not just advised.
+# DISPATCH_NOSENT carries no session_id, so R1-R8 above never had one to scope
+# against — the gate must stay invisible to them (fails open, no session_id).
+smart_dispatch() { # <prompt_id> <session_id> <prompt-text>
+  printf '{"tool_name":"Agent","prompt_id":"%s","session_id":"%s","tool_input":{"subagent_type":"task-gopher:smart-gopher","prompt":"%s"}}' "$1" "$2" "$3"
+}
+task_dispatch() { # <prompt_id> <session_id>
+  printf '{"tool_name":"Agent","prompt_id":"%s","session_id":"%s","tool_input":{"subagent_type":"task-gopher:task-gopher","prompt":"x"}}' "$1" "$2"
+}
+
+run_hook "$(smart_dispatch g1 sGATE "investigate which of three parsers is live")"
+check "G1: first smart-gopher dispatch this session -> checkpoint deny" is_deny
+check "G1: nudge names task-gopher" "printf '%s' \"\$OUT\" | grep -q 'task-gopher'"
+check "G1: nudge previews the prompt" "printf '%s' \"\$OUT\" | grep -q 'investigate which of three parsers'"
+check "G1: checkpoint logged" "grep -q '\"event\":\"smart-gate-checkpoint\"' \"$FAKEHOME/.claude/task-gopher.log\""
+check "G1: no dispatch-event logged for the denied attempt" \
+  "! tail -1 \"$FAKEHOME/.claude/task-gopher.log\" | grep -q '\"event\":\"dispatch\"'"
+
+run_hook "$(smart_dispatch g1 sGATE "investigate which of three parsers is live")"
+check "G2: identical retry -> allowed" is_allow
+check "G2: retry logged as a normal dispatch" "grep -q '\"event\":\"dispatch\".*\"agent\":\"smart-gopher\"' \"$FAKEHOME/.claude/task-gopher.log\""
+
+run_hook "$(smart_dispatch g2 sGATE "a completely different smart-gopher task")"
+check "G3: a DIFFERENT smart-gopher prompt, same session -> its own fresh checkpoint" is_deny
+run_hook "$(smart_dispatch g2 sGATE "a completely different smart-gopher task")"
+check "G3b: that exact prompt's retry -> allowed" is_allow
+run_hook "$(smart_dispatch g1 sGATE "investigate which of three parsers is live")"
+check "G3c: the FIRST prompt (already passed) still goes straight through after a different one fired" is_allow
+
+run_hook "$(smart_dispatch g3 sGATE-OTHER "first smart-gopher dispatch of a fresh session")"
+check "G4: a different session's first smart-gopher dispatch -> its own checkpoint" is_deny
+run_hook "$(smart_dispatch g3 sGATE-OTHER "first smart-gopher dispatch of a fresh session")"
+check "G4b: that session's retry -> allowed" is_allow
+run_hook "$(smart_dispatch g6 sGATE "investigate which of three parsers is live")"
+check "G4c: the exact prompt from G1, but a DIFFERENT prompt_id, same session -> no re-fire (keyed on prompt text, not prompt_id)" is_allow
+
+run_hook "$(task_dispatch g4 sGATE-TG)"
+check "G5: task-gopher dispatch, brand-new session, never gated" is_allow
+
+run_hook "$(payload "$DISPATCH_NOSENT" g5 task-gopher:smart-gopher)"
+check "G6: smart-gopher dispatch with no session_id fails open (can't scope -> allow)" is_allow
+
 echo "----"
 echo "SUMMARY: $PASS passed, $FAIL failed"
 [ $FAIL -eq 0 ]
