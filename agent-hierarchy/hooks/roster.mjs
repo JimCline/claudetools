@@ -129,7 +129,7 @@ function detectTransport() {
 function spawnShape(member, transport) {
   // herdr's own `--name` positional already names the pane/agent — duplicating
   // it after `--` would pass claude a second, redundant --name.
-  const agentFlags = [`--agent ah:${member.role}`, member.model ? `--model ${member.model}` : null, member.effort ? `--effort ${member.effort}` : null, member.autoMode ? `--permission-mode ${member.autoMode}` : null].filter(Boolean);
+  const agentFlags = [`--agent ah:${member.role}`, member.model && member.model !== "inherit" ? `--model ${member.model}` : null, member.effort ? `--effort ${member.effort}` : null, member.autoMode ? `--permission-mode ${member.autoMode}` : null].filter(Boolean);
   const claudeFlags = [...agentFlags, `--name ${member.name}`];
   const claudeCmd = `claude ${claudeFlags.join(" ")}`;
   if (transport === "herdr") return { transport, steps: [`herdr pane split --current --direction right --cwd "${cwd}" --no-focus`, `herdr agent start ${member.name} --kind claude --pane <pane-id-from-split> -- ${agentFlags.join(" ")}`] };
