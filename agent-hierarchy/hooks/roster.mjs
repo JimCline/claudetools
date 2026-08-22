@@ -16,12 +16,14 @@
  *   roster.mjs create  [--plan] [--commit --verified <json> --transport <t>
  *                       --roster-level <L> [--partial]
  *                       [--orchestrator-pid <pid>]] [--cwd <path>]
+ *   roster.mjs create  --spawn --mode <auto|columns|grid> [--roster-level <L>]
+ *                       [--orchestrator-pid <pid>] [--cwd <path>]
  *   roster.mjs next-split --mode <auto|columns|grid> --pane-count <N> --self <pane-id>
  *                       --created '<json array of pane ids>'
  *                       --geometry '<json array of {pane_id, rect}>'
  *   roster.mjs layout-splits --mode <m> --pane-count <n> [--self <id>] [--cwd <p>]
  *                       (or --next --created <json>, or --apply --target <id> --direction <right|down>)
- *   roster.mjs disband [--kill --plan|--commit] [--cwd <path>]
+ *   roster.mjs disband [--commit|--keep-sessions] [--cwd <path>]
  *
  * `--level`/the positional bare word are equivalent; `add`/`edit`/`remove`
  * with neither default to the level the roster currently resolves from
@@ -35,14 +37,15 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { basename, dirname, resolve } from "node:path";
 
 import { CONFIG_VERSION, findGitRoot, hierarchyDir, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames } from "./lib-config.mjs";
 import { newId, localIso, pidAlive } from "./lib-hier.mjs";
 import { clearTeam, readTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamPath, validateMember, validateRosterBlock, writeTeam } from "./lib-roster.mjs";
 
-const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill"]);
+const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn"]);
+const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "cwd"]);
 
 function parseArgs(argv) {
   const opts = { _: [] };
@@ -212,6 +215,162 @@ function nextSplit({ mode, paneCount, self, created, geometry }) {
   return { target, direction };
 }
 
+// Sole exec site for herdr (spec 0002 §11.3's grep assertion; spec 0005 extends the permitted
+// callers to `create --spawn` alongside `layout-splits` — see tests/test-roster-layout-splits.sh).
+function herdrCall(args) {
+  const timeout = Number(process.env.AH_HERDR_TIMEOUT_MS || 10000);
+  let stdout;
+  try {
+    stdout = execFileSync("herdr", args, { encoding: "utf8", timeout, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  } catch (err) {
+    if (err.signal) throw new Error(`herdr ${args.join(" ")} timed out after ${timeout}ms`);
+    throw new Error(`herdr ${args.join(" ")} failed: ${(err.stderr && String(err.stderr).trim()) || err.message}`);
+  }
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    throw new Error(`herdr ${args.join(" ")} produced unparseable output`);
+  }
+}
+
+/** Spec 0004 §6.6 sequential split loop, shared by `layout-splits` (bare form) and `create --spawn`'s layout phase (spec 0005 §4 step 3). Stops at the first failure. */
+function runLayoutLoop({ mode, paneCount, self, splitCwd }) {
+  const panes = [];
+  const splits = [];
+  for (let i = 1; i <= paneCount; i++) {
+    let geomResult;
+    try {
+      geomResult = herdrCall(["pane", "layout", "--current"]);
+    } catch (err) {
+      if (panes.length === 0) fail(err.message);
+      partial({ panes, splits, mode, pane_count: paneCount, complete: false, failed_at: i, attempted: null, error: err.message });
+    }
+    const geometry = geomResult.result.layout.panes;
+    const decision = nextSplit({ mode, paneCount, self, created: panes, geometry });
+    let splitResult;
+    try {
+      splitResult = herdrCall(["pane", "split", "--pane", decision.target, "--direction", decision.direction, "--cwd", splitCwd, "--no-focus"]);
+    } catch (err) {
+      if (panes.length === 0) fail(err.message);
+      partial({ panes, splits, mode, pane_count: paneCount, complete: false, failed_at: i, attempted: decision, error: err.message });
+    }
+    const newPaneId = splitResult.result.pane.pane_id;
+    panes.push(newPaneId);
+    splits.push({ i, target: decision.target, direction: decision.direction, pane_id: newPaneId });
+  }
+  return { panes, splits };
+}
+
+/** Shared by `create --plan` and `create --spawn` (spec 0005 §9 item 1): resolve the roster, refuse/clear a stale Team, compute members[] + spawn shapes. */
+function resolveMembersPlan(dir) {
+  const existing = readTeam(dir);
+  if (existing) {
+    const stale = !pidAlive(existing.orchestrator && existing.orchestrator.pid) || Date.now() - Date.parse(existing.created) > 24 * 3600 * 1000;
+    if (!stale) fail(`a live Team ${existing.team_id} already exists — disband it first`);
+    clearTeam(dir);
+  }
+  const resolved = resolveRoster(cwd);
+  if (!resolved) fail("no roster resolves at any level — hand off to `roster.mjs init`");
+  const transport = detectTransport();
+  const plan = resolved.members.map((m) => {
+    const route = m.route || resolved.route;
+    return { role: m.role, name: m.name, model: m.model, effort: m.effort, route, autoMode: m.autoMode, spawn: route === "peer" ? spawnShape(m, transport) : null };
+  });
+  return { level: resolved.level, path: resolved.path, transport, layout_plan: layoutPlan(resolved, transport, plan), members: plan };
+}
+
+function runShell(commandString) {
+  return new Promise((resolvePromise) => {
+    execFile("/bin/sh", ["-c", commandString], { encoding: "utf8", maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+      resolvePromise({ err, stdout, stderr });
+    });
+  });
+}
+
+/**
+ * One member's launch, with the herdr-only retry (spec 0005 §4 step 6). NEEDS-EVIDENCE item 2 (§9)
+ * is unresolved — no live pane was available to reproduce the retryable "pane busy" condition, only
+ * the non-retryable ones (bad --kind, nonexistent pane) — so this uses the spec's documented safe
+ * fallback: retry once on any herdr failure, herdr-only.
+ */
+async function launchMember(member, transport) {
+  const template = member.spawn.launch[0];
+  const cmd = member.spawn.target_placeholder && member.transport_id != null ? template.split(member.spawn.target_placeholder).join(member.transport_id) : template;
+  let attempt = await runShell(cmd);
+  let retried = false;
+  if (attempt.err && transport === "herdr") {
+    retried = true;
+    attempt = await runShell(cmd);
+  }
+  const errorText = () => (attempt.stderr && String(attempt.stderr).trim()) || (attempt.err && attempt.err.message) || "launch failed";
+  if (transport === "herdr") {
+    if (!attempt.err) {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(attempt.stdout);
+      } catch {
+        /* non-JSON success output — reported as ready with a null launch_result */
+      }
+      return { ...member, launch_status: "ready", launch_result: parsed, retried };
+    }
+    return { ...member, launch_status: "failed", launch_result: null, retried, error: errorText() };
+  }
+  // tmux and terminal: no readiness handshake, and no retry (spec 0005 §4 step 6 [correction]).
+  if (!attempt.err) return { ...member, launch_status: "dispatched", launch_result: null, retried: false };
+  return { ...member, launch_status: "failed", launch_result: null, retried: false, error: errorText() };
+}
+
+/** `create --spawn` (spec 0005): resolve + layout + launch + retry in one script invocation. */
+async function createSpawn(dir) {
+  const mode = opts.mode;
+  if (!ROSTER_LAYOUT_VALUES.includes(mode)) fail(`--mode must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(mode)}`);
+  const { level, transport, layout_plan, members } = resolveMembersPlan(dir);
+  const peerMembers = members.filter((m) => m.route === "peer");
+
+  let panes = [];
+  if (transport === "herdr" && peerMembers.length > 0) {
+    const self = process.env.HERDR_PANE_ID;
+    if (!self) fail("create --spawn needs HERDR_PANE_ID in the environment");
+    ({ panes } = runLayoutLoop({ mode, paneCount: peerMembers.length, self, splitCwd: cwd }));
+  } else if (transport === "tmux") {
+    for (let i = 0; i < peerMembers.length; i++) {
+      try {
+        panes.push(execFileSync("tmux", ["new-window", "-P", "-F", "#{pane_id}", "-c", cwd], { encoding: "utf8" }).trim());
+      } catch (err) {
+        // Mirrors runLayoutLoop's herdr-path partial(): preserve the windows already created
+        // rather than losing them to the generic top-level catch (spec 0005 review, tmux gap).
+        partial({ panes, mode, pane_count: peerMembers.length, complete: false, failed_at: i, error: err.message });
+      }
+    }
+  }
+
+  // [correction] spec 0003 §6.2: N layout commands must yield N distinct, non-empty target ids —
+  // asserted before any launch fires, so a bad layout cannot become N claude processes in the wrong places.
+  if (transport !== "terminal" && peerMembers.length > 0) {
+    if (panes.length !== peerMembers.length || panes.some((p) => !p) || new Set(panes).size !== panes.length) {
+      fail(`create --spawn: layout produced ${JSON.stringify(panes)} for ${peerMembers.length} peer member(s) — expected that many distinct, non-empty target ids`);
+    }
+  }
+  peerMembers.forEach((m, i) => {
+    m.transport_id = transport === "terminal" ? null : panes[i];
+  });
+
+  const settled = await Promise.allSettled(peerMembers.map((m) => launchMember(m, transport)));
+  const launchByName = new Map(
+    settled.map((r, i) => [peerMembers[i].name, r.status === "fulfilled" ? r.value : { ...peerMembers[i], launch_status: "failed", launch_result: null, retried: false, error: String(r.reason) }])
+  );
+
+  const outputMembers = members.map((m) => {
+    if (m.route !== "peer") return { role: m.role, name: m.name, model: m.model, route: m.route, autoMode: m.autoMode, transport_id: null, launch_status: null };
+    const lm = launchByName.get(m.name);
+    const entry = { role: m.role, name: m.name, model: m.model, route: m.route, autoMode: m.autoMode, transport_id: m.transport_id, launch_status: lm.launch_status, launch_result: lm.launch_result, retried: lm.retried };
+    if (lm.error) entry.error = lm.error;
+    return entry;
+  });
+  const isPartial = outputMembers.some((m) => m.route === "peer" && m.launch_status === "failed");
+  out({ level, transport, members: outputMembers, partial: isPartial });
+}
+
 try {
   switch (cmd) {
     case "show": {
@@ -352,23 +511,6 @@ try {
       if (opts.next === true && opts.apply === true) fail("--next and --apply are mutually exclusive");
       if (detectTransport() !== "herdr") fail("layout-splits requires the herdr transport");
 
-      // Scoped inside this case so `herdrCall(` is reachable only from here (spec 0002 §11.3's grep assertion).
-      function herdrCall(args) {
-        const timeout = Number(process.env.AH_HERDR_TIMEOUT_MS || 10000);
-        let stdout;
-        try {
-          stdout = execFileSync("herdr", args, { encoding: "utf8", timeout, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
-        } catch (err) {
-          if (err.signal) throw new Error(`herdr ${args.join(" ")} timed out after ${timeout}ms`);
-          throw new Error(`herdr ${args.join(" ")} failed: ${(err.stderr && String(err.stderr).trim()) || err.message}`);
-        }
-        try {
-          return JSON.parse(stdout);
-        } catch {
-          throw new Error(`herdr ${args.join(" ")} produced unparseable output`);
-        }
-      }
-
       const splitCwd = typeof opts.cwd === "string" ? opts.cwd : process.cwd();
 
       if (opts.apply === true) {
@@ -422,35 +564,20 @@ try {
         out({ panes: [], complete: true });
         break;
       }
-      const panes = [];
-      const splits = [];
-      for (let i = 1; i <= paneCount; i++) {
-        let geomResult;
-        try {
-          geomResult = herdrCall(["pane", "layout", "--current"]);
-        } catch (err) {
-          if (panes.length === 0) fail(err.message);
-          partial({ panes, splits, mode, pane_count: paneCount, complete: false, failed_at: i, attempted: null, error: err.message });
-        }
-        const geometry = geomResult.result.layout.panes;
-        const decision = nextSplit({ mode, paneCount, self, created: panes, geometry });
-        let splitResult;
-        try {
-          splitResult = herdrCall(["pane", "split", "--pane", decision.target, "--direction", decision.direction, "--cwd", splitCwd, "--no-focus"]);
-        } catch (err) {
-          if (panes.length === 0) fail(err.message);
-          partial({ panes, splits, mode, pane_count: paneCount, complete: false, failed_at: i, attempted: decision, error: err.message });
-        }
-        const newPaneId = splitResult.result.pane.pane_id;
-        panes.push(newPaneId);
-        splits.push({ i, target: decision.target, direction: decision.direction, pane_id: newPaneId });
-      }
+      const { panes, splits } = runLayoutLoop({ mode, paneCount, self, splitCwd });
       out({ panes, splits, mode, pane_count: paneCount, complete: true });
       break;
     }
 
     case "create": {
+      if ([opts.plan === true, opts.commit === true, opts.spawn === true].filter(Boolean).length > 1) {
+        fail("create: --plan, --commit, and --spawn are mutually exclusive");
+      }
       const dir = hierarchyDir(cwd);
+      if (opts.spawn === true) {
+        await createSpawn(dir);
+        break;
+      }
       if (opts.commit) {
         const verified = typeof opts.verified === "string" ? JSON.parse(opts.verified) : fail("--commit needs --verified <json array>");
         const transport = typeof opts.transport === "string" ? opts.transport : fail("--commit needs --transport");
@@ -478,68 +605,69 @@ try {
         break;
       }
       // --plan (default): resolve, refuse a live Team, clear a stale one, report the spawn plan.
-      const existing = readTeam(dir);
-      if (existing) {
-        const stale = !pidAlive(existing.orchestrator && existing.orchestrator.pid) || Date.now() - Date.parse(existing.created) > 24 * 3600 * 1000;
-        if (!stale) fail(`a live Team ${existing.team_id} already exists — disband it first`);
-        clearTeam(dir);
-      }
-      const resolved = resolveRoster(cwd);
-      if (!resolved) fail("no roster resolves at any level — hand off to `roster.mjs init`");
-      const transport = detectTransport();
-      const plan = resolved.members.map((m) => {
-        const route = m.route || resolved.route;
-        return { role: m.role, name: m.name, model: m.model, effort: m.effort, route, autoMode: m.autoMode, spawn: route === "peer" ? spawnShape(m, transport) : null };
-      });
-      out({ level: resolved.level, path: resolved.path, transport, layout_plan: layoutPlan(resolved, transport, plan), members: plan });
+      out(resolveMembersPlan(dir));
       break;
     }
 
     case "disband": {
+      // Spec 0006 §6: an unrecognized flag must fail loudly, not degrade to the (now destructive-
+      // by-default) bare path. --kill is accepted-and-ignored (§5.4) for 0002-era callers.
+      for (const key of Object.keys(opts)) {
+        if (key === "_") continue;
+        if (!DISBAND_FLAGS.has(key)) fail(`disband: unrecognized flag --${key} (use --commit, --keep-sessions, or --plan)`);
+      }
+      if (opts["keep-sessions"] === true && (opts.commit === true || opts.kill === true)) {
+        fail("disband --keep-sessions cannot be combined with --commit or --kill");
+      }
       const dir = hierarchyDir(cwd);
-      if (opts.kill === true) {
-        // Two-call contract (spec 0002 §8.1/§8.3): --plan emits, never removes; --commit removes,
-        // never re-reads. Folding both into one call is what let a declined confirmation or a
-        // failed close leave team.json already gone — the exact bug this split exists to prevent.
-        if (opts.commit === true) {
-          const team = readTeam(dir);
-          if (!team) {
-            out({ removed: false, reason: "no active team" });
-            break;
-          }
-          clearTeam(dir);
-          out({ removed: teamPath(dir) });
+
+      // --commit: removes team.json only, never re-reads the member list (spec 0002 §8.1/§8.3,
+      // spec 0006 §5.2 — no longer gated on --kill).
+      if (opts.commit === true) {
+        const team = readTeam(dir);
+        if (!team) {
+          out({ removed: false, reason: "no active team" });
           break;
         }
-        if (opts.plan !== true) fail("disband --kill requires --plan or --commit");
+        clearTeam(dir);
+        out({ removed: teamPath(dir) });
+        break;
+      }
+
+      // --keep-sessions: the old safe default (spec 0006 §5.3) — single call, removes team.json,
+      // emits nothing, closes nothing.
+      if (opts["keep-sessions"] === true) {
         const team = readTeam(dir);
         if (!team) {
           out({ disbanded: false, reason: "no active team" });
           break;
         }
-        const close = team.members.map((m) => {
-          let command = null;
-          if (m.route === "peer" && m.transport_id) {
-            if (team.transport === "herdr") command = `herdr pane close ${m.transport_id}`;
-            else if (team.transport === "tmux") command = `tmux kill-pane -t ${m.transport_id}`;
-          }
-          return { role: m.role, name: m.name, route: m.route, transport: team.transport, transport_id: m.transport_id, command };
-        });
-        out({ close });
+        clearTeam(dir);
+        out({ disbanded: true, team_id: team.team_id, members: team.members.map((m) => ({ role: m.role, name: m.name, transport_id: m.transport_id })) });
         break;
       }
+
+      // Bare disband / --plan / --kill (ignored): the new default (spec 0006 §5.1) — read-only,
+      // emits the close plan, writes nothing.
       const team = readTeam(dir);
       if (!team) {
         out({ disbanded: false, reason: "no active team" });
         break;
       }
-      clearTeam(dir);
-      out({ disbanded: true, team_id: team.team_id, members: team.members.map((m) => ({ role: m.role, name: m.name, transport_id: m.transport_id })) });
+      const close = team.members.map((m) => {
+        let command = null;
+        if (m.route === "peer" && m.transport_id) {
+          if (team.transport === "herdr") command = `herdr pane close ${m.transport_id}`;
+          else if (team.transport === "tmux") command = `tmux kill-pane -t ${m.transport_id}`;
+        }
+        return { role: m.role, name: m.name, route: m.route, transport: team.transport, transport_id: m.transport_id, command };
+      });
+      out({ close });
       break;
     }
 
     default:
-      fail(`usage: roster.mjs show|init|add|edit|remove|layout|create|next-split|layout-splits|disband [--kill --plan|--commit] [--level global|repo|repo-user] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
+      fail(`usage: roster.mjs show|init|add|edit|remove|layout|create|next-split|layout-splits|disband [--commit|--keep-sessions] [--level global|repo|repo-user] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
   }
 } catch (err) {
   fail(err && err.message ? err.message : String(err));

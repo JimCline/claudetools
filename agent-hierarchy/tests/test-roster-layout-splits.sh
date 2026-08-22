@@ -204,10 +204,10 @@ touch "$FAKE_HERDR_MARKER"
 exit 1
 EOF
 mkdir -p "$SANDBOX/markerbin"
-cat > "$SANDBOX/markerbin/herdr" <<'EOF'
-#!/bin/sh
-touch "$FAKE_HERDR_MARKER"
-exit 1
+cat > "$SANDBOX/markerbin/herdr" <<EOF
+#!$(command -v node)
+require("fs").writeFileSync(process.env.FAKE_HERDR_MARKER, "");
+process.exit(1);
 EOF
 chmod +x "$SANDBOX/markerbin/herdr"
 rm -f "$SANDBOX/marker"
@@ -226,8 +226,23 @@ INVOK disband --kill --plan
 INVOK disband --kill --commit
 check "invariant: no subcommand but layout-splits reaches herdrCall (marker never created)" \
   '[ ! -e "$SANDBOX/marker" ]'
-check "invariant (grep): herdrCall( appears only inside the layout-splits case" \
-  '[ "$(grep -c "herdrCall(" "$H/roster.mjs")" -eq "$(awk "/case \"layout-splits\":/,/^    }/" "$H/roster.mjs" | grep -c "herdrCall(")" ]'
+
+# ---- create --spawn joins the permitted list (spec 0005 §11.3): unlike every subcommand above, it
+# DOES reach herdrCall on a herdr roster with a peer member.
+rm -f "$SANDBOX/marker"
+INVOK init --level repo --route peer
+INVOK add --level repo --role architect --model opus
+HOME="$FAKEHOME" HERDR_ENV=1 HERDR_PANE_ID=p0 PATH="$SANDBOX/markerbin:$NODE_DIR" FAKE_HERDR_MARKER="$SANDBOX/marker" node "$H/roster.mjs" create --spawn --mode auto --cwd "$PROJ" >/dev/null 2>&1
+check "invariant: create --spawn DOES reach herdrCall on a herdr roster (marker created)" \
+  '[ -e "$SANDBOX/marker" ]'
+INVOK disband --commit
+
+# herdrCall's definition plus its permitted callers (layout-splits, create --spawn) are the only
+# places `herdrCall(` may appear (spec 0002 §11.3, extended by spec 0005 §11.3 to add create --spawn
+# to the permitted set). function herdrCall precedes layout-splits; case "disband" immediately
+# follows create, so this range brackets exactly {definition, layout-splits, create} and nothing else.
+check "invariant (grep): herdrCall( appears only in its definition, layout-splits, and create --spawn" \
+  '[ "$(grep -c "herdrCall(" "$H/roster.mjs")" -eq "$(awk "/^function herdrCall/,/case \"disband\":/" "$H/roster.mjs" | grep -c "herdrCall(")" ]'
 
 echo
 echo "passed: $PASS  failed: $FAIL"

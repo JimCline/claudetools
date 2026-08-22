@@ -8,6 +8,12 @@ Related: `docs/specs/0001-agent-roster.md` §6 (`create` — instantiating a Tea
 `docs/specs/0003-roster-create-perf.md` (the batched-launch / sequential-layout tradeoff revisited by §5);
 `docs/specs/0004-roster-layout.md` — **amended by this spec's §5, §6 and §7**, see below.
 
+> **Amended 2026-08-22 by `0006-disband-kill-by-default.md`.** §8.2's decision — keep plain `disband`
+> safe, put the destructive form behind `--kill` — is **reversed** by user direction. Bare `disband` is
+> now the close-plan call and `--keep-sessions` is the safe form. §8.1's two-call contract, §8.1's
+> close-before-remove ordering, and §8.3's emit-don't-execute rule are all **unchanged** — only which
+> flag selects which path changed. Read §8.2 as history.
+
 ## 1. Goal
 
 Fix the defects that surfaced across two consecutive `create` runs against `wrangl`

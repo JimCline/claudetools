@@ -49,14 +49,14 @@ with `--cwd "$(pwd)"` (or the relevant repo path). Level may be given as
 - `edit --member <NAME> [--level L] [--role R] [--model M] [--effort E] [--route ...] [--auto-mode A]`
 - `remove --member <NAME> [--level L]`
 - `layout [--level <L>] [--layout auto|columns|grid]` — show or set the team-wide pane layout.
-- `create [--plan | --commit ...]` — see § Create.
+- `create [--plan | --commit ... | --spawn --mode <m>]` — see § Create.
 - `layout-splits --mode <m> --pane-count <n> [--self <id>] [--cwd <p>] [--next|--apply …]` — performs
   the herdr layout phase. Used by § Create phase 3a. Not a user-facing command.
 - `next-split --mode <m> --pane-count <n> --self <id> --created <json> --geometry <json>` — the pure
   decision function, exposed for testing. The skill does not call it; `layout-splits` does.
-- `disband [--kill --plan|--commit]` — tears down `team.json`; plain `disband` never kills sessions.
-  `--kill --plan` emits close commands (read-only); `--kill --commit` removes `team.json` after the
-  skill has actually run them. See § disband.
+- `disband [--commit|--keep-sessions]` — tears down the Team. Bare `disband` emits close commands
+  (read-only); `--commit` removes `team.json` after the skill has actually run them; `--keep-sessions`
+  removes `team.json` without closing anything. See § disband.
 
 `add`/`edit`/`remove` with no `--level` operate on whichever level currently
 resolves (repo-user > repo > global) and print which level they picked — say
@@ -144,9 +144,29 @@ running session can do — drive the sequence yourself:
 2. **`manual` mode**: before each spawn, show the intended placement (name,
    role, transport) and let the user override it (different pane, skip it,
    change the name) before proceeding. `auto` mode spawns straight through.
-3. **Spawn every peer-routed member in two batched phases.** Do not run one
-   member's full sequence before starting the next — that serializes an
-   `agent start` wait per member.
+3. **Spawn.**
+
+   **`auto` mode:** run one command:
+
+       roster.mjs create --spawn --mode <layout_plan.mode> [--roster-level <L>] [--orchestrator-pid <pid>] --cwd <repo root>
+
+   It resolves the roster, runs the layout phase, asserts one distinct
+   non-empty target id per peer-routed member before launching anything, then
+   launches every peer-routed member's `agent start`/`send-keys` concurrently
+   (herdr retries a single `pane_not_available`-class failure once, in-process;
+   tmux and terminal never retry). It returns one JSON result: `level`,
+   `transport`, and `members[]` — each entry carries `role`, `name`, `model`,
+   `route`, `autoMode`, `transport_id`, and `launch_status`
+   (`ready`|`dispatched`|`failed`; `null` for subagent-routed members), plus
+   `error` when `failed`. `partial: true` iff any peer-routed member's
+   `launch_status` is `failed` — a `dispatched` member (tmux only) is not
+   partial, see step 4. Skip straight to step 4 with this `members[]` — do not
+   recompute placements or drive `layout-splits`/`layout` commands yourself in
+   `auto` mode.
+
+   **`manual` mode:** spawn every peer-routed member in two batched phases
+   yourself, exactly as below. Do not run one member's full sequence before
+   starting the next — that serializes an `agent start` wait per member.
 
    **3a — Layout.** For the `herdr` transport, `spawn.layout` is empty and the
    plan carries a top-level `layout_plan`. Run **one** command:
@@ -227,11 +247,17 @@ running session can do — drive the sequence yourself:
    be silently converted into a per-member pause between 3a and 3b.
 4. **Check in.** Call `ListAgents` and match each spawned member's derived
    name. **Poll every 2 seconds, give up at 60 seconds** — fixed interval,
-   not backoff; this is not configurable.
+   not backoff; this is not configurable. A member `--spawn` reported as
+   `dispatched` (tmux only — `send-keys` has no readiness signal to wait on)
+   is *expected* to still be checking in here; it is not a partial and needs
+   no special handling — poll it exactly like a `ready` member.
 5. **Commit.** Build the `verified` member array (one object per roster
    member: `role`, `name`, `ref` from ListAgents, `route`, `model`, `effort`,
    `auto_mode`, `transport_id`, `checked_in`; subagent-routed members get
-   `name`/`ref`/`transport_id` null and `checked_in` set now). Run
+   `name`/`ref`/`transport_id` null and `checked_in` set now). In `auto` mode,
+   build this directly from `--spawn`'s `members[]` (`role`, `name`, `route`,
+   `model`, `autoMode`, `transport_id` are already there) plus each member's
+   `ref` from `ListAgents` — do not recompute the rest by hand. Run
    `roster.mjs create --commit --transport <t> --roster-level <L> --verified
    '<json>'` (add `--partial` if any peer-routed member never checked in). The
    orchestrator pid it records comes from the `CLAUDE_PID` env var by default
@@ -278,36 +304,38 @@ candidate, not a place for invented judgment calls.
 
 ## `disband`
 
-Run `roster.mjs disband`. It only removes `team.json` — it never kills panes
-or sessions, since they may hold work that already cost tokens. Print the
-member names and `transport_id`s it returns so the user can close them
-themselves if they want to.
-
-A stale Team (dead orchestrator pid, or older than the fixed 24h cap) is also
-swept automatically on the next plain top-level SessionStart — that safety
-net needs no action here.
-
-**`disband --kill`** — tears the Team all the way down. It is a **two-call
+Bare `disband` tears the Team all the way down by default. It is a **two-call
 contract**, mirroring `create`'s `--plan`/`--commit` split, so removal cannot
 happen before the real closes do:
 
-1. Run `roster.mjs disband --kill --plan`. Read-only — `team.json` is
-   untouched. It returns a `close` array, one entry per member, with a
-   `command` (or `null` for terminal-routed, subagent-routed, or a member
-   with no live `transport_id`).
+1. Run `roster.mjs disband`. Read-only — `team.json` is untouched. It returns
+   a `close` array, one entry per member, with a `command` (or `null` for
+   terminal-routed, subagent-routed, or a member with no live
+   `transport_id`).
 2. Prompt the user once: "this will close N live sessions — proceed?",
    naming the members. Stop here if they decline.
 3. Run every non-null `command` in **one** Bash invocation and report, per
    member, whether its session actually closed or the close call failed
    (e.g. the pane was already gone) — a failed close is reported, not fatal.
-4. Only now run `roster.mjs disband --kill --commit` to remove `team.json`.
-   If it reports no active team (e.g. a retry after step 4 already ran),
-   that's fine — the teardown already completed.
+4. Only now run `roster.mjs disband --commit` to remove `team.json`. If it
+   reports no active team (e.g. a retry after step 4 already ran), that's
+   fine — the teardown already completed.
 
-Never call `--commit` before running the closes from `--plan`, and never
-skip `--plan`'s confirmation step — folding the two into one call is exactly
-what would leave `team.json` gone before a declined prompt or a failed close
-could be honored.
+Never call `--commit` before running the closes from the plan call, and never
+skip the plan call's confirmation step — folding the two into one call is
+exactly what would leave `team.json` gone before a declined prompt or a
+failed close could be honored.
+
+**`roster.mjs disband --keep-sessions`** — the safe form: removes `team.json`
+and closes nothing, since sessions may hold work that already cost tokens.
+Single call, no confirmation needed since nothing destructive to a live
+session happens. Print the member names and `transport_id`s it returns so
+the user can close them themselves if they want to.
+
+A stale Team (dead orchestrator pid, or older than the fixed 24h cap) is also
+swept automatically on the next plain top-level SessionStart — that sweep
+clears `team.json` directly and never runs `roster.mjs disband`, so it is
+unaffected by which flag is the default here.
 
 ## Check-in registry (`team.json`)
 
