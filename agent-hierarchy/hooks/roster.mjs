@@ -211,7 +211,31 @@ function nextSplit({ mode, paneCount, self, created, geometry }) {
     }
   }
   const rect = byId.get(target);
-  const direction = effectiveMode(mode, paneCount) === "columns" || rect.width > rect.height * 2 ? "right" : "down";
+
+  // Plan constants, spec 0007 §5.2 — derived from paneCount alone, no persisted state.
+  const total = paneCount + 1;
+  const bands = Math.max(total >= 3 ? 2 : 1, 2 ** Math.floor(Math.log2(total) / 2));
+  const cols = Math.ceil(total / bands);
+
+  // Root rect, spec 0007 §5.3 — bounding box of the candidate panes only.
+  const cands = [self, ...created].map((id) => byId.get(id));
+  const rootX = Math.min(...cands.map((r) => r.x));
+  const rootY = Math.min(...cands.map((r) => r.y));
+  const rootWidth = Math.max(...cands.map((r) => r.x + r.width)) - rootX;
+  const rootHeight = Math.max(...cands.map((r) => r.y + r.height)) - rootY;
+
+  // Direction rule, spec 0007 §5.4.
+  let direction;
+  if (effectiveMode(mode, paneCount) === "columns") {
+    direction = "right";
+  } else if (rootWidth > 0 && rootHeight > 0 && rect.height * 2 * bands > rootHeight * 3) {
+    direction = "down"; // spans >1.5 bands
+  } else if (rootWidth > 0 && rootHeight > 0 && rect.width * 2 * cols > rootWidth * 3) {
+    direction = "right"; // spans >1.5 columns
+  } else {
+    direction = rect.width > rect.height * 2 ? "right" : "down"; // 0004 §6.1, verbatim
+  }
+
   return { target, direction };
 }
 

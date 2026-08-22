@@ -51,16 +51,19 @@ run --mode columns --pane-count 3 --self p0 --created '["a"]' --geometry '[{"pan
 check "5: columns mode -> right even for a tall (5x100) target" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"direction\": \"right\""'
 
-# 6 — mode grid: aspect rule, strict > at the boundary
-run --mode grid --pane-count 3 --self p0 --created '["a"]' --geometry '[{"pane_id":"p0","rect":{"width":1,"height":1,"x":0,"y":0}},{"pane_id":"a","rect":{"width":90,"height":42,"x":0,"y":0}}]'
-check "6a: grid, 90x42 (90 > 84) -> right" \
-  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"direction\": \"right\""'
-run --mode grid --pane-count 3 --self p0 --created '["a"]' --geometry '[{"pane_id":"p0","rect":{"width":1,"height":1,"x":0,"y":0}},{"pane_id":"a","rect":{"width":45,"height":42,"x":0,"y":0}}]'
-check "6b: grid, 45x42 (45 > 84 false) -> down" \
-  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"direction\": \"down\""'
-run --mode grid --pane-count 3 --self p0 --created '["a"]' --geometry '[{"pane_id":"p0","rect":{"width":1,"height":1,"x":0,"y":0}},{"pane_id":"a","rect":{"width":84,"height":42,"x":0,"y":0}}]'
-check "6c: grid, width === height*2 exactly -> down (strict >, boundary is not right)" \
-  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"direction\": \"down\""'
+# 6 — grid, ragged case: falls back to the §6.1 aspect rule (0007 §7.2 — re-anchored: a 1x1 self
+# overlapping the target at the origin is not a tiling, so under the shape-aware rule it no longer
+# reaches the fallback. Fixture is total=5 (--pane-count 4), four 90x21-ish panes tiling a 180x42
+# root so the band/column tests both fall through and the §6.1 aspect rule alone decides.)
+run --mode grid --pane-count 4 --self p0 --created '["p1","p2","p3"]' --geometry '[{"pane_id":"p0","rect":{"width":90,"height":21,"x":0,"y":0}},{"pane_id":"p1","rect":{"width":90,"height":21,"x":90,"y":0}},{"pane_id":"p2","rect":{"width":90,"height":21,"x":0,"y":21}},{"pane_id":"p3","rect":{"width":90,"height":21,"x":90,"y":21}}]'
+check "6a': grid, ragged fallback, 90x21 target (90 > 42) -> right" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"target\": \"p0\"" && echo "$OUT" | grep -q "\"direction\": \"right\""'
+run --mode grid --pane-count 4 --self p0 --created '["p1","p2","p3"]' --geometry '[{"pane_id":"p0","rect":{"width":40,"height":21,"x":0,"y":0}},{"pane_id":"p1","rect":{"width":40,"height":21,"x":40,"y":0}},{"pane_id":"p2","rect":{"width":40,"height":21,"x":0,"y":21}},{"pane_id":"p3","rect":{"width":40,"height":21,"x":40,"y":21}}]'
+check "6b': grid, ragged fallback, 40x21 target (40 > 42 false) -> down" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"target\": \"p0\"" && echo "$OUT" | grep -q "\"direction\": \"down\""'
+run --mode grid --pane-count 4 --self p0 --created '["p1","p2","p3"]' --geometry '[{"pane_id":"p0","rect":{"width":42,"height":21,"x":0,"y":0}},{"pane_id":"p1","rect":{"width":42,"height":21,"x":42,"y":0}},{"pane_id":"p2","rect":{"width":42,"height":21,"x":0,"y":21}},{"pane_id":"p3","rect":{"width":42,"height":21,"x":42,"y":21}}]'
+check "6c': grid, ragged fallback, width === height*2 exactly -> down (strict >, 0004 §6.1 boundary preserved)" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"target\": \"p0\"" && echo "$OUT" | grep -q "\"direction\": \"down\""'
 
 # 7 — AMENDED (0002 §7.3 cause 2): auto resolves from --pane-count, never from created.length.
 run --mode auto --pane-count 2 --self p0 --created '[]' --geometry '[{"pane_id":"p0","rect":{"width":5,"height":100,"x":0,"y":0}}]'
@@ -143,6 +146,91 @@ NODEEOF
 OUT=$(node "/tmp/nextsplit-equalarea-$$.mjs" "$H/roster.mjs" 2>&1); RC=$?
 rm -f "/tmp/nextsplit-equalarea-$$.mjs"
 check "11: equal-area property holds for 4 panes (pane-count 3) from two different start rects, self included" \
+  '[ "$RC" -eq 0 ]'
+
+# 12 — multi-axis tiling (0007 §5.5 item 1): first split is always down for total>=3, across a
+# range of pane counts, from a single-pane 180x42 start.
+for pc in 2 3 4 5 6 7 8; do
+  run --mode grid --pane-count "$pc" --self p0 --created '[]' --geometry '[{"pane_id":"p0","rect":{"width":180,"height":42,"x":0,"y":0}}]'
+  check "12: grid, first split is down for --pane-count $pc" \
+    '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"direction\": \"down\""'
+done
+
+# 13 — grid differs from columns (0007 §5.5 item 4): the same fixtures under --mode columns are
+# right for every pane count, proving the two modes are distinct rather than coincidentally equal.
+for pc in 2 3 4 5 6 7 8; do
+  run --mode columns --pane-count "$pc" --self p0 --created '[]' --geometry '[{"pane_id":"p0","rect":{"width":180,"height":42,"x":0,"y":0}}]'
+  check "13: columns, first split is right for --pane-count $pc (contrasts with case 12's down)" \
+    '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"direction\": \"right\""'
+done
+
+# 14 — the sketch formula (floor(sqrt(total))) is rejected (0007 §5.2's max(2, ...) floor):
+# --pane-count 2 (total=3) on 100x60 must be down. floor(sqrt(3))=1 would collapse grid to columns
+# here and give right instead.
+run --mode grid --pane-count 2 --self p0 --created '[]' --geometry '[{"pane_id":"p0","rect":{"width":100,"height":60,"x":0,"y":0}}]'
+check "14: grid, --pane-count 2 (total=3) on 100x60 -> down (0007 §5.2 floor, not floor(sqrt(total)))" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"direction\": \"down\""'
+
+# 15 — the live case, end to end (0007 §4): from a 180x42 single-pane start with --pane-count 3,
+# the full decision sequence is exactly [down, right, right] and the final rects are four 90x21
+# panes tiling the four quadrants — the live-confirmed workaround, reproduced by the algorithm.
+cat > "/tmp/nextsplit-livecase-$$.mjs" <<'NODEEOF'
+import { execFileSync } from "node:child_process";
+
+const H = process.argv[2];
+
+function runNextSplit(mode, paneCount, self, created, geometry) {
+  const out = execFileSync("node", [H, "next-split", "--mode", mode, "--pane-count", String(paneCount), "--self", self, "--created", JSON.stringify(created), "--geometry", JSON.stringify(geometry)], { encoding: "utf8", env: { ...process.env, HERDR_ENV: undefined } });
+  return JSON.parse(out);
+}
+
+const rects = { p0: { width: 180, height: 42, x: 0, y: 0 } };
+const created = [];
+const directions = [];
+for (let i = 0; i < 3; i++) {
+  const geometry = Object.entries(rects).map(([pane_id, rect]) => ({ pane_id, rect }));
+  const { target, direction } = runNextSplit("grid", 3, "p0", created, geometry);
+  directions.push(direction);
+  const rect = rects[target];
+  const newId = `p${i + 1}`;
+  if (direction === "right") {
+    const w1 = Math.floor(rect.width / 2);
+    const w2 = rect.width - w1;
+    rects[target] = { ...rect, width: w1 };
+    rects[newId] = { ...rect, width: w2, x: rect.x + w1 };
+  } else {
+    const h1 = Math.floor(rect.height / 2);
+    const h2 = rect.height - h1;
+    rects[target] = { ...rect, height: h1 };
+    rects[newId] = { ...rect, height: h2, y: rect.y + h1 };
+  }
+  created.push(newId);
+}
+
+const expectedDirections = JSON.stringify(["down", "right", "right"]);
+const gotDirections = JSON.stringify(directions);
+if (gotDirections !== expectedDirections) {
+  console.error(`expected directions ${expectedDirections}, got ${gotDirections}`);
+  process.exit(1);
+}
+
+const expectedRects = [
+  { width: 90, height: 21, x: 0, y: 0 },
+  { width: 90, height: 21, x: 90, y: 0 },
+  { width: 90, height: 21, x: 0, y: 21 },
+  { width: 90, height: 21, x: 90, y: 21 },
+];
+const gotRects = Object.values(rects).map((r) => ({ width: r.width, height: r.height, x: r.x, y: r.y }));
+const norm = (arr) => JSON.stringify([...arr].sort((a, b) => a.x - b.x || a.y - b.y));
+if (norm(gotRects) !== norm(expectedRects)) {
+  console.error(`expected rects ${JSON.stringify(expectedRects)}, got ${JSON.stringify(gotRects)}`);
+  process.exit(1);
+}
+process.exit(0);
+NODEEOF
+OUT=$(node "/tmp/nextsplit-livecase-$$.mjs" "$H/roster.mjs" 2>&1); RC=$?
+rm -f "/tmp/nextsplit-livecase-$$.mjs"
+check "15: end to end, 180x42 --pane-count 3 -> sequence [down,right,right], four 90x21 quadrants (0007 §4 live case)" \
   '[ "$RC" -eq 0 ]'
 
 echo

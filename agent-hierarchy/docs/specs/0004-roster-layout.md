@@ -379,7 +379,8 @@ mechanism that no longer exists.
 ### 6.3 The three modes — amended selector input
 
 - **`columns`** — direction is always `right`. Target per rule 2.
-- **`grid`** — direction is chosen per the §6.1 visual-aspect rule on the *target* pane. Target per rule 2.
+- **`grid`** — direction is chosen by the shape rule at `0007` §5.4 (band test, then column test, falling
+  back to the §6.1 visual-aspect rule for a target that already fits one grid cell). Target per rule 2.
 - **`auto`** — `columns` when `layout_plan.pane_count ≤ 2`, otherwise `grid`.
 
 **Amended:** `auto` resolves **once, from the final target pane count**, and the resolved mode is the
@@ -395,35 +396,43 @@ There are only two algorithms. `auto` is a selector, not a third implementation.
 Starting from P0 alone. `→` = split right, `↓` = split down. N = `pane_count` = member panes = splits;
 total panes on screen = N+1.
 
-**`grid` at 180×42 cells** (the live sample's full tab area):
+**`grid` at 180×42 cells** (the live sample's full tab area). `total = N+1`; `bands`/`cols` per `0007` §5.2.
 
-| N | splits, in order | resulting panes |
-|---|---|---|
-| 1 | P0→A | P0 90×42, A 90×42 |
-| 2 | …then P0→B (tie P0/A ⇒ P0 first) | P0 45×42, B 45×42, A 90×42 |
-| 3 | …then A→C | **four equal 45×42 panes**, P0 among them |
-| 4 | …then P0↓D (four-way tie ⇒ P0; 45 > 84 false ⇒ down) | P0 45×21, D 45×21, A/B/C 45×42 |
-| 5 | …then A↓E | P0, D, A, E at 45×21; B, C at 45×42 |
+| N | total | bands×cols | splits, in order | resulting panes |
+|---|---|---|---|---|
+| 1 | 2 | 1×2 | P0→A | P0 90×42, A 90×42 |
+| 2 | 3 | 2×2 | P0↓A, then P0→B | P0 90×21, B 90×21 (top); A 180×21 (bottom) |
+| 3 | 4 | 2×2 | P0↓A, P0→B, A→C | **four equal 90×21 panes — two rows of two**, P0 among them |
+| 4 | 5 | 2×3 | …then P0→D (four-way tie ⇒ P0; ragged, §6.1 fallback fires) | top 45, 45, 90; bottom 90, 90 — all ×21 |
+| 5 | 6 | 2×3 | …then A→E | top 45, 45, 90; bottom 45, 45, 90 — all ×21 |
 
 **`grid` at 200×50 cells**, the same rules on a differently-shaped tab:
 
-| N | splits, in order | resulting panes |
-|---|---|---|
-| 1 | P0→A (200 > 100) | P0 100×50, A 100×50 |
-| 2 | …then P0↓B (tie ⇒ P0; 100 > 100 false ⇒ down) | P0 100×25, B 100×25, A 100×50 |
-| 3 | …then A↓C | **four equal 100×25 quadrants** |
+| N | total | bands×cols | splits, in order | resulting panes |
+|---|---|---|---|---|
+| 1 | 2 | 1×2 | P0→A | P0 100×50, A 100×50 |
+| 2 | 3 | 2×2 | P0↓A, then P0→B | P0 100×25, B 100×25 (top); A 200×25 (bottom) |
+| 3 | 4 | 2×2 | P0↓A, P0→B, A→C | **four equal 100×25 quadrants** |
+
+The N=3 rows are now identical in shape across both tabs — two rows of two, differing only in cell
+dimensions. Under the pre-`0007` rule they diverged (180×42 gave one row of four, 200×50 gave quadrants)
+purely because of the terminal's aspect; that divergence is what `0007` was filed against.
 
 The N=3 row is exactly the arrangement `0002` §7.2 describes as the expected one — P0 split down first,
-then each half split again — and it falls out of the amended rules without being special-cased.
+then each half split again — and it falls out of the rules without being special-cased.
 
 **These tables are worked examples, not invariants.** The algorithm is geometry-driven, so the exact
-sequence depends on the terminal's dimensions — visible above: the same rules split *right* at step 2
-on a 180×42 tab and *down* on a 200×50 one. That is the rule working correctly, not drifting.
-**The specification is the rules in §6.1-6.3**, and §11.3 tests those rules rather than these tables —
-asserting a table would bake one terminal's dimensions into the suite.
+sequence depends on the terminal's dimensions, and on ragged pane counts the fallback aspect rule can
+still diverge by tab shape (see `0007` §5.6's `total = 5` trace). That is the rule working correctly, not
+drifting. **The specification is the rules in §6.1-6.3, amended by `0007` §5.4**, and §11.3 tests those
+rules rather than these tables — asserting a table would bake one terminal's dimensions into the suite.
 
 What *is* invariant, and what §11.3 asserts: for `pane_count + 1` equal to a power of two, every
 resulting pane has equal area regardless of the starting rect. Both tables above show it at N=3.
+
+Also invariant, and asserted alongside it: for `pane_count + 1 >= 3` in `grid` mode the sequence contains
+at least one `down` split and at least one `right` split, and the final layout has exactly `bands` rows
+(`0007` §5.5).
 
 **`columns`** (all `right`), 180×42 tab, widths listed P0-first then in creation order:
 
@@ -505,8 +514,26 @@ function nextSplit({ mode, paneCount, self, created, geometry }) {
     if (area > bestArea) { bestArea = area; target = id; }   // strict > ⇒ earliest wins ties
   }
   const rect = byId.get(target);
-  const direction =
-    effectiveMode(mode, paneCount) === "columns" || rect.width > rect.height * 2 ? "right" : "down";
+
+  // Plan constants (0007 §5.2) and root rect (0007 §5.3), derived from the arguments alone.
+  const total = paneCount + 1;
+  const bands = Math.max(total >= 3 ? 2 : 1, 2 ** Math.floor(Math.log2(total) / 2));
+  const cols = Math.ceil(total / bands);
+  const cands = [self, ...created].map((id) => byId.get(id));
+  const rootWidth = Math.max(...cands.map((r) => r.x + r.width)) - Math.min(...cands.map((r) => r.x));
+  const rootHeight = Math.max(...cands.map((r) => r.y + r.height)) - Math.min(...cands.map((r) => r.y));
+
+  // Direction rule (0007 §5.4): band test, then column test, then the §6.1 aspect rule as fallback.
+  let direction;
+  if (effectiveMode(mode, paneCount) === "columns") {
+    direction = "right";
+  } else if (rootWidth > 0 && rootHeight > 0 && rect.height * 2 * bands > rootHeight * 3) {
+    direction = "down";
+  } else if (rootWidth > 0 && rootHeight > 0 && rect.width * 2 * cols > rootWidth * 3) {
+    direction = "right";
+  } else {
+    direction = rect.width > rect.height * 2 ? "right" : "down";
+  }
   return { target, direction };
 }
 ```
@@ -764,6 +791,18 @@ tab-size-specific examples, and asserting them would bake one terminal's dimensi
     about the rule rather than one tab: both must pass. The simulator is an idealization of herdr's
     splitting and its only job is to exercise the decision *sequence*; do not assert exact cell counts
     against it.
+12. **Multi-axis tiling (`0007` §5.5 items 1-2).** For `grid` mode and `--pane-count` 2 through 8 on a
+    single-pane 180×42 start geometry, the first decision is always `down`, and across the full run
+    there is at least one `down` and at least one `right`.
+13. **`grid` differs from `columns` (`0007` §5.5 item 4).** Same fixtures as item 12 with `--mode columns`
+    instead: the first (and every) decision is `right`, proving the two modes diverge for every
+    `pane_count >= 2`.
+14. **The `floor(sqrt(total))` sketch formula is rejected (`0007` §5.2's `max(2, …)` floor).**
+    `--pane-count 2 --mode grid` (`total = 3`) on 100×60 ⇒ `down`. A `floor(sqrt(total))`-based `bands`
+    would yield `right` here; this is the direct regression test for that mistake.
+15. **The live case, end to end (`0007` §4).** From a 180×42 single-pane start with `--pane-count 3`, the
+    full decision sequence is exactly `["down","right","right"]` and the final rects are four 90×21 panes
+    at `(0,0) (90,0) (0,21) (90,21)`.
 
 `layout-splits`' own checks — including the invariant that no other subcommand executes `herdr` — are
 specified in `0002` §11.3, since that is where the subcommand is designed.

@@ -121,6 +121,8 @@ init_state 180 42
 run --pane-count 3 --mode grid
 check "3: self participates in more than one split (Defect E end-to-end guard)" \
   'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const o=JSON.parse(s);const selfSplits=o.splits.filter(sp=>sp.target===\"p0\").length;process.exit(selfSplits>1?0:1)})"'
+check "3b: final layout is a grid, not a row — exactly two distinct y-values across the four panes (0007 §7.3)" \
+  '[ "$(node -e "const s=JSON.parse(require(\"fs\").readFileSync(\"$SANDBOX/state.json\",\"utf8\"));console.log(new Set(Object.values(s.panes).map(r=>r.y)).size)")" -eq 2 ]'
 
 # 4 — partial: FAIL_ON=2 -> exit 3, 1 pane, complete false, failed_at 2, attempted present, error non-empty
 init_state 180 42

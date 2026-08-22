@@ -488,7 +488,9 @@ Two compounding causes:
 For 4 total panes, the rules should produce four equal panes with `self` among them.
 On a 200×50 tab that is literally `0004` §6.4's quadrant sequence — split `self`
 down, then split each half — and it falls out without a special case once both
-causes are fixed. On a 180×42 tab the same rules give four equal 45×42 columns.
+causes are fixed. On a 180×42 tab the same rules give four equal panes at 90×21, two rows of two
+(`0007` §5 recomputed the sequence; `0002`'s original text here predicted four 45×42 columns, which is
+the arrangement `0007` was filed against).
 Equal *area* is the invariant; a specific split sequence is not.
 
 ### 7.3 Required change — the rule lives in `0004`, amended
