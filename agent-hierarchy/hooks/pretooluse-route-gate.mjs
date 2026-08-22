@@ -64,6 +64,7 @@ import {
   roster,
   sessionModel,
 } from "./lib-hier.mjs";
+import { teamMemberByName } from "./lib-roster.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
 
 const TIER_ROLES = ["architect", "ultra-advisor"];
@@ -88,7 +89,7 @@ function askReason(ros, sessionId) {
     if (live.length) liveBits.push(`${ROLE_LABELS[role]}=${live.map(describeInstance).join("; ")}`);
   }
   return [
-    `agent-hierarchy: choose this session's dispatch route before tasking roles. Live peers: ${liveBits.length ? liveBits.join(" | ") : "none"}.`,
+    `ah: choose this session's dispatch route before tasking roles. Live peers: ${liveBits.length ? liveBits.join(" | ") : "none"}.`,
     "Ask the user with AskUserQuestion, exactly these options in this order:",
     '  "Peer agents only (Recommended)" — never spawn a roster subagent; when no live peer exists for a role, ask before falling back to a subagent for that role.',
     '  "Prefer peer agents, fall back to subagents" — reuse a live peer when one is free; spawn without asking when none is.',
@@ -99,19 +100,19 @@ function askReason(ros, sessionId) {
 }
 
 function subagentsDenyReason() {
-  return "agent-hierarchy: route is subagents this session — spawn the subagent instead, or change route with msg.mjs route.";
+  return "ah: route is subagents this session — spawn the subagent instead, or change route with msg.mjs route.";
 }
 
 function peersDenyReason(role, live) {
-  return `agent-hierarchy: route is peers this session — live instance(s) for ${ROLE_LABELS[role]}: ${live.map(describeInstance).join("; ")}. SendMessage it (set to_name) instead of spawning, or change route with msg.mjs route.`;
+  return `ah: route is peers this session — live instance(s) for ${ROLE_LABELS[role]}: ${live.map(describeInstance).join("; ")}. SendMessage it (set to_name) instead of spawning, or change route with msg.mjs route.`;
 }
 
 function peerFallbackAskReason(role) {
-  return `agent-hierarchy: route is peers this session, but no live instance of ${ROLE_LABELS[role]} exists to route to. Ask the user with AskUserQuestion: "No live ${ROLE_LABELS[role]} peer is available — spawn a subagent for this role instead?", options "Yes, spawn a subagent (Recommended)" and "No, wait — I'll start the peer myself". If yes, re-issue this exact dispatch. If no, do not dispatch — wait for the peer to come up or tell the user you're blocked on ${ROLE_LABELS[role]}.`;
+  return `ah: route is peers this session, but no live instance of ${ROLE_LABELS[role]} exists to route to. Ask the user with AskUserQuestion: "No live ${ROLE_LABELS[role]} peer is available — spawn a subagent for this role instead?", options "Yes, spawn a subagent (Recommended)" and "No, wait — I'll start the peer myself". If yes, re-issue this exact dispatch. If no, do not dispatch — wait for the peer to come up or tell the user you're blocked on ${ROLE_LABELS[role]}.`;
 }
 
 function preferPeersDenyReason(role, live) {
-  return `agent-hierarchy: route is prefer-peers this session — free live instance(s) for ${ROLE_LABELS[role]}: ${live.map(describeInstance).join("; ")}. SendMessage it (set to_name) instead of spawning, or change route with msg.mjs route.`;
+  return `ah: route is prefer-peers this session — free live instance(s) for ${ROLE_LABELS[role]}: ${live.map(describeInstance).join("; ")}. SendMessage it (set to_name) instead of spawning, or change route with msg.mjs route.`;
 }
 
 function tierReason(model, tier, role, roleModel, roleTierN, msgsOff) {
@@ -150,7 +151,10 @@ try {
     text = typeof toolInput.message === "string" ? toolInput.message : "";
     if (!parseSentinel(text)) decide(null);
     const to = typeof toolInput.to === "string" ? stripRef(toolInput.to.trim()) : "";
-    role = PEER_ELIGIBLE_ROLES.find((r) => resolvedPeerTargets(r, resolved.roles[r], repoBasename).includes(to)) || null;
+    // Team-first (ADR 0002): the active Team's check-in registry is authoritative once it exists.
+    const teamMember = to ? teamMemberByName(dir, to) : null;
+    role = teamMember ? teamMember.role : null;
+    if (!role) role = PEER_ELIGIBLE_ROLES.find((r) => resolvedPeerTargets(r, resolved.roles[r], repoBasename).includes(to)) || null;
     if (!role && to) {
       const ros = getRoster();
       role = PEER_ELIGIBLE_ROLES.find((r) => (ros[r] || []).some((i) => i.name === to)) || null;
@@ -190,7 +194,7 @@ try {
             appendGate(dir, { type: "peer-fallback-ask", session_id: sessionId, role });
             decide("deny", peerFallbackAskReason(role));
           }
-          decide(null, null, `agent-hierarchy: route is peers this session, no live instance of ${ROLE_LABELS[role]} exists, and the user was already asked this session — spawning the subagent.`);
+          decide(null, null, `ah: route is peers this session, no live instance of ${ROLE_LABELS[role]} exists, and the user was already asked this session — spawning the subagent.`);
         }
       } else if (route === "prefer-peers") {
         const free = live.filter((i) => !i.busy);

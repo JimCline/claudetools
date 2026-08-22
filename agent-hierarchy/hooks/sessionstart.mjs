@@ -7,7 +7,7 @@
  * which model each role runs on and how to route work through the chain.
  *
  * Gating, in this order:
- *   - Subagent (`agent_id` set) → inject NOTHING. `agent-hierarchy:*` role
+ *   - Subagent (`agent_id` set) → inject NOTHING. `ah:*` role
  *     agents must never receive the protocol, since subagents can nest and an
  *     Implementor that starts orchestrating defeats the hierarchy; foreign
  *     subagents such as `task-gopher:task-gopher` should not pay for it
@@ -49,7 +49,22 @@ import {
   readHookInput,
   resolveConfig,
 } from "./lib-config.mjs";
-import { appendRosterRecord, buildStateBlock, cacheSessionModel, effectiveRoute, ensureHierarchyDir, sessionModel, sweep, SWEEP_DAYS } from "./lib-hier.mjs";
+import { appendRosterRecord, buildStateBlock, cacheSessionModel, effectiveRoute, ensureHierarchyDir, pidAlive, ageSecOf, sessionModel, sweep, SWEEP_DAYS } from "./lib-hier.mjs";
+import { clearTeam, readTeam } from "./lib-roster.mjs";
+
+// ponytail: 24h is a blunt fixed ceiling, not a config knob — see spec 0001 §5.3.
+const TEAM_STALE_AGE_SEC = 24 * 3600;
+
+/** Clear an abandoned team.json: dead orchestrator pid or past the age cap. Returns a note string, or null. */
+function sweepStaleTeam(dir) {
+  const team = readTeam(dir);
+  if (!team) return null;
+  const orchestratorPid = team.orchestrator && team.orchestrator.pid;
+  const stale = !pidAlive(orchestratorPid) || ageSecOf(team.created) > TEAM_STALE_AGE_SEC;
+  if (!stale) return null;
+  clearTeam(dir);
+  return `cleared stale team ${team.team_id}`;
+}
 
 const input = await readHookInput();
 
@@ -82,17 +97,25 @@ if (!isSubagent(input)) {
       let model = null;
       let route = null;
       let state = null;
+      let teamSweepNote = null;
       try {
         dir = ensureHierarchyDir(cwd);
         model = sessionModel(input, dir);
         if (input.model && input.session_id) cacheSessionModel(dir, input.session_id, input.model);
         if (input.source === "startup") sweep(dir, SWEEP_DAYS);
+        // Stale-team safety net (spec 0001 §5.3): only a plain top-level session can
+        // legitimately observe a DIFFERENT session's abandoned team — never the
+        // Orchestrator's own session before it has written the registry, and never a
+        // `--agent <role>` member session (excluded above by the `role` branch, but
+        // guarded again here per the spec's exact condition).
+        if (!isTopLevelAgentSession(input)) teamSweepNote = sweepStaleTeam(dir);
         route = effectiveRoute(dir, resolved, input.session_id || null);
         state = buildStateBlock(dir, resolved, basename(resolved.cwd), model, input.session_id || null, route);
       } catch {
         // state block is best-effort; the directive still goes out
       }
       context = buildDirective(resolved, input.session_id, { hierDir: dir, model, route });
+      if (teamSweepNote) context += "\n\n" + teamSweepNote;
       if (state) context += "\n\n" + state;
     }
   }

@@ -30,6 +30,13 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Cycle with lib-roster.mjs (which imports ROLES/VALID_MODELS_BY_ROLE from here): safe only
+// because neither module touches the other's export at module top-level, only inside function
+// bodies called later (statusReport here; validateMember/validateRosterBlock there). Keep it that
+// way — a top-level use on either side would risk the top-level-await deadlock class documented
+// in lib-roster.mjs's header.
+import { readTeam } from "./lib-roster.mjs";
+
 /** Absolute path to the escalation-gate CLI, resolved from this file so it survives wherever the plugin is installed. */
 const GATE_CLI = join(dirname(fileURLToPath(import.meta.url)), "gate.mjs");
 /** Absolute path to the message-file CLI, same resolution as GATE_CLI. */
@@ -102,6 +109,12 @@ export const VALID_MODELS_BY_ROLE = {
 };
 
 export const CONFIG_BASENAME = "agent-hierarchy.json";
+
+/** Roles a roster member may carry — the same ROLES list, orchestrator is never a member (§3.2). */
+export const ROSTER_ROLES = ROLES;
+
+/** Roster levels, in resolution precedence order (highest first). */
+export const ROSTER_LEVELS = ["repo-user", "repo", "global"];
 
 /** Model families ranked for the tier rule: a role at or below the session's own tier buys no extra reasoning. */
 export const TIER = { haiku: 1, sonnet: 2, opus: 3, fable: 4 };
@@ -183,7 +196,7 @@ export async function readHookInput() {
  * with no `agent_id`), so testing `agent_type` classifies a genuine main
  * session as a subagent and suppresses the injection it should receive.
  *
- * Both subagent cases suppress every injection: an `agent-hierarchy:*` role
+ * Both subagent cases suppress every injection: an `ah:*` role
  * (hard recursion suppression, since subagents can nest up to three layers)
  * and any foreign subagent such as `task-gopher:task-gopher`.
  */
@@ -223,6 +236,90 @@ export function projectConfigPath(cwd) {
   return join(resolve(cwd), ".claude", CONFIG_BASENAME);
 }
 
+/** Walk up from `start` to the nearest enclosing `.git`; null if none. Shared by hierarchyDir and the roster levels below so all three agree on "this repo". */
+export function findGitRoot(start) {
+  let dir = resolve(start);
+  for (;;) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
+ * The hierarchy runtime dir for a cwd. `AGENT_HIERARCHY_DIR` env wins; else
+ * the enclosing git checkout's `.claude/hierarchy/`; else
+ * `~/.claude/hierarchy/<basename(cwd)>/`. Lives here (not lib-hier.mjs, which
+ * re-exports it) so lib-config.mjs can resolve a team.json path for
+ * `statusReport` without a runtime import cycle.
+ */
+export function hierarchyDir(cwd) {
+  const env = process.env.AGENT_HIERARCHY_DIR;
+  if (typeof env === "string" && env.trim()) return resolve(env.trim());
+  const base = typeof cwd === "string" && cwd ? cwd : process.cwd();
+  const root = findGitRoot(base);
+  if (root) return join(root, ".claude", "hierarchy");
+  return join(homedir(), ".claude", "hierarchy", basename(resolve(base)));
+}
+
+/** `"-Users-jimcline-git-repos-claudetools"` style slug of an absolute path — every `/` becomes `-`, leading `-` preserved. */
+export function pathSlug(absPath) {
+  return resolve(absPath).replace(/\//g, "-");
+}
+
+/** Absolute path of each roster level's config file for a cwd. */
+export function rosterLevelPaths(cwd) {
+  const resolvedCwd = resolve(typeof cwd === "string" && cwd ? cwd : process.cwd());
+  const repoRoot = findGitRoot(resolvedCwd) || resolvedCwd;
+  return {
+    global: userConfigPath(),
+    repo: join(repoRoot, ".claude", CONFIG_BASENAME),
+    "repo-user": join(homedir(), ".claude", "agent-hierarchy", "projects", pathSlug(repoRoot), CONFIG_BASENAME),
+  };
+}
+
+/**
+ * Derive each member's dispatch name (§3.4): first member of a role gets
+ * `peerName(repoBasename, role)`, later same-role members get `-2`, `-3`, ...
+ * in array order. `peerName` stays the ordinal-1 case of this function.
+ */
+export function rosterMemberNames(members, repoBasename) {
+  const seen = {};
+  return members.map((m) => {
+    const role = m.role;
+    const ordinal = (seen[role] = (seen[role] || 0) + 1);
+    const base = peerName(repoBasename, role);
+    return { ...m, name: ordinal === 1 ? base : `${base}-${ordinal}` };
+  });
+}
+
+/**
+ * Resolve the roster: repo-user → repo → global, first level whose `roster`
+ * key is present with at least one member wins IN ITS ENTIRETY (no merging
+ * across levels). Returns `{level, route, members: [...withNames], path}` or
+ * null when no level has one.
+ */
+export function resolveRoster(cwd) {
+  const paths = rosterLevelPaths(cwd);
+  const repoBasename = basename(findGitRoot(resolve(typeof cwd === "string" && cwd ? cwd : process.cwd())) || resolve(typeof cwd === "string" && cwd ? cwd : process.cwd()));
+  for (const level of ROSTER_LEVELS) {
+    const path = paths[level];
+    if (!existsSync(path)) continue;
+    let data;
+    try {
+      data = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      continue;
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+    const r = data.roster;
+    if (!r || typeof r !== "object" || Array.isArray(r) || !Array.isArray(r.members) || r.members.length === 0) continue;
+    return { level, route: r.route, members: rosterMemberNames(r.members, repoBasename), path };
+  }
+  return null;
+}
+
 /** Load one scope. Returns null when absent/unreadable/not an object. */
 function loadScope(path, scope, warnings) {
   if (!path || !existsSync(path)) return null;
@@ -230,17 +327,17 @@ function loadScope(path, scope, warnings) {
   try {
     data = JSON.parse(readFileSync(path, "utf8"));
   } catch {
-    warnings.push(`agent-hierarchy: ${scope}-scope config at ${path} is not valid JSON — ignoring it.`);
+    warnings.push(`ah: ${scope}-scope config at ${path} is not valid JSON — ignoring it.`);
     return null;
   }
   if (!data || typeof data !== "object" || Array.isArray(data)) {
-    warnings.push(`agent-hierarchy: ${scope}-scope config at ${path} is not a JSON object — ignoring it.`);
+    warnings.push(`ah: ${scope}-scope config at ${path} is not a JSON object — ignoring it.`);
     return null;
   }
   const version = data.version === undefined ? CONFIG_VERSION : data.version;
   if (!Number.isInteger(version) || version > CONFIG_VERSION) {
     warnings.push(
-      `agent-hierarchy: ${scope}-scope config at ${path} declares version ${JSON.stringify(data.version)}, which this plugin (v${CONFIG_VERSION}) does not understand — ignoring it.`
+      `ah: ${scope}-scope config at ${path} declares version ${JSON.stringify(data.version)}, which this plugin (v${CONFIG_VERSION}) does not understand — ignoring it.`
     );
     return null;
   }
@@ -258,13 +355,15 @@ export function resolveConfig(cwd) {
   const resolvedCwd = resolve(typeof cwd === "string" && cwd ? cwd : process.cwd());
   const userPath = userConfigPath();
   const projectPath = projectConfigPath(cwd);
+  const repoUserPath = rosterLevelPaths(cwd)["repo-user"];
   const user = loadScope(userPath, "user", warnings);
   // When the session's cwd IS the home directory the two scopes are the same
   // file; loading it twice would report every role as shadowed by itself.
   const project = projectPath === userPath ? null : loadScope(projectPath, "project", warnings);
+  const repoUser = repoUserPath === userPath || repoUserPath === projectPath ? null : loadScope(repoUserPath, "repo-user", warnings);
 
-  // Least specific first: project layers are applied last so they win.
-  const layers = [user, project].filter(Boolean);
+  // Least specific first: repo-user is the new highest-precedence layer.
+  const layers = [user, project, repoUser].filter(Boolean);
 
   const roles = {};
   const sources = {};
@@ -288,6 +387,8 @@ export function resolveConfig(cwd) {
       layers,
       warnings,
       cwd: resolvedCwd,
+      roster: null,
+      rosterLevel: null,
     };
   }
 
@@ -307,7 +408,7 @@ export function resolveConfig(cwd) {
   }
   if (!HANDOFF_MODES.includes(handoffs)) {
     warnings.push(
-      `agent-hierarchy: handoffs ${JSON.stringify(handoffs)} is not a mode (allowed: ${HANDOFF_MODES.join(", ")}) — using "auto".`
+      `ah: handoffs ${JSON.stringify(handoffs)} is not a mode (allowed: ${HANDOFF_MODES.join(", ")}) — using "auto".`
     );
     handoffs = "auto";
     handoffsSource = "default";
@@ -319,7 +420,7 @@ export function resolveConfig(cwd) {
     if (typeof layer.data.msgs === "string") msgs = layer.data.msgs;
   }
   if (!MSGS_MODES.includes(msgs)) {
-    warnings.push(`agent-hierarchy: msgs ${JSON.stringify(msgs)} is not a mode (allowed: ${MSGS_MODES.join(", ")}) — using "required".`);
+    warnings.push(`ah: msgs ${JSON.stringify(msgs)} is not a mode (allowed: ${MSGS_MODES.join(", ")}) — using "required".`);
     msgs = "required";
   }
 
@@ -333,7 +434,7 @@ export function resolveConfig(cwd) {
     }
   }
   if (route !== null && !ROUTE_VALUES.includes(route)) {
-    warnings.push(`agent-hierarchy: route ${JSON.stringify(route)} is not a mode (allowed: ${ROUTE_VALUES.join(", ")}) — ignoring it.`);
+    warnings.push(`ah: route ${JSON.stringify(route)} is not a mode (allowed: ${ROUTE_VALUES.join(", ")}) — ignoring it.`);
     route = null;
     routeSource = null;
   }
@@ -360,7 +461,7 @@ export function resolveConfig(cwd) {
     const valid = VALID_MODELS_BY_ROLE[role];
     if (typeof model !== "string" || !valid.includes(model)) {
       warnings.push(
-        `agent-hierarchy: model ${JSON.stringify(model)} is not allowed for role "${role}" (allowed: ${valid.join(", ")}) — using the default "${ROLE_DEFAULTS[role].model}".`
+        `ah: model ${JSON.stringify(model)} is not allowed for role "${role}" (allowed: ${valid.join(", ")}) — using the default "${ROLE_DEFAULTS[role].model}".`
       );
       roles[role] = { ...roles[role], model: ROLE_DEFAULTS[role].model };
     }
@@ -369,7 +470,7 @@ export function resolveConfig(cwd) {
     let dispatch = rawDispatch === undefined ? "peer" : rawDispatch;
     if (!DISPATCH_MODES.includes(dispatch)) {
       warnings.push(
-        `agent-hierarchy: dispatch ${JSON.stringify(rawDispatch)} is not valid for role "${role}" (allowed: ${DISPATCH_MODES.join(", ")}) — using "peer".`
+        `ah: dispatch ${JSON.stringify(rawDispatch)} is not valid for role "${role}" (allowed: ${DISPATCH_MODES.join(", ")}) — using "peer".`
       );
       dispatch = "peer";
     }
@@ -379,14 +480,31 @@ export function resolveConfig(cwd) {
       let peer = rawPeer === undefined ? "auto" : rawPeer;
       const validArray = Array.isArray(peer) && peer.length > 0 && peer.every((p) => typeof p === "string" && p.trim());
       if (!validArray && (typeof peer !== "string" || !peer.trim())) {
-        warnings.push(`agent-hierarchy: peer value for role "${role}" must be a non-empty string or array of names — using "auto".`);
+        warnings.push(`ah: peer value for role "${role}" must be a non-empty string or array of names — using "auto".`);
         peer = "auto";
       }
       roles[role] = { ...roles[role], peer };
     }
   }
 
-  return { configured: true, enabled, handoffs, handoffsSource, msgs, route, routeSource, roles, sources, shadowed, layers, warnings, cwd: resolvedCwd };
+  const rosterResult = resolveRoster(cwd);
+  return {
+    configured: true,
+    enabled,
+    handoffs,
+    handoffsSource,
+    msgs,
+    route,
+    routeSource,
+    roles,
+    sources,
+    shadowed,
+    layers,
+    warnings,
+    cwd: resolvedCwd,
+    roster: rosterResult,
+    rosterLevel: rosterResult ? rosterResult.level : null,
+  };
 }
 
 /** The subagent_type to dispatch for a role, honouring task-runner's `delegate`. */
@@ -394,7 +512,7 @@ export function subagentType(role, entry) {
   if (role === "task-runner" && entry && entry.delegate === "task-gopher") {
     return "task-gopher:task-gopher";
   }
-  return `agent-hierarchy:${role}`;
+  return `ah:${role}`;
 }
 
 /**
@@ -533,7 +651,7 @@ export function buildDirective(resolved, sessionId, extra = {}) {
     "5. Living spec: if the Implementor reports a spec gap or a deviation is agreed, amend the spec file (yourself, or re-dispatch the Architect for design questions) BEFORE the Reviewer runs. The Reviewer always validates against the current spec.",
     "6. Review loop: the Reviewer classifies each finding impl-defect or spec-defect. Impl-defects go back to the Implementor, spec-defects to the Architect. Max 2 round-trips; if findings are still open after that, escalate to Ultra-Advisor rather than looping again, then surface its verdict to the user.",
     `7. Ultra-Advisor — escalation apex, never a routine step. It reasons and adjudicates; it never implements. Dispatch it ONLY when: the user says the problem is hard, important, or high-stakes, or asks for a second opinion; the Architect reports low confidence or a fork it could not resolve; the review loop hits its cap in item 6; or the change carries outsized blast radius (security, auth, data migration, concurrency, a public interface, anything hard to reverse). Give it the same absolute spec path plus the specific question. Its answer is authoritative: fold it into the spec before the Implementor runs again. Do not escalate merely because a task feels large — size is the Architect's job. ${gateSentences(sessionId)}`,
-    "8. Task-Runner: prefer `task-gopher:task-gopher`; if that agent type is unavailable use `agent-hierarchy:task-runner`. task-gopher's on/off toggle controls only its directive, not the agent — delegation works either way.",
+    "8. Task-Runner: prefer `task-gopher:task-gopher`; if that agent type is unavailable use `ah:task-runner`. task-gopher's on/off toggle controls only its directive, not the agent — delegation works either way.",
     "9. Skills and commands override: a skill mandating a different flow (tdd, diagnose, review) wins over this protocol for its scope.",
     `10. Flow control — handoffs are currently "${resolved.handoffs}"${confirm ? " (ask before each reasoning-role dispatch, per item 0)" : " (you advance the chain yourself and report)"}. The user owns this switch and may flip it AT ANY TIME, in either direction, just by telling you — "ask me before handoffs", "stop asking", or /hierarchy flow auto|confirm. When they do: update the "handoffs" key in the most specific agent-hierarchy.json that exists (project if present, else user) with the Write tool, preserving every other key; confirm the change in one line; and honor the new mode immediately for the rest of this session — do not wait for a restart.`,
     "11. Evidence loop — YOU keep the roles in their lanes. The Architect reasons and designs; it never executes — no tests, builds, or experiments, direct or via a runner (Bash is denied to it). (a) Dispatch it with design questions only: never fold \"and verify it works\" into an Architect prompt. (b) When its report or spec carries NEEDS-EVIDENCE items, route that gruntwork to the Implementor (write/run/measure, at implementation rates; Task-Runner for a pure run-and-report), then re-dispatch the Architect with the results and the same spec path. (c) The Reviewer likewise reasons only: it reads diffs itself (read-only git is its instrument) but MUST delegate every execution — suites, builds, repro scripts — to task-gopher and judge the compact report; its Bash is for inspection, never for running. (d) If any role's report shows it did another role's work — an Architect that ran tests, a Reviewer that ran a suite itself, an Implementor that redesigned — do not accept that part: note the overstep, and route the work to the role that owns it. Reasoning-tier tokens buy judgment, not gruntwork; enforcing that split is YOUR job, not the roles' goodwill.",
@@ -577,7 +695,7 @@ export function statusReport(cwd) {
   const projectPath = projectConfigPath(cwd);
   const seen = Object.fromEntries(resolved.layers.map((l) => [l.scope, l.path]));
 
-  out.push(`agent-hierarchy: ${!resolved.configured ? "NOT CONFIGURED" : resolved.enabled ? "ON" : "OFF (enabled:false)"}`);
+  out.push(`ah: ${!resolved.configured ? "NOT CONFIGURED" : resolved.enabled ? "ON" : "OFF (enabled:false)"}`);
   out.push(`user config:    ${seen.user || `${userPath} (none)`}`);
   out.push(`project config: ${seen.project || `${projectPath || "(unknown cwd)"} (none)`}`);
   out.push(
@@ -601,6 +719,25 @@ export function statusReport(cwd) {
   }
   out.push("");
   out.push("* inherit = omit the `model` parameter on the Agent call (never pass \"inherit\").");
+  out.push("");
+  if (resolved.roster) {
+    const r = resolved.roster;
+    out.push(`Roster: level=${r.level} route=${r.route} path=${r.path}`);
+    for (const m of r.members) {
+      out.push(
+        `  ${m.name.padEnd(24)} ${ROLE_LABELS[m.role] || m.role} model=${m.model || "?"} effort=${m.effort || "-"} route=${m.route || r.route} auto-mode=${m.autoMode || "-"}`
+      );
+    }
+  } else {
+    out.push("Roster: none configured — /agent-roster init to define one (roles/route above stay in effect).");
+  }
+  let team = null;
+  try {
+    team = readTeam(hierarchyDir(resolved.cwd));
+  } catch {
+    team = null;
+  }
+  out.push(team ? `Team: ${team.team_id} (${team.transport}, ${team.members.length} member(s)${team.partial ? ", partial" : ""})` : "Team: none active — /agent-roster create to instantiate the roster");
   if (resolved.shadowed.length) {
     out.push(`WARNING: project config shadows user-scope values for: ${resolved.shadowed.join(", ")}.`);
   }

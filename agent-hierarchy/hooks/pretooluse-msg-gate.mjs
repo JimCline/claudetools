@@ -36,7 +36,7 @@ function decide(decision, reason) {
 
 function denyReason(role, why) {
   return [
-    "agent-hierarchy: role dispatches carry their brief as a message file, not inline prose.",
+    "ah: role dispatches carry their brief as a message file, not inline prose.",
     `1. node "${MSG_CLI}" new --to ${role || "<role>"} --from orchestrator --slug <slug> [--to-name <peer-or-agent name>] [--parent <id>] [--reason context|second-opinion|parallel]`,
     "2. Fill every section (bullets, no prose; keep every constraint verbatim; [0] tldr indexes the rest).",
     "3. Re-issue this exact dispatch with first line: [hierarchy-msg <path>] then ≤3 TL;DR lines. Peer briefs keep the [hierarchy-peer-brief ...] sentinel too.",

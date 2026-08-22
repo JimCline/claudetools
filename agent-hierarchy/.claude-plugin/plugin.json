@@ -1,8 +1,8 @@
 {
-  "name": "agent-hierarchy",
+  "name": "ah",
   "displayName": "Agent Hierarchy — Role/Model Assignment",
-  "version": "0.30.0",
-  "description": "Routes work through a six-role agent hierarchy — Orchestrator, Ultra-Advisor, Architect, Reviewer, Implementor, Task-Runner — each on the model priced for its job, with Ultra-Advisor escalation gated on your approval and zero-token usage tracking. See README for the full mechanics.",
+  "version": "0.32.0",
+  "description": "Multi-agent role hierarchy, each on the right model.",
   "author": {
     "name": "Jim Cline"
   },

@@ -103,7 +103,7 @@ try {
   const from = req && req.fm && req.fm.from ? req.fm.from : "orchestrator";
   appendGate(dir, { type: "nudge", agent_id: agentId, session_id: input.session_id || null, id: meta.id });
   block(
-    `agent-hierarchy: your brief was a message file (${requestPath}); write your response file — node "${MSG_CLI}" new --type response --id ${meta.id} --to ${from} --from ${role}; fill every section (bullets, no prose; [1] status first bullet done|partial|blocked) — and return exactly: [hierarchy-msg <response path>] + the [1] status bullet.`
+    `ah: your brief was a message file (${requestPath}); write your response file — node "${MSG_CLI}" new --type response --id ${meta.id} --to ${from} --from ${role}; fill every section (bullets, no prose; [1] status first bullet done|partial|blocked) — and return exactly: [hierarchy-msg <response path>] + the [1] status bullet.`
   );
 } catch {
   allow();

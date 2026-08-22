@@ -48,18 +48,18 @@ last_for() { # <jq-ish: name-or-session key> -> last record json
     process.stdout.write(recs.length?JSON.stringify(recs[recs.length-1]):"none");' "$PEERS" "$1"; }
 
 # ---- 1: peer session SessionStart -> up (pid = hook's ppid); SessionEnd -> down
-run sessionstart.mjs "{\"session_id\":\"peer-s1\",\"cwd\":\"$PROJ\",\"agent_type\":\"agent-hierarchy:implementor\",\"source\":\"startup\",\"hook_event_name\":\"SessionStart\"}"
+run sessionstart.mjs "{\"session_id\":\"peer-s1\",\"cwd\":\"$PROJ\",\"agent_type\":\"ah:implementor\",\"source\":\"startup\",\"hook_event_name\":\"SessionStart\"}"
 check "peer SessionStart: still emits the role notice" 'echo "$OUT" | grep -q "MAIN session"'
 check "peer SessionStart: notice says You are a peer Implementor + msg protocol" 'echo "$OUT" | grep -q "You are a peer Implementor" && echo "$OUT" | grep -q "hierarchy-msg"'
 check "peer SessionStart: up record written" '[ "$(last_for peer-s1 | node -e "process.stdin.on(\"data\",d=>process.stdout.write(JSON.parse(d).status))")" = up ]'
 check "peer SessionStart: role + pid recorded" 'last_for peer-s1 | grep -q "\"role\":\"implementor\"" && last_for peer-s1 | grep -q "\"pid\":[0-9]"'
-run sessionstart.mjs "{\"session_id\":\"sub-s\",\"cwd\":\"$PROJ\",\"agent_id\":\"a1\",\"agent_type\":\"agent-hierarchy:implementor\",\"hook_event_name\":\"SessionStart\"}"
+run sessionstart.mjs "{\"session_id\":\"sub-s\",\"cwd\":\"$PROJ\",\"agent_id\":\"a1\",\"agent_type\":\"ah:implementor\",\"hook_event_name\":\"SessionStart\"}"
 check "subagent SessionStart: no roster record" '[ "$(last_for sub-s)" = none ] && [ -z "$OUT" ]'
 run sessionend-roster.mjs "{\"session_id\":\"peer-s1\",\"cwd\":\"$PROJ\",\"hook_event_name\":\"SessionEnd\",\"reason\":\"exit\"}"
 check "SessionEnd (no agent_type in payload): matched by session_id -> down" '[ "$(last_for peer-s1 | grep -c "\"status\":\"down\"")" = 1 ]'
 run sessionend-roster.mjs "{\"session_id\":\"plain-s\",\"cwd\":\"$PROJ\",\"hook_event_name\":\"SessionEnd\",\"reason\":\"exit\"}"
 check "SessionEnd for an ordinary session: nothing written" '[ "$(last_for plain-s)" = none ]'
-run sessionend-roster.mjs "{\"session_id\":\"peer-s2\",\"cwd\":\"$PROJ\",\"agent_type\":\"agent-hierarchy:reviewer\",\"hook_event_name\":\"SessionEnd\"}"
+run sessionend-roster.mjs "{\"session_id\":\"peer-s2\",\"cwd\":\"$PROJ\",\"agent_type\":\"ah:reviewer\",\"hook_event_name\":\"SessionEnd\"}"
 check "SessionEnd with agent_type role: down written even without a prior up" 'last_for peer-s2 | grep -q "\"status\":\"down\""'
 
 # ---- 2: ListAgents PostToolUse parses the listing; role-matching names only

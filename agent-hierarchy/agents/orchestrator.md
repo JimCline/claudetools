@@ -4,7 +4,7 @@ description: >-
   The Orchestrator in the agent hierarchy — decomposes work, dispatches
   Ultra-Advisor, Architect, Implementor, Reviewer, and Task-Runner, and
   synthesizes what they report. It is usually just your ordinary top-level
-  session; launch it explicitly with `--agent agent-hierarchy:orchestrator`
+  session; launch it explicitly with `--agent ah:orchestrator`
   when you want the role stated up front with no ambiguity — a `/pane`
   session, or a fresh session you are deliberately starting as the
   Orchestrator. Not configurable via `/hierarchy` — it always runs on this

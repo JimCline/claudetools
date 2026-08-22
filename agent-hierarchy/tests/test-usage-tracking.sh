@@ -47,11 +47,11 @@ USAGE="$FAKEHOME/.claude/agent-hierarchy.usage.jsonl"
 
 # ---- collector: sums a real transcript into one record
 mk_transcript "$PROJ/sessA/subagents/agent-idA.jsonl" "claude-opus-5" 30 70
-run_collect "$(payload idA agent-hierarchy:architect)"
+run_collect "$(payload idA ah:architect)"
 check "collector: exits 0" '[ $RC -eq 0 ]'
 check "collector: one record written" '[ "$(wc -l < "$USAGE")" -eq 1 ]'
 check "collector: sums out=100 in=30 cache_read=300, found, type stored" \
-  'node -e "const r=JSON.parse(require(\"fs\").readFileSync(\"$USAGE\",\"utf8\").trim());process.exit(r.out===100&&r.in===30&&r.cache_read===300&&r.cache_create===5&&r.calls===2&&r.found===true&&r.agent_type===\"agent-hierarchy:architect\"&&r.model===\"claude-opus-5\"?0:1)"'
+  'node -e "const r=JSON.parse(require(\"fs\").readFileSync(\"$USAGE\",\"utf8\").trim());process.exit(r.out===100&&r.in===30&&r.cache_read===300&&r.cache_create===5&&r.calls===2&&r.found===true&&r.agent_type===\"ah:architect\"&&r.model===\"claude-opus-5\"?0:1)"'
 
 # ---- second agent, delegate type (maps to task-runner at report time)
 mk_transcript "$PROJ/sessA/subagents/agent-idB.jsonl" "claude-haiku-4-5-20251001" 11 22
@@ -63,7 +63,7 @@ mk_transcript "$PROJ/sessA/subagents/agent-idC.jsonl" "claude-sonnet-5" 5 5
 run_collect "$(payload idC github-pr-toolkit:github-worker)"
 
 # ---- missing transcript -> found:false telemetry record, zero tokens
-run_collect "$(payload idGone agent-hierarchy:reviewer)"
+run_collect "$(payload idGone ah:reviewer)"
 check "collector: missing transcript logged found:false with zero tokens" \
   'node -e "const l=require(\"fs\").readFileSync(\"$USAGE\",\"utf8\").trim().split(\"\n\");const r=JSON.parse(l[l.length-1]);process.exit(r.found===false&&r.out===0&&r.agent_id===\"idGone\"?0:1)"'
 
@@ -103,7 +103,7 @@ check "reporter: found:false surfaces as missing count on reviewer" \
 
 # ---- a re-fired Stop (resumed agent) must not double-count: transcript sums
 # are cumulative, so the LAST record per (session, agent) wins.
-run_collect "$(payload idA agent-hierarchy:architect)"
+run_collect "$(payload idA ah:architect)"
 run_report all --json
 check "reporter: duplicate Stop for same agent counted once (out stays 100)" \
   'printf "%s" "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const j=JSON.parse(s);const a=j.windowed.roles.architect;process.exit(a.out===100&&a.agents===1?0:1)})"'
@@ -145,7 +145,7 @@ for j in "$PLUGIN/hooks/hooks.json" "$PLUGIN/.claude-plugin/plugin.json" "$ROOT/
   node -e "JSON.parse(require('fs').readFileSync('$j','utf8'))" >/dev/null 2>&1 && { PASS=$((PASS+1)); echo "PASS: valid JSON $(basename "$j")"; } || { FAIL=$((FAIL+1)); echo "FAIL: invalid JSON $j"; }
 done
 V_PLUGIN=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$PLUGIN/.claude-plugin/plugin.json','utf8')).version)")
-V_MARKET=$(node -e "const m=JSON.parse(require('fs').readFileSync('$ROOT/.claude-plugin/marketplace.json','utf8')); process.stdout.write(m.plugins.find(p=>p.name==='agent-hierarchy').version)")
+V_MARKET=$(node -e "const m=JSON.parse(require('fs').readFileSync('$ROOT/.claude-plugin/marketplace.json','utf8')); process.stdout.write(m.plugins.find(p=>p.name==='ah').version)")
 [ -n "$V_PLUGIN" ] && [ "$V_PLUGIN" = "$V_MARKET" ] && { PASS=$((PASS+1)); echo "PASS: versions agree ($V_PLUGIN)"; } || { FAIL=$((FAIL+1)); echo "FAIL: version mismatch plugin=$V_PLUGIN marketplace=$V_MARKET"; }
 
 # ---- real config untouched

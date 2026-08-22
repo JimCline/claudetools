@@ -1,6 +1,6 @@
 ---
-description: Assign a model to each hierarchy role, or inspect/toggle the hierarchy.
-argument-hint: "[init|status|set <role> <model>|on|off|flow [auto|confirm]|gate [status|session|each|off|reset]|usage [day|week|month|all]|msgs [open|closed|all|off|required]|peers|route [peers|subagents|prefer-peers]|sweep [days]]"
+description: Enable/disable the hierarchy and its handoff flow, or inspect it. Model/roster assignment lives in /agent-roster.
+argument-hint: "[init|status|on|off|flow [auto|confirm]|gate [status|session|each|off|reset]|usage [day|week|month|all]|msgs [open|closed|all|off|required]|peers|sweep [days]]"
 ---
 
 The user ran `/hierarchy` with argument: `$ARGUMENTS`
@@ -80,22 +80,33 @@ Pick the ONE case matching the argument:
 
 ---
 
-## empty or `init` — the wizard
+## empty or `init` — enable + handoff flow
+
+This wizard only turns the hierarchy on and sets its handoff flow. Model and
+roster assignment (which roles exist, their model/effort/route) lives in
+**`/agent-roster init`** — see the handoff in step 6 below.
 
 1. Tell the user the **Orchestrator is fixed**: it is this session's own agent,
-   whatever model the session runs on. Only the other five roles are assignable.
+   whatever model the session runs on.
 2. Check for existing config: read `~/.claude/agent-hierarchy.json` and
    `<cwd>/.claude/agent-hierarchy.json` (either may be absent). Also check
    whether task-gopher is installed — `ls -d ~/.claude/plugins/cache/*/task-gopher 2>/dev/null` or the presence of a `task-gopher:task-gopher` agent type.
 3. **Task-Runner is decided by the task-gopher check, not by a question:**
    - **task-gopher installed** → do NOT ask about Task-Runner. Auto-assign
-     `{ "model": "haiku", "delegate": "task-gopher" }` and tell the user:
-     "Task-Runner: deferring to task-gopher (already installed)." An existing
-     explicit Task-Runner value in the config being prefilled still wins —
-     the user chose it once; keep it and say so.
-   - **task-gopher NOT installed** → Task-Runner gets a question in call 5
-     (see below) whose recommended option is installing task-gopher.
-4. **AskUserQuestion call 1 — scope and flow.** Two questions in one call:
+     `roles.task-runner`: `{ "model": "haiku", "delegate": "task-gopher" }`
+     and tell the user: "Task-Runner: deferring to task-gopher (already
+     installed)." An existing explicit Task-Runner value in the config being
+     prefilled still wins — the user chose it once; keep it and say so.
+   - **task-gopher NOT installed** → ask one question: options
+     `Install task-gopher (recommended)`, `haiku`, `sonnet`, `opus`. If they
+     pick the install option: write `roles.task-runner`:
+     `{ "model": "haiku", "delegate": "task-gopher" }` and tell them to run
+     `/plugin install task-gopher@claudetools` themselves (you cannot run
+     `/plugin`). Until it is installed, the directive's fallback rule routes
+     Task-Runner work to the bundled `ah:task-runner`, so
+     nothing breaks in the meantime. Any other model typed via "Other" is
+     accepted as-is (`haiku` is valid for this legwork-only role).
+4. **AskUserQuestion call — scope and flow.** Two questions in one call:
    - **Scope**: "User (all repos)" and "Project (this repo, committable)". If a
      config already exists at either scope, say so in the question header and
      mark that scope's option as the existing one.
@@ -107,143 +118,20 @@ Pick the ONE case matching the argument:
      `/hierarchy flow` or just by telling the Orchestrator mid-session — so
      nothing is locked in here. Prefill from an existing config's `handoffs`
      key if present.
-5. **AskUserQuestion call 2 — dispatch route, one question per reasoning
-   role.** Ultra-Advisor, Architect, Reviewer, Implementor, all in a single
-   call — exactly 4 questions, the hard maximum. Header is the short role
-   label (`Advisor` for Ultra-Advisor — its full label is over the 12-char
-   header limit; `Architect`, `Reviewer`, `Implementor` fit as-is). Each
-   question: "How should `<Role>` be dispatched — a named peer session, or
-   always a fresh subagent?" Exactly 2 options:
-   - **"Peer agent (Recommended)"** — SendMessage to a running peer session
-     when one exists; falls back to a subagent when it isn't. This is the
-     existing default behavior every role has had until now.
-   - **"Subagent only"** — always spawn a fresh `agent-hierarchy:<role>`
-     subagent; never route to a peer, even if one with a matching name is
-     running.
-
-   **Prefill** the same way as the model-tier call below: pull `dispatch`
-   from the chosen scope's existing config, or the other scope's if the
-   chosen one has none, and say which scope you pulled from. A config with no
-   `dispatch` key at all — every config written before this feature existed —
-   prefills to **"Peer agent"**: that reproduces today's behavior exactly, so
-   upgrading an existing config with no changes is a no-op.
-6. **Gather peer-name work.** From call 2's answers, collect the roles that
-   chose "Peer agent" into a working list. If it's empty, skip straight to
-   step 10 (model tier) — nothing else in steps 6–9 applies. Otherwise call
-   ListAgents **once**, now, before asking anything else. Its result is
-   needed both to decide whether "pick from a list" is offerable in step 7
-   and to build the ranked list in step 8.
-7. **AskUserQuestion call 3 — peer name source, one question per role that
-   chose "Peer agent".** Up to 4 questions (there are only 4 peer-eligible
-   roles, so this never exceeds the cap), one per such role. Header: same
-   short role label as call 2. Question: "How do you want to specify
-   `<Role>`'s peer session?" Options:
-   - **"Use \"`<repo>`-`<role>`\" (Recommended)"** — the standard convention
-     name (`<repo>` = this repo's basename, `<role>` = the role key, e.g.
-     `architect`); the Orchestrator will look for a peer with exactly this
-     name at dispatch time.
-   - **"Pick from a list"** — choose from currently running peer sessions,
-     ranked by how likely they are to be the right one. **Omit this option
-     for a role's question if the ListAgents result from step 6 has fewer
-     than 2 sessions total** — AskUserQuestion needs 2–4 options, and with
-     fewer than 2 real candidates this choice is degenerate; that role's
-     question then has exactly 2 options (convention name, type it in).
-   - **"Type in the exact name"** — enter the exact session name of a peer
-     you already know; it doesn't need to be running right now.
-8. **Resolve "Pick from a list" answers.** For every role that picked it,
-   rank the ListAgents result from step 6 for that specific role, most
-   likely first:
-   1. Exact match: session name equals `<repo>-<role>`.
-   2. Name contains **both** the repo basename **and** a role-match token
-      (`architect`→`architect`; `reviewer`→`reviewer`;
-      `implementor`→`implementor`; `ultra-advisor`→`ultra-advisor` or
-      `advisor`).
-   3. Name contains a role-match token only.
-   4. Name contains the repo basename only.
-   5. Everything else.
-
-   Within a tier, more-recently-started sessions rank higher (ListAgents
-   reports "started X ago"). Take the top 4 — AskUserQuestion's hard option
-   cap — and ask one question per role needing this (bundle into one call,
-   ≤4 questions): header = role label; question = "Pick `<Role>`'s peer
-   session"; each option's label is the peer name, description is its status
-   and "started X ago". AskUserQuestion's automatic "Other" stays available
-   for anything not shown in the top 4.
-9. **Resolve "Type in the exact name" answers.** For every role that picked
-   it, ask directly in your response text — not via AskUserQuestion, which
-   isn't built for pure freeform capture — naming all such roles together in
-   one message (e.g. "What's the exact peer session name for Architect? For
-   Reviewer?"), and take the user's next message as the value(s), trimmed of
-   whitespace. One round-trip for all of them, not one per role.
-10. **AskUserQuestion call 4 — the four reasoning roles' model.** One
-    question each for Ultra-Advisor, Architect, Reviewer, and Implementor,
-    all in a single call — exactly 4 questions, the hard maximum. **Always
-    asked for all four roles regardless of their call-2 dispatch choice**:
-    the model is used both when a role's dispatch is "Subagent only" (its
-    only behavior) and as the **fallback** model when dispatch is "Peer
-    agent" and no peer is present at dispatch time — so it is never dead
-    weight even for a peer-routed role. **Maximum 4 options per question** is
-    also a hard limit, so curate. **Prefill if a config exists at either
-    scope**: use the chosen scope's current values as the first/recommended
-    option for each role, or — if the chosen scope has no config but the
-    other one does — prefill from that one instead, and tell the user which
-    scope you pulled the values from. A role missing from the prefill source
-    — an older config written before that role existed, which is every
-    config predating Ultra-Advisor — uses its shipped default below as the
-    recommended option, not whatever the file happens to contain. With no
-    config anywhere, use these defaults (recommended first):
-    - **Ultra-Advisor** — `fable` (recommended), `opus`. Only two options
-      exist; do not offer `sonnet` or `inherit`. Say what the role is for:
-      the escalation apex, dispatched only for the hardest or highest-stakes
-      calls, so it is rarely used and its per-call cost matters less than its
-      judgment.
-    - **Architect** — `opus` (recommended), `sonnet`, `fable`, `inherit`
-    - **Reviewer** — `opus` (recommended), `sonnet`, `fable`, `inherit`
-    - **Implementor** — `inherit` (recommended — runs on the session model),
-      `sonnet`, `opus`, `fable`
-11. **AskUserQuestion call 5 — Task-Runner. Only when task-gopher is NOT
-    installed** (when it is installed, step 3 already settled this and you
-    ask nothing). One question, options: `Install task-gopher (recommended)`,
-    `haiku`, `sonnet`, `opus`. If they pick the install option: write
-    `{ "model": "haiku", "delegate": "task-gopher" }` and tell them to run
-    `/plugin install task-gopher@claudetools` themselves (you cannot run
-    `/plugin`). Until it is installed, the directive's fallback rule routes
-    Task-Runner work to the bundled `agent-hierarchy:task-runner`, so nothing
-    breaks in the meantime.
-
-    For every question in steps 10 and 11: any other model (including full
-    model IDs, which only work in agent frontmatter, not here) goes through
-    AskUserQuestion's automatic "Other" free-text — validate anything typed
-    there against **that role's** valid values (no `haiku` for reasoning
-    roles; only `fable` or `opus` for `ultra-advisor`) and re-ask rather than
-    writing something invalid. Peer names accepted via "Other" on step 7/8's
-    questions, or typed in directly per step 9, are accepted as **any
-    non-empty string, trimmed** — no format validation, no liveness check
-    against ListAgents.
-12. **Write nothing until the wizard completes.** If the user aborts, cancels,
-    or the role calls do not come back with an answer for every asked role
-    (including peer-name resolution for any role that chose "Peer agent"),
-    write no file and say the config was left unchanged.
-13. On completion, write the JSON with the Write tool to the chosen scope's
-    path (`mkdir -p` the `.claude` directory first if needed). Set
-    `"version": 1`, `"enabled": true`, and `"handoffs"` to the flow answer
-    from call 1 ("auto" or "confirm" — write it explicitly even for auto, so
-    the file documents the choice). For each reasoning role, always write
-    `"dispatch"` explicitly (`"peer"` or `"model"` — write it even when it's
-    the recommended default, same reasoning as `handoffs` always being
-    explicit). When dispatch is `"peer"`, also write `"peer"`: `"auto"` if
-    the convention was chosen, otherwise the picked or typed name. When
-    dispatch is `"model"`, omit `peer` entirely — it isn't applicable. The
-    Task-Runner entry comes from step 3 or step 11 (auto-assigned or
-    answered); only the task-gopher deferral carries `delegate` — a plain
-    model pick omits it.
-14. **Echo the resolved effective table**, not what you just wrote — run the
-    resolver command above and show its output. If it reports that a project
-    config shadows user-scope values you just set, call that out explicitly:
-    the values you wrote are not the ones in force.
-15. Close with the propagation note: the assignments apply to **this** session
-    immediately, and other live sessions pick them up at their next start,
-    clear, or compaction.
+5. Write the JSON with the Write tool to the chosen scope's path (`mkdir -p`
+   the `.claude` directory first if needed), preserving every other existing
+   key at that scope. Set `"version": 1`, `"enabled": true`, `"handoffs"` to
+   the flow answer (write it explicitly even for `"auto"`, so the file
+   documents the choice), and `roles.task-runner` from step 3. Echo the
+   resolved effective table (resolver command above), and close with the
+   propagation note: this applies to **this** session immediately, and other
+   live sessions pick it up at their next start, clear, or compaction.
+6. **Initial Setup trigger.** Run `resolveRoster(cwd)` (or read `.roster`/
+   `.rosterLevel` off the resolver output). If it is `null` at all three
+   levels (global, repo, repo-user — no roster configured anywhere), hand off
+   directly into `/agent-roster init`'s flow now: its route question first,
+   then its per-role walk. If a roster already resolves, just say so and
+   point at `/agent-roster show` — do not re-run its wizard.
 
 ---
 
@@ -254,22 +142,20 @@ is configured/on/off, which file each scope resolved to, the effective model for
 each role, which scope each value came from, any shadowing or validation
 warning, and the propagation note. Do not recompute the table yourself.
 
+The resolver output also carries a **roster** section (winning level, path,
+each member's name/role/model/effort/route/auto-mode) when a roster resolves,
+and a **Team** section (active `team_id`, or "none active") when `team.json`
+exists — both are printed as part of the same verbatim output, nothing extra
+to run.
+
 ---
 
-## `set <role> <model>`
+## `set <role> <model>` — moved
 
-1. Validate `<role>` is one of `ultra-advisor`, `architect`, `reviewer`,
-   `implementor`, `task-runner` and `<model>` is valid **for that role**
-   (`architect`/`reviewer`/`implementor`: `opus`, `sonnet`, `fable`, `inherit`;
-   `task-runner` also allows `haiku`; `ultra-advisor`: `fable` or `opus` only).
-   If not, say what is valid for that role and stop — write nothing.
-2. Edit **the most specific config that already exists**: the project config if
-   `<cwd>/.claude/agent-hierarchy.json` exists, otherwise the user config. If
-   neither exists, tell the user to run `/hierarchy init` first and stop.
-3. Read that file, replace that role's object entirely (shallow replacement —
-   this drops `delegate` unless you are setting task-runner back to task-gopher),
-   and write it back with the Write tool, preserving every other key.
-4. Echo the resolved table (resolver command) and the propagation note.
+Superseded by `/agent-roster edit`, which operates on roster members instead
+of the legacy `roles` table. Point the user at
+`/agent-roster edit --member <name> --model <model>` (or `/agent-roster add`
+if the role isn't in the roster yet).
 
 ---
 
@@ -412,27 +298,18 @@ One line per known instance: `role: name  live|stale  how  age ago  [busy]
 dir, fed by peer-session SessionStart/SessionEnd hooks and by ListAgents /
 SendMessage observations.
 
-## `route [peers|subagents|prefer-peers]`
+## `route` — moved
 
-No argument: print this session's current dispatch route and where it came
-from (session answer, config, or the `peers` default):
+The `/hierarchy route` command surface is gone; the machinery it drove
+(the per-session dispatch-route answer, and the `pretooluse-route-gate.mjs`
+gate that asks once per session and enforces it silently) is unchanged and
+still runs. Team-wide route now lives in the roster (`roster.route`, with an
+optional per-member override) — set it via `/agent-roster init`/`edit`. This
+session's own route answer can still be inspected directly:
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs" route --session "$CLAUDE_SESSION_ID" --plain --cwd "$(pwd)"
 ```
-
-With an argument: record it as this session's answer, then offer to also
-persist it as the config `route` key (edit the file that currently defines
-the config, project scope if both exist, same rule as `set`) so future
-sessions never have to ask. `peers` (the default) never spawns a roster
-subagent for a role with a live peer — SendMessage it instead — and when no
-peer is live for a role, asks once per role before falling back to a
-subagent for it; `subagents` never routes to a peer; `prefer-peers` uses a
-live, free peer when one exists and falls back to a subagent silently,
-without asking, otherwise. A `pretooluse-route-gate.mjs` PreToolUse gate asks
-this question once per session before the first roster dispatch, then
-enforces the answer silently — each enforcement deny is one-shot per
-(session, role), so an identical re-issued dispatch always passes.
 
 ## `sweep [days]`
 
@@ -451,5 +328,5 @@ never touched. The same sweep runs silently at session startup.
 ## anything else
 
 Show the usage line:
-`/hierarchy [init|status|set <role> <model>|on|off|flow [auto|confirm]|gate [status|session|each|off|reset]|usage [day|week|month|all]|msgs [open|closed|all|off|required]|peers|route [peers|subagents|prefer-peers]|sweep [days]]`,
+`/hierarchy [init|status|on|off|flow [auto|confirm]|gate [status|session|each|off|reset]|usage [day|week|month|all]|msgs [open|closed|all|off|required]|peers|sweep [days]]`,
 then run `status`.

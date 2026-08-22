@@ -8,12 +8,15 @@
     "description": "Claude Code plugins by Jim Cline — context-window discipline and related tooling.",
     "version": "1.0.0"
   },
+  "renames": {
+    "agent-hierarchy": "ah"
+  },
   "plugins": [
     {
-      "name": "agent-hierarchy",
+      "name": "ah",
       "source": "./agent-hierarchy",
-      "description": "Routes work through a six-role agent hierarchy — Orchestrator, Ultra-Advisor, Architect, Reviewer, Implementor, Task-Runner — each on the model priced for its job, with Ultra-Advisor escalation gated on your approval and zero-token usage tracking. See README for the full mechanics.",
-      "version": "0.30.0",
+      "description": "Multi-agent role hierarchy, each on the right model.",
+      "version": "0.32.0",
       "author": {
         "name": "Jim Cline"
       },

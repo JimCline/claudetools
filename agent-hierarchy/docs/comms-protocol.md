@@ -82,13 +82,13 @@ root marketplace.json to 0.29.0.
 ## [5] dispatch gate (PreToolUse)
 - New `hooks/pretooluse-msg-gate.mjs`, wired on `Agent|Task|SendMessage` (same matcher line as the ultra gate; order in hooks.json: ultra gate first, then msg gate, then roster/tier gate — a deny anywhere stops the call).
 - Applies to:
-  - `Agent`/`Task` where `subagent_type` ∈ `agent-hierarchy:{architect,implementor,reviewer,ultra-advisor}` (also bare names, mirroring `GATED_SUBAGENT_TYPES` style).
+  - `Agent`/`Task` where `subagent_type` ∈ `ah:{architect,implementor,reviewer,ultra-advisor}` (also bare names, mirroring `GATED_SUBAGENT_TYPES` style).
   - `SendMessage` whose `message` contains the `[hierarchy-peer-brief` sentinel (a tasking). Pings, chat, replies pass.
 - Exempt: task-runner / task-gopher (errands stay inline); any subagent context (`isSubagent(input)`) — subagents dispatching subagents are already relayed by other plugins; keep this orchestrator-only in 0.29.0.
 - Check: prompt/message contains `[hierarchy-msg <path>]` where `<path>` is absolute, exists, is under `<dir>/msgs/`, ends `--request.md`, frontmatter parses, `type: request`, and `to:` matches the dispatched role (`subagentType→role` via existing `roleFor`; for peer briefs, the role whose `resolvedPeerTarget` equals `to`, or skip the role check if `to` matches no configured peer).
 - Deny (`permissionDecision:"deny"`) with reason:
   ```
-  agent-hierarchy: role dispatches carry their brief as a message file, not inline prose.
+  ah: role dispatches carry their brief as a message file, not inline prose.
   1. node "$CLAUDE_PLUGIN_ROOT/hooks/msg.mjs" new --to <role> --from orchestrator --slug <slug> [--parent <id>] [--reason context|second-opinion|parallel]
   2. Fill every section (bullets, no prose; keep every constraint verbatim; [0] tldr indexes the rest).
   3. Re-issue this exact dispatch with first line: [hierarchy-msg <path>] then ≤3 TL;DR lines. Peer briefs keep the [hierarchy-peer-brief ...] sentinel too.
@@ -128,7 +128,7 @@ root marketplace.json to 0.29.0.
 - Trigger: a dispatch that would task a peer-eligible role (Agent/Task with a roster `subagent_type`, or SendMessage carrying `[hierarchy-peer-brief`), when NO `{type:"route", session_id, value}` record exists this session AND no config `route` key. Task-runner/task-gopher exempt — errands are not roster dispatches.
 - On trigger, DENY once with:
   ```
-  agent-hierarchy: choose this session's dispatch route before tasking roles. Live peers: <Role>="<name>" <how> <age><, busy><, N open>; … | none.
+  ah: choose this session's dispatch route before tasking roles. Live peers: <Role>="<name>" <how> <age><, busy><, N open>; … | none.
   Ask the user with AskUserQuestion, exactly these options in this order:
     "Prefer peer agents, fall back to subagents (Recommended)" — reuse a live peer when one is free; spawn only when none is.
     "Peer agents only" — never spawn a roster subagent; wait or tell the user when no peer is free.

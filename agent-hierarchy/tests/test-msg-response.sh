@@ -78,13 +78,13 @@ ID=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).id)' "$OUT")
 T1="$PROJDIR/sess1/subagents/agent-a1.jsonl"
 write_transcript "$T1" "[hierarchy-msg $REQ]
 - implement impl-x" "Done, I changed three files."
-nudge a1 agent-hierarchy:implementor "Done, I changed three files." "$T1"
+nudge a1 ah:implementor "Done, I changed three files." "$T1"
 check "no pointer -> block" 'blocked'
 check "block reason: names msg.mjs new --type response --id <id>" 'echo "$OUT" | grep -q "msg.mjs.* new --type response --id $ID"'
 check "block reason: says --to orchestrator --from implementor" 'echo "$OUT" | grep -q -- "--to orchestrator --from implementor"'
 check "block reason: return exactly [hierarchy-msg <response path>] + status" 'echo "$OUT" | grep -q "\[hierarchy-msg <response path>\]"'
 check "nudge recorded in gates.jsonl" 'grep -q "\"type\":\"nudge\".*\"agent_id\":\"a1\"" "$HD/gates.jsonl"'
-nudge a1 agent-hierarchy:implementor "Done, I changed three files." "$T1"
+nudge a1 ah:implementor "Done, I changed three files." "$T1"
 check "second stop of the same agent_id -> allow" 'allowed'
 
 # ---- 2: pointer to an existing response file -> allow silently
@@ -96,32 +96,32 @@ RESP2=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).path)' "$OUT")
 T2="$PROJDIR/sess1/subagents/agent-a2.jsonl"
 write_transcript "$T2" "[hierarchy-msg $REQ2]" "[hierarchy-msg $RESP2]
 - done: PASS"
-nudge a2 agent-hierarchy:reviewer "[hierarchy-msg $RESP2]
+nudge a2 ah:reviewer "[hierarchy-msg $RESP2]
 - done: PASS" "$T2"
 check "pointer to existing response -> allow" 'allowed'
-nudge a2b agent-hierarchy:reviewer "[hierarchy-msg $HD/msgs/${ID2}--orchestrator--rev-y--response.md.missing]" "$T2"
+nudge a2b ah:reviewer "[hierarchy-msg $HD/msgs/${ID2}--orchestrator--rev-y--response.md.missing]" "$T2"
 check "pointer to a non-existent response -> block" 'blocked'
 msg new --to reviewer --from orchestrator --slug rev-z
 REQ3=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).path)' "$OUT")
 T3="$PROJDIR/sess1/subagents/agent-a3.jsonl"
 write_transcript "$T3" "[hierarchy-msg $REQ3]" "[hierarchy-msg $RESP2]"
-nudge a3 agent-hierarchy:reviewer "[hierarchy-msg $RESP2]" "$T3"
+nudge a3 ah:reviewer "[hierarchy-msg $RESP2]" "$T3"
 check "pointer to a response for a DIFFERENT id -> block" 'blocked'
 
 # ---- 3: last_assistant_message absent -> read the transcript's last assistant line
-nudge a4 agent-hierarchy:reviewer - "$T2"
+nudge a4 ah:reviewer - "$T2"
 check "no last_assistant_message: transcript last assistant line has pointer -> allow" 'allowed'
 T5="$PROJDIR/sess1/subagents/agent-a5.jsonl"
 write_transcript "$T5" "[hierarchy-msg $REQ3]" "all done, no pointer"
-nudge a5 agent-hierarchy:reviewer - "$T5"
+nudge a5 ah:reviewer - "$T5"
 check "no last_assistant_message: transcript lacks pointer -> block" 'blocked'
 
 # ---- 4: no request token in the brief (inline brief / gate off) -> allow silently
 T6="$PROJDIR/sess1/subagents/agent-a6.jsonl"
 write_transcript "$T6" "Please review /tmp/spec.md" "done"
-nudge a6 agent-hierarchy:reviewer "done" "$T6"
+nudge a6 ah:reviewer "done" "$T6"
 check "no request token in first user turn -> allow" 'allowed'
-nudge a7 agent-hierarchy:reviewer "done" "$PROJDIR/sess1/subagents/agent-missing.jsonl"
+nudge a7 ah:reviewer "done" "$PROJDIR/sess1/subagents/agent-missing.jsonl"
 check "missing transcript -> allow (fail open)" 'allowed'
 
 # ---- 5: non-role subagents and msgs:off
@@ -130,7 +130,7 @@ check "task-gopher -> allow" 'allowed'
 nudge a9 general-purpose "done" "$T1"
 check "foreign agent type -> allow" 'allowed'
 echo '{ "version": 1, "enabled": true, "msgs": "off", "roles": {} }' > "$PROJ/.claude/agent-hierarchy.json"
-nudge a10 agent-hierarchy:implementor "no pointer" "$T1"
+nudge a10 ah:implementor "no pointer" "$T1"
 check "msgs:off -> allow" 'allowed'
 echo '{ "version": 1, "enabled": true, "roles": {} }' > "$PROJ/.claude/agent-hierarchy.json"
 OUT=$(echo "garbage" | HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node "$NUDGE" 2>&1); RC=$?

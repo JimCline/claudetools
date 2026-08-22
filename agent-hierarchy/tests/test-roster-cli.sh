@@ -1,0 +1,84 @@
+#!/bin/bash
+# agent-hierarchy — roster.mjs CLI: init/add/edit/remove/show, level defaulting,
+# orchestrator-role rejection, invalid-level rejection.
+# HOME-redirected; real state untouched.
+# Usage: bash tests/test-roster-cli.sh   (exits 0 iff all cases pass)
+
+PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+H="$PLUGIN/hooks"
+SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-roster-cli-test.XXXXXX")"
+trap 'rm -rf "$SANDBOX"' EXIT
+SANDBOX="$(cd "$SANDBOX" && pwd -P)"
+FAKEHOME="$SANDBOX/home"
+PROJ="$SANDBOX/myrepo"
+mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude"
+(cd "$PROJ" && git init -q)
+PASS=0; FAIL=0
+
+check() {
+  local name=$1; shift
+  if eval "$@"; then PASS=$((PASS+1)); echo "PASS: $name"; else FAIL=$((FAIL+1)); echo "FAIL: $name (RC=$RC OUT=${OUT:0:400})"; fi
+}
+
+run() { OUT=$(HOME="$FAKEHOME" node "$H/roster.mjs" "$@" --cwd "$PROJ" 2>&1); RC=$?; }
+
+run init --level repo --route peer
+check "init: creates roster with route, empty members" 'echo "$OUT" | grep -q "\"route\": \"peer\"" && [ "$RC" -eq 0 ]'
+
+run init --level bogus --route peer
+check "init: invalid level rejected" '[ "$RC" -ne 0 ]'
+
+run init --level repo --route bogus
+check "init: invalid route rejected" '[ "$RC" -ne 0 ]'
+
+run add --level repo --role reviewer --model opus
+check "add: appends a reviewer, derived name returned" 'echo "$OUT" | grep -q "\"name\": \"myrepo-reviewer\"" && [ "$RC" -eq 0 ]'
+
+run add --level repo --role reviewer --model opus
+check "add: second reviewer gets -2 suffix" 'echo "$OUT" | grep -q "\"name\": \"myrepo-reviewer-2\"" && [ "$RC" -eq 0 ]'
+
+run add --role orchestrator --model opus
+check "add: role orchestrator rejected" '[ "$RC" -ne 0 ]'
+
+run add --level repo --role not-a-role --model opus
+check "add: unknown role rejected" '[ "$RC" -ne 0 ]'
+
+run add --role implementor --model sonnet
+check "add: no --level given defaults to the resolving level (repo)" 'echo "$OUT" | grep -q "\"level\": \"repo\"" && echo "$OUT" | grep -q "\"wasDefaulted\": true"'
+
+run edit --member myrepo-reviewer-2 --model sonnet
+check "edit: updates by derived name" 'echo "$OUT" | grep -q "\"model\": \"sonnet\""'
+
+run edit --member no-such-member --model sonnet
+check "edit: unknown member name rejected" '[ "$RC" -ne 0 ]'
+
+run show
+check "show: resolved roster lists 3 members" 'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>process.exit(JSON.parse(s).members.length===3?0:1))"'
+
+run remove --member myrepo-reviewer-2
+check "remove: drops the member by derived name" 'echo "$OUT" | grep -q "\"removed\": \"myrepo-reviewer-2\""'
+
+run show
+check "show: resolved roster now lists 2 members" 'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>process.exit(JSON.parse(s).members.length===2?0:1))"'
+
+run remove --member myrepo-reviewer-2
+check "remove: re-removing an already-gone member fails" '[ "$RC" -ne 0 ]'
+
+# ---- create --plan: herdr spawn shape carries agent flags after `--`, not a duplicate --name
+run init --level repo --route peer
+run add --level repo --role architect --model opus
+OUT=$(HOME="$FAKEHOME" HERDR_ENV=1 node "$H/roster.mjs" create --plan --cwd "$PROJ" 2>&1); RC=$?
+check "create --plan: herdr transport detected" 'echo "$OUT" | grep -q "\"transport\": \"herdr\""'
+check "create --plan: herdr spawn step carries agent flags after --, no duplicate --name" \
+  'echo "$OUT" | grep -q "herdr agent start myrepo-architect --kind claude --pane <pane-id-from-split> -- --agent ah:architect --model opus" && ! echo "$OUT" | grep -q -- "-- .*--name"'
+
+# ---- create --commit: orchestrator pid comes from CLAUDE_PID, not the CLI's own ppid
+VERIFIED='[{"role":"architect","name":"myrepo-architect","ref":"r1","route":"peer","model":"opus","transport_id":null,"checked_in":"2026-01-01T00:00:00Z"}]'
+OUT=$(HOME="$FAKEHOME" CLAUDE_PID=424242 node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --verified "$VERIFIED" --cwd "$PROJ" 2>&1); RC=$?
+check "create --commit: orchestrator.pid taken from CLAUDE_PID env, not process.ppid" 'echo "$OUT" | grep -q "\"pid\": 424242" && ! echo "$OUT" | grep -q "\"pid\": $$"'
+OUT=$(HOME="$FAKEHOME" node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --verified "$VERIFIED" --orchestrator-pid 313131 --cwd "$PROJ" 2>&1); RC=$?
+check "create --commit: --orchestrator-pid overrides the env var" 'echo "$OUT" | grep -q "\"pid\": 313131"'
+
+echo
+echo "passed: $PASS  failed: $FAIL"
+[ "$FAIL" -eq 0 ]

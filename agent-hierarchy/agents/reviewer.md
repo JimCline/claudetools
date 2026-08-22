@@ -56,7 +56,7 @@ Your contract:
   the whole basis of your verdict being trustworthy.
 - **Delegation is MANDATORY for execution, available for bulk retrieval.**
   Every run — suites, builds, scripts — goes to `task-gopher:task-gopher` (or
-  `agent-hierarchy:task-runner` if that is unavailable) as a decision-free
+  `ah:task-runner` if that is unavailable) as a decision-free
   order with a named compact output; sifting a long log can go there too.
   Never dispatch ultra-advisor, architect, reviewer, or implementor. And never
   use a subagent to do what your own denied tools would not let you do:

@@ -18,10 +18,12 @@
 
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
-import { PEER_ELIGIBLE_ROLES, ROLES, ROLE_LABELS, ROUTE_VALUES, TIER, resolvedPeerTargets, tierOf } from "./lib-config.mjs";
+import { hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_LABELS, ROUTE_VALUES, TIER, resolvedPeerTargets, tierOf } from "./lib-config.mjs";
+import { readTeam, teamMemberByName } from "./lib-roster.mjs";
+
+export { hierarchyDir };
 
 export const MSG_ROLES = ["orchestrator", ...ROLES];
 export const MSG_TYPES = ["request", "response"];
@@ -46,26 +48,6 @@ const ROLE_TOKENS = [
 ];
 
 // ---------------------------------------------------------------- runtime dir
-
-function findGitRoot(start) {
-  let dir = resolve(start);
-  for (;;) {
-    if (existsSync(join(dir, ".git"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
-
-/** The runtime dir for a cwd. Env override > git-root project dir > user dir keyed by cwd basename. */
-export function hierarchyDir(cwd) {
-  const env = process.env.AGENT_HIERARCHY_DIR;
-  if (typeof env === "string" && env.trim()) return resolve(env.trim());
-  const base = typeof cwd === "string" && cwd ? cwd : process.cwd();
-  const root = findGitRoot(base);
-  if (root) return join(root, ".claude", "hierarchy");
-  return join(homedir(), ".claude", "hierarchy", basename(resolve(base)));
-}
 
 /** mkdir -p the layout and self-gitignore it. Idempotent; returns the dir. */
 export function ensureHierarchyDir(cwd) {
@@ -429,8 +411,18 @@ export function roleFromName(name) {
   return null;
 }
 
-/** The role whose configured peer targets include `name`, else the role its token implies, else null. */
+/**
+ * The role for a peer session name: the active Team's check-in registry
+ * first (ADR 0002 — authoritative once a Team exists), then the role whose
+ * configured peer targets include `name`, then the role its token implies.
+ */
 export function roleForPeerName(name, resolved, repoBasename) {
+  try {
+    const member = teamMemberByName(hierarchyDir(resolved.cwd), name);
+    if (member) return member.role;
+  } catch {
+    // team lookup is best-effort; fall through to the existing paths
+  }
   for (const role of PEER_ELIGIBLE_ROLES) {
     if (resolvedPeerTargets(role, resolved.roles[role], repoBasename).includes(name)) return role;
   }
@@ -604,10 +596,23 @@ export function buildStateBlock(dir, resolved, repoBasename, model, sessionId = 
   const openLine = open.length
     ? `open exchanges: ${open.length} — ${shown.join(", ")}${open.length > 10 ? ` +${open.length - 10} more: msg.mjs list` : ""}`
     : "open exchanges: none";
-  const ros = roster(dir, resolved, repoBasename, now);
-  const anyPeer = PEER_ELIGIBLE_ROLES.some((r) => ros[r].length);
+  const team = readTeam(dir);
+  let peersLine;
+  if (team && Array.isArray(team.members) && team.members.length) {
+    const ros = roster(dir, resolved, repoBasename, now);
+    const rows = team.members.map((m) => {
+      if (m.route !== "peer" || !m.name) return `${m.role}=(subagent)`;
+      const live = (ros[m.role] || []).find((i) => i.name === m.name);
+      return `${m.role}=${m.name} ${live ? (live.busy ? "busy" : "idle") : "not-seen"}`;
+    });
+    peersLine = `Team ${team.team_id} (authoritative)${team.partial ? " [partial]" : ""}: ${rows.join("; ")}`;
+  } else {
+    const ros = roster(dir, resolved, repoBasename, now);
+    const anyPeer = PEER_ELIGIBLE_ROLES.some((r) => ros[r].length);
+    peersLine = `peers: ${anyPeer ? rosterLine(ros) : "none"}`;
+  }
   const eff = route || (sessionId ? effectiveRoute(dir, resolved, sessionId) : null);
-  return [`HIERARCHY STATE (${dir}):`, openLine, `peers: ${anyPeer ? rosterLine(ros) : "none"}`, routeLine(eff), tierLine(resolved, model)].join("\n");
+  return [`HIERARCHY STATE (${dir}):`, openLine, peersLine, routeLine(eff), tierLine(resolved, model)].join("\n");
 }
 
 export { ROLES, ROLE_LABELS };

@@ -51,24 +51,24 @@ msg new --type response --id "$REV_ID"
 REV_RESP=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).path)' "$OUT")
 
 # ---- 1: Agent dispatches
-agent agent-hierarchy:implementor "Please implement the thing at /tmp/spec.md"
+agent ah:implementor "Please implement the thing at /tmp/spec.md"
 check "Agent implementor, no token -> deny" 'denied'
 check "deny reason: names msg.mjs new --to implementor" 'echo "$OUT" | grep -q "msg.mjs.* new --to implementor --from orchestrator"'
 check "deny reason: says missing token" 'echo "$OUT" | grep -q "missing token"'
 check "deny reason: 3 numbered steps" 'echo "$OUT" | grep -q "3\. Re-issue this exact dispatch"'
-agent agent-hierarchy:implementor "[hierarchy-msg $HD/msgs/20990101-000000-zzzz--implementor--nope--request.md]
+agent ah:implementor "[hierarchy-msg $HD/msgs/20990101-000000-zzzz--implementor--nope--request.md]
 tldr"
 check "Agent: token to a missing file -> deny (path not found)" 'denied && echo "$OUT" | grep -q "path not found"'
-agent agent-hierarchy:implementor "[hierarchy-msg $REV_REQ]
+agent ah:implementor "[hierarchy-msg $REV_REQ]
 tldr"
 check "Agent implementor with reviewer's request -> deny wrong to:" 'denied && echo "$OUT" | grep -q "wrong to: (file says reviewer, dispatch is implementor)"'
-agent agent-hierarchy:reviewer "[hierarchy-msg $REV_RESP]
+agent ah:reviewer "[hierarchy-msg $REV_RESP]
 tldr"
 check "Agent: response file used as request -> deny (not a request file)" 'denied && echo "$OUT" | grep -q "not a request file"'
 cp "$IMPL_REQ" "$SANDBOX/outside--request.md"
-agent agent-hierarchy:implementor "[hierarchy-msg $SANDBOX/outside--request.md]"
+agent ah:implementor "[hierarchy-msg $SANDBOX/outside--request.md]"
 check "Agent: request file outside <dir>/msgs -> deny" 'denied'
-agent agent-hierarchy:implementor "[hierarchy-msg $IMPL_REQ]
+agent ah:implementor "[hierarchy-msg $IMPL_REQ]
 - implement impl-task; see file"
 check "Agent implementor with valid file -> allow (silent)" 'allowed'
 agent implementor "[hierarchy-msg $IMPL_REQ]"
@@ -77,11 +77,11 @@ agent implementor "no token here"
 check "bare subagent_type without token -> deny" 'denied'
 agent task-gopher:task-gopher "run the tests and report"
 check "task-gopher exempt" 'allowed'
-agent agent-hierarchy:task-runner "run the tests"
+agent ah:task-runner "run the tests"
 check "task-runner exempt" 'allowed'
 agent general-purpose "anything"
 check "foreign subagent type passes" 'allowed'
-agent agent-hierarchy:implementor "no token" "sub1"
+agent ah:implementor "no token" "sub1"
 check "subagent context (agent_id set) passes" 'allowed'
 
 # ---- 2: SendMessage
@@ -108,17 +108,17 @@ check "SendMessage brief to a non-configured peer without token -> still denied"
 cat > "$PROJ/.claude/agent-hierarchy.json" <<EOF
 { "version": 1, "enabled": true, "msgs": "off", "roles": {} }
 EOF
-agent agent-hierarchy:implementor "no token"
+agent ah:implementor "no token"
 check "msgs:off -> gate disabled" 'allowed'
 cat > "$PROJ/.claude/agent-hierarchy.json" <<EOF
 { "version": 1, "enabled": true, "msgs": "sometimes", "roles": {} }
 EOF
-agent agent-hierarchy:implementor "no token"
+agent ah:implementor "no token"
 check "msgs invalid value -> falls back to required (denies)" 'denied'
 cat > "$PROJ/.claude/agent-hierarchy.json" <<EOF
 { "version": 1, "enabled": false, "roles": {} }
 EOF
-agent agent-hierarchy:implementor "no token"
+agent ah:implementor "no token"
 check "enabled:false -> passes" 'allowed'
 cat > "$PROJ/.claude/agent-hierarchy.json" <<EOF
 { "version": 1, "enabled": true, "roles": {} }

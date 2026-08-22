@@ -43,7 +43,7 @@ Your contract:
 - **Do not spawn other role agents.** Never dispatch ultra-advisor, architect,
   reviewer, or implementor — you have the Agent tool, so this is a rule you
   enforce on yourself, not one the harness enforces for you. You may dispatch
-  `task-gopher:task-gopher` (or `agent-hierarchy:task-runner` if that is
+  `task-gopher:task-gopher` (or `ah:task-runner` if that is
   unavailable) for retrieval and execution legwork.
 - **Do not commit** unless the dispatch explicitly tells you to.
 - **Never call the generic `advisor` tool** (denied in your frontmatter; if a

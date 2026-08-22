@@ -1,0 +1,3 @@
+# Check-in registry is the authoritative dispatch source for a Team
+
+Today, peer dispatch works by computing an expected name (`<repo-basename>-<role>`) and matching it against live `ListAgents` output — unreliable, since live peer session names don't always follow that pattern. Once `/agent-roster create` stands up a Team and the Orchestrator verifies membership, the resulting Check-in registry (verified name/address per member) becomes the dispatch source of truth for that Team: no more guessing by name pattern. `ListAgents` name-matching is kept only as a fallback for ad-hoc peers that exist outside any formal Team (e.g. a peer started by hand rather than via `/agent-roster create`), so that path isn't lost — but within an active Team it's no longer used.
