@@ -97,15 +97,17 @@ done
 # precise checks on the two implementors, herdr transport (exact spawn-step strings)
 HOME="$FAKEHOME" HERDR_ENV=1 node "$H/roster.mjs" create --plan --cwd "$PROJ" > "$SANDBOX/plan-precise.json" 2>&1
 check "create --plan (herdr): default implementor (model inherit) emits no --model flag at all" \
-  'grep -q "herdr agent start myrepo-implementor --kind claude --pane <TARGET> -- --agent ah:implementor\"" "$SANDBOX/plan-precise.json"'
+  'grep -q "herdr agent start myrepo-implementor --kind claude --pane <TARGET> -- --agent ah:implementor --name myrepo-implementor\"" "$SANDBOX/plan-precise.json"'
 check "create --plan (herdr): explicit-model implementor still emits --model opus" \
-  'grep -q "herdr agent start myrepo-implementor-2 --kind claude --pane <TARGET> -- --agent ah:implementor --model opus" "$SANDBOX/plan-precise.json"'
+  'grep -q "herdr agent start myrepo-implementor-2 --kind claude --pane <TARGET> -- --agent ah:implementor --name myrepo-implementor-2 --model opus" "$SANDBOX/plan-precise.json"'
 check "create --plan (herdr): spawn.layout is empty, target_from is null (0004 §11.1.1 — layout is no longer per-member)" \
   'node -e "const p=JSON.parse(require(\"fs\").readFileSync(\"$SANDBOX/plan-precise.json\",\"utf8\"));const bad=p.members.some(m=>m.spawn&&(m.spawn.layout.length!==0||m.spawn.target_from!==null||m.spawn.target_placeholder!==\"<TARGET>\"||m.spawn.target_source.path!==\".result.pane.pane_id\"));process.exit(bad?1:0)"'
 check "create --plan (herdr): top-level layout_plan present, pane_count matches, split_command has holes not --current (0004 §11.1.2)" \
   'node -e "const p=JSON.parse(require(\"fs\").readFileSync(\"$SANDBOX/plan-precise.json\",\"utf8\"));const lp=p.layout_plan;const peerCount=p.members.filter(m=>m.spawn).length;process.exit(lp&&lp.pane_count===peerCount&&[\"auto\",\"columns\",\"grid\"].includes(lp.mode)&&lp.split_command.includes(\"--pane <SPLIT_TARGET>\")&&lp.split_command.includes(\"<DIRECTION>\")&&!lp.split_command.includes(\"--current\")&&lp.inspect_source.path===\".result.layout.panes\"?0:1)"'
-check "create --plan (herdr): launch does not contain --name" \
-  'node -e "const p=JSON.parse(require(\"fs\").readFileSync(\"$SANDBOX/plan-precise.json\",\"utf8\"));const bad=p.members.some(m=>m.spawn&&m.spawn.launch.some(s=>s.includes(\"--name\")));process.exit(bad?1:0)"'
+# 0002 Defect D: herdr launch must carry --name <derived-name> so the Claude session's display
+# name matches the check-in scan — the pre-amendment version of this test asserted the opposite.
+check "create --plan (herdr): launch contains --name <derived-name> after -- (0002 Defect D)" \
+  'node -e "const p=JSON.parse(require(\"fs\").readFileSync(\"$SANDBOX/plan-precise.json\",\"utf8\"));const bad=p.members.some(m=>m.spawn&&!m.spawn.launch.some(s=>s.includes(\`--name \${m.name}\`)));process.exit(bad?1:0)"'
 check "create --plan (herdr): target_source is json .result.pane.pane_id, target_from is null (0004 §3.2)" \
   'node -e "const p=JSON.parse(require(\"fs\").readFileSync(\"$SANDBOX/plan-precise.json\",\"utf8\"));const m=p.members.find(x=>x.spawn);process.exit(m.spawn.target_source.kind===\"json\"&&m.spawn.target_source.path===\".result.pane.pane_id\"&&m.spawn.target_placeholder===\"<TARGET>\"&&m.spawn.target_from===null?0:1)"'
 

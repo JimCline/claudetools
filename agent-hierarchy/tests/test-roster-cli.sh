@@ -64,13 +64,13 @@ check "show: resolved roster now lists 2 members" 'echo "$OUT" | node -e "let s=
 run remove --member myrepo-reviewer-2
 check "remove: re-removing an already-gone member fails" '[ "$RC" -ne 0 ]'
 
-# ---- create --plan: herdr spawn shape carries agent flags after `--`, not a duplicate --name
+# ---- create --plan: herdr spawn shape carries agent flags after `--`, including --name (0002 Defect D)
 run init --level repo --route peer
 run add --level repo --role architect --model opus
 OUT=$(HOME="$FAKEHOME" HERDR_ENV=1 node "$H/roster.mjs" create --plan --cwd "$PROJ" 2>&1); RC=$?
 check "create --plan: herdr transport detected" 'echo "$OUT" | grep -q "\"transport\": \"herdr\""'
-check "create --plan: herdr spawn step carries agent flags after --, no duplicate --name" \
-  'echo "$OUT" | grep -q "herdr agent start myrepo-architect --kind claude --pane <TARGET> -- --agent ah:architect --model opus" && ! echo "$OUT" | grep -q -- "-- .*--name"'
+check "create --plan: herdr spawn step carries agent flags after --, includes --name (0002 Defect D)" \
+  'echo "$OUT" | grep -q "herdr agent start myrepo-architect --kind claude --pane <TARGET> -- --agent ah:architect --name myrepo-architect --model opus"'
 
 # ---- create --commit: orchestrator pid comes from CLAUDE_PID, not the CLI's own ppid
 VERIFIED='[{"role":"architect","name":"myrepo-architect","ref":"r1","route":"peer","model":"opus","transport_id":null,"checked_in":"2026-01-01T00:00:00Z"}]'

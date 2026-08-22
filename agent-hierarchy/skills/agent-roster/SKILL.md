@@ -50,8 +50,13 @@ with `--cwd "$(pwd)"` (or the relevant repo path). Level may be given as
 - `remove --member <NAME> [--level L]`
 - `layout [--level <L>] [--layout auto|columns|grid]` — show or set the team-wide pane layout.
 - `create [--plan | --commit ...]` — see § Create.
-- `next-split --mode <m> --self <id> --created <json> --geometry <json>` — internal; used by § Create phase 3a. Not a user-facing command.
-- `disband` — tears down `team.json` only; never kills sessions.
+- `layout-splits --mode <m> --pane-count <n> [--self <id>] [--cwd <p>] [--next|--apply …]` — performs
+  the herdr layout phase. Used by § Create phase 3a. Not a user-facing command.
+- `next-split --mode <m> --pane-count <n> --self <id> --created <json> --geometry <json>` — the pure
+  decision function, exposed for testing. The skill does not call it; `layout-splits` does.
+- `disband [--kill --plan|--commit]` — tears down `team.json`; plain `disband` never kills sessions.
+  `--kill --plan` emits close commands (read-only); `--kill --commit` removes `team.json` after the
+  skill has actually run them. See § disband.
 
 `add`/`edit`/`remove` with no `--level` operate on whichever level currently
 resolves (repo-user > repo > global) and print which level they picked — say
@@ -144,19 +149,35 @@ running session can do — drive the sequence yourself:
    `agent start` wait per member.
 
    **3a — Layout.** For the `herdr` transport, `spawn.layout` is empty and the
-   plan carries a top-level `layout_plan`; you drive the splits. Loop
-   `layout_plan.pane_count` times: run `layout_plan.inspect_command` and parse
-   `layout_plan.inspect_source.path`; pass that geometry, your own
-   `$HERDR_PANE_ID`, and the pane ids you have created so far (in creation
-   order) to `roster.mjs next-split --mode <layout_plan.mode>`; run
-   `layout_plan.split_command` with the target and direction it returns; read
-   the new pane id from `layout_plan.target_source.path` and append it to your
-   created list. **Do not compute the target or direction yourself —
-   `next-split` owns that rule.** This loop is **sequential**; each target
-   depends on the previous result, so do not try to batch it.
+   plan carries a top-level `layout_plan`. Run **one** command:
 
-   In `manual` mode, pause inside this loop before each split — see § Create
-   manual-mode layout below.
+       roster.mjs layout-splits --mode <layout_plan.mode> --pane-count <layout_plan.pane_count> --cwd <repo root>
+
+   It inspects the live geometry, computes every decision, and performs every
+   split itself. Read `panes` from its JSON — the new pane ids, in creation
+   order.
+
+   - **exit 0** — `complete: true`, you have all `pane_count` ids.
+   - **exit 3** — partial. `panes` holds the ids that *did* get created and
+     they are real: use them. `failed_at` and `error` say which split failed
+     and why, and `attempted` carries the decision it was about to run. Retry
+     that one split with `layout-splits --apply --target … --direction …`; if
+     it fails again, carry the members that have no pane into step 5's
+     partial handling. **Do not discard the panes you already have** — they
+     cost real work and their members can still be launched.
+   - **exit 2** — nothing was done; the message says why. No panes were
+     created; treat the layout phase as failed and stop before 3b.
+
+   **Do not drive the split loop yourself, and do not compute targets or
+   directions yourself.** `layout-splits` owns both. The `layout_plan`
+   command templates in the plan document the contract and are the fallback
+   if `layout-splits` is unavailable; they are not a second way to do this.
+
+   **Your own pane is one of the panes being laid out**, and may be split
+   more than once. That is correct; do not "protect" it.
+
+   In `manual` mode, drive it one iteration at a time with `--next` /
+   `--apply` — see § Create manual-mode layout below.
 
    For `tmux`, phase 3a is unchanged from 0003: issue every member's
    `spawn.layout` commands **in a single message**, one tool call per member,
@@ -168,22 +189,25 @@ running session can do — drive the sequence yourself:
 
    **Assert before continuing:** you must hold one non-empty target id per
    peer-routed member — for herdr, exactly `layout_plan.pane_count` distinct
-   pane ids, minus any the user deliberately dropped in `manual` mode; for
-   tmux, one per member with a `layout`. If any is missing, empty, or
-   duplicated, retry that one split (herdr) or re-run that member's `layout`
-   commands (tmux) **one at a time** and use those results; if a member still
-   yields no target, treat it as a member that did not come up and carry it
-   into step 5's partial handling.
+   pane ids, minus any that failed after a retry or were deliberately skipped
+   in `manual` mode; for tmux, one per member with a `layout`. If a tmux
+   target is missing, empty, or duplicated, re-run that member's `layout`
+   commands **one at a time**; if a member still yields no target, treat it
+   as a member that did not come up and carry it into step 5's partial
+   handling.
 
    Assign the pane/target ids to peer-routed members in plan order, then
    continue to 3b unchanged.
 
-   On the sequential herdr loop: 0003 measured the layout batch as saving
-   only `(N-1) × split_latency`, rated **Medium** confidence with a named
-   serial fallback. This spec takes that fallback deliberately in exchange
-   for a layout that is actually usable. All of 0003's real saving — the
-   batched `launch` phase, `N × ready_wait` collapsing to `max(ready_wait)` —
-   is untouched.
+   `layout-splits` removes the model-turn cost that made the serial herdr
+   loop expensive in practice: the whole loop now runs inside a single tool
+   call instead of one round trip per inspect/decide/split step. All of
+   0003's real saving — the batched `launch` phase, `N × ready_wait`
+   collapsing to `max(ready_wait)` — is untouched.
+
+   If any peer-routed member's `auto_mode` is `bypassPermissions`, say once
+   before launching that it can leave that session stuck at a startup
+   confirmation screen instead of ready.
 
    **3b — Launch.** Substitute each member's target id for its
    `target_placeholder` inside its `launch` commands, then issue every member's
@@ -219,18 +243,23 @@ running session can do — drive the sequence yourself:
    Team is degraded**; do not silently pretend a missing member exists, and
    do not block or tear down on a partial check-in unless the user says to.
 
-**§ Create manual-mode layout.** In `manual` mode, inside the 3a loop, after
-`next-split` returns and **before** running the split, show the user:
-- the iteration (`split 2 of 4`),
-- the target pane id and its current size in cells (from the geometry you
-  just read),
-- the direction, and the mode that chose it.
+**§ Create manual-mode layout.** In `manual` mode, run the layout phase one
+iteration at a time. For each of the `layout_plan.pane_count` iterations:
 
-Offer: **accept** (run it as computed), **change direction** (`right`/`down`),
-**change target** (any existing pane id from the geometry — including panes
-this loop did not create), or **skip this split**. Run whatever the user
-settles on, then continue the loop; the next iteration re-reads geometry and
-re-computes from the real result, so an amendment is absorbed rather than
+1. `roster.mjs layout-splits --next --mode <m> --pane-count <n> --created '<ids so far, JSON>'`
+   — this reads the live geometry and returns the decision **without
+   splitting anything**.
+2. Show the user: the iteration (`split 2 of 4`), the target pane id and its
+   current size in cells, whether it is this session's own pane, the
+   direction, and the mode that chose it.
+3. Offer: **accept**, **change direction** (`right`/`down`), **change
+   target** (any pane id in the returned geometry — including panes this
+   loop did not create), or **skip this split**.
+4. Unless skipped, run
+   `roster.mjs layout-splits --apply --target <id> --direction <dir> --cwd <repo root>`
+   and append the returned `pane_id` to your list.
+
+The next iteration re-reads geometry, so an amendment is absorbed rather than
 compounding.
 
 **Skip** means that member gets no pane: it is carried into step 5's partial
@@ -257,6 +286,28 @@ themselves if they want to.
 A stale Team (dead orchestrator pid, or older than the fixed 24h cap) is also
 swept automatically on the next plain top-level SessionStart — that safety
 net needs no action here.
+
+**`disband --kill`** — tears the Team all the way down. It is a **two-call
+contract**, mirroring `create`'s `--plan`/`--commit` split, so removal cannot
+happen before the real closes do:
+
+1. Run `roster.mjs disband --kill --plan`. Read-only — `team.json` is
+   untouched. It returns a `close` array, one entry per member, with a
+   `command` (or `null` for terminal-routed, subagent-routed, or a member
+   with no live `transport_id`).
+2. Prompt the user once: "this will close N live sessions — proceed?",
+   naming the members. Stop here if they decline.
+3. Run every non-null `command` in **one** Bash invocation and report, per
+   member, whether its session actually closed or the close call failed
+   (e.g. the pane was already gone) — a failed close is reported, not fatal.
+4. Only now run `roster.mjs disband --kill --commit` to remove `team.json`.
+   If it reports no active team (e.g. a retry after step 4 already ran),
+   that's fine — the teardown already completed.
+
+Never call `--commit` before running the closes from `--plan`, and never
+skip `--plan`'s confirmation step — folding the two into one call is exactly
+what would leave `team.json` gone before a declined prompt or a failed close
+could be honored.
 
 ## Check-in registry (`team.json`)
 
