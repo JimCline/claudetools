@@ -70,7 +70,7 @@ run add --level repo --role architect --model opus
 OUT=$(HOME="$FAKEHOME" HERDR_ENV=1 node "$H/roster.mjs" create --plan --cwd "$PROJ" 2>&1); RC=$?
 check "create --plan: herdr transport detected" 'echo "$OUT" | grep -q "\"transport\": \"herdr\""'
 check "create --plan: herdr spawn step carries agent flags after --, no duplicate --name" \
-  'echo "$OUT" | grep -q "herdr agent start myrepo-architect --kind claude --pane <pane-id-from-split> -- --agent ah:architect --model opus" && ! echo "$OUT" | grep -q -- "-- .*--name"'
+  'echo "$OUT" | grep -q "herdr agent start myrepo-architect --kind claude --pane <TARGET> -- --agent ah:architect --model opus" && ! echo "$OUT" | grep -q -- "-- .*--name"'
 
 # ---- create --commit: orchestrator pid comes from CLAUDE_PID, not the CLI's own ppid
 VERIFIED='[{"role":"architect","name":"myrepo-architect","ref":"r1","route":"peer","model":"opus","transport_id":null,"checked_in":"2026-01-01T00:00:00Z"}]'
@@ -78,6 +78,38 @@ OUT=$(HOME="$FAKEHOME" CLAUDE_PID=424242 node "$H/roster.mjs" create --commit --
 check "create --commit: orchestrator.pid taken from CLAUDE_PID env, not process.ppid" 'echo "$OUT" | grep -q "\"pid\": 424242" && ! echo "$OUT" | grep -q "\"pid\": $$"'
 OUT=$(HOME="$FAKEHOME" node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --verified "$VERIFIED" --orchestrator-pid 313131 --cwd "$PROJ" 2>&1); RC=$?
 check "create --commit: --orchestrator-pid overrides the env var" 'echo "$OUT" | grep -q "\"pid\": 313131"'
+
+# ---- 0004 §11.2: roster.layout validation and the `layout` subcommand
+cat > "$SANDBOX/validate-layout.mjs" <<EOF
+import { validateRosterBlock } from "$H/lib-roster.mjs";
+const bad = validateRosterBlock({ route: "peer", layout: "quadrant", members: [] });
+const okAbsent = validateRosterBlock({ route: "peer", members: [] });
+console.log(JSON.stringify({ bad, okAbsent }));
+EOF
+OUT=$(node "$SANDBOX/validate-layout.mjs" 2>&1); RC=$?
+check "roster.layout: invalid value rejected, message names the allowed values" \
+  'echo "$OUT" | grep -q "auto, columns, grid"'
+check "roster.layout: absent key -> no validation error (contrast with roster.route, which must error)" \
+  'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>process.exit(JSON.parse(s).okAbsent.length===0?0:1))"'
+
+run layout --level repo --layout grid
+check "layout: writes the level file" 'echo "$OUT" | grep -q "\"layout\": \"grid\"" && [ "$RC" -eq 0 ]'
+run show --level repo
+check "layout: a subsequent show reports the new value" 'echo "$OUT" | grep -q "\"layout\": \"grid\""'
+
+run layout --level repo --layout bogus
+check "layout: invalid mode rejected" '[ "$RC" -ne 0 ]'
+
+# a per-member "layout" field is a stray key that validation ignores (there is no per-member layout)
+ROSTER_PATH="$PROJ/.claude/agent-hierarchy.json"
+node -e '
+const fs = require("fs");
+const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+data.roster.members[0].layout = "grid";
+fs.writeFileSync(process.argv[1], JSON.stringify(data, null, 2));
+' "$ROSTER_PATH"
+run show --level repo
+check "add/edit: a stray per-member layout field is ignored, not rejected" '[ "$RC" -eq 0 ]'
 
 echo
 echo "passed: $PASS  failed: $FAIL"

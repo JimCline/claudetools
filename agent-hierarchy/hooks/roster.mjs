@@ -6,15 +6,19 @@
  * validation and reads/writes only, so validation lives in one place.
  *
  *   roster.mjs show   [global|repo|repo-user] [--level L] [--cwd <path>]
- *   roster.mjs init    [level] [--level L] --route <peer|subagent> [--cwd <path>]
+ *   roster.mjs init    [level] [--level L] --route <peer|subagent> [--layout <mode>] [--cwd <path>]
  *   roster.mjs add     [level] [--level L] --role <R> [--model M] [--effort E]
  *                       [--route peer|subagent] [--auto-mode A] [--cwd <path>]
  *   roster.mjs edit    [level] [--level L] --member <NAME> [--role R] [--model M]
  *                       [--effort E] [--route ...] [--auto-mode A] [--cwd <path>]
  *   roster.mjs remove  [level] [--level L] --member <NAME> [--cwd <path>]
+ *   roster.mjs layout  [level] [--level L] [--layout <auto|columns|grid>] [--cwd <path>]
  *   roster.mjs create  [--plan] [--commit --verified <json> --transport <t>
  *                       --roster-level <L> [--partial]
  *                       [--orchestrator-pid <pid>]] [--cwd <path>]
+ *   roster.mjs next-split --mode <auto|columns|grid> --self <pane-id>
+ *                       --created '<json array of pane ids>'
+ *                       --geometry '<json array of {pane_id, rect}>'
  *   roster.mjs disband [--cwd <path>]
  *
  * `--level`/the positional bare word are equivalent; `add`/`edit`/`remove`
@@ -34,7 +38,7 @@ import { basename, dirname, resolve } from "node:path";
 
 import { CONFIG_VERSION, findGitRoot, hierarchyDir, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames } from "./lib-config.mjs";
 import { newId, localIso, pidAlive } from "./lib-hier.mjs";
-import { clearTeam, readTeam, ROSTER_ROUTE_VALUES, validateMember, validateRosterBlock, writeTeam } from "./lib-roster.mjs";
+import { clearTeam, readTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, validateMember, validateRosterBlock, writeTeam } from "./lib-roster.mjs";
 
 const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial"]);
 
@@ -132,9 +136,75 @@ function spawnShape(member, transport) {
   const agentFlags = [`--agent ah:${member.role}`, member.model && member.model !== "inherit" ? `--model ${member.model}` : null, member.effort ? `--effort ${member.effort}` : null, member.autoMode ? `--permission-mode ${member.autoMode}` : null].filter(Boolean);
   const claudeFlags = [...agentFlags, `--name ${member.name}`];
   const claudeCmd = `claude ${claudeFlags.join(" ")}`;
-  if (transport === "herdr") return { transport, steps: [`herdr pane split --current --direction right --cwd "${cwd}" --no-focus`, `herdr agent start ${member.name} --kind claude --pane <pane-id-from-split> -- ${agentFlags.join(" ")}`] };
-  if (transport === "tmux") return { transport, steps: [`tmux new-window -c "${cwd}"`, `tmux send-keys ${JSON.stringify(claudeCmd)} Enter`] };
-  return { transport, steps: [`${claudeCmd} --bg`] };
+  if (transport === "herdr") return {
+    transport,
+    // Layout is team-level and geometry-dependent: the orchestrator computes the split
+    // sequence from `layout_plan` and live `herdr pane layout` output. See spec 0004 §3.2.
+    layout: [],
+    launch: [`herdr agent start ${member.name} --kind claude --pane <TARGET> -- ${agentFlags.join(" ")}`],
+    target_placeholder: "<TARGET>",
+    target_from: null,
+    target_source: { kind: "json", path: ".result.pane.pane_id" },
+  };
+  if (transport === "tmux") return {
+    transport,
+    // -P -F prints the new window's pane id: an untargeted `send-keys` writes to
+    // whatever pane is active, which cannot survive two launches being in flight.
+    layout: [`tmux new-window -P -F '#{pane_id}' -c "${cwd}"`],
+    launch: [`tmux send-keys -t <TARGET> ${JSON.stringify(claudeCmd)} Enter`],
+    target_placeholder: "<TARGET>",
+    target_from: 0,
+    target_source: { kind: "stdout", trim: true },
+  };
+  return { transport, layout: [], launch: [`${claudeCmd} --bg`], target_placeholder: null, target_from: null, target_source: null };
+}
+
+/** Plan-level herdr layout instructions for the orchestrator to drive (spec 0004 §5.2). Null for non-herdr or an all-subagent roster. */
+function layoutPlan(resolved, transport, plan) {
+  if (transport !== "herdr") return null;
+  const paneCount = plan.filter((m) => m.route === "peer").length;
+  if (paneCount === 0) return null;
+  return {
+    mode: resolved.layout,
+    computed_by: "orchestrator",
+    pane_count: paneCount,
+    inspect_command: `herdr pane layout --current`,
+    inspect_source: { kind: "json", path: ".result.layout.panes" },
+    split_command: `herdr pane split --pane <SPLIT_TARGET> --direction <DIRECTION> --cwd "${cwd}" --no-focus`,
+    target_source: { kind: "json", path: ".result.pane.pane_id" },
+  };
+}
+
+/**
+ * Pure greedy split-target algorithm (spec 0004 §6). No I/O — arithmetic over
+ * `created` (pane ids created so far, in creation order) and `geometry`
+ * (`[{pane_id, rect: {width, height, x, y}}]`). Exists so the rule is
+ * unit-tested and the orchestrator never improvises it.
+ */
+function nextSplit({ mode, self, created, geometry }) {
+  if (created.length === 0) return { target: self, direction: direction(self, mode, created, geometry) };
+  const byId = new Map(geometry.map((g) => [g.pane_id, g.rect]));
+  let target = null;
+  let bestArea = -1;
+  for (const id of created) {
+    const rect = byId.get(id);
+    if (!rect) fail(`next-split: created pane ${JSON.stringify(id)} is absent from --geometry`);
+    const area = rect.width * rect.height;
+    if (area > bestArea) {
+      bestArea = area;
+      target = id;
+    }
+  }
+  return { target, direction: direction(target, mode, created, geometry) };
+}
+
+/** Direction for a chosen target, per the mode and (for grid) the target's visual aspect (§6.1/§6.3). */
+function direction(target, mode, created, geometry) {
+  const effectiveMode = mode === "auto" ? (created.length + 1 <= 2 ? "columns" : "grid") : mode;
+  if (effectiveMode === "columns") return "right";
+  const rect = geometry.find((g) => g.pane_id === target);
+  if (!rect) fail(`next-split: target pane ${JSON.stringify(target)} is absent from --geometry`);
+  return rect.rect.width > rect.rect.height * 2 ? "right" : "down";
 }
 
 try {
@@ -149,7 +219,7 @@ try {
         out({
           level,
           path,
-          roster: data.roster && data.roster.members ? { route: data.roster.route, members: namedMembers(data.roster.members) } : null,
+          roster: data.roster && data.roster.members ? { route: data.roster.route, layout: data.roster.layout || "auto", members: namedMembers(data.roster.members) } : null,
           shadowed: resolved && resolved.level !== level ? `shadowed by ${resolved.level}` : null,
         });
       } else {
@@ -166,6 +236,10 @@ try {
       const data = readLevelFile(path);
       data.version = data.version || CONFIG_VERSION;
       data.roster = { route, members: [] };
+      if (typeof opts.layout === "string") {
+        if (!ROSTER_LAYOUT_VALUES.includes(opts.layout)) fail(`--layout must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(opts.layout)}`);
+        data.roster.layout = opts.layout;
+      }
       writeLevelFile(path, data);
       out({ level, path, roster: data.roster });
       break;
@@ -233,6 +307,33 @@ try {
       break;
     }
 
+    case "layout": {
+      const { level, wasDefaulted } = targetLevel();
+      const path = rosterLevelPaths(cwd)[level];
+      const data = readLevelFile(path);
+      if (!data.roster || !Array.isArray(data.roster.members)) fail(`no roster at level "${level}" — run \`roster.mjs init\` first`);
+      if (typeof opts.layout === "string") {
+        if (!ROSTER_LAYOUT_VALUES.includes(opts.layout)) fail(`--layout must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(opts.layout)}`);
+        data.roster.layout = opts.layout;
+        const blockErrors = validateRosterBlock(data.roster);
+        if (blockErrors.length) fail(blockErrors.join("; "));
+        writeLevelFile(path, data);
+      }
+      if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — using the currently-resolving level "${level}"\n`);
+      out({ level, path, wasDefaulted, layout: data.roster.layout || "auto" });
+      break;
+    }
+
+    case "next-split": {
+      const mode = opts.mode;
+      if (!ROSTER_LAYOUT_VALUES.includes(mode)) fail(`--mode must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(mode)}`);
+      const self = typeof opts.self === "string" ? opts.self : fail("next-split needs --self <pane-id>");
+      const created = typeof opts.created === "string" ? JSON.parse(opts.created) : fail("next-split needs --created <json array>");
+      const geometry = typeof opts.geometry === "string" ? JSON.parse(opts.geometry) : fail("next-split needs --geometry <json array>");
+      out(nextSplit({ mode, self, created, geometry }));
+      break;
+    }
+
     case "create": {
       const dir = hierarchyDir(cwd);
       if (opts.commit) {
@@ -275,7 +376,7 @@ try {
         const route = m.route || resolved.route;
         return { role: m.role, name: m.name, model: m.model, effort: m.effort, route, autoMode: m.autoMode, spawn: route === "peer" ? spawnShape(m, transport) : null };
       });
-      out({ level: resolved.level, path: resolved.path, transport, members: plan });
+      out({ level: resolved.level, path: resolved.path, transport, layout_plan: layoutPlan(resolved, transport, plan), members: plan });
       break;
     }
 
@@ -292,7 +393,7 @@ try {
     }
 
     default:
-      fail(`usage: roster.mjs show|init|add|edit|remove|create|disband [--level global|repo|repo-user] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
+      fail(`usage: roster.mjs show|init|add|edit|remove|layout|create|next-split|disband [--level global|repo|repo-user] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
   }
 } catch (err) {
   fail(err && err.message ? err.message : String(err));

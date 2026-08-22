@@ -44,11 +44,13 @@ with `--cwd "$(pwd)"` (or the relevant repo path). Level may be given as
 ≡ `--level repo`.
 
 - `show [--level global|repo|repo-user]` — resolved roster, or one level's raw file.
-- `init --level <L> --route <peer|subagent>` — replaces that level's roster wholesale.
+- `init --level <L> --route <peer|subagent> [--layout auto|columns|grid]` — replaces that level's roster wholesale.
 - `add --role <R> [--level L] [--model M] [--effort E] [--route peer|subagent] [--auto-mode A]`
 - `edit --member <NAME> [--level L] [--role R] [--model M] [--effort E] [--route ...] [--auto-mode A]`
 - `remove --member <NAME> [--level L]`
+- `layout [--level <L>] [--layout auto|columns|grid]` — show or set the team-wide pane layout.
 - `create [--plan | --commit ...]` — see § Create.
+- `next-split --mode <m> --self <id> --created <json> --geometry <json>` — internal; used by § Create phase 3a. Not a user-facing command.
 - `disband` — tears down `team.json` only; never kills sessions.
 
 `add`/`edit`/`remove` with no `--level` operate on whichever level currently
@@ -75,11 +77,16 @@ configured at any level), say so and offer to run `init`.
    SendMessage'd from then on; "Subagent only" — always a fresh Agent-tool
    dispatch, never a standing session. A member can override this later via
    its own `--route`.
-3. **Destructive check.** If that level already has a roster (`show --level
+3. **Layout.** If not given, ask the team-wide pane layout: `auto`
+   (Recommended) — columns for 1-2 members, grid beyond; `columns` — one
+   vertical column per member, narrow past three; `grid` — balanced
+   quadrants. Pass it as `--layout <mode>` to `roster.mjs init`. Only
+   meaningful for the `herdr` transport; harmless otherwise.
+4. **Destructive check.** If that level already has a roster (`show --level
    <L>` returns members), confirm before replacing — `init` always replaces
    the whole level's block, never merges into it.
-4. Run `roster.mjs init --level <L> --route <route>`.
-5. **Walk the roles.** For each of `architect`, `implementor`, `reviewer`,
+5. Run `roster.mjs init --level <L> --route <route> [--layout <mode>]`.
+6. **Walk the roles.** For each of `architect`, `implementor`, `reviewer`,
    `task-runner`, `ultra-advisor` in turn, ask (AskUserQuestion, batched into
    calls of up to 4 questions) whether to include it, and if so its model,
    effort, and auto-mode. Prefill/offer defaults from `ROLE_DEFAULTS` in
@@ -87,7 +94,7 @@ configured at any level), say so and offer to run `init`.
    role the user includes, run `roster.mjs add --level <L> --role <role>
    [--model ...] [--effort ...] [--auto-mode ...]`. A role can be added more
    than once if the user wants multiple instances of it.
-6. Run `show` and echo the result.
+7. Run `show` and echo the result.
 
 Whole-level replace is a *read* rule; `init` itself only ever writes the one
 level's file you asked for.
@@ -99,6 +106,10 @@ target member's derived name for `edit`/`remove`), then call the CLI. Report
 the exact result the CLI returns, including which level it defaulted to when
 `--level` was omitted.
 
+Layout (`roster.layout`) is team-wide, not a per-member field — there is no
+`--layout` on `add`/`edit`. Use `roster.mjs layout` (§ Command surface) to
+change it outside of `init`.
+
 ## Create
 
 `create [auto|manual]` (default `auto`) instantiates the resolved roster as a
@@ -106,24 +117,90 @@ live Team, verified via check-in. `roster.mjs create` only ever does file
 I/O; spawning sessions and calling `ListAgents` are things only this skill's
 running session can do — drive the sequence yourself:
 
+0. **Confirm the layout.** Read the roster's `layout` (via `roster.mjs show`;
+   it is `auto` unless set). Ask the user to confirm it for this Team with
+   AskUserQuestion, marking the stored value "(current default)": `auto` —
+   columns for 1-2 members, grid beyond; `columns` — one vertical column per
+   member; `grid` — balanced quadrants. **Always ask, every `create`** — a
+   persisted default is not a licence to apply it silently. If the user picks
+   something other than the stored value, ask once whether to make it the new
+   default, and only if yes run `roster.mjs layout --layout <mode>`. Never
+   persist a divergent choice without asking. This step applies to `auto` and
+   `manual` alike. Skip it entirely when the transport is not `herdr`.
 1. **Plan.** Run `roster.mjs create --plan`. It resolves the roster, refuses
    if a live Team already exists (tell the user to `disband` first), clears
    an already-stale one automatically, detects the transport (`herdr` if
    `HERDR_ENV=1`, else `tmux` if a tmux server is reachable, else
    `terminal`), and returns each member's derived name, role, model,
-   effort, route, and — for peer-routed members — a `spawn` shape (the
-   concrete command(s) for the detected transport). If it errors because no
-   roster resolves, hand off to § Init.
+   effort, route, and — for peer-routed members — a `spawn` shape (`layout`
+   and `launch` command lists for the detected transport, plus how to thread
+   the target id from one to the other). If it errors because no roster
+   resolves, hand off to § Init.
 2. **`manual` mode**: before each spawn, show the intended placement (name,
    role, transport) and let the user override it (different pane, skip it,
    change the name) before proceeding. `auto` mode spawns straight through.
-3. **Spawn every peer-routed member** using its `spawn.steps`, via Bash (or
-   the `herdr` skill's tools when transport is `herdr`) — one running
-   `claude --agent ah:<role> --model <model> --name
-   <derived-name>` (plus `--effort <e>` / `--permission-mode <a>` when set)
-   per member, in the repo root. Subagent-routed members are never spawned
-   here — they stay ordinary Agent-tool dispatches, recorded in the Team with
-   `name`/`ref`/`transport_id` null.
+3. **Spawn every peer-routed member in two batched phases.** Do not run one
+   member's full sequence before starting the next — that serializes an
+   `agent start` wait per member.
+
+   **3a — Layout.** For the `herdr` transport, `spawn.layout` is empty and the
+   plan carries a top-level `layout_plan`; you drive the splits. Loop
+   `layout_plan.pane_count` times: run `layout_plan.inspect_command` and parse
+   `layout_plan.inspect_source.path`; pass that geometry, your own
+   `$HERDR_PANE_ID`, and the pane ids you have created so far (in creation
+   order) to `roster.mjs next-split --mode <layout_plan.mode>`; run
+   `layout_plan.split_command` with the target and direction it returns; read
+   the new pane id from `layout_plan.target_source.path` and append it to your
+   created list. **Do not compute the target or direction yourself —
+   `next-split` owns that rule.** This loop is **sequential**; each target
+   depends on the previous result, so do not try to batch it.
+
+   In `manual` mode, pause inside this loop before each split — see § Create
+   manual-mode layout below.
+
+   For `tmux`, phase 3a is unchanged from 0003: issue every member's
+   `spawn.layout` commands **in a single message**, one tool call per member,
+   so they run concurrently. Extract each target id using its
+   `target_source`: `kind: "json"` means read the given path out of the JSON
+   response; `kind: "stdout"` means take stdout and trim it.
+
+   For `terminal`, there is no layout phase.
+
+   **Assert before continuing:** you must hold one non-empty target id per
+   peer-routed member — for herdr, exactly `layout_plan.pane_count` distinct
+   pane ids, minus any the user deliberately dropped in `manual` mode; for
+   tmux, one per member with a `layout`. If any is missing, empty, or
+   duplicated, retry that one split (herdr) or re-run that member's `layout`
+   commands (tmux) **one at a time** and use those results; if a member still
+   yields no target, treat it as a member that did not come up and carry it
+   into step 5's partial handling.
+
+   Assign the pane/target ids to peer-routed members in plan order, then
+   continue to 3b unchanged.
+
+   On the sequential herdr loop: 0003 measured the layout batch as saving
+   only `(N-1) × split_latency`, rated **Medium** confidence with a named
+   serial fallback. This spec takes that fallback deliberately in exchange
+   for a layout that is actually usable. All of 0003's real saving — the
+   batched `launch` phase, `N × ready_wait` collapsing to `max(ready_wait)` —
+   is untouched.
+
+   **3b — Launch.** Substitute each member's target id for its
+   `target_placeholder` inside its `launch` commands, then issue every member's
+   `launch` **in a single message**, one tool call per member. Members with
+   `target_placeholder: null` need no substitution.
+
+   If a launch reports that the pane is not available or not at a prompt, retry
+   that one member's launch once before treating it as failed — the shell may not
+   have reached its prompt yet.
+
+   Subagent-routed members are never spawned here — they stay ordinary Agent-tool
+   dispatches, recorded in the Team with `name`/`ref`/`transport_id` null.
+
+   The `manual`-mode rule in step 2 is unchanged and still applies: in `manual`,
+   show the intended placement and allow an override **before** phase 3a, per
+   member. Manual mode may present all members' placements at once; it must not
+   be silently converted into a per-member pause between 3a and 3b.
 4. **Check in.** Call `ListAgents` and match each spawned member's derived
    name. **Poll every 2 seconds, give up at 60 seconds** — fixed interval,
    not backoff; this is not configurable.
@@ -141,6 +218,28 @@ running session can do — drive the sequence yourself:
    and tell the user exactly which member(s) never checked in and that the
    Team is degraded**; do not silently pretend a missing member exists, and
    do not block or tear down on a partial check-in unless the user says to.
+
+**§ Create manual-mode layout.** In `manual` mode, inside the 3a loop, after
+`next-split` returns and **before** running the split, show the user:
+- the iteration (`split 2 of 4`),
+- the target pane id and its current size in cells (from the geometry you
+  just read),
+- the direction, and the mode that chose it.
+
+Offer: **accept** (run it as computed), **change direction** (`right`/`down`),
+**change target** (any existing pane id from the geometry — including panes
+this loop did not create), or **skip this split**. Run whatever the user
+settles on, then continue the loop; the next iteration re-reads geometry and
+re-computes from the real result, so an amendment is absorbed rather than
+compounding.
+
+**Skip** means that member gets no pane: it is carried into step 5's partial
+handling as a member that did not come up, exactly as a failed split would
+be. Say so when offering the option — a skip is not free, it degrades the
+Team.
+
+This pause is inside 3a, before each split — never a pause between 3a and 3b,
+which 0003 §5 forbids because it would re-serialize the batched launch phase.
 
 If you hit a genuinely ambiguous case here beyond a plain partial check-in —
 a transport that silently no-ops, a member that comes up under an unexpected

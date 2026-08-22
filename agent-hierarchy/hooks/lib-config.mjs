@@ -297,8 +297,9 @@ export function rosterMemberNames(members, repoBasename) {
 /**
  * Resolve the roster: repo-user → repo → global, first level whose `roster`
  * key is present with at least one member wins IN ITS ENTIRETY (no merging
- * across levels). Returns `{level, route, members: [...withNames], path}` or
- * null when no level has one.
+ * across levels). Returns `{level, route, layout, members: [...withNames], path}`
+ * (`layout` defaults to "auto" when absent — the sole default site, spec 0004 §4.3)
+ * or null when no level has one.
  */
 export function resolveRoster(cwd) {
   const paths = rosterLevelPaths(cwd);
@@ -315,7 +316,7 @@ export function resolveRoster(cwd) {
     if (!data || typeof data !== "object" || Array.isArray(data)) continue;
     const r = data.roster;
     if (!r || typeof r !== "object" || Array.isArray(r) || !Array.isArray(r.members) || r.members.length === 0) continue;
-    return { level, route: r.route, members: rosterMemberNames(r.members, repoBasename), path };
+    return { level, route: r.route, layout: r.layout || "auto", members: rosterMemberNames(r.members, repoBasename), path };
   }
   return null;
 }

@@ -20,6 +20,9 @@ import { ROLES, VALID_MODELS_BY_ROLE } from "./lib-config.mjs";
 /** A roster member's route: "peer" (SendMessage to a live session) or "subagent" (spawned in-process). */
 export const ROSTER_ROUTE_VALUES = ["peer", "subagent"];
 
+/** Team-wide herdr pane layout: "auto" (default), "columns", or "grid". See spec 0004 §4. */
+export const ROSTER_LAYOUT_VALUES = ["auto", "columns", "grid"];
+
 /** `claude --effort <level>` values (verified via `claude --help`, NEEDS-EVIDENCE #1). */
 export const EFFORT_VALUES = ["low", "medium", "high", "xhigh", "max"];
 
@@ -58,6 +61,9 @@ export function validateRosterBlock(roster) {
   const errors = [];
   if (!ROSTER_ROUTE_VALUES.includes(roster.route)) {
     errors.push(`roster.route is required and must be "peer" or "subagent", got ${JSON.stringify(roster.route)}`);
+  }
+  if (roster.layout !== undefined && roster.layout !== null && !ROSTER_LAYOUT_VALUES.includes(roster.layout)) {
+    errors.push(`roster.layout must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(roster.layout)}`);
   }
   if (!Array.isArray(roster.members)) {
     errors.push("roster.members must be an array");
