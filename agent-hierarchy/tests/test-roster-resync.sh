@@ -146,6 +146,18 @@ run move myrepo-architect --new-tab --new-workspace
 check "move: two placement flags -> exit non-zero, usage message" \
   '[ "$RC" -ne 0 ] && echo "$OUT" | grep -qi "exactly one of"'
 
+# ---- move: --tab without --split -> non-zero exit, message names --split, herdr never invoked.
+# FAKE_HERDR_FAIL=1 makes any herdr call exit 1 with "fake herdr: forced failure" — its absence
+# from $OUT proves the guard fired before herdrCall() was ever reached.
+write_team herdr
+FAKE_HERDR_FAIL=1 run move myrepo-architect --tab w2:t9
+check "move: --tab without --split -> exit non-zero, message names --split" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q -- "--split"'
+check "move: --tab without --split -> herdr never invoked" \
+  '! echo "$OUT" | grep -q "fake herdr: forced failure"'
+check "move: --tab without --split -> team.json architect tab_id unchanged" \
+  'node -e "const m=JSON.parse(require(\"fs\").readFileSync(\"$TEAM_FILE\",\"utf8\")).members.find(x=>x.name===\"myrepo-architect\");process.exit(m.tab_id===\"w2:t1\"?0:1)"'
+
 # ---- move --dry-run: emits the herdr pane move ... string, executes nothing
 write_team herdr
 run move myrepo-architect --new-tab --dry-run

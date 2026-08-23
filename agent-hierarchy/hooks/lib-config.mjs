@@ -154,6 +154,27 @@ export function peerName(repoBasename, role) {
 }
 
 /**
+ * Role tokens a peer session name may carry; `advisor` alone reads as
+ * ultra-advisor. Lives here (not lib-hier.mjs) so `validateTeamAlias` below
+ * can consult it without a circular import — lib-hier.mjs imports
+ * `roleFromName` from here instead (spec 0010 §4.4 amendment (e)).
+ */
+const ROLE_TOKENS = [
+  ["ultra-advisor", "ultra-advisor"],
+  ["architect", "architect"],
+  ["reviewer", "reviewer"],
+  ["implementor", "implementor"],
+  ["advisor", "ultra-advisor"],
+];
+
+/** The role a session name implies, via a role token, or null. */
+export function roleFromName(name) {
+  if (typeof name !== "string") return null;
+  for (const [token, role] of ROLE_TOKENS) if (name.includes(token)) return role;
+  return null;
+}
+
+/**
  * Every peer session name this role's config resolves to — `peer` may be a
  * single name or an array of names (several peers for one role). Empty when
  * the resolved `dispatch` is "model" (never route to a peer) or the role isn't
@@ -295,15 +316,90 @@ export function rosterMemberNames(members, repoBasename) {
 }
 
 /**
+ * Character-set + role-collision rule for a `teamAlias` (spec 0010 §4.4,
+ * amendment (d)): starts alphanumeric, 1-32 chars of letters/digits/`-`
+ * thereafter, and must not derive a peer name that `roleFromName`'s
+ * unanchored substring match resolves to the wrong role, for any role in
+ * `PEER_ELIGIBLE_ROLES` (e.g. alias `architect` yields peer name
+ * `architect-reviewer`, which resolves to role `architect`, not `reviewer`).
+ * Stated behaviorally against the real functions, not a hardcoded token
+ * list, so it stays correct if `ROLE_TOKENS` ever changes — a blacklist
+ * would wrongly reject `advisor`, which is genuinely safe. Returns
+ * `{ok: true}` or `{ok: false, why}`.
+ */
+export function validateTeamAlias(alias) {
+  if (typeof alias !== "string" || !alias) return { ok: false, why: "alias must be a non-empty string" };
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,31}$/.test(alias)) {
+    return {
+      ok: false,
+      why: "alias must start with a letter or digit, be 1-32 characters, and contain only letters, digits, and -",
+    };
+  }
+  const collidesWith = PEER_ELIGIBLE_ROLES.find((role) => roleFromName(peerName(alias, role)) !== role);
+  if (collidesWith) {
+    return {
+      ok: false,
+      why: `alias collides with role-token matching: a "${collidesWith}" peer name derived from it would not resolve back to role "${collidesWith}"`,
+    };
+  }
+  return { ok: true };
+}
+
+/** Convenience boolean wrapper over `validateTeamAlias`. */
+export function isValidTeamAlias(alias) {
+  return validateTeamAlias(alias).ok;
+}
+
+/**
+ * Resolve the naming prefix for a repo (spec 0010 §4.1): the first of
+ * repo-user, repo carrying a valid top-level `teamAlias` string wins; `global`
+ * is never read (§4.3 — an alias is a property of one repo, not a
+ * machine-wide default). An unreadable file, non-object root, absent key, or
+ * a value failing `validateTeamAlias` falls through to the next level —
+ * never throws. Nothing found → the git-root basename (or cwd basename when
+ * not inside a git checkout), byte-identical to the pre-alias behavior.
+ * `teamPrefix` is a thin wrapper over this — keep it that way, one
+ * implementation.
+ */
+export function teamPrefixInfo(cwd) {
+  const resolvedCwd = resolve(typeof cwd === "string" && cwd ? cwd : process.cwd());
+  const repoRoot = findGitRoot(resolvedCwd) || resolvedCwd;
+  const paths = rosterLevelPaths(cwd);
+  for (const level of ROSTER_LEVELS) {
+    if (level === "global") continue;
+    const path = paths[level];
+    if (!existsSync(path)) continue;
+    let data;
+    try {
+      data = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      continue;
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+    const alias = data.teamAlias;
+    if (alias === undefined) continue;
+    if (isValidTeamAlias(alias)) return { prefix: alias, alias, source: level };
+    // Invalid hand-edited value — fall through; resolveConfig's warnings array
+    // is where the user learns why (it reads the same raw layers).
+  }
+  return { prefix: basename(repoRoot), alias: null, source: "default" };
+}
+
+/** The winning naming prefix for a repo — see `teamPrefixInfo`. */
+export function teamPrefix(cwd) {
+  return teamPrefixInfo(cwd).prefix;
+}
+
+/**
  * Resolve the roster: repo-user → repo → global, first level whose `roster`
  * key is present with at least one member wins IN ITS ENTIRETY (no merging
- * across levels). Returns `{level, route, layout, members: [...withNames], path}`
- * (`layout` defaults to "auto" when absent — the sole default site, spec 0004 §4.3)
- * or null when no level has one.
+ * across levels). Returns `{level, route, layout, members: [...withNames],
+ * path, teamAlias, teamAliasSource}` (`layout` defaults to "auto" when absent
+ * — the sole default site, spec 0004 §4.3) or null when no level has one.
  */
 export function resolveRoster(cwd) {
   const paths = rosterLevelPaths(cwd);
-  const repoBasename = basename(findGitRoot(resolve(typeof cwd === "string" && cwd ? cwd : process.cwd())) || resolve(typeof cwd === "string" && cwd ? cwd : process.cwd()));
+  const { prefix, alias, source } = teamPrefixInfo(cwd);
   for (const level of ROSTER_LEVELS) {
     const path = paths[level];
     if (!existsSync(path)) continue;
@@ -316,7 +412,15 @@ export function resolveRoster(cwd) {
     if (!data || typeof data !== "object" || Array.isArray(data)) continue;
     const r = data.roster;
     if (!r || typeof r !== "object" || Array.isArray(r) || !Array.isArray(r.members) || r.members.length === 0) continue;
-    return { level, route: r.route, layout: r.layout || "auto", members: rosterMemberNames(r.members, repoBasename), path };
+    return {
+      level,
+      route: r.route,
+      layout: r.layout || "auto",
+      members: rosterMemberNames(r.members, prefix),
+      path,
+      teamAlias: alias,
+      teamAliasSource: source,
+    };
   }
   return null;
 }
@@ -365,6 +469,18 @@ export function resolveConfig(cwd) {
 
   // Least specific first: repo-user is the new highest-precedence layer.
   const layers = [user, project, repoUser].filter(Boolean);
+
+  // teamAlias is read at repo/repo-user only (§4.3) — a hand-edited invalid
+  // value at global is simply never consulted, so it gets no warning either.
+  for (const layer of layers) {
+    if (layer.scope === "user") continue;
+    const rawAlias = layer.data.teamAlias;
+    if (rawAlias === undefined) continue;
+    const v = validateTeamAlias(rawAlias);
+    if (!v.ok) {
+      warnings.push(`ah: teamAlias ${JSON.stringify(rawAlias)} at ${layer.scope}-scope config (${layer.path}) is invalid (${v.why}) — ignoring it.`);
+    }
+  }
 
   const roles = {};
   const sources = {};
@@ -620,7 +736,7 @@ export function buildDirective(resolved, sessionId, extra = {}) {
   const model = extra && typeof extra.model === "string" ? extra.model : null;
   const route = extra && extra.route && typeof extra.route.value === "string" ? extra.route : null;
   const confirm = resolved.handoffs === "confirm";
-  const repoBasename = basename(resolved.cwd);
+  const repoBasename = teamPrefix(resolved.cwd);
   const needsPeerConfirmation = ROLES.some(
     (role) =>
       PEER_ELIGIBLE_ROLES.includes(role) && resolved.roles[role].dispatch === "peer" && resolved.roles[role].peer === "auto"
@@ -708,7 +824,8 @@ export function statusReport(cwd) {
   out.push("");
   out.push("Resolved effective table:");
   out.push(`  Orchestrator  ${"session model".padEnd(14)} fixed (this session's agent)`);
-  const repoBasename = basename(resolved.cwd);
+  const aliasInfo = teamPrefixInfo(resolved.cwd);
+  const repoBasename = aliasInfo.prefix;
   for (const role of ROLES) {
     const entry = resolved.roles[role];
     const model = entry.model === "inherit" ? "inherit*" : entry.model;
@@ -732,6 +849,19 @@ export function statusReport(cwd) {
   } else {
     out.push("Roster: none configured — /agent-roster init to define one (roles/route above stay in effect).");
   }
+  out.push(
+    aliasInfo.alias
+      ? `Team alias: ${aliasInfo.alias} (from ${aliasInfo.source}) — agents named ${aliasInfo.alias}-<role>`
+      : `Team alias: none — agents named ${aliasInfo.prefix}-<role>`
+  );
+  if (resolved.rosterLevel === "global") {
+    out.push("  — GLOBAL roster; confirmation required before dispatching to its members (spec 0009 §4).");
+  }
+  const userScopeRoles = ROLES.filter((role) => resolved.sources[role] === "user");
+  if (userScopeRoles.length) {
+    out.push(`  — role config for ${userScopeRoles.map((role) => ROLE_LABELS[role]).join(", ")} comes from user scope; confirmation required (spec 0009 §4).`);
+  }
+  out.push(`Stand up one missing peer: roster.mjs spawn-one <role> --cwd ${resolved.cwd}. Full-team Create is the /agent-roster skill's job — do not hand-assemble create calls.`);
   let team = null;
   try {
     team = readTeam(hierarchyDir(resolved.cwd));

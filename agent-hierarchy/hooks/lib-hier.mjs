@@ -20,7 +20,7 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
-import { hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_LABELS, ROUTE_VALUES, TIER, resolvedPeerTargets, tierOf } from "./lib-config.mjs";
+import { hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_LABELS, ROUTE_VALUES, TIER, resolvedPeerTargets, roleFromName, tierOf } from "./lib-config.mjs";
 import { readTeam, teamMemberByName } from "./lib-roster.mjs";
 
 export { hierarchyDir };
@@ -38,14 +38,6 @@ export const SWEEP_DAYS = 7;
 /** `[hierarchy-msg <abs path>]` — the in-band pointer to a message file. */
 export const MSG_TOKEN_RE = /\[hierarchy-msg\s+([^\]\s]+)\s*\]/;
 
-/** Role tokens a peer session name may carry; `advisor` alone reads as ultra-advisor. */
-const ROLE_TOKENS = [
-  ["ultra-advisor", "ultra-advisor"],
-  ["architect", "architect"],
-  ["reviewer", "reviewer"],
-  ["implementor", "implementor"],
-  ["advisor", "ultra-advisor"],
-];
 
 // ---------------------------------------------------------------- runtime dir
 
@@ -403,13 +395,6 @@ export function effectiveRoute(dir, resolved, sessionId) {
 }
 
 // ---------------------------------------------------------------- roster
-
-/** The role a session name implies, via a role token, or null. */
-export function roleFromName(name) {
-  if (typeof name !== "string") return null;
-  for (const [token, role] of ROLE_TOKENS) if (name.includes(token)) return role;
-  return null;
-}
 
 /**
  * The role for a peer session name: the active Team's check-in registry

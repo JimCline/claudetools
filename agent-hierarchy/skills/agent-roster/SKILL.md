@@ -29,8 +29,10 @@ the resolved (winning) roster; `roster.mjs show --level <L>` prints one
 level's raw file and says if it's shadowed.
 
 Member names are **derived, never stored**: the first member of a role at the
-winning level is `<repo-basename>-<role>` (e.g. `claudetools-architect`); a
-second, third, ... same-role member gets `-2`, `-3` appended, in array order.
+winning level is `<team-prefix>-<role>` (e.g. `claudetools-architect`) — the
+team-prefix is the repo's `teamAlias` if one is set, else the repo basename;
+see `roster.mjs alias`. A second, third, ... same-role member gets `-2`, `-3`
+appended, in array order.
 Removing an earlier member re-ordinals the ones after it — names are only
 meaningful for a Team's lifetime, and a live Team's authoritative names are
 frozen in `team.json` at check-in time (§ Check-in registry), not recomputed
@@ -59,9 +61,18 @@ with `--cwd "$(pwd)"` (or the relevant repo path). Level may be given as
   removes `team.json` without closing anything. See § disband.
 - `resync [--dry-run]` — re-derives every peer member's herdr pane/tab/workspace location from
   herdr's live topology and rewrites `team.json`. See § resync / move.
-- `move <name> --tab <id> [--split right|down] | --new-tab [--workspace <id>] | --new-workspace
+- `move <name> --tab <id> --split right|down | --new-tab [--workspace <id>] | --new-workspace
   [--dry-run]` — relocates a member's pane via `herdr pane move`, then resyncs its record. See
   § resync / move.
+- `spawn-one <role> [--cwd <path>] [--dry-run] [--allow-global]` — stands up ONE missing or dead
+  peer and persists it into `team.json`, without touching any other member. Prefer this over
+  Create when a Team already exists and only one role needs (re)starting — Create refuses to run
+  against a live Team. See § spawn-one.
+- `alias [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]` — read, set, or
+  clear the repo's `teamAlias` (the team-prefix members are named under). No `--set`/`--clear`
+  reads the currently-effective alias; `--level` is required with `--set`/`--clear` when it can't
+  be inferred from an already-resolving roster. Never accepts `--level global` — an alias is
+  repo-scoped.
 
 `add`/`edit`/`remove` with no `--level` operate on whichever level currently
 resolves (repo-user > repo > global) and print which level they picked — say
@@ -95,6 +106,17 @@ configured at any level), say so and offer to run `init`.
 4. **Destructive check.** If that level already has a roster (`show --level
    <L>` returns members), confirm before replacing — `init` always replaces
    the whole level's block, never merges into it.
+4a. **Team name.** Ask via AskUserQuestion what prefix this repo's agent
+   names should use. Show the derived name it produces, not just the prefix:
+   offer `"<repo-basename>" — agents named <repo-basename>-architect,
+   <repo-basename>-reviewer, … (Recommended)` as the first option, and
+   `"Use a shorter alias"` as the second, which prompts for free text.
+   Whatever the user types is validated by `roster.mjs alias --set`; on
+   rejection, report the CLI's message and ask again rather than silently
+   correcting it. Skip this question entirely if `roster.mjs alias` already
+   reports an alias for this repo — say in one line what it is and move on.
+   If the user picks the alias option, run
+   `roster.mjs alias --level <L> --set <name>`.
 5. Run `roster.mjs init --level <L> --route <route> [--layout <mode>]`.
 6. **Walk the roles.** For each of `architect`, `implementor`, `reviewer`,
    `task-runner`, `ultra-advisor` in turn, ask (AskUserQuestion, batched into
@@ -373,13 +395,58 @@ changes, and neither is part of the normal roster-building flow above.
   `--dry-run` computes and prints the plan without writing. Non-herdr
   transports are a clean no-op. Run it any time the recorded location might
   be wrong; disband no longer needs it run first (see § disband).
-- **`roster.mjs move <name> --tab <id> [--split right|down] | --new-tab
+- **`roster.mjs move <name> --tab <id> --split right|down | --new-tab
   [--workspace <id>] | --new-workspace [--dry-run]`** — runs `herdr pane
   move` for that member, then resyncs its record from a fresh topology query
   (the move's own response body is ignored). `--dry-run` prints the `herdr
   pane move …` command and runs nothing. Failure paths: an unresolved member
   name, or a herdr move that itself fails, both `fail()` with `team.json`
   untouched — the pane never moved, so the record is still correct as-is.
+  `--split` is required whenever `--tab` is given — herdr rejects the move
+  without it (spec 0009 §6.6), so `roster.mjs` `fail()`s locally before
+  calling herdr rather than forwarding a call that cannot succeed.
+
+## `spawn-one`
+
+Spec 0009 §6. `roster.mjs create` refuses to run against a live Team
+(`create --spawn`/`--commit`/`--plan` all `fail()` when one already exists),
+so once a Team exists and one role has died — or was never launched — there
+is no supported way to stand up just that role. `spawn-one` closes that one
+gap; it is not a lighter-weight alternative to Create for a full team.
+
+- **`roster.mjs spawn-one <role> [--cwd <path>] [--dry-run] [--allow-global]`**
+  — resolves the roster, finds `<role>`'s member, and:
+  - a live team member for that role already exists → no-op,
+    `{spawned:false, reason:"already live"}`.
+  - otherwise → places one pane, launches and verifies it the same way
+    `create --spawn` does, then merge-writes `team.json`: every other
+    member is preserved, only this role's record is replaced or appended.
+  - `--dry-run` prints the resolved member, layout mode, and launch command;
+    executes and writes nothing.
+
+  Prefer `spawn-one` over Create whenever a Team already (partially) exists —
+  Create's whole-team flow is the `/agent-roster` skill's job for building a
+  fresh Team, never for patching one member into an existing one.
+
+**Two gates guard both `spawn-one` and full-team `create --spawn`/Create's
+peer-dispatch entry points**, because `roster.mjs` runs as a Bash subprocess
+that the PreToolUse hook cannot see inside:
+
+- **`--allow-global`** — required whenever the roster resolves at the
+  `global` level (`~/.claude/agent-hierarchy.json`'s roster block, not a
+  repo-scoped one); omitting it `fail()`s naming the flag. This mirrors the
+  PreToolUse gate's scope-A confirmation (spec 0009 §4) for the CLI path.
+- **The PreToolUse global-scope confirm gate** (spec 0009 §4) still applies
+  to any Agent/Task/SendMessage dispatch to the resulting peer — `--allow-global`
+  only unblocks the CLI command that stands the peer up, not later dispatch to it.
+
+**Fallback ordering when the `route` is `peers` and no live peer exists for a
+role** (spec 0009 §5): the dispatch is denied with a prompt that recommends,
+in order, (1) stand up the real peer with `spawn-one` (Recommended, offered
+only when a roster entry for that role exists at a usable level), (2) spawn a
+one-off subagent instead, (3) neither — wait. This replaces the previous
+subagent-only recommendation; a real, persisted peer is now the default
+fallback, not a disposable subagent.
 
 ## Check-in registry (`team.json`)
 

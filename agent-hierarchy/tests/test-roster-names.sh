@@ -34,6 +34,18 @@ check "rosterMemberNames preserves the member's other fields" '[ "$OUT" = opus ]
 evalc "JSON.stringify(C.rosterMemberNames([], 'myrepo'))"
 check "empty members -> empty array" '[ "$OUT" = "[]" ]'
 
+# ==== 12 — teamPrefix(cwd) with no teamAlias set anywhere: falls back to the
+# git-root basename (spec 0010 §3), the same value the old repoBasename
+# derivations used to compute directly.
+NAMEDIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-teamprefix-test.XXXXXX")"
+trap 'rm -rf "$NAMEDIR"' EXIT
+NAMEDIR="$(cd "$NAMEDIR" && pwd -P)"
+TEAMPREFIX_REPO="$NAMEDIR/some-repo-name"
+mkdir -p "$TEAMPREFIX_REPO"
+(cd "$TEAMPREFIX_REPO" && git init -q)
+evalc "C.teamPrefix('$TEAMPREFIX_REPO')"
+check "12: teamPrefix with no teamAlias -> basename of the git root" '[ "$OUT" = some-repo-name ]'
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

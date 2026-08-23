@@ -12,8 +12,8 @@
  * directly.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { delimiter, join } from "node:path";
 
 import { ROLES, VALID_MODELS_BY_ROLE } from "./lib-config.mjs";
 
@@ -30,6 +30,28 @@ export const EFFORT_VALUES = ["low", "medium", "high", "xhigh", "max"];
 export const AUTO_MODE_VALUES = ["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"];
 
 export const teamPath = (dir) => join(dir, "team.json");
+
+// ---------------------------------------------------------------- herdr transport presence (spec 0010 §2.4)
+
+/**
+ * True when an executable named `herdr` is on PATH. Pure `fs` — never spawns
+ * a process, because this runs on every SessionStart including `compact`.
+ * No caching: a stale cached "missing" answer is worse than re-checking.
+ */
+export function herdrOnPath() {
+  const pathEnv = process.env.PATH;
+  if (typeof pathEnv !== "string" || !pathEnv) return false;
+  for (const entry of pathEnv.split(delimiter)) {
+    if (!entry) continue;
+    try {
+      accessSync(join(entry, "herdr"), constants.X_OK);
+      return true;
+    } catch {
+      // not here, or not executable — try the next PATH entry
+    }
+  }
+  return false;
+}
 
 // ---------------------------------------------------------------- roster member/block validation
 

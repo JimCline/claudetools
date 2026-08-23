@@ -37,8 +37,6 @@
  * without saying so — so build the string first, then write it once.
  */
 
-import { basename } from "node:path";
-
 import {
   buildDirective,
   buildNudge,
@@ -48,9 +46,26 @@ import {
   isTopLevelAgentSession,
   readHookInput,
   resolveConfig,
+  teamPrefix,
 } from "./lib-config.mjs";
 import { appendRosterRecord, buildStateBlock, cacheSessionModel, effectiveRoute, ensureHierarchyDir, pidAlive, ageSecOf, sessionModel, sweep, SWEEP_DAYS } from "./lib-hier.mjs";
-import { clearTeam, readTeam } from "./lib-roster.mjs";
+import { clearTeam, herdrOnPath, readTeam } from "./lib-roster.mjs";
+
+/** Feature A (spec 0010 §2.5): advisory only, never blocks. */
+function herdrWarning() {
+  try {
+    if (process.env.HERDR_ENV === "1" && !herdrOnPath()) {
+      return (
+        "ah: HERDR_ENV=1 but no `herdr` binary was found on PATH. Roster spawning " +
+        "(/agent-roster create, roster.mjs spawn-one) will fail when it tries to place " +
+        "panes. Install herdr, or unset HERDR_ENV to fall back to tmux/terminal."
+      );
+    }
+  } catch {
+    // advisory only — never let a probe failure cost the directive
+  }
+  return null;
+}
 
 // ponytail: 24h is a blunt fixed ceiling, not a config knob — see spec 0001 §5.3.
 const TEAM_STALE_AGE_SEC = 24 * 3600;
@@ -110,13 +125,15 @@ if (!isSubagent(input)) {
         // guarded again here per the spec's exact condition).
         if (!isTopLevelAgentSession(input)) teamSweepNote = sweepStaleTeam(dir);
         route = effectiveRoute(dir, resolved, input.session_id || null);
-        state = buildStateBlock(dir, resolved, basename(resolved.cwd), model, input.session_id || null, route);
+        state = buildStateBlock(dir, resolved, teamPrefix(resolved.cwd), model, input.session_id || null, route);
       } catch {
         // state block is best-effort; the directive still goes out
       }
       context = buildDirective(resolved, input.session_id, { hierDir: dir, model, route });
       if (teamSweepNote) context += "\n\n" + teamSweepNote;
       if (state) context += "\n\n" + state;
+      const herdrNote = herdrWarning();
+      if (herdrNote) context += "\n\n" + herdrNote;
     }
   }
 }

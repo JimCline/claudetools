@@ -238,6 +238,10 @@ roster.mjs move <name> --new-workspace
 3. Transport not herdr → the §4 no-op.
 4. Exactly one of `--tab` / `--new-tab` / `--new-workspace`; zero or more than one →
    `fail()` with the usage line. `--split` is only valid with `--tab`.
+
+   **Correction (spec 0009 §6.6):** `--split` is not merely "only valid with `--tab`" —
+   herdr **requires** it whenever `--tab` is given. Verified at runtime; herdr's `--help`
+   does not annotate the dependency.
 5. `--dry-run` → emit the `herdr pane move …` command string and stop. Write nothing,
    execute nothing.
 6. Otherwise execute `herdr pane move <transport_id> …`. Non-zero exit → `fail()` with

@@ -26,6 +26,16 @@ sessions. Silent inside subagents by design: role agents carry their own
 contracts in `agents/*.md`, and a worker that starts orchestrating would
 defeat the point.
 
+## Prerequisites
+
+Everything above runs with nothing but Node — no external binary required.
+The one optional dependency is `herdr`, needed only if you opt into the
+`herdr` transport (`HERDR_ENV=1`) for pane-based peer teams. Without it,
+roster spawning falls back to tmux, and without tmux, to plain terminal
+windows — nothing breaks, you just don't get herdr's pane placement.
+Verified against herdr 0.8.2; see herdr's own install instructions for how to
+get it on PATH.
+
 ## The flow
 
 Trivial edits (a typo, a config value) skip the chain entirely. A

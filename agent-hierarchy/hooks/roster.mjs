@@ -30,6 +30,8 @@
  *                       <name> --new-tab [--workspace <id>]
  *                       <name> --new-workspace
  *                       [--dry-run] [--cwd <path>]
+ *   roster.mjs spawn-one <role> [--cwd <path>] [--dry-run] [--allow-global]
+ *   roster.mjs alias   [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]
  *
  * `--level`/the positional bare word are equivalent; `add`/`edit`/`remove`
  * with neither default to the level the roster currently resolves from
@@ -49,16 +51,18 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFile, execFileSync } from "node:child_process";
-import { basename, dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 
-import { CONFIG_VERSION, findGitRoot, hierarchyDir, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames } from "./lib-config.mjs";
-import { newId, localIso, pidAlive } from "./lib-hier.mjs";
-import { clearTeam, readTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamPath, validateMember, validateRosterBlock, writeTeam } from "./lib-roster.mjs";
+import { CONFIG_VERSION, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, teamPrefix, teamPrefixInfo, validateTeamAlias } from "./lib-config.mjs";
+import { ageSecOf, latestRoster, newId, localIso, pidAlive, ROSTER_FRESH_SEC } from "./lib-hier.mjs";
+import { clearTeam, herdrOnPath, readTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamPath, validateMember, validateRosterBlock, writeTeam } from "./lib-roster.mjs";
 
-const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace"]);
+const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear"]);
 const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "cwd"]);
 const RESYNC_FLAGS = new Set(["dry-run", "cwd"]);
 const MOVE_FLAGS = new Set(["tab", "split", "new-tab", "workspace", "new-workspace", "dry-run", "cwd"]);
+const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global"]);
+const ALIAS_FLAGS = new Set(["level", "set", "clear", "cwd"]);
 
 function parseArgs(argv) {
   const opts = { _: [] };
@@ -99,7 +103,7 @@ const all = parseArgs(process.argv.slice(2));
 const cmd = all._.shift();
 const opts = all;
 const cwd = typeof opts.cwd === "string" ? opts.cwd : process.cwd();
-const repoBasename = basename(findGitRoot(cwd) || resolve(cwd));
+const repoBasename = teamPrefix(cwd);
 
 function levelArg() {
   if (typeof opts.level === "string") return opts.level;
@@ -440,22 +444,25 @@ async function launchMember(member, transport) {
   return { ...member, launch_status: "failed", launch_result: null, retried: false, error: errorText() };
 }
 
-/** `create --spawn` (spec 0005): resolve + layout + launch + retry in one script invocation. */
-async function createSpawn(dir) {
-  const mode = opts.mode;
-  if (!ROSTER_LAYOUT_VALUES.includes(mode)) fail(`--mode must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(mode)}`);
-  const { level, transport, layout_plan, members } = resolveMembersPlan(dir);
-  const peerMembers = members.filter((m) => m.route === "peer");
-
+/**
+ * Per-member layout+launch+retry (spec 0009 §6.3 step 5): place `peerMembers.length` panes via the
+ * transport, assign each member's `transport_id`, then launch+retry each with `launchMember`.
+ * Mutates `peerMembers` in place (`transport_id`); returns launch results aligned to `peerMembers`.
+ * Shared by `createSpawn` (spec 0005) and `spawn-one` (spec 0009 §6) — one implementation.
+ */
+async function layoutAndLaunch(peerMembers, transport, mode, splitCwd, callerLabel) {
   let panes = [];
   if (transport === "herdr" && peerMembers.length > 0) {
+    if (!herdrOnPath()) {
+      fail("transport is herdr (HERDR_ENV=1) but no `herdr` binary is on PATH — cannot place panes. Install herdr, or unset HERDR_ENV to use tmux/terminal.");
+    }
     const self = process.env.HERDR_PANE_ID;
-    if (!self) fail("create --spawn needs HERDR_PANE_ID in the environment");
-    ({ panes } = runLayoutLoop({ mode, paneCount: peerMembers.length, self, splitCwd: cwd }));
+    if (!self) fail(`${callerLabel} needs HERDR_PANE_ID in the environment`);
+    ({ panes } = runLayoutLoop({ mode, paneCount: peerMembers.length, self, splitCwd }));
   } else if (transport === "tmux") {
     for (let i = 0; i < peerMembers.length; i++) {
       try {
-        panes.push(execFileSync("tmux", ["new-window", "-P", "-F", "#{pane_id}", "-c", cwd], { encoding: "utf8" }).trim());
+        panes.push(execFileSync("tmux", ["new-window", "-P", "-F", "#{pane_id}", "-c", splitCwd], { encoding: "utf8" }).trim());
       } catch (err) {
         // Mirrors runLayoutLoop's herdr-path partial(): preserve the windows already created
         // rather than losing them to the generic top-level catch (spec 0005 review, tmux gap).
@@ -468,7 +475,7 @@ async function createSpawn(dir) {
   // asserted before any launch fires, so a bad layout cannot become N claude processes in the wrong places.
   if (transport !== "terminal" && peerMembers.length > 0) {
     if (panes.length !== peerMembers.length || panes.some((p) => !p) || new Set(panes).size !== panes.length) {
-      fail(`create --spawn: layout produced ${JSON.stringify(panes)} for ${peerMembers.length} peer member(s) — expected that many distinct, non-empty target ids`);
+      fail(`${callerLabel}: layout produced ${JSON.stringify(panes)} for ${peerMembers.length} peer member(s) — expected that many distinct, non-empty target ids`);
     }
   }
   peerMembers.forEach((m, i) => {
@@ -476,9 +483,74 @@ async function createSpawn(dir) {
   });
 
   const settled = await Promise.allSettled(peerMembers.map((m) => launchMember(m, transport)));
-  const launchByName = new Map(
-    settled.map((r, i) => [peerMembers[i].name, r.status === "fulfilled" ? r.value : { ...peerMembers[i], launch_status: "failed", launch_result: null, retried: false, error: String(r.reason) }])
+  return settled.map((r, i) => (r.status === "fulfilled" ? r.value : { ...peerMembers[i], launch_status: "failed", launch_result: null, retried: false, error: String(r.reason) }));
+}
+
+/** Spec 0009 §6.4: shared CLI-side guard for `spawn-one` and `create --spawn` — a Bash subprocess
+    that §4's PreToolUse gate cannot see inside must not become the laundering path around it. */
+function requireAllowGlobal(level, path) {
+  if (level !== "global" || opts["allow-global"] === true) return;
+  fail(
+    `ah: this roster resolves at GLOBAL level (${path}) and may belong to an unrelated project. Re-run with --allow-global, or create a repo roster with the /agent-roster skill.`
   );
+}
+
+/** Strip a member's role (and any -<ordinal> suffix) off its derived name to recover its naming prefix. */
+function prefixOfMemberName(name, role) {
+  if (typeof name !== "string" || typeof role !== "string") return name;
+  return name.replace(new RegExp(`-${role}(?:-\\d+)?$`), "");
+}
+
+/** Spec 0010 §5.3/§7.4: `alias --set`/`--clear` still write even with a live Team, but must
+    warn — names are frozen in team.json (ADR 0002); the new prefix only applies to the next Team. */
+function warnLiveTeamAlias(dir, newPrefix) {
+  const team = readTeam(dir);
+  if (!team || !Array.isArray(team.members) || team.members.length === 0) return;
+  const sample = team.members[0];
+  const oldPrefix = prefixOfMemberName(sample.name, sample.role);
+  process.stderr.write(
+    `roster.mjs: ah: team ${team.team_id} is live with ${team.members.length} member(s) named "${oldPrefix}-${sample.role}". ` +
+      `Their names are frozen in team.json and are unaffected — they keep receiving dispatch under those names. ` +
+      `The new prefix "${newPrefix}" applies to the next Team you create.\n`
+  );
+}
+
+/** Spec 0010 §7.2/§7.4: `spawn-one` after an alias change can add a member under a different
+    prefix than the Team's existing members — no auto-rename, no auto-disband, just a warning. */
+function warnMixedPrefixSpawnOne(dir, member) {
+  const team = readTeam(dir);
+  if (!team || !Array.isArray(team.members) || team.members.length === 0) return;
+  const newPrefix = prefixOfMemberName(member.name, member.role);
+  const mismatched = team.members.find((m) => m.name && m.role && prefixOfMemberName(m.name, m.role) !== newPrefix);
+  if (!mismatched) return;
+  const oldPrefix = prefixOfMemberName(mismatched.name, mismatched.role);
+  process.stderr.write(
+    `roster.mjs: ah: this member will be named "${member.name}", but team ${team.team_id}'s existing members are named "${oldPrefix}-*". ` +
+      `The team will hold both prefixes. Every name still resolves from team.json, so dispatch is unaffected.\n`
+  );
+}
+
+/** Spec 0009 §6.3 step 4: the same up/pid, seen|briefed/freshness liveness rule `roster()`
+    (lib-hier.mjs) applies per-record, applied here to one named team member. */
+function memberIsLive(dir, name) {
+  const rec = latestRoster(dir).find((r) => r.name === name);
+  if (!rec || rec.status === "down") return false;
+  if (rec.status === "up") return pidAlive(rec.pid);
+  if (rec.status === "seen" || rec.status === "briefed") return ageSecOf(rec.ts) < ROSTER_FRESH_SEC;
+  return false;
+}
+
+/** `create --spawn` (spec 0005): resolve + layout + launch + retry in one script invocation. */
+async function createSpawn(dir) {
+  const mode = opts.mode;
+  if (!ROSTER_LAYOUT_VALUES.includes(mode)) fail(`--mode must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(mode)}`);
+  const preResolved = resolveRoster(cwd);
+  if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
+  const { level, transport, layout_plan, members } = resolveMembersPlan(dir);
+  const peerMembers = members.filter((m) => m.route === "peer");
+
+  const launched = await layoutAndLaunch(peerMembers, transport, mode, cwd, "create --spawn");
+  const launchByName = new Map(peerMembers.map((m, i) => [m.name, launched[i]]));
 
   const outputMembers = members.map((m) => {
     if (m.route !== "peer") return { role: m.role, name: m.name, model: m.model, route: m.route, autoMode: m.autoMode, transport_id: null, launch_status: null };
@@ -505,11 +577,15 @@ try {
         const path = rosterLevelPaths(cwd)[level];
         const data = readLevelFile(path);
         const resolved = resolveRoster(cwd);
+        const effective = teamPrefixInfo(cwd);
         out({
           level,
           path,
           roster: data.roster && data.roster.members ? { route: data.roster.route, layout: data.roster.layout || "auto", members: namedMembers(data.roster.members) } : null,
           shadowed: resolved && resolved.level !== level ? `shadowed by ${resolved.level}` : null,
+          teamAlias: level === "global" ? undefined : typeof data.teamAlias === "string" ? data.teamAlias : null,
+          effectiveTeamAlias: effective.alias,
+          effectiveTeamAliasSource: effective.source,
         });
       } else {
         out(resolveRoster(cwd) || { roster: null });
@@ -619,6 +695,49 @@ try {
       break;
     }
 
+    case "alias": {
+      for (const key of Object.keys(opts)) {
+        if (key === "_") continue;
+        if (!ALIAS_FLAGS.has(key)) fail(`alias: unrecognized flag --${key} (use --level, --set, --clear, or --cwd)`);
+      }
+      if (opts.set !== undefined && opts.clear === true) fail("alias: --set and --clear are mutually exclusive");
+      const dir = hierarchyDir(cwd);
+
+      if (opts.set !== undefined) {
+        if (typeof opts.set !== "string") fail("alias --set needs a value: roster.mjs alias --set <name>");
+        const v = validateTeamAlias(opts.set);
+        if (!v.ok) fail(`alias: ${v.why}`);
+        const { level } = targetLevel();
+        if (level === "global") fail("alias: an alias is repo-scoped — use --level repo or --level repo-user, not global (spec 0010 §4.3)");
+        const path = rosterLevelPaths(cwd)[level];
+        const data = readLevelFile(path);
+        data.teamAlias = opts.set;
+        writeLevelFile(path, data);
+        const prefix = teamPrefixInfo(cwd).prefix;
+        warnLiveTeamAlias(dir, prefix);
+        out({ level, path, teamAlias: opts.set, prefix });
+        break;
+      }
+
+      if (opts.clear === true) {
+        const { level } = targetLevel();
+        if (level === "global") fail("alias: an alias is repo-scoped — use --level repo or --level repo-user, not global (spec 0010 §4.3)");
+        const path = rosterLevelPaths(cwd)[level];
+        const data = readLevelFile(path);
+        delete data.teamAlias;
+        writeLevelFile(path, data);
+        const prefix = teamPrefixInfo(cwd).prefix;
+        warnLiveTeamAlias(dir, prefix);
+        out({ level, path, teamAlias: null, prefix });
+        break;
+      }
+
+      // Read-only.
+      const info = teamPrefixInfo(cwd);
+      out({ alias: info.alias, source: info.source, prefix: info.prefix, effective_names_sample: `${info.prefix}-architect` });
+      break;
+    }
+
     case "next-split": {
       const mode = opts.mode;
       if (!ROSTER_LAYOUT_VALUES.includes(mode)) fail(`--mode must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(mode)}`);
@@ -635,6 +754,9 @@ try {
     case "layout-splits": {
       if (opts.next === true && opts.apply === true) fail("--next and --apply are mutually exclusive");
       if (detectTransport() !== "herdr") fail("layout-splits requires the herdr transport");
+      if (!herdrOnPath()) {
+        fail("transport is herdr (HERDR_ENV=1) but no `herdr` binary is on PATH — cannot place panes. Install herdr, or unset HERDR_ENV to use tmux/terminal.");
+      }
 
       const splitCwd = typeof opts.cwd === "string" ? opts.cwd : process.cwd();
 
@@ -866,6 +988,7 @@ try {
       if (modeCount !== 1) fail("move: exactly one of --tab, --new-tab, --new-workspace is required");
       const moveUsage = "roster.mjs move <name> --tab <id> [--split right|down] | --new-tab [--workspace <id>] | --new-workspace";
       if (opts.tab !== undefined && typeof opts.tab !== "string") fail(`move: --tab requires a value: ${moveUsage}`);
+      if (opts.tab !== undefined && opts.split === undefined) fail(`move: --tab requires --split right|down: ${moveUsage}`);
       if (opts.workspace !== undefined && typeof opts.workspace !== "string") fail(`move: --workspace requires a value: ${moveUsage}`);
       if (opts.split !== undefined && opts.tab === undefined) fail("move: --split is only valid with --tab");
       const herdrArgs = ["pane", "move", member.transport_id];
@@ -912,8 +1035,76 @@ try {
       break;
     }
 
+    case "spawn-one": {
+      // Spec 0009 §6: the one operation `create` cannot reach — a live Team with one role
+      // dead or never launched. Extracted, not forked, from `createSpawn`'s launch path.
+      for (const key of Object.keys(opts)) {
+        if (key === "_") continue;
+        if (!SPAWN_ONE_FLAGS.has(key)) fail(`spawn-one: unrecognized flag --${key} (use --cwd, --dry-run, or --allow-global)`);
+      }
+      const role = opts._[0];
+      if (!PEER_ELIGIBLE_ROLES.includes(role)) fail(`spawn-one: role must be one of ${PEER_ELIGIBLE_ROLES.join(", ")}, got ${JSON.stringify(role)}`);
+      const resolved = resolveRoster(cwd);
+      if (!resolved) fail(`no roster configured for ${cwd}; run the /agent-roster skill's Init flow`);
+      requireAllowGlobal(resolved.level, resolved.path);
+      const member = resolved.members.find((m) => m.role === role);
+      if (!member) {
+        const roles = [...new Set(resolved.members.map((m) => m.role))];
+        fail(`spawn-one: no ${role} member in the roster — roles it defines: ${roles.join(", ") || "(none)"}`);
+      }
+
+      const dir = hierarchyDir(cwd);
+      const team = readTeam(dir);
+      const existing = team && Array.isArray(team.members) ? team.members.find((m) => m.role === role) : null;
+      if (existing && memberIsLive(dir, existing.name)) {
+        out({ spawned: false, reason: "already live", member: existing });
+        break;
+      }
+      warnMixedPrefixSpawnOne(dir, member);
+
+      const transport = detectTransport();
+      const planEntry = { role: member.role, name: member.name, model: member.model, effort: member.effort, route: "peer", autoMode: member.autoMode, spawn: spawnShape(member, transport) };
+      const layoutInfo = layoutPlan(resolved, transport, [planEntry]);
+      const mode = layoutInfo ? layoutInfo.mode : resolved.layout;
+      if (!ROSTER_LAYOUT_VALUES.includes(mode)) fail(`spawn-one: layout mode must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(mode)}`);
+
+      if (opts["dry-run"] === true) {
+        out({ dry_run: true, role: member.role, name: member.name, mode, launch: planEntry.spawn.launch });
+        break;
+      }
+
+      const [launched] = await layoutAndLaunch([planEntry], transport, mode, cwd, "spawn-one");
+      if (launched.launch_status === "failed") fail(launched.error || "spawn-one launch failed");
+
+      const newRecord = { role: member.role, name: member.name, route: "peer", model: member.model, effort: member.effort, autoMode: member.autoMode, transport_id: launched.transport_id };
+      const launchedPane = transport === "herdr" && launched.launch_result && launched.launch_result.result && launched.launch_result.result.pane;
+      if (launchedPane && launchedPane.tab_id != null) newRecord.tab_id = launchedPane.tab_id;
+      if (launchedPane && launchedPane.workspace_id != null) newRecord.workspace_id = launchedPane.workspace_id;
+
+      let outTeam = team;
+      if (!outTeam) {
+        const orchestratorPid = Number(process.env.CLAUDE_PID);
+        outTeam = {
+          version: 1,
+          team_id: newId(),
+          created: localIso(),
+          roster_level: resolved.level,
+          transport,
+          orchestrator: { session_id: null, pid: Number.isInteger(orchestratorPid) ? orchestratorPid : null },
+          members: [],
+          partial: resolved.members.length > 1,
+        };
+      }
+      const idx = outTeam.members.findIndex((m) => m.role === role);
+      if (idx === -1) outTeam.members.push(newRecord);
+      else outTeam.members[idx] = newRecord;
+      writeTeam(dir, outTeam);
+      out({ spawned: true, member: newRecord, team_id: outTeam.team_id, roster_level: outTeam.roster_level });
+      break;
+    }
+
     default:
-      fail(`usage: roster.mjs show|init|add|edit|remove|layout|create|next-split|layout-splits|disband|resync|move [--commit|--keep-sessions] [--level global|repo|repo-user] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
+      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one [--commit|--keep-sessions] [--level global|repo|repo-user] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
   }
 } catch (err) {
   fail(err && err.message ? err.message : String(err));

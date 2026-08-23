@@ -28,9 +28,9 @@
  */
 
 import { fileURLToPath } from "node:url";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 
-import { peerName, readHookInput, resolveConfig, resolvedPeerTargets } from "./lib-config.mjs";
+import { peerName, readHookInput, resolveConfig, resolvedPeerTargets, teamPrefix } from "./lib-config.mjs";
 import { getDecision, isGatedPeerTarget, isGatedSubagentType, normalizeSessionId } from "./lib-gate.mjs";
 
 const GATE_CLI = join(dirname(fileURLToPath(import.meta.url)), "gate.mjs");
@@ -99,7 +99,7 @@ if (!isDispatch && !isSend) decide(null);
 
 const toolInput = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
 const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
-const repoBasename = basename(resolve(cwd));
+const repoBasename = teamPrefix(cwd);
 
 // Cheap string check first, against the shipped "<repo>-ultra-advisor"
 // convention — this alone gates every install that hasn't set a custom peer

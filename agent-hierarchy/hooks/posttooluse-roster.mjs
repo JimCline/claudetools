@@ -15,9 +15,7 @@
  * hook and is unchanged. Subagents write nothing. Fail-open.
  */
 
-import { basename, resolve } from "node:path";
-
-import { isSubagent, readHookInput, resolveConfig } from "./lib-config.mjs";
+import { isSubagent, readHookInput, resolveConfig, teamPrefix } from "./lib-config.mjs";
 import { appendRosterRecord, hierarchyDir, roleForPeerName } from "./lib-hier.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
 
@@ -42,7 +40,7 @@ try {
   if (!isSubagent(input)) {
     const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
     const resolved = resolveConfig(cwd);
-    const repoBasename = basename(resolve(cwd));
+    const repoBasename = teamPrefix(cwd);
     const dir = hierarchyDir(cwd);
     const toolInput = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
 

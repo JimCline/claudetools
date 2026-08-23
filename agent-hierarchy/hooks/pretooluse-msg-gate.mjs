@@ -15,9 +15,7 @@
  * and `msgs:"off"` in agent-hierarchy.json. Any internal error allows.
  */
 
-import { basename, resolve } from "node:path";
-
-import { hierarchyRoleOf, isSubagent, MSG_CLI, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolvedPeerTargets } from "./lib-config.mjs";
+import { hierarchyRoleOf, isSubagent, MSG_CLI, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolvedPeerTargets, teamPrefix } from "./lib-config.mjs";
 import { hierarchyDir, validateRequestToken } from "./lib-hier.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
 
@@ -72,7 +70,7 @@ try {
 
   if (isSend) {
     const to = typeof toolInput.to === "string" ? stripRef(toolInput.to.trim()) : "";
-    const repoBasename = basename(resolve(cwd));
+    const repoBasename = teamPrefix(cwd);
     role = PEER_ELIGIBLE_ROLES.find((r) => resolvedPeerTargets(r, resolved.roles[r], repoBasename).includes(to)) || null;
   }
 

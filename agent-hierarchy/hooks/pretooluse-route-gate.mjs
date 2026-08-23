@@ -1,6 +1,30 @@
 #!/usr/bin/env node
 /**
- * agent-hierarchy — PreToolUse route gate: session routing preference + tier rule.
+ * agent-hierarchy — PreToolUse route gate: global-scope confirm gate + session
+ * routing preference + tier rule.
+ *
+ * Global-scope confirm gate (spec 0009 §4), two independent predicates, both
+ * evaluated before routing preference:
+ *   - Scope A (roster identity): fires when `resolved.rosterLevel === "global"`
+ *     and the role is peer-eligible, UNLESS the dispatch is an Agent/Task spawn
+ *     under route "subagents" (a SendMessage peer brief still fires — the
+ *     `subagents` route denies that later anyway, but scope A is the more
+ *     specific reason). `rosterLevel === null` never fires it.
+ *   - Scope B (role config): fires when `resolved.sources[role] === "user"`
+ *     (never `"default"` — that is every unconfigured repo, see spec §8.10),
+ *     for ANY resolved role except `ultra-advisor` (its own PreToolUse gate,
+ *     `pretooluse-ultra-gate.mjs`, already puts a human in the loop). Runs
+ *     regardless of PEER_ELIGIBLE_ROLES/route — a plain subagent dispatch
+ *     borrows the same user-scope model/effort.
+ * Both are answer-or-stay-denied, strict, per (session_id, scope) — unlike the
+ * routing-preference ask below, an unanswered re-issue keeps denying (with a
+ * shorter reason once the first full prompt has been shown). `allow`/`deny`
+ * are recorded via `msg.mjs global-scope <roster|config> <allow|deny>
+ * --session <id>` as `{type:"global-scope", session_id, scope, answer}`; the
+ * one-shot `{type:"global-scope-ask", session_id, scope}` only suppresses
+ * re-showing the long prompt, it authorises nothing. Scope A denies before
+ * scope B when both fire on one dispatch, and its reason mentions scope B is
+ * pending. See docs/specs/0009-global-roster-confirm-gate.md.
  *
  * Routing preference (Agent/Task spawning a peer-eligible role, or a
  * SendMessage peer brief): the FIRST such dispatch each session, when no
@@ -49,9 +73,7 @@
  * independent.
  */
 
-import { basename, resolve } from "node:path";
-
-import { hierarchyRoleOf, isSubagent, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolvedPeerTargets, ROLE_LABELS, tierOf } from "./lib-config.mjs";
+import { hierarchyRoleOf, isSubagent, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolvedPeerTargets, ROLE_LABELS, teamPrefix, tierOf } from "./lib-config.mjs";
 import {
   appendGate,
   describeInstance,
@@ -59,6 +81,7 @@ import {
   extractMsgToken,
   hasGate,
   hierarchyDir,
+  readGates,
   readMsgFile,
   roleTier,
   roster,
@@ -107,8 +130,24 @@ function peersDenyReason(role, live) {
   return `ah: route is peers this session — live instance(s) for ${ROLE_LABELS[role]}: ${live.map(describeInstance).join("; ")}. SendMessage it (set to_name) instead of spawning, or change route with msg.mjs route.`;
 }
 
-function peerFallbackAskReason(role) {
-  return `ah: route is peers this session, but no live instance of ${ROLE_LABELS[role]} exists to route to. Ask the user with AskUserQuestion: "No live ${ROLE_LABELS[role]} peer is available — spawn a subagent for this role instead?", options "Yes, spawn a subagent (Recommended)" and "No, wait — I'll start the peer myself". If yes, re-issue this exact dispatch. If no, do not dispatch — wait for the peer to come up or tell the user you're blocked on ${ROLE_LABELS[role]}.`;
+function peerFallbackAskReason(role, resolved, dir, sessionId, cwd) {
+  // §5.2: offer the spawn-one option only when a roster entry for `role` exists at a
+  // level this session may use (repo/repo-user, or global with a recorded scope-A allow).
+  const rosterUsable = !!resolved.roster && (resolved.rosterLevel !== "global" || globalScopeAnswer(dir, sessionId, "roster") === "allow");
+  const member = rosterUsable ? resolved.roster.members.find((m) => m.role === role) : null;
+  if (member) {
+    return [
+      `ah: route is peers this session, but no live instance of ${ROLE_LABELS[role]} exists to route to.`,
+      `A roster entry for ${ROLE_LABELS[role]} exists at ${resolved.rosterLevel} level (name: ${member.name}).`,
+      "Ask the user with AskUserQuestion, exactly these options in this order:",
+      `  "Stand up the real ${ROLE_LABELS[role]} peer (Recommended)" — node "$CLAUDE_PLUGIN_ROOT/hooks/roster.mjs" spawn-one ${role} --cwd ${cwd}`,
+      "     Then SendMessage the peer instead of re-issuing this dispatch.",
+      '  "Spawn a one-off subagent instead" — re-issue this exact dispatch.',
+      `  "Neither — I'll start it myself" — do not dispatch; say you are blocked on ${ROLE_LABELS[role]}.`,
+    ].join("\n");
+  }
+  const why = resolved.rosterLevel === "global" && !rosterUsable ? "global roster not confirmed" : `no roster entry for ${ROLE_LABELS[role]}`;
+  return `ah: route is peers this session, but no live instance of ${ROLE_LABELS[role]} exists to route to (${why}). Ask the user with AskUserQuestion: "No live ${ROLE_LABELS[role]} peer is available — spawn a subagent for this role instead?", options "Yes, spawn a subagent (Recommended)" and "No, wait — I'll start the peer myself". If yes, re-issue this exact dispatch. If no, do not dispatch — wait for the peer to come up or tell the user you're blocked on ${ROLE_LABELS[role]}.`;
 }
 
 function preferPeersDenyReason(role, live) {
@@ -120,6 +159,66 @@ function tierReason(model, tier, role, roleModel, roleTierN, msgsOff) {
     ? "Do it inline, or re-issue this exact dispatch to proceed."
     : "Do it inline, or set reason: context|second-opinion|parallel in the request file and re-issue.";
   return `tier rule: you are ${model}(${tier}) ≥ ${ROLE_LABELS[role]} ${roleModel}(${roleTierN}). ${escape}`;
+}
+
+function globalScopeAnswer(dir, sessionId, scope) {
+  const recs = readGates(dir).filter((r) => r.type === "global-scope" && r.session_id === sessionId && r.scope === scope);
+  return recs.length ? recs[recs.length - 1].answer : null;
+}
+
+function globalScopeReaskReason(scope, sessionId, scopeBPending) {
+  const what = scope === "roster" ? "the global roster" : "user-scope role configuration";
+  const note = scopeBPending ? " Note: a second question about user-scope role configuration (scope B) is also pending for this dispatch." : "";
+  return `ah: you were already asked about ${what} this session and did not record an answer. Run node "$CLAUDE_PLUGIN_ROOT/hooks/msg.mjs" global-scope ${scope} <allow|deny> --session ${sessionId}, then re-issue.${note}`;
+}
+
+function globalRosterAskReason(resolved, sessionId, scopeBPending) {
+  const members = resolved.roster.members.map((m) => `${m.name}(${m.role})`).join(", ") || "(none)";
+  const lines = [
+    `ah: no roster is configured for this repo (checked repo and repo-user). The roster resolving here is the GLOBAL one at ${resolved.roster.path}, members: ${members}. It may belong to an unrelated project.`,
+    "Ask the user with AskUserQuestion, exactly these options in this order:",
+    '  "Create a roster for this repo (Recommended)" — run the /agent-roster skill\'s Init then Add flow for this repo, then re-issue.',
+    '  "Use the global roster for this session" — records allow; no further prompting for this scope.',
+    `  "Subagents only this session" — node "$CLAUDE_PLUGIN_ROOT/hooks/msg.mjs" route subagents --session ${sessionId}`,
+    `Record the answer: node "$CLAUDE_PLUGIN_ROOT/hooks/msg.mjs" global-scope roster <allow|deny> --session ${sessionId}`,
+    "Then re-issue this exact dispatch. Say in one line what you recorded.",
+  ];
+  if (scopeBPending) lines.push("Note: a second question about user-scope role configuration (scope B) is also pending for this dispatch.");
+  return lines.join("\n");
+}
+
+function globalRosterDenyReason(sessionId) {
+  return `ah: the global roster was declined for this session. Create a repo roster with the /agent-roster skill, or switch to subagents (msg.mjs route subagents --session ${sessionId}).`;
+}
+
+function globalConfigAskReason(role, resolved, sessionId) {
+  const entry = resolved.roles[role];
+  const lines = [
+    `ah: ${ROLE_LABELS[role]}'s configuration here comes from your USER-scope config (~/.claude/agent-hierarchy.json): model=${entry.model} effort=${entry.effort || "-"} dispatch=${entry.dispatch || "-"}. This repo has no project or repo-user config for ${ROLE_LABELS[role]}, so those settings may have been set for a different project.`,
+    "Ask the user with AskUserQuestion, exactly these options in this order:",
+    '  "Use the user-scope settings for this session (Recommended)" — records allow.',
+    '  "Set this role for this repo instead" — run the /agent-roster skill\'s Add/Edit flow at repo level, then re-issue.',
+    `  "Stop — I'll decide later" — do not dispatch; say you are blocked on ${ROLE_LABELS[role]}.`,
+    `Record the answer: node "$CLAUDE_PLUGIN_ROOT/hooks/msg.mjs" global-scope config <allow|deny> --session ${sessionId}`,
+    "Then re-issue this exact dispatch. Say in one line what you recorded.",
+  ];
+  return lines.join("\n");
+}
+
+function globalConfigDenyReason(role) {
+  return `ah: user-scope role configuration was declined for this session. Set ${ROLE_LABELS[role]} at repo level with the /agent-roster skill, then re-issue.`;
+}
+
+function enforceGlobalScope(dir, sessionId, scope, askReasonFn, denyReasonFn, scopeBPending) {
+  const answer = globalScopeAnswer(dir, sessionId, scope);
+  if (answer === "deny") decide("deny", denyReasonFn());
+  if (answer === "allow") return;
+  const asked = hasGate(dir, (r) => r.type === "global-scope-ask" && r.session_id === sessionId && r.scope === scope);
+  if (!asked) {
+    appendGate(dir, { type: "global-scope-ask", session_id: sessionId, scope });
+    decide("deny", askReasonFn());
+  }
+  decide("deny", globalScopeReaskReason(scope, sessionId, scopeBPending));
 }
 
 try {
@@ -135,7 +234,7 @@ try {
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
   const resolved = resolveConfig(cwd);
   if (!resolved.enabled) decide(null);
-  const repoBasename = basename(resolve(cwd));
+  const repoBasename = teamPrefix(cwd);
   const dir = hierarchyDir(cwd);
   const sessionId = typeof input.session_id === "string" && input.session_id ? input.session_id : "__nosession__";
 
@@ -159,6 +258,20 @@ try {
       const ros = getRoster();
       role = PEER_ELIGIBLE_ROLES.find((r) => (ros[r] || []).some((i) => i.name === to)) || null;
     }
+  }
+
+  // ---- scope A/B: global-scope confirm gate (spec 0009 §4), evaluated before
+  // routing preference — see the header comment for the two predicates.
+  const scopeBWillFire = !!role && role !== "ultra-advisor" && resolved.sources[role] === "user";
+  if (role && PEER_ELIGIBLE_ROLES.includes(role)) {
+    const preRoute = effectiveRoute(dir, resolved, sessionId).value;
+    const scopeAApplies = resolved.rosterLevel === "global" && !(isDispatch && preRoute === "subagents");
+    if (scopeAApplies) {
+      enforceGlobalScope(dir, sessionId, "roster", () => globalRosterAskReason(resolved, sessionId, scopeBWillFire), () => globalRosterDenyReason(sessionId), scopeBWillFire);
+    }
+  }
+  if (scopeBWillFire) {
+    enforceGlobalScope(dir, sessionId, "config", () => globalConfigAskReason(role, resolved, sessionId), () => globalConfigDenyReason(role));
   }
 
   // ---- routing preference: ask once per session, then enforce silently
@@ -192,7 +305,7 @@ try {
           const askedFallback = hasGate(dir, (r) => r.type === "peer-fallback-ask" && r.session_id === sessionId && r.role === role);
           if (!askedFallback) {
             appendGate(dir, { type: "peer-fallback-ask", session_id: sessionId, role });
-            decide("deny", peerFallbackAskReason(role));
+            decide("deny", peerFallbackAskReason(role, resolved, dir, sessionId, cwd));
           }
           decide(null, null, `ah: route is peers this session, no live instance of ${ROLE_LABELS[role]} exists, and the user was already asked this session — spawning the subagent.`);
         }
