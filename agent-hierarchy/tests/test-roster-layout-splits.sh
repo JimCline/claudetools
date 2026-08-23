@@ -239,12 +239,22 @@ check "invariant: create --spawn DOES reach herdrCall on a herdr roster (marker 
   '[ -e "$SANDBOX/marker" ]'
 INVOK disband --commit
 
-# herdrCall's definition plus its permitted callers (layout-splits, create --spawn) are the only
-# places `herdrCall(` may appear (spec 0002 §11.3, extended by spec 0005 §11.3 to add create --spawn
-# to the permitted set). function herdrCall precedes layout-splits; case "disband" immediately
-# follows create, so this range brackets exactly {definition, layout-splits, create} and nothing else.
-check "invariant (grep): herdrCall( appears only in its definition, layout-splits, and create --spawn" \
-  '[ "$(grep -c "herdrCall(" "$H/roster.mjs")" -eq "$(awk "/^function herdrCall/,/case \"disband\":/" "$H/roster.mjs" | grep -c "herdrCall(")" ]'
+# herdrCall's definition plus its permitted callers (layout-splits, create --spawn, and now move)
+# are the only places `herdrCall(` may appear (spec 0002 §11.3, extended by spec 0005 §11.3 to add
+# create --spawn, and by spec 0008 §5.5 to add move — "roster.mjs may start a process and may not
+# stop one" also covers relocating one). move's case sits after disband's and resync's in the
+# switch, so one contiguous range can't bracket {definition, layout-splits, create,
+# queryHerdrTopology, move} without also swallowing disband's/resync's case bodies — summing two
+# disjoint windows (definition..disband boundary, and move's own case body) keeps both excluded, so
+# a herdrCall( added to either would break the count match below.
+PERMITTED=$(( $(awk "/^function herdrCall/,/case \"disband\":/" "$H/roster.mjs" | grep -c "herdrCall(") + $(awk "/case \"move\":/,/default:/" "$H/roster.mjs" | grep -c "herdrCall(") ))
+check "invariant (grep): herdrCall( appears only in its definition, layout-splits, create --spawn, and move" \
+  '[ "$(grep -c "herdrCall(" "$H/roster.mjs")" -eq "'"$PERMITTED"'" ]'
+
+# disband's case body specifically never calls herdrCall( directly (spec 0002 §11.3, spec 0006 §4:
+# disband executes nothing) — an explicit, narrowly-scoped assertion independent of the sum above.
+check "invariant (grep): disband's own case body never calls herdrCall( directly" \
+  '[ "$(awk "/case \"disband\":/,/case \"resync\":/" "$H/roster.mjs" | grep -c "herdrCall(")" -eq 0 ]'
 
 echo
 echo "passed: $PASS  failed: $FAIL"

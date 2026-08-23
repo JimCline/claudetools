@@ -127,6 +127,13 @@ Output shape is unchanged from `0002` §8.3:
 `transport_id`. The per-transport construction at `:520-527`, including the tmux `kill-pane` line at
 `:524`, is not touched by this spec.
 
+**Forward reference (spec 0008 §5.6, additive, not a rewrite of this decision):** for the herdr
+transport, bare disband now resyncs the member list in memory (never persisted) before building
+`close`, so the plan targets each member's current pane rather than its spawn-time one. This relaxes
+"output shape unchanged" additively — a sibling `resync` key and a per-member `resync_status` field
+are added, every field named above keeps its name, position, and meaning — and "writes nothing" is
+preserved exactly as stated here. tmux and terminal disband are untouched.
+
 ### 5.2 `--commit` — unchanged, and no longer requires `--kill`
 
 Behaviour is byte-identical to today's `disband --kill --commit` (`:504-512`): remove `team.json`,

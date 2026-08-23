@@ -57,6 +57,11 @@ with `--cwd "$(pwd)"` (or the relevant repo path). Level may be given as
 - `disband [--commit|--keep-sessions]` — tears down the Team. Bare `disband` emits close commands
   (read-only); `--commit` removes `team.json` after the skill has actually run them; `--keep-sessions`
   removes `team.json` without closing anything. See § disband.
+- `resync [--dry-run]` — re-derives every peer member's herdr pane/tab/workspace location from
+  herdr's live topology and rewrites `team.json`. See § resync / move.
+- `move <name> --tab <id> [--split right|down] | --new-tab [--workspace <id>] | --new-workspace
+  [--dry-run]` — relocates a member's pane via `herdr pane move`, then resyncs its record. See
+  § resync / move.
 
 `add`/`edit`/`remove` with no `--level` operate on whichever level currently
 resolves (repo-user > repo > global) and print which level they picked — say
@@ -144,6 +149,11 @@ running session can do — drive the sequence yourself:
 2. **`manual` mode**: before each spawn, show the intended placement (name,
    role, transport) and let the user override it (different pane, skip it,
    change the name) before proceeding. `auto` mode spawns straight through.
+
+   `--spawn` only launches the panes — it writes nothing; the Team does not
+   exist until the follow-up `create --commit --verified <json> --transport
+   <t> --roster-level <L>` call persists `team.json`, and until then
+   `resync`, `move`, and `disband` cannot see the members at all.
 3. **Spawn.**
 
    **`auto` mode:** run one command:
@@ -308,10 +318,20 @@ Bare `disband` tears the Team all the way down by default. It is a **two-call
 contract**, mirroring `create`'s `--plan`/`--commit` split, so removal cannot
 happen before the real closes do:
 
-1. Run `roster.mjs disband`. Read-only — `team.json` is untouched. It returns
-   a `close` array, one entry per member, with a `command` (or `null` for
-   terminal-routed, subagent-routed, or a member with no live
-   `transport_id`).
+1. Run `roster.mjs disband`. Read-only — `team.json` is untouched. For the
+   herdr transport it resyncs the member list **in memory** first (never
+   persisted), so the plan targets each member's *current* pane rather than
+   the one it was spawned into — you do **not** need to run `resync` first;
+   that manual-resync-first advice is obsolete (spec 0008 §5.6/§7.4). It
+   returns a `close` array, one entry per member, with a `command` (or `null`
+   for terminal-routed, subagent-routed, or a member with no live
+   `transport_id`) and, for herdr, a `resync_status` per member plus a
+   sibling `resync` key (`{"ok": true, "counts": {...}}`, or `{"ok": false,
+   "reason": "..."}` if herdr was unreachable — the plan still comes from the
+   stored ids in that case, never blocked). The one residual gap: a move that
+   lands *between* this query and step 3's actual closes is still possible —
+   nothing inside `roster.mjs` can close that window, it's bounded by how
+   long your step-2 confirmation takes.
 2. Prompt the user once: "this will close N live sessions — proceed?",
    naming the members. Stop here if they decline.
 3. Run every non-null `command` in **one** Bash invocation and report, per
@@ -336,6 +356,30 @@ A stale Team (dead orchestrator pid, or older than the fixed 24h cap) is also
 swept automatically on the next plain top-level SessionStart — that sweep
 clears `team.json` directly and never runs `roster.mjs disband`, so it is
 unaffected by which flag is the default here.
+
+## `resync` / `move`
+
+Spec 0008. `team.json`'s recorded pane/tab/workspace location can go stale —
+the user drags a pane in the Herdr UI, or an orchestrator-issued move happens
+— without `roster.mjs` ever being told. Both verbs are additive; nothing else
+changes, and neither is part of the normal roster-building flow above.
+
+- **`roster.mjs resync [--dry-run]`** — queries herdr's live topology once,
+  matches each peer member by herdr agent name first (falls back to pane id),
+  and rewrites `team.json` with each member's current `transport_id`,
+  `tab_id`, `workspace_id`. A member with no live match is left with its ids
+  **unchanged** and gets `transport_stale: true` — a dead pane's close is a
+  harmless no-op later, whereas clearing the id would leak a still-live one.
+  `--dry-run` computes and prints the plan without writing. Non-herdr
+  transports are a clean no-op. Run it any time the recorded location might
+  be wrong; disband no longer needs it run first (see § disband).
+- **`roster.mjs move <name> --tab <id> [--split right|down] | --new-tab
+  [--workspace <id>] | --new-workspace [--dry-run]`** — runs `herdr pane
+  move` for that member, then resyncs its record from a fresh topology query
+  (the move's own response body is ignored). `--dry-run` prints the `herdr
+  pane move …` command and runs nothing. Failure paths: an unresolved member
+  name, or a herdr move that itself fails, both `fail()` with `team.json`
+  untouched — the pane never moved, so the record is still correct as-is.
 
 ## Check-in registry (`team.json`)
 

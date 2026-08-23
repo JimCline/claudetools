@@ -18,12 +18,18 @@
  *                       [--orchestrator-pid <pid>]] [--cwd <path>]
  *   roster.mjs create  --spawn --mode <auto|columns|grid> [--roster-level <L>]
  *                       [--orchestrator-pid <pid>] [--cwd <path>]
+ *   (`--spawn` launches only; `--commit` persists. Both are required, in that order.)
  *   roster.mjs next-split --mode <auto|columns|grid> --pane-count <N> --self <pane-id>
  *                       --created '<json array of pane ids>'
  *                       --geometry '<json array of {pane_id, rect}>'
  *   roster.mjs layout-splits --mode <m> --pane-count <n> [--self <id>] [--cwd <p>]
  *                       (or --next --created <json>, or --apply --target <id> --direction <right|down>)
  *   roster.mjs disband [--commit|--keep-sessions] [--cwd <path>]
+ *   roster.mjs resync  [--dry-run] [--cwd <path>]
+ *   roster.mjs move    <name> --tab <tab_id> [--split right|down]
+ *                       <name> --new-tab [--workspace <id>]
+ *                       <name> --new-workspace
+ *                       [--dry-run] [--cwd <path>]
  *
  * `--level`/the positional bare word are equivalent; `add`/`edit`/`remove`
  * with neither default to the level the roster currently resolves from
@@ -34,6 +40,11 @@
  * plus each member's derived name and spawn shape — it spawns nothing.
  * `--commit` persists a Team the caller (the SKILL.md flow) has already
  * spawned and verified via ListAgents, writing team.json.
+ *
+ * `resync` re-derives every peer member's herdr location from herdr's own live
+ * topology and rewrites team.json; `move` executes a `herdr pane move` then
+ * resyncs that one member. Bare `disband`/`--plan` also resyncs first, in
+ * memory only (no write) — see docs/specs/0008-roster-relocate.md.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -44,8 +55,10 @@ import { CONFIG_VERSION, findGitRoot, hierarchyDir, ROLES, ROLE_DEFAULTS, ROSTER
 import { newId, localIso, pidAlive } from "./lib-hier.mjs";
 import { clearTeam, readTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamPath, validateMember, validateRosterBlock, writeTeam } from "./lib-roster.mjs";
 
-const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn"]);
+const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace"]);
 const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "cwd"]);
+const RESYNC_FLAGS = new Set(["dry-run", "cwd"]);
+const MOVE_FLAGS = new Set(["tab", "split", "new-tab", "workspace", "new-workspace", "dry-run", "cwd"]);
 
 function parseArgs(argv) {
   const opts = { _: [] };
@@ -257,6 +270,89 @@ function herdrCall(args) {
   }
 }
 
+/**
+ * Live herdr topology: agent name (if any) plus pane/tab/workspace ids for every live pane
+ * (spec 0008 §5.2). `herdr agent list` is the preferred single-call source — field names
+ * (`.result.agents[].{name?,pane_id,tab_id,workspace_id}`) verified against a live herdr this
+ * session; `name` is absent for a pane hosting no `herdr agent start`-named agent.
+ */
+function queryHerdrTopology() {
+  const result = herdrCall(["agent", "list"]);
+  const agents = result && result.result && Array.isArray(result.result.agents) ? result.result.agents : null;
+  if (!agents) throw new Error("herdr agent list produced unexpected shape (missing .result.agents)");
+  return agents.map((a) => ({ name: a.name || null, pane_id: a.pane_id, tab_id: a.tab_id, workspace_id: a.workspace_id }));
+}
+
+/** Spec 0008 §5.3: name first (durable across workspace moves), pane id second, else no match. */
+function matchMemberToPane(member, topology) {
+  if (member.name) {
+    const byName = topology.find((p) => p.name === member.name);
+    if (byName) return byName;
+  }
+  if (member.transport_id) {
+    const byId = topology.find((p) => p.pane_id === member.transport_id);
+    if (byId) return byId;
+  }
+  return null;
+}
+
+/**
+ * Pure heal pass over `team.members` against live herdr topology (spec 0008 §5.1). No I/O beyond
+ * the topology query — never writes team.json. Shared by `resync` (persists the result) and
+ * `disband`'s bare/`--plan` path (does not persist) — one implementation, two callers.
+ * Returns `{ members, counts, query_ok, query_error, warning? }`; on query failure `members` and
+ * `counts` are null and the caller decides whether to fail() (resync/move) or degrade (disband).
+ */
+function resyncMembers(team) {
+  let topology;
+  try {
+    topology = queryHerdrTopology();
+  } catch (err) {
+    return { members: null, counts: null, query_ok: false, query_error: err.message };
+  }
+  const claimed = new Set();
+  let duplicate = false;
+  const counts = { updated: 0, unchanged: 0, not_found: 0, skipped: 0 };
+  const members = team.members.map((m) => {
+    if (m.route !== "peer" || m.transport_id == null) {
+      counts.skipped++;
+      return { ...m, status: "skipped" };
+    }
+    let match = matchMemberToPane(m, topology);
+    if (match && claimed.has(match.pane_id)) {
+      duplicate = true; // spec 0008 §7.6: first match wins, later claimants fall through to not_found
+      match = null;
+    }
+    if (!match) {
+      counts.not_found++;
+      return { ...m, status: "not_found", transport_stale: true };
+    }
+    claimed.add(match.pane_id);
+    const from = { transport_id: m.transport_id, tab_id: m.tab_id, workspace_id: m.workspace_id };
+    const to = { transport_id: match.pane_id, tab_id: match.tab_id, workspace_id: match.workspace_id };
+    const healed = { ...m, transport_id: to.transport_id, tab_id: to.tab_id, workspace_id: to.workspace_id };
+    delete healed.transport_stale;
+    if (from.transport_id !== to.transport_id || from.tab_id !== to.tab_id || from.workspace_id !== to.workspace_id) {
+      counts.updated++;
+      return { ...healed, status: "updated", from, to };
+    }
+    counts.unchanged++;
+    return { ...healed, status: "unchanged" };
+  });
+  return { members, counts, query_ok: true, query_error: null, warning: duplicate ? "duplicate pane match" : undefined };
+}
+
+/** Strip resyncMembers()'s per-pass bookkeeping fields before a healed member array is persisted. */
+function stripResyncMeta(m) {
+  const { status, from, to, ...member } = m;
+  return member;
+}
+
+/** Spec 0008 §4: the no-op reason for a non-herdr transport, shared by `resync` and `move`. */
+function transportNoop(transport) {
+  return transport === "tmux" ? "transport tmux not supported (spec 0008 §4)" : "transport terminal has no panes";
+}
+
 /** Spec 0004 §6.6 sequential split loop, shared by `layout-splits` (bare form) and `create --spawn`'s layout phase (spec 0005 §4 step 3). Stops at the first failure. */
 function runLayoutLoop({ mode, paneCount, self, splitCwd }) {
   const panes = [];
@@ -389,6 +485,11 @@ async function createSpawn(dir) {
     const lm = launchByName.get(m.name);
     const entry = { role: m.role, name: m.name, model: m.model, route: m.route, autoMode: m.autoMode, transport_id: m.transport_id, launch_status: lm.launch_status, launch_result: lm.launch_result, retried: lm.retried };
     if (lm.error) entry.error = lm.error;
+    // Spec 0008 §6: populate tab_id/workspace_id from the launch result when it carries them.
+    // No new herdr query on this path — if absent, the first `resync` fills them in.
+    const launchedPane = transport === "herdr" && lm.launch_result && lm.launch_result.result && lm.launch_result.result.pane;
+    if (launchedPane && launchedPane.tab_id != null) entry.tab_id = launchedPane.tab_id;
+    if (launchedPane && launchedPane.workspace_id != null) entry.workspace_id = launchedPane.workspace_id;
     return entry;
   });
   const isPartial = outputMembers.some((m) => m.route === "peer" && m.launch_status === "failed");
@@ -671,27 +772,148 @@ try {
         break;
       }
 
-      // Bare disband / --plan / --kill (ignored): the new default (spec 0006 §5.1) — read-only,
-      // emits the close plan, writes nothing.
+      // Bare disband / --plan / --kill (ignored): the new default (spec 0006 §5.1). Read-only,
+      // emits the close plan, writes nothing. Spec 0008 §5.6 (AMENDMENT): for herdr, resync the
+      // member list in memory first — the plan then targets each member's *current* pane — but
+      // never persist the heal and never fail() on a query error (degrade to the stored ids).
       const team = readTeam(dir);
       if (!team) {
         out({ disbanded: false, reason: "no active team" });
         break;
       }
-      const close = team.members.map((m) => {
+      let healedMembers = team.members;
+      let resyncSummary = null;
+      if (team.transport === "herdr") {
+        const result = resyncMembers(team);
+        if (result.query_ok) {
+          healedMembers = result.members;
+          resyncSummary = { ok: true, counts: result.counts };
+          if (result.warning) resyncSummary.warning = result.warning;
+        } else {
+          healedMembers = team.members.map((m) => ({ ...m, status: "unqueried" }));
+          resyncSummary = { ok: false, reason: result.query_error };
+        }
+      }
+      const close = healedMembers.map((m) => {
         let command = null;
         if (m.route === "peer" && m.transport_id) {
           if (team.transport === "herdr") command = `herdr pane close ${m.transport_id}`;
           else if (team.transport === "tmux") command = `tmux kill-pane -t ${m.transport_id}`;
         }
-        return { role: m.role, name: m.name, route: m.route, transport: team.transport, transport_id: m.transport_id, command };
+        const entry = { role: m.role, name: m.name, route: m.route, transport: team.transport, transport_id: m.transport_id, command };
+        if (team.transport === "herdr") entry.resync_status = m.status;
+        return entry;
       });
-      out({ close });
+      const disbandOut = { close };
+      if (resyncSummary) disbandOut.resync = resyncSummary;
+      out(disbandOut);
+      break;
+    }
+
+    case "resync": {
+      for (const key of Object.keys(opts)) {
+        if (key === "_") continue;
+        if (!RESYNC_FLAGS.has(key)) fail(`resync: unrecognized flag --${key} (use --dry-run or --cwd)`);
+      }
+      const dir = hierarchyDir(cwd);
+      const team = readTeam(dir);
+      if (!team) {
+        out({ resynced: false, reason: "no active team" });
+        break;
+      }
+      if (team.transport !== "herdr") {
+        out({ resynced: false, reason: transportNoop(team.transport) });
+        break;
+      }
+      const result = resyncMembers(team);
+      if (!result.query_ok) fail(result.query_error);
+      const dryRun = opts["dry-run"] === true;
+      const membersOut = result.members.map((m) => {
+        const entry = { role: m.role, name: m.name, status: m.status };
+        if (m.status === "updated") {
+          entry.from = m.from;
+          entry.to = m.to;
+        }
+        return entry;
+      });
+      if (!dryRun) {
+        team.members = result.members.map(stripResyncMeta);
+        writeTeam(dir, team);
+      }
+      const resyncOut = { resynced: true, dry_run: dryRun, transport: "herdr", members: membersOut, counts: result.counts };
+      if (result.warning) resyncOut.warning = result.warning;
+      out(resyncOut);
+      break;
+    }
+
+    case "move": {
+      for (const key of Object.keys(opts)) {
+        if (key === "_") continue;
+        if (!MOVE_FLAGS.has(key)) fail(`move: unrecognized flag --${key} (use --tab/--split, --new-tab[/--workspace], or --new-workspace)`);
+      }
+      const name = typeof opts._[0] === "string" ? opts._[0] : fail("move needs a member name: roster.mjs move <name> --tab <id> [--split right|down] | --new-tab [--workspace <id>] | --new-workspace");
+      const dir = hierarchyDir(cwd);
+      const team = readTeam(dir);
+      const teamMembers = team && Array.isArray(team.members) ? team.members : [];
+      const member = teamMembers.find((m) => m.name === name);
+      if (!member) fail(`move: no member named ${JSON.stringify(name)} — known members: ${teamMembers.map((m) => m.name).filter(Boolean).join(", ") || "(none)"}`);
+      if (member.route !== "peer" || member.transport_id == null) fail(`move: member ${name} has no pane to move`);
+      if (team.transport !== "herdr") {
+        out({ moved: false, reason: transportNoop(team.transport) });
+        break;
+      }
+      const modeCount = [opts.tab !== undefined, opts["new-tab"] === true, opts["new-workspace"] === true].filter(Boolean).length;
+      if (modeCount !== 1) fail("move: exactly one of --tab, --new-tab, --new-workspace is required");
+      const moveUsage = "roster.mjs move <name> --tab <id> [--split right|down] | --new-tab [--workspace <id>] | --new-workspace";
+      if (opts.tab !== undefined && typeof opts.tab !== "string") fail(`move: --tab requires a value: ${moveUsage}`);
+      if (opts.workspace !== undefined && typeof opts.workspace !== "string") fail(`move: --workspace requires a value: ${moveUsage}`);
+      if (opts.split !== undefined && opts.tab === undefined) fail("move: --split is only valid with --tab");
+      const herdrArgs = ["pane", "move", member.transport_id];
+      if (opts.tab !== undefined) {
+        herdrArgs.push("--tab", opts.tab);
+        if (opts.split !== undefined) {
+          if (opts.split !== "right" && opts.split !== "down") fail(`move: --split must be "right" or "down", got ${JSON.stringify(opts.split)}`);
+          herdrArgs.push("--split", opts.split);
+        }
+      } else if (opts["new-tab"] === true) {
+        herdrArgs.push("--new-tab");
+        if (typeof opts.workspace === "string") herdrArgs.push("--workspace", opts.workspace);
+      } else {
+        herdrArgs.push("--new-workspace");
+      }
+      const commandString = `herdr ${herdrArgs.join(" ")}`;
+      if (opts["dry-run"] === true) {
+        out({ moved: false, dry_run: true, command: commandString });
+        break;
+      }
+      try {
+        herdrCall(herdrArgs);
+      } catch (err) {
+        fail(err.message);
+      }
+      // Ignore the move response body entirely (spec 0008 §2/§5.4 step 7) — re-query instead.
+      const result = resyncMembers(team);
+      if (!result.query_ok) {
+        // spec 0008 §7.5: the pane already moved, so a query failure is reported at exit 0, never fail() —
+        // a non-zero exit here would misrepresent the move (which succeeded) as having failed.
+        out({ moved: true, command: commandString, resync: { ok: false, reason: result.query_error } });
+        break;
+      }
+      team.members = result.members.map(stripResyncMeta);
+      writeTeam(dir, team);
+      const healed = result.members.find((m) => m.name === name);
+      const resyncOut = { ok: true, status: healed.status };
+      if (healed.status === "updated") {
+        resyncOut.from = healed.from;
+        resyncOut.to = healed.to;
+      }
+      if (result.warning) resyncOut.warning = result.warning;
+      out({ moved: true, member: { role: member.role, name: member.name }, command: commandString, resync: resyncOut });
       break;
     }
 
     default:
-      fail(`usage: roster.mjs show|init|add|edit|remove|layout|create|next-split|layout-splits|disband [--commit|--keep-sessions] [--level global|repo|repo-user] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
+      fail(`usage: roster.mjs show|init|add|edit|remove|layout|create|next-split|layout-splits|disband|resync|move [--commit|--keep-sessions] [--level global|repo|repo-user] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
   }
 } catch (err) {
   fail(err && err.message ? err.message : String(err));
