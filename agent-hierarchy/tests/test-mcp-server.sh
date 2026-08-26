@@ -606,6 +606,67 @@ SWEEP_SURVIVAL="$(SERVER_PATH="$SERVER" LIB_ROSTER="$REPO_ROOT/hooks/lib-roster.
 check "roster_create via MCP: SESSION_PID-owned team is live and survives sweepStaleTeam; explicit orchestrator_pid overrides SESSION_PID" \
   '[ "$SWEEP_SURVIVAL" = "PASS" ]'
 
+# ---------------------------------------------------------------------------
+# spec 0018 §9 follow-up (claude-tools-orchestrator, post-certification): an
+# executed (not just argv-read) roster_teams end-to-end check that `own`
+# reflects the SESSION_PID-resolved owner correctly, both when this session
+# owns the team and when it doesn't.
+# ---------------------------------------------------------------------------
+cat > "$TMP/teams-own.mjs" <<'JSEOF'
+const { callTool } = await import(process.env.SERVER_PATH);
+const cwd = process.env.TEST_REPO;
+const verified = JSON.stringify([{ role: "architect", name: "repod-architect", model: "opus", route: "peer", autoMode: null }]);
+await callTool("roster_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo" });
+
+const ownTrue = await callTool("roster_teams", { cwd });
+const ownTrueOk = !ownTrue.isError && JSON.parse(ownTrue.content[0].text).teams.some((t) => t.own === true);
+
+const notOwn = await callTool("roster_teams", { cwd, orchestrator_pid: 1 }); // pid 1 never equals SESSION_PID
+const notOwnOk = !notOwn.isError && JSON.parse(notOwn.content[0].text).teams.every((t) => t.own === false);
+
+console.log(ownTrueOk && notOwnOk ? "PASS" : "FAIL " + JSON.stringify({ ownTrueOk, notOwnOk }));
+JSEOF
+REPO_D="$TMP/repo-d"
+mkdir -p "$REPO_D"
+(cd "$REPO_D" && git init -q)
+TEAMS_OWN="$(SERVER_PATH="$SERVER" TEST_REPO="$REPO_D" node "$TMP/teams-own.mjs" 2>&1)"
+check "roster_teams via MCP: own field reflects SESSION_PID vs an explicit non-owning orchestrator_pid" \
+  '[ "$TEAMS_OWN" = "PASS" ]'
+
+# ---------------------------------------------------------------------------
+# spec 0018 §9 follow-up: an executed roster_spawn_one end-to-end check that
+# a newly-created team is SESSION_PID-owned (live), not null (the §1.2 site a
+# commit-only fix would miss). Terminal transport, forced by a fake `claude`
+# stub on PATH with no herdr binary present, so no real pane is launched.
+# ---------------------------------------------------------------------------
+BIN_CLAUDE_ONLY="$TMP/bin-claude-only"
+mkdir -p "$BIN_CLAUDE_ONLY"
+cat > "$BIN_CLAUDE_ONLY/claude" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$BIN_CLAUDE_ONLY/claude"
+NODE_DIR="$(dirname "$(command -v node)")"
+cat > "$TMP/spawn-one-own.mjs" <<'JSEOF'
+const { teamIsLive, readTeam } = await import(process.env.LIB_ROSTER);
+const { callTool } = await import(process.env.SERVER_PATH);
+const cwd = process.env.TEST_REPO;
+
+await callTool("roster_member", { cwd, action: "init", level: "repo", route: "peer" });
+await callTool("roster_member", { cwd, action: "add", level: "repo", role: "ultra-advisor", model: "opus" });
+const res = await callTool("roster_spawn_one", { cwd, role: "ultra-advisor" });
+const dir = cwd + "/.claude/hierarchy";
+const team = readTeam(dir);
+const ok = !res.isError && team && team.orchestrator.pid != null && team.orchestrator.pid !== 1 && teamIsLive(team);
+console.log(ok ? "PASS" : "FAIL " + JSON.stringify({ res, team }));
+JSEOF
+REPO_E="$TMP/repo-e"
+mkdir -p "$REPO_E"
+(cd "$REPO_E" && git init -q)
+SPAWN_ONE_OWN="$(env -u HERDR_ENV PATH="$BIN_CLAUDE_ONLY:$NODE_DIR" SERVER_PATH="$SERVER" LIB_ROSTER="$REPO_ROOT/hooks/lib-roster.mjs" TEST_REPO="$REPO_E" node "$TMP/spawn-one-own.mjs" 2>&1)"
+check "roster_spawn_one via MCP: new team is SESSION_PID-owned and live, not null" \
+  '[ "$SPAWN_ONE_OWN" = "PASS" ]'
+
 echo ""
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

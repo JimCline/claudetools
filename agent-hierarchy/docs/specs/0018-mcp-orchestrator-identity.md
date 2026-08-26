@@ -1,18 +1,17 @@
 # 0018 — Orchestrator identity on the MCP path
 
-Status: spec, **blocking**, final. No open questions — the Bash-vs-refuse fork is
-resolved by §4's `process.ppid` derivation, which removes it rather than settling it.
-Fixes a defect introduced by 0016 (roster MCP coverage); defeats safety checks in
-0011 and destroys team files via 0015's liveness path.
+Status: implemented and certified; amended 2026-08-26 with two doc-only points from
+review (§12). Fixed a defect introduced by 0016 (roster MCP coverage) that defeated
+safety checks in 0011 and destroyed team files via 0015's liveness path.
 
 ## 1. The defect
 
-`roster_create mode:"commit"` via MCP writes
+`roster_create mode:"commit"` via MCP wrote
 `orchestrator: {pid: null, session_id: null}`.
 
-Root cause, confirmed: **`CLAUDE_PID` is not passed to plugin MCP server
-subprocesses.** Only `CLAUDE_PROJECT_DIR`, `CLAUDE_PLUGIN_ROOT`, and
-`CLAUDE_PLUGIN_DATA` are. roster.mjs:1036:
+Root cause: **`CLAUDE_PID` is not passed to plugin MCP server subprocesses.** Only
+`CLAUDE_PROJECT_DIR`, `CLAUDE_PLUGIN_ROOT`, and `CLAUDE_PLUGIN_DATA` are.
+roster.mjs:1036:
 
 ```js
 const orchestratorPid = typeof opts["orchestrator-pid"] === "string"
@@ -57,7 +56,7 @@ if (existing && pidAlive(existing.orchestrator && existing.orchestrator.pid)) {
 With a null pid this is `true && false`, so the guard is skipped and 0011 §7.2's
 prefix-collision refusal never fires. Two teams can derive identical peer names — the
 exact failure 0011 §7.2 exists to prevent, unrepairable by tagging because
-ListAgents' namespace is machine-global. The null pid defeats two independent safety
+ListAgents' namespace is machine-global. The null pid defeated two independent safety
 checks (this and 0011 §5.3.5), not one.
 
 **Ownership matching fails.** `roster_move` / `roster_resync` report "known members:
@@ -67,29 +66,29 @@ checks (this and 0011 §5.3.5), not one.
 
 `orchestrator` is written at exactly two places, and read for identity at a third:
 
-| Site | Path | Override flag today | Severity |
+| Site | Path | Override flag before this spec | Severity |
 |---|---|---|---|
 | roster.mjs:1036/1043 | `create --commit` | `--orchestrator-pid` **exists** | Corruption (§1.1) |
 | roster.mjs:1347/1354 | `spawn-one` (creates a team when none exists) | **none — env only** | Corruption (§1.1) |
 | roster.mjs:1372 | `teams` (computes `myPid` for the `own` field) | none | Degradation |
 
-The `spawn-one` site is the one a commit-path-only fix would miss, and it is worse
-than the commit site in one respect: `const orchestratorPid = Number(process.env.CLAUDE_PID);`
-has **no flag to override it**, so via MCP there is currently no way to get a correct
-owner onto a team `spawn-one` creates — not even by passing a parameter.
+The `spawn-one` site is the one a commit-path-only fix would have missed, and it was
+worse than the commit site in one respect: `Number(process.env.CLAUDE_PID)` with **no
+flag to override it**, so via MCP there was no way to get a correct owner onto a team
+`spawn-one` created — not even by passing a parameter.
 
-The `teams` site is read-only: `myPid` is `NaN` via MCP, so `roster_teams`' per-team
-`own` determination never matches. Wrong output, nothing corrupted.
+The `teams` site is read-only: `myPid` was `NaN` via MCP, so `roster_teams`' per-team
+`own` determination never matched. Wrong output, nothing corrupted.
 
 ## 2. Non-negotiable: do not fix this in `teamIsLive` or `pidAlive`
 
-The symptom surfaces in 0015's liveness check, so the fix will look like it belongs
+The symptom surfaces in 0015's liveness check, so the fix looks like it belongs
 there. **It does not.** Making `pidAlive(null)` or `teamIsLive` treat a null pid as
 alive would make every genuinely-dead team read as live forever: 0011 §5.3.5 would
 refuse new creates because a corpse owns the team, the 24h sweep would never fire,
 and 0015's liveness design would collapse to a constant `true`.
 
-**0015's code is correct**, and so is `pidAlive`. The defect is entirely in what gets
+**0015's code is correct**, and so is `pidAlive`. The defect was entirely in what got
 *written*. Any patch to the liveness predicates as part of this fix is out of scope
 and should be rejected in review.
 
@@ -106,11 +105,11 @@ and should be rejected in review.
   is as useless as a null one. Refuse both, with **distinct messages**, so the caller
   can tell "you gave me nothing" from "you gave me a corpse".
 
-**This is not merely a backstop.** With §4 in place it should never fire on the MCP
-path, but it fires for real on the **Bash** path whenever `CLAUDE_PID` is unset — a
-cron invocation, a bare shell, a nested non-Claude subprocess, a test harness. §1.1's
-consequences apply identically there. Its tests must therefore exercise the Bash
-path, not only the MCP one.
+**Not merely a backstop.** With §4 in place it should never fire on the MCP path, but
+it fires for real on the **Bash** path whenever `CLAUDE_PID` is unset — a cron
+invocation, a bare shell, a nested non-Claude subprocess, a test harness. §1.1's
+consequences apply identically there. Its tests therefore exercise the Bash path, not
+only the MCP one.
 
 ## 4. Fix B — the server derives the pid from its own process tree
 
@@ -120,14 +119,13 @@ inside `server.mjs` *is* the orchestrating session's pid: the same identity
 `CLAUDE_PID` carries for Bash-tool subprocesses, reached through the process tree
 instead of an env var Claude Code never populates for MCP servers.
 
-Consequences, all good:
+Consequences:
 
 - **No Bash call**, by the model or the server. 0016 §1's no-Bash requirement survives
   intact — no amendment needed.
 - **No caller parameter required.** `orchestrator_pid` stays an *optional override*,
   matching its existing "Override" schema wording.
-- **No stamped-pid file and no multi-session ambiguity rule.** `process.ppid` is
-  unambiguous per server process, and servers are per-session.
+- **No stamped-pid file and no multi-session ambiguity rule** (§7).
 
 ### 4.1 Capture at startup — the load-bearing detail
 
@@ -147,13 +145,12 @@ because pid 1 always exists. A lazy read at commit time would stamp an owner tha
 reads alive forever: the team never sweeps, 0011 §5.3.5 refuses new creates because a
 corpse owns it, and liveness pins to true for that team.
 
-That is strictly worse than the bug being fixed: **null fails closed and loudly;
-pid 1 fails open and silently, permanently.** Capturing at startup closes it — at that
-moment the parent is definitely the session, and the constant remains the true session
-pid after any later reparenting, so the team correctly reads dead once the session
-ends.
+Strictly worse than the bug being fixed: **null fails closed and loudly; pid 1 fails
+open and silently, permanently.** Capturing at startup closes it — at that moment the
+parent is definitely the session, and the constant remains the true session pid after
+any later reparenting, so the team correctly reads dead once the session ends.
 
-Two cheap belts:
+Two belts:
 
 - **If `process.ppid === 1` at capture time, treat the pid as unresolvable** — set
   `SESSION_PID` to null rather than 1. Already orphaned at startup means the parent
@@ -163,39 +160,31 @@ Two cheap belts:
 
 ### 4.2 Resolution order
 
-Explicit, so tests can pin it:
-
 1. explicit `orchestrator_pid` tool parameter (override — always wins),
 2. `SESSION_PID` captured at startup,
-3. the CLI's own `CLAUDE_PID` default — which simply never fires on this path.
+3. the CLI's own `CLAUDE_PID` default — which never fires on this path.
 
-In `server.mjs`'s `roster_create` case, line 478 becomes an
-`args_in.orchestrator_pid ?? SESSION_PID` push (`pushArg` already skips
+In `server.mjs`'s `roster_create` case, the `orchestrator-pid` push becomes
+`args_in.orchestrator_pid ?? SESSION_PID` (`pushArg` already skips
 null/undefined/empty, so a null `SESSION_PID` correctly sends no flag and lands on
 Fix A's refusal).
 
 ### 4.3 The three sites
 
 - **`roster_create mode:"commit"`** — pass the resolved pid as `--orchestrator-pid`.
-  The flag already exists; roster.mjs needs no change here beyond §3's refusal.
-- **`roster_spawn_one`** — **roster.mjs must gain `--orchestrator-pid` on the
-  `spawn-one` verb**, since 1347 currently reads env only with no override. Mirror
-  1036's precedence exactly (`typeof opts["orchestrator-pid"] === "string" ? Number(…)
-  : Number(process.env.CLAUDE_PID)`) so the two write sites resolve identity
-  identically — one behaviour, two call sites, not two behaviours. Then have the
-  server pass the resolved pid.
+  The flag already exists.
+- **`roster_spawn_one`** — **roster.mjs gains `--orchestrator-pid` on the `spawn-one`
+  verb**, since 1347 read env only with no override. Mirror 1036's precedence exactly
+  so the two write sites resolve identity identically — one behaviour at two call
+  sites, not two behaviours. Then have the server pass the resolved pid.
 - **`roster_teams`** — pass the resolved pid so `myPid` (1372) is correct and the
-  `own` field works via MCP. roster.mjs needs a flag here too, or the `own`
-  computation must accept one. Lowest severity; do not let it delay §3/§4.3's first
-  two items, but do not silently skip it either — an `own` field that is always false
-  is a wrong answer, not a missing one.
-
-This is the item a commit-path-only fix would have missed. `spawn-one` creating a
-null-owner team is the same corruption with the same file-deleting consequence.
+  `own` field works via MCP. Lowest severity; must not delay the first two, but not to
+  be silently skipped either — an `own` field that is always false is a wrong answer,
+  not a missing one.
 
 ## 5. Fix C — recovery for already-broken teams
 
-At least one live team already has a null owner, and §1.1 means it is on a clock.
+Teams committed before this fix have a null owner, and §1.1 means they are on a clock.
 Disband-and-recreate is wrong: it tears down running sessions holding real work, for a
 metadata problem.
 
@@ -220,12 +209,39 @@ would make a read-mostly healing verb quietly rewrite identity.
 
 MCP surface: `roster_adopt`, defaulting `--orchestrator-pid` to `SESSION_PID` per
 §4.2. Not destructive to live sessions, so no §4.5.1-style ask gate — but
-identity-mutating, so keep it a distinct named tool (0016 §4.5's gateability
-argument) rather than folding it into `roster_config`.
+identity-mutating, so a distinct named tool (0016 §4.5's gateability argument) rather
+than folded into `roster_config`.
 
 **Operational note:** because the sweep deletes on the next SessionStart, an existing
 broken team must be adopted *before* that session restarts. Say so in SKILL.md and in
 the release note.
+
+### 5.1 No `--allow-global` guard — intentional (see §12.1)
+
+`adopt` deliberately does **not** call `requireAllowGlobal`, unlike `create --spawn`
+(roster.mjs:624), `spawn-one` (1135), and `move` (0016 §4.4). This is a decision, not
+an oversight.
+
+0009's gate exists to stop a session from acting at **global breadth** — operating on
+a roster definition that spans every repo on the machine. The guarded verbs all
+*launch or relocate live sessions* derived from a possibly-global roster.
+
+`adopt` has no breadth. It rewrites one field of one `team.json` inside one project's
+`hierarchyDir(cwd)`. It launches nothing, relocates nothing, reads no roster config,
+and creates no file. A team's `roster_level` may read `global`, but that records where
+the *roster definition* came from — it does not make the team file itself global, and
+adoption does not touch that definition.
+
+The threat `adopt` actually carries is ownership seizure, and the §5 hijack guard
+addresses it directly and more tightly than a breadth gate would: adoption is
+permitted **only** when the recorded owner is null or dead, i.e. only as a repair to a
+team nobody is running. Adding `requireAllowGlobal` on top would be consistency
+cargo-culting — a prompt for a risk this verb does not carry, which is how gates get
+reflexively approved and stop meaning anything.
+
+**Revisit if either becomes true:** `adopt` gains the ability to target a team outside
+the current cwd's hierarchy dir, or to change a team's `roster_level`. Both would give
+it breadth, and then 0009 applies.
 
 ## 6. `session_id` — a pre-existing gap, not part of this regression
 
@@ -246,58 +262,71 @@ nothing misread as dead).
 
 - Accept an optional `orchestrator_session_id` parameter and pass it through when
   supplied. **Do not** hard-refuse when absent.
-- **Do not hold the push for this.** It is not a regression and was not introduced by
-  0016/0017.
-- **NEEDS-EVIDENCE 1 (non-blocking):** can the calling model obtain its own session id
-  at all? It appears in hook payloads, but no path from the model to that value is
-  established. If none exists, `session_id` stays null by construction and the 0011
-  §4.4 rung 2 degradation is permanent — state that plainly in 0011's terms rather
-  than rediscovering it later. Report; do not invent a mechanism.
+- **Do not hold a release for this.** Not a regression, not introduced by 0016/0017.
+
+### 6.1 Resolved: how a model could get its own session id — and why neither route is taken
+
+No **direct** mechanism exists: the session id appears in hook payloads, but nothing
+exposes it to the model or to an MCP server, and there is no `CLAUDE_SESSION_ID`
+analogue to `CLAUDE_PID`.
+
+The **indirect** route is a SessionStart hook stamping it into the hierarchy dir for
+the server to read — **which is exactly the pattern §7 withdrew for the pid, and it
+fails for exactly the same reasons**: the hierarchy dir is per-*project* while
+sessions are many, so a shared stamp file holds several ids and picking one is a
+guess; and guessing identity is the failure this spec exists to eliminate.
+
+Note the asymmetry that makes the pid solvable and the session id not: `process.ppid`
+works because the process tree is authoritative and per-server, needing no shared
+file. There is no process-tree equivalent for a session *id* — it is an application-
+level identifier with no OS-level counterpart.
+
+So `session_id` stays null by construction on both paths unless a caller passes
+`--session`, and 0011 §4.4 rung 2's degradation is **permanent** absent a new
+mechanism from Claude Code itself. Recorded here so the stamping idea is not
+rediscovered as a fresh proposal.
 
 ## 7. Withdrawn — hook-stamped pid
 
-The previous revision proposed a SessionStart hook stamping `CLAUDE_PID` into the
+An earlier revision proposed a SessionStart hook stamping `CLAUDE_PID` into the
 hierarchy dir, with an ambiguity rule for multi-session projects. **Superseded by §4**
 and not to be built: `process.ppid` gives the same answer with no file, no staleness
 window, and no ambiguity, because the server is per-session and the process tree is
-authoritative. Recorded so the idea is not revived.
+authoritative. Recorded so the idea is not revived. See §6.1 for why the same pattern
+also fails for `session_id`.
 
-## 8. Files to change
+## 8. Files changed
 
 - `hooks/roster.mjs` — §3 refusals at both write sites (1036–1043, 1347–1354); new
   `--orchestrator-pid` flag on `spawn-one`; a pid flag for `teams`' `own` computation
   (§4.3); new `adopt` verb (§5). The `CLAUDE_PID` default and the existing
-  `--orchestrator-pid` flag on `create` are untouched.
+  `--orchestrator-pid` flag on `create` untouched.
 - `mcp/server.mjs` — `SESSION_PID` constant beside `HERE`/`MSG_CLI`/`ROSTER_CLI`
-  (§4.1); resolution order at the `roster_create` `orchestrator-pid` push (line 478)
-  and the new `roster_spawn_one` / `roster_teams` pushes; optional
-  `orchestrator_session_id`; new `roster_adopt` tool.
-- `skills/agent-roster/SKILL.md` — § Create step 5: the pid is now supplied
-  automatically by the server, and `orchestrator_pid` is an override, not a
-  requirement. Plus §5's operational note.
+  (§4.1); resolution order at the `roster_create`, `roster_spawn_one`, and
+  `roster_teams` pushes; optional `orchestrator_session_id`; new `roster_adopt` tool.
+- `skills/agent-roster/SKILL.md` — § Create step 5: the pid is supplied automatically
+  by the server, and `orchestrator_pid` is an override, not a requirement. Plus §5's
+  operational note.
 - `tests/` — §9.
 - `plugin.json` **and** root `marketplace.json` — version bump. Both (0011 §14).
 
 ## 9. Verification
 
-- **A team committed via MCP has a live, correct owner pid**, `teamIsLive` is true,
+- **A team committed via MCP has a live, correct owner pid**, `teamIsLive` true,
   `move`/`resync` match members, `history` shows `active: true`, and
   **`sweepStaleTeam` does not clear it** — assert the file survives a simulated
-  SessionStart sweep. This is the data-loss regression test.
+  SessionStart sweep. The data-loss regression test.
 - **`spawn-one` via MCP with no existing team** produces a team with a live owner pid,
-  not null. This is the §1.2 site a commit-only fix would miss.
+  not null. The §1.2 site a commit-only fix would have missed.
 - `roster_teams` via MCP reports `own` correctly for a team this session owns.
-- `guardTeamPrefixCollision` fires again for a properly-owned team (roster.mjs:414) —
-  the §1.1 second-guard regression.
+- `guardTeamPrefixCollision` fires again for a properly-owned team (roster.mjs:414).
 - **Explicit `orchestrator_pid` overrides the derived value** (§4.2 ordering).
-- `SESSION_PID` is read once at module load — assert by construction (a single
-  module-level read; no `process.ppid` reference inside any handler). A test cannot
-  easily simulate reparenting; a grep-style assertion that `process.ppid` appears
-  exactly once in `server.mjs`, at module level, is the practical check.
+- `SESSION_PID` is read once at module load — `process.ppid` appears exactly once in
+  `server.mjs`, at module level. Simulating reparenting in a test is not worth
+  building; this structural assertion is the practical check.
 - **Bash path unchanged**: `create --commit` with `CLAUDE_PID` set and no explicit
   flag still stamps that pid. `tests/test-roster-cli.sh:75–78` and
-  `test-roster-multi-team.sh:203–224` already exercise `CLAUDE_PID` and must stay
-  green.
+  `test-roster-multi-team.sh:203–224` already exercise `CLAUDE_PID` and stay green.
 - **Bash path with `CLAUDE_PID` unset** → Fix A refusal, exit 2, **no `team.json`
   written** (assert the file's absence). Both write sites.
 - `create --commit --orchestrator-pid <dead pid>` → refused, message distinct from the
@@ -310,42 +339,68 @@ authoritative. Recorded so the idea is not revived.
 - Full existing suite green.
 
 **Test-harness note:** `tests/test-mcp-server.sh:16` spawns the server directly, so
-`SESSION_PID` there is the *test runner's* pid, not a Claude session's. That is
-correct and makes the derivation easy to assert — compare the stamped pid against the
-spawning shell's `$$`.
+`SESSION_PID` there is the *test runner's* pid, not a Claude session's. That is correct
+and makes the derivation easy to assert — compare the stamped pid against the spawning
+shell's `$$`.
 
 ## 10. Assessment
 
-**Recommend blocking the push.** 0016 made the MCP path the default way to create
-teams, and on that path this writes a team file that is deleted at the next
-SessionStart, orphaning any panes it spawned. Silent data loss in the newly-default
-path, surfacing later and in a different subsystem than the one that caused it. Cost
-of holding is low (pre-push); cost of shipping is a regression users hit before they
-hit the feature.
+Blocking before release, on the grounds that 0016 made the MCP path the *default* way
+to create teams, and on that path this wrote a team file deleted at the next
+SessionStart, orphaning any panes it spawned — silent data loss in the newly-default
+path, surfacing later and in a different subsystem than the one that caused it.
 
-Cost is the user's call — that is the recommendation.
-
-The fix is now small and has no open design questions: one constant, a resolution
-order at three call sites, one new CLI flag, one refusal, one recovery verb.
+The fix was small: one constant, a resolution order at three call sites, one new CLI
+flag, one refusal, one recovery verb.
 
 ## 11. Evidence log
 
-All from reading source or direct process inspection, not inference:
+All from reading source or direct process inspection:
 
 - `CLAUDE_PID` absent from MCP server subprocess env; no mechanism exposes
   calling-session identity via the MCP protocol (claude-code-guide, against Claude
   Code's documentation).
 - **The `ah` MCP server's PPID equals the session's `CLAUDE_PID`** (verified with
   `ps -o pid,ppid,command`). Basis for §4.
-- `pidAlive` rejects null/undefined/0 (lib-hier.mjs:484–492); `pidAlive(1)` would
-  return true — basis for §4.1's capture-at-startup rule.
+- `pidAlive` rejects null/undefined/0 (lib-hier.mjs:484–492); `pidAlive(1)` returns
+  true — basis for §4.1's capture-at-startup rule.
 - `sweepStaleTeam` calls `clearTeam` on a non-live team (sessionstart.mjs:71–76) —
-  this is deletion, not mis-reporting.
+  deletion, not mis-reporting.
 - `guardTeamPrefixCollision` skips its refusal on a null pid (roster.mjs:414).
-- `orchestrator` is written at exactly two sites, 1043 and 1354; 1354 (`spawn-one`)
-  has **no override flag** — basis for §1.2 and §4.3.
+- `orchestrator` written at exactly two sites, 1043 and 1354; 1354 (`spawn-one`) had
+  **no override flag** — basis for §1.2 and §4.3.
 - `teams` computes `myPid` from `CLAUDE_PID` at 1372 — read-only degradation.
 - `session_id` sourced from `--session` only at 1043, hardcoded null at 1354 —
   establishing §6 as pre-existing.
-- `execCli` spawns with `{stdio}` only, inheriting the server env (server.mjs:318–338);
-  `server.mjs` currently contains no `process.ppid` / `process.pid` reference.
+- `requireAllowGlobal` called at roster.mjs:624 (`create --spawn`) and 1135
+  (`spawn-one`) only — basis for §5.1's scope comparison.
+- `execCli` spawns with `{stdio}` only, inheriting the server env (server.mjs:318–338).
+
+## 12. Amendment log
+
+### 12.1 `adopt` and the allow-global gate — decided, not deferred
+
+Review noted that §5's `adopt` carries no `--allow-global` guard despite mutating team
+ownership. Now answered explicitly in **§5.1: intentional, and it should stay that
+way.** 0009's gate guards *breadth* — acting on a roster definition spanning every repo
+— and `adopt` has none: one field, one file, one project's hierarchy dir, nothing
+launched or relocated. The real threat is ownership seizure, which §5's hijack guard
+addresses more tightly by permitting adoption only when the owner is null or dead.
+
+Recorded as a decision rather than left open, because an unanswered "should this have a
+gate?" gets re-raised every review, and because adding a prompt for a risk a verb does
+not carry is how gates become reflexive and stop meaning anything. §5.1 names the two
+conditions that would reverse it.
+
+### 12.2 `session_id` — the indirect route is the withdrawn §7 pattern
+
+§6's conclusion ("no mechanism") was accurate but imprecise. Sharpened in **§6.1**: no
+*direct* mechanism exists, and the *indirect* one — a SessionStart hook stamping the id
+into the hierarchy dir — is exactly the pattern §7 withdrew for the pid, failing for
+the same per-project-file ambiguity reason.
+
+Also recorded there: the asymmetry explaining why the pid was solvable and the session
+id is not. `process.ppid` works because the process tree is authoritative and
+per-server, requiring no shared file; a session *id* is an application-level
+identifier with no OS-level counterpart, so no equivalent exists. The 0011 §4.4 rung 2
+degradation is therefore permanent absent a new mechanism from Claude Code itself.
