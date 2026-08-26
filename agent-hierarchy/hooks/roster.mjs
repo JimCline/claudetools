@@ -16,8 +16,7 @@
  *   roster.mjs create  [--plan] [--commit --verified <json> --transport <t>
  *                       --roster-level <L> [--partial]
  *                       [--orchestrator-pid <pid>]] [--cwd <path>]
- *   roster.mjs create  --spawn --mode <auto|columns|grid> [--roster-level <L>]
- *                       [--orchestrator-pid <pid>] [--cwd <path>]
+ *   roster.mjs create  --spawn --mode <auto|columns|grid> [--roster-level <L>] [--cwd <path>]
  *   (`--spawn` launches only; `--commit` persists. Both are required, in that order.)
  *   roster.mjs next-split --mode <auto|columns|grid> --pane-count <N> --self <pane-id>
  *                       --created '<json array of pane ids>'
@@ -33,6 +32,8 @@
  *   roster.mjs spawn-one <role> [--cwd <path>] [--dry-run] [--allow-global]
  *   roster.mjs alias   [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]
  *   roster.mjs teams   [--cwd <path>]
+ *   roster.mjs history [--cwd <path>]
+ *   roster.mjs create  --from <id|alias> [--team <T>] [--plan|--commit|--spawn] [--cwd <path>]
  *
  * `--team <name>` (spec 0011 §5.1) selects a named team's `teams/<name>.json`
  * in place of the default `team.json`, on every subcommand above that touches
@@ -57,16 +58,17 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFile, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 
 import { CONFIG_VERSION, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, teamPrefix, teamPrefixInfo, validateTeamAlias } from "./lib-config.mjs";
 import { ageSecOf, latestRoster, newId, localIso, pidAlive, ROSTER_FRESH_SEC } from "./lib-hier.mjs";
-import { clearTeam, herdrOnPath, listTeamNames, readTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamPath, validateMember, validateRosterBlock, writeTeam } from "./lib-roster.mjs";
+import { clearTeam, fingerprint, herdrOnPath, historyEntryIsActive, listTeamNames, normalizeMembers, readHistory, readTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamIsLive, teamPath, upsertHistory, validateMember, validateRosterBlock, writeTeam } from "./lib-roster.mjs";
 
-const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear"]);
-const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "cwd", "team"]);
+const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm"]);
+const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "close", "confirm", "plan-token", "allow-global", "cwd", "team"]);
 const RESYNC_FLAGS = new Set(["dry-run", "cwd", "team"]);
-const MOVE_FLAGS = new Set(["tab", "split", "new-tab", "workspace", "new-workspace", "dry-run", "cwd", "team"]);
+const MOVE_FLAGS = new Set(["tab", "split", "new-tab", "workspace", "new-workspace", "dry-run", "allow-global", "cwd", "team"]);
 const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global", "team"]);
 const ALIAS_FLAGS = new Set(["level", "set", "clear", "cwd", "team"]);
 
@@ -117,8 +119,10 @@ function resolveTeamArg() {
   if (!v.ok) fail(`--team: ${v.why}`);
   return opts.team;
 }
-const teamArg = resolveTeamArg();
-const repoBasename = teamPrefix(cwd, teamArg);
+// `create --from` without an explicit --team defaults the team scope to the entry's own stored
+// alias (spec 0015 §7.2) — the `create` case reassigns both before anything else reads them.
+let teamArg = resolveTeamArg();
+let repoBasename = teamPrefix(cwd, teamArg);
 
 function levelArg() {
   if (typeof opts.level === "string") return opts.level;
@@ -435,17 +439,20 @@ function refuseLiveDefaultTeam(dir, existing) {
   );
 }
 
+/** Shared by `resolveMembersPlan` and `planMembersFromHistory` (spec 0015 §7.2): refuse a live Team, clear a stale one. */
+function refuseOrClearExistingTeam(dir) {
+  const existing = readTeam(dir, teamArg);
+  if (!existing) return;
+  if (teamIsLive(existing)) {
+    if (!teamArg) refuseLiveDefaultTeam(dir, existing);
+    fail(`a live Team ${existing.team_id} already exists — disband it first`);
+  }
+  clearTeam(dir, teamArg);
+}
+
 /** Shared by `create --plan` and `create --spawn` (spec 0005 §9 item 1): resolve the roster, refuse/clear a stale Team, compute members[] + spawn shapes. */
 function resolveMembersPlan(dir) {
-  const existing = readTeam(dir, teamArg);
-  if (existing) {
-    const stale = !pidAlive(existing.orchestrator && existing.orchestrator.pid) || Date.now() - Date.parse(existing.created) > 24 * 3600 * 1000;
-    if (!stale) {
-      if (!teamArg) refuseLiveDefaultTeam(dir, existing);
-      fail(`a live Team ${existing.team_id} already exists — disband it first`);
-    }
-    clearTeam(dir, teamArg);
-  }
+  refuseOrClearExistingTeam(dir);
   const resolved = resolveRoster(cwd, teamArg);
   if (!resolved) fail("no roster resolves at any level — hand off to `roster.mjs init`");
   const transport = detectTransport();
@@ -454,6 +461,60 @@ function resolveMembersPlan(dir) {
     return { role: m.role, name: m.name, model: m.model, effort: m.effort, route, autoMode: m.autoMode, spawn: route === "peer" ? spawnShape(m, transport) : null };
   });
   return { level: resolved.level, path: resolved.path, transport, layout_plan: layoutPlan(resolved, transport, plan), members: plan };
+}
+
+/** `create --from <id|alias>` (spec 0015 §7.2): resolve which history entry `--from` names. */
+function resolveHistoryEntry(dir) {
+  const key = opts.from;
+  const h = readHistory(dir);
+  const byId = h.teams.find((t) => t.id === key);
+  if (byId) return byId;
+  const byAlias = h.teams.filter((t) => t.alias === key).sort((a, b) => (a.last_used < b.last_used ? 1 : -1));
+  if (byAlias.length) return byAlias[0];
+  fail(`create --from: no history entry matches ${JSON.stringify(key)} — available ids: ${h.teams.map((t) => t.id).join(", ") || "(none)"}`);
+}
+
+/**
+ * Rename stored history members (role/model/effort/route/auto_mode, snake_case, no name — spec
+ * 0015 §3.1) to the plan-shape's camelCase `autoMode` and validate. Renaming before validating
+ * matters: `validateMember` checks the camelCase key and rejects any member carrying a "name"
+ * (spec §7.2: the rename is history->plan only, one direction). Returns the renamed members, or
+ * `fail()`s naming the invalid field — never silently repairs a stale entry.
+ */
+function validateHistoryMembers(entry) {
+  const stored = Array.isArray(entry.members) ? entry.members : [];
+  const renamed = stored.map((m) => {
+    const out = { role: m.role, model: m.model, effort: m.effort, route: m.route };
+    if (m.auto_mode !== undefined) out.autoMode = m.auto_mode;
+    return out;
+  });
+  const rosterBlock = { route: (renamed[0] && renamed[0].route) || "peer", layout: "auto", members: renamed };
+  const errors = validateRosterBlock(rosterBlock);
+  if (errors.length) fail(errors.join("; "));
+  return renamed;
+}
+
+/**
+ * `create --from <id|alias>` (spec 0015 §7.2): the member source is a stored history entry
+ * instead of a live roster level. Everything downstream — refuse/clear a stale Team, validation,
+ * derived names, spawn shapes — is the existing `resolveMembersPlan` path, unchanged.
+ */
+function planMembersFromHistory(entry, dir) {
+  refuseOrClearExistingTeam(dir);
+  const renamed = validateHistoryMembers(entry);
+  const rosterBlock = { route: (renamed[0] && renamed[0].route) || "peer", layout: "auto", members: renamed };
+  const transport = detectTransport();
+  const named = namedMembers(renamed);
+  const plan = named.map((m) => {
+    const route = m.route || rosterBlock.route;
+    return { role: m.role, name: m.name, model: m.model, effort: m.effort, route, autoMode: m.autoMode, spawn: route === "peer" ? spawnShape(m, transport) : null };
+  });
+  return { level: entry.roster_level || null, path: null, transport, layout_plan: layoutPlan(rosterBlock, transport, plan), members: plan };
+}
+
+/** `create`'s member source: history (`--from`) or the live roster (default). */
+function getMembersPlan(dir) {
+  return typeof opts.from === "string" ? planMembersFromHistory(resolveHistoryEntry(dir), dir) : resolveMembersPlan(dir);
 }
 
 function runShell(commandString) {
@@ -562,13 +623,43 @@ async function layoutAndLaunch(peerMembers, transport, mode, splitCwd, callerLab
   return settled.map((r, i) => (r.status === "fulfilled" ? r.value : { ...peerMembers[i], launch_status: "failed", launch_result: null, retried: false, error: String(r.reason) }));
 }
 
-/** Spec 0009 §6.4: shared CLI-side guard for `spawn-one` and `create --spawn` — a Bash subprocess
-    that §4's PreToolUse gate cannot see inside must not become the laundering path around it. */
+/** Spec 0009 §6.4: shared CLI-side guard for `spawn-one`, `create --spawn`, `move` (spec 0016
+    §4.4), and `disband --close` (spec 0016 §4.5) — a Bash subprocess that §4's PreToolUse gate
+    cannot see inside must not become the laundering path around it. */
 function requireAllowGlobal(level, path) {
   if (level !== "global" || opts["allow-global"] === true) return;
   fail(
     `ah: this roster resolves at GLOBAL level (${path}) and may belong to an unrelated project. Re-run with --allow-global, or create a repo roster with the /agent-roster skill.`
   );
+}
+
+/** Spec 0016 §4.5: short hash over `team_id` + the sorted non-null `transport_id`s of the close
+    set — binds `disband --close --plan-token` to the exact plan that `disband` (bare/plan mode)
+    reported, so a stale plan or a topology change between plan and close is caught rather than
+    silently closing the wrong panes. */
+function closeToken(teamId, closable) {
+  const ids = closable.map((m) => m.transport_id).filter((id) => id != null).sort();
+  return createHash("sha256").update(JSON.stringify({ team_id: teamId, ids })).digest("hex").slice(0, 16);
+}
+
+/** Members with something addressable to close — spec 0016 §4.5's "close set". */
+function closableMembers(members) {
+  return members.filter((m) => m.route === "peer" && m.transport_id != null);
+}
+
+/** Build argv directly and close one member's pane — never `/bin/sh` (spec 0016 §4.5): a
+    `transport_id` reaches here from herdr/tmux's own output, but running it through a shell
+    string (as the display-only `command` field does) would make it an injection vector. */
+function closeMemberPane(transport, transportId) {
+  if (transport === "herdr") {
+    herdrCall(["pane", "close", transportId]);
+    return;
+  }
+  if (transport === "tmux") {
+    execFileSync("tmux", ["kill-pane", "-t", transportId]);
+    return;
+  }
+  throw new Error(`disband --close: transport ${JSON.stringify(transport)} has no addressable pane to close`);
 }
 
 /** Strip a member's role (and any -<ordinal> suffix) off its derived name to recover its naming prefix. */
@@ -620,9 +711,16 @@ function memberIsLive(dir, name) {
 async function createSpawn(dir) {
   const mode = opts.mode;
   if (!ROSTER_LAYOUT_VALUES.includes(mode)) fail(`--mode must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(mode)}`);
-  const preResolved = resolveRoster(cwd, teamArg);
-  if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
-  const { level, transport, layout_plan, members } = resolveMembersPlan(dir);
+  // --from only changes where the member list comes from — it must not change whether a spawn
+  // is gated, so this runs unconditionally either way (a prior version skipped it for --from).
+  if (typeof opts.from === "string") {
+    const entry = resolveHistoryEntry(dir);
+    requireAllowGlobal(entry.roster_level, "stored in team-history.json");
+  } else {
+    const preResolved = resolveRoster(cwd, teamArg);
+    if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
+  }
+  const { level, transport, layout_plan, members } = getMembersPlan(dir);
   const peerMembers = members.filter((m) => m.route === "peer");
 
   const launched = await layoutAndLaunch(peerMembers, transport, mode, cwd, "create --spawn");
@@ -906,12 +1004,25 @@ try {
         fail("create: --plan, --commit, and --spawn are mutually exclusive");
       }
       const dir = hierarchyDir(cwd);
+      // Spec 0015 §7.2: --from without an explicit --team targets the entry's own alias (or the
+      // default team when the alias is null) — an explicit --team still wins. Must happen before
+      // anything below reads teamArg/repoBasename (naming, file target, history upsert alias).
+      if (typeof opts.from === "string" && !teamArg) {
+        const entry = resolveHistoryEntry(dir);
+        teamArg = entry.alias || null;
+        repoBasename = teamPrefix(cwd, teamArg);
+      }
       guardTeamPrefixCollision(dir, teamArg);
       if (opts.spawn === true) {
         await createSpawn(dir);
         break;
       }
       if (opts.commit) {
+        // `--from --commit` (spec 0015 §7.2): --commit still reads members from --verified, not
+        // history (only a real spawn/check-in cycle has ref/transport_id/checked_in) — but a
+        // stored entry that no longer validates must fail() before anything else runs, so this
+        // eager check is the only place --from's validation happens on the commit path.
+        if (typeof opts.from === "string") validateHistoryMembers(resolveHistoryEntry(dir));
         const verified = typeof opts.verified === "string" ? JSON.parse(opts.verified) : fail("--commit needs --verified <json array>");
         const transport = typeof opts.transport === "string" ? opts.transport : fail("--commit needs --transport");
         const rosterLevel = typeof opts["roster-level"] === "string" ? opts["roster-level"] : fail("--commit needs --roster-level");
@@ -934,11 +1045,30 @@ try {
           partial: opts.partial === true,
         };
         writeTeam(dir, team, teamArg);
-        out({ committed: true, team });
+        // A history-write failure must not fail `create` — the Team is already committed and
+        // running; a missing history row is cosmetic (spec 0015 §4).
+        const outObj = { committed: true, team };
+        try {
+          const normalized = normalizeMembers(team.members);
+          const historyResult = upsertHistory(dir, {
+            fingerprint: fingerprint({ roster_level: team.roster_level, transport: team.transport, members: normalized }),
+            alias: teamArg || null,
+            roster_level: team.roster_level,
+            transport: team.transport,
+            members: normalized,
+            team_id: team.team_id,
+          });
+          // Spec 0015 §6: exceeding the 5-entry cap because every eviction candidate is a live
+          // team is temporary but must not be silent.
+          if (historyResult.capExceeded) outObj.history = { ok: true, cap_exceeded: true };
+        } catch (err) {
+          outObj.history = { ok: false, why: err && err.message ? err.message : String(err) };
+        }
+        out(outObj);
         break;
       }
       // --plan (default): resolve, refuse a live Team, clear a stale one, report the spawn plan.
-      out(resolveMembersPlan(dir));
+      out(getMembersPlan(dir));
       break;
     }
 
@@ -947,12 +1077,55 @@ try {
       // by-default) bare path. --kill is accepted-and-ignored (§5.4) for 0002-era callers.
       for (const key of Object.keys(opts)) {
         if (key === "_") continue;
-        if (!DISBAND_FLAGS.has(key)) fail(`disband: unrecognized flag --${key} (use --commit, --keep-sessions, or --plan)`);
+        if (!DISBAND_FLAGS.has(key)) fail(`disband: unrecognized flag --${key} (use --commit, --keep-sessions, --plan, or --close --confirm --plan-token <tok>)`);
       }
       if (opts["keep-sessions"] === true && (opts.commit === true || opts.kill === true)) {
         fail("disband --keep-sessions cannot be combined with --commit or --kill");
       }
+      if (opts.close === true && (opts.commit === true || opts["keep-sessions"] === true || opts.kill === true)) {
+        fail("disband --close cannot be combined with --commit, --keep-sessions, or --kill");
+      }
       const dir = hierarchyDir(cwd);
+
+      // --close (spec 0016 §4.5): closes the live sessions the preceding plan call named, via
+      // argv built directly (never runShell's /bin/sh). Does not remove team.json — --commit
+      // remains a separate call, per §3.
+      if (opts.close === true) {
+        const team = readTeam(dir, teamArg);
+        if (!team) {
+          out({ closed: false, reason: "no active team" });
+          break;
+        }
+        let healedMembers = team.members;
+        if (team.transport === "herdr") {
+          const result = resyncMembers(team);
+          if (result.query_ok) healedMembers = result.members;
+        }
+        const closable = closableMembers(healedMembers);
+        const closeList = closable.map((m) => ({ name: m.name, transport_id: m.transport_id }));
+        if (opts.confirm !== true) {
+          fail(`disband --close: --confirm is required to close live sessions. Close list: ${JSON.stringify(closeList)}`);
+        }
+        if (typeof opts["plan-token"] !== "string" || !opts["plan-token"]) {
+          fail("disband --close needs --plan-token <tok>, from a preceding `disband` (plan) call");
+        }
+        const expectedToken = closeToken(team.team_id, closable);
+        if (opts["plan-token"] !== expectedToken) {
+          fail("disband --close: --plan-token does not match the current close plan (the topology may have changed) — re-run `disband` and retry with the fresh token");
+        }
+        const preResolved = resolveRoster(cwd, teamArg);
+        if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
+        const results = closable.map((m) => {
+          try {
+            closeMemberPane(team.transport, m.transport_id);
+            return { name: m.name, transport_id: m.transport_id, closed: true, error: null };
+          } catch (err) {
+            return { name: m.name, transport_id: m.transport_id, closed: false, error: err.message };
+          }
+        });
+        out({ closed: results.every((r) => r.closed), results });
+        break;
+      }
 
       // --commit: removes team.json only, never re-reads the member list (spec 0002 §8.1/§8.3,
       // spec 0006 §5.2 — no longer gated on --kill).
@@ -1012,7 +1185,7 @@ try {
         if (team.transport === "herdr") entry.resync_status = m.status;
         return entry;
       });
-      const disbandOut = { close };
+      const disbandOut = { close, close_token: closeToken(team.team_id, closableMembers(healedMembers)) };
       if (resyncSummary) disbandOut.resync = resyncSummary;
       out(disbandOut);
       break;
@@ -1057,9 +1230,11 @@ try {
     case "move": {
       for (const key of Object.keys(opts)) {
         if (key === "_") continue;
-        if (!MOVE_FLAGS.has(key)) fail(`move: unrecognized flag --${key} (use --tab/--split, --new-tab[/--workspace], or --new-workspace)`);
+        if (!MOVE_FLAGS.has(key)) fail(`move: unrecognized flag --${key} (use --tab/--split, --new-tab[/--workspace], --new-workspace, or --allow-global)`);
       }
       const name = typeof opts._[0] === "string" ? opts._[0] : fail("move needs a member name: roster.mjs move <name> --tab <id> [--split right|down] | --new-tab [--workspace <id>] | --new-workspace");
+      const preResolved = resolveRoster(cwd, teamArg);
+      if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
       const dir = hierarchyDir(cwd);
       const team = readTeam(dir, teamArg);
       const teamMembers = team && Array.isArray(team.members) ? team.members : [];
@@ -1213,8 +1388,28 @@ try {
       break;
     }
 
+    case "history": {
+      // Spec 0015 §7.1: read-only inventory of stored roster configs, for `create --from`.
+      const dir = hierarchyDir(cwd);
+      const h = readHistory(dir);
+      const teams = h.teams.map((e) => ({
+        id: e.id,
+        label: e.label,
+        alias: e.alias,
+        active: historyEntryIsActive(dir, e),
+        last_used: e.last_used,
+        created_at: e.created_at,
+        roles: [...new Set((e.members || []).map((m) => m.role))],
+        member_count: Array.isArray(e.members) ? e.members.length : 0,
+        roster_level: e.roster_level,
+        transport: e.transport,
+      }));
+      out({ teams });
+      break;
+    }
+
     default:
-      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one|teams [--commit|--keep-sessions] [--level global|repo|repo-user] [--team <name>] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
+      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one|teams|history [--commit|--keep-sessions] [--level global|repo|repo-user] [--team <name>] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
   }
 } catch (err) {
   fail(err && err.message ? err.message : String(err));

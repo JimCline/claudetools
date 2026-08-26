@@ -36,6 +36,10 @@ const cwdSchema = {
   description: "Absolute path to the repo/session working directory. Required on every call — never defaults to the server's own cwd.",
 };
 
+const teamSchema = { type: "string", description: "Named team scope, if any." };
+
+const levelSchema = { type: "string", enum: ["global", "repo", "repo-user"] };
+
 export const TOOLS = [
   {
     name: "msg_new",
@@ -53,7 +57,7 @@ export const TOOLS = [
         reason: { type: "string", description: "context|second-opinion|parallel" },
         type: { type: "string", description: "request|response (default request)." },
         id: { type: "string", description: "Explicit message id — set when writing a response to match its request." },
-        team: { type: "string", description: "Named team scope, if any." },
+        team: teamSchema,
       },
       required: ["cwd", "to", "from", "slug"],
     },
@@ -67,7 +71,7 @@ export const TOOLS = [
         cwd: cwdSchema,
         filter: { type: "string", enum: ["open", "closed", "all"], description: "Default open." },
         to: { type: "string", description: "Filter by recipient role." },
-        team: { type: "string", description: "Named team scope, if any." },
+        team: teamSchema,
       },
       required: ["cwd"],
     },
@@ -91,7 +95,7 @@ export const TOOLS = [
       type: "object",
       properties: {
         cwd: cwdSchema,
-        team: { type: "string", description: "Named team scope, if any." },
+        team: teamSchema,
       },
       required: ["cwd"],
     },
@@ -103,8 +107,8 @@ export const TOOLS = [
       type: "object",
       properties: {
         cwd: cwdSchema,
-        level: { type: "string", enum: ["global", "repo", "repo-user"], description: "Show one level's raw file instead of the resolved (winning) roster." },
-        team: { type: "string", description: "Named team scope, if any." },
+        level: { ...levelSchema, description: "Show one level's raw file instead of the resolved (winning) roster." },
+        team: teamSchema,
       },
       required: ["cwd"],
     },
@@ -120,6 +124,167 @@ export const TOOLS = [
       required: ["cwd"],
     },
   },
+  {
+    name: "roster_member",
+    description: "Init a roster level, or add, edit, or remove a roster member, via roster.mjs.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        action: { type: "string", enum: ["init", "add", "edit", "remove"] },
+        level: levelSchema,
+        member: { type: "string", description: "The member's derived name. Required with action: edit, remove." },
+        role: { type: "string", description: "Required with action: add." },
+        model: { type: "string", description: "With action: add, edit." },
+        effort: { type: "string", description: "With action: add, edit." },
+        route: { type: "string", enum: ["peer", "subagent"], description: "Required with action: init." },
+        auto_mode: { type: "string", description: "With action: add, edit." },
+        layout: { type: "string", enum: ["auto", "columns", "grid"], description: "With action: init." },
+      },
+      required: ["cwd", "action"],
+    },
+  },
+  {
+    name: "roster_config",
+    description: "Show or set a roster level's pane layout, or the repo's team-name alias, via roster.mjs.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        target: { type: "string", enum: ["layout", "alias"] },
+        level: levelSchema,
+        layout: { type: "string", enum: ["auto", "columns", "grid"], description: "With target: layout. Omit to read." },
+        set: { type: "string", description: "New alias. With target: alias." },
+        clear: { type: "boolean", description: "With target: alias." },
+        team: teamSchema,
+      },
+      required: ["cwd", "target"],
+    },
+  },
+  {
+    name: "roster_create",
+    description: "Plan, spawn, or commit a Team via roster.mjs create.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        mode: { type: "string", enum: ["plan", "spawn", "commit"] },
+        team: teamSchema,
+        roster_level: { type: "string" },
+        layout_mode: { type: "string", description: "Layout mode, with mode: spawn." },
+        orchestrator_pid: { type: "integer", description: "Override, with mode: commit." },
+        transport: { type: "string", description: "With mode: commit." },
+        verified: { type: "string", description: "JSON array, passed to --verified verbatim. Required with mode: commit." },
+        partial: { type: "boolean", description: "With mode: commit." },
+      },
+      required: ["cwd", "mode"],
+    },
+  },
+  {
+    name: "roster_layout_splits",
+    description: "Run or drive the herdr layout-splits phase via roster.mjs layout-splits.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        mode: { type: "string", enum: ["auto", "columns", "grid"] },
+        pane_count: { type: "integer" },
+        next: { type: "boolean", description: "Compute the next decision without splitting." },
+        created: { type: "string", description: "JSON array of pane ids already created, with next: true." },
+        apply: { type: "boolean", description: "Perform one split directly." },
+        target: { type: "string", description: "Pane id, with apply: true." },
+        direction: { type: "string", enum: ["right", "down"], description: "With apply: true." },
+      },
+      required: ["cwd"],
+    },
+  },
+  {
+    name: "roster_disband",
+    description: "Plan, commit, or keep-sessions a Team teardown via roster.mjs disband. Non-destructive modes only — never closes anything.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        team: teamSchema,
+        mode: { type: "string", enum: ["plan", "commit", "keep-sessions"], description: "Default plan." },
+      },
+      required: ["cwd"],
+    },
+  },
+  {
+    name: "roster_disband_close",
+    description: "Close the live sessions of a Team. Destructive; requires prior user confirmation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        team: teamSchema,
+        confirm: { type: "boolean", description: "Must be true, and only after the user has been shown the close list and agreed." },
+        plan_token: { type: "string", description: "close_token from the preceding roster_disband mode:plan call." },
+        allow_global: { type: "boolean" },
+      },
+      required: ["cwd", "confirm", "plan_token"],
+    },
+  },
+  {
+    name: "roster_resync",
+    description: "Re-derive every peer member's herdr location from live topology via roster.mjs resync.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        team: teamSchema,
+        dry_run: { type: "boolean" },
+      },
+      required: ["cwd"],
+    },
+  },
+  {
+    name: "roster_move",
+    description: "Relocate a member's pane via roster.mjs move.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        team: teamSchema,
+        name: { type: "string", description: "The member's derived name." },
+        tab: { type: "string" },
+        split: { type: "string", enum: ["right", "down"], description: "Required with tab." },
+        new_tab: { type: "boolean" },
+        workspace: { type: "string", description: "With new_tab." },
+        new_workspace: { type: "boolean" },
+        dry_run: { type: "boolean" },
+        allow_global: { type: "boolean" },
+      },
+      required: ["cwd", "name"],
+    },
+  },
+  {
+    name: "roster_history",
+    description: "List recent team-history entries (for reuse via 'create --from') via roster.mjs history.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+      },
+      required: ["cwd"],
+    },
+  },
+  {
+    name: "roster_spawn_one",
+    description: "Spawn or restart one missing/dead peer role (e.g. 'spawn the architect') without touching the rest of the team.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        team: teamSchema,
+        role: { type: "string" },
+        dry_run: { type: "boolean" },
+        allow_global: { type: "boolean" },
+      },
+      required: ["cwd", "role"],
+    },
+  },
 ];
 
 const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
@@ -129,9 +294,16 @@ const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
  * Exported so tests can exercise the mapping directly with synthetic inputs,
  * independent of which real CLI invocation (if any) produces a given case.
  */
-export function mapExecResult({ code, stdout, stderr, scriptPath }) {
+export function mapExecResult({ code, stdout, stderr, scriptPath, expectedNonZero }) {
   if (code === 0) {
     const text = stderr && stderr.trim() ? `${stdout}\nstderr:\n${stderr}` : stdout;
+    return { content: [{ type: "text", text }] };
+  }
+  if (expectedNonZero && expectedNonZero.has(code)) {
+    // Spec 0016 §5: an expected non-zero exit (e.g. layout-splits' partial exit 3) is data, not
+    // an error — the full stdout payload (`complete: false`, `panes`, `failed_at`, ...) must
+    // survive, prefixed with the exit code the way exit 2 already prefixes `exit=2`.
+    const text = stderr && stderr.trim() ? `exit=${code}\n${stdout}\nstderr:\n${stderr}` : `exit=${code}\n${stdout}`;
     return { content: [{ type: "text", text }] };
   }
   if (code === 2) {
@@ -143,13 +315,13 @@ export function mapExecResult({ code, stdout, stderr, scriptPath }) {
   };
 }
 
-function execCli(scriptPath, args) {
+function execCli(scriptPath, args, expectedNonZero) {
   return new Promise((resolve) => {
     let child;
     try {
       child = spawn(process.execPath, [scriptPath, ...args], { stdio: ["ignore", "pipe", "pipe"] });
     } catch (err) {
-      resolve(mapExecResult({ code: -1, stdout: "", stderr: String(err && err.message ? err.message : err), scriptPath }));
+      resolve(mapExecResult({ code: -1, stdout: "", stderr: String(err && err.message ? err.message : err), scriptPath, expectedNonZero }));
       return;
     }
     let stdout = "";
@@ -157,10 +329,10 @@ function execCli(scriptPath, args) {
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));
     child.on("error", (err) => {
-      resolve(mapExecResult({ code: -1, stdout, stderr: stderr || String(err && err.message ? err.message : err), scriptPath }));
+      resolve(mapExecResult({ code: -1, stdout, stderr: stderr || String(err && err.message ? err.message : err), scriptPath, expectedNonZero }));
     });
     child.on("close", (code) => {
-      resolve(mapExecResult({ code, stdout, stderr, scriptPath }));
+      resolve(mapExecResult({ code, stdout, stderr, scriptPath, expectedNonZero }));
     });
   });
 }
@@ -168,6 +340,15 @@ function execCli(scriptPath, args) {
 function pushArg(args, flag, value) {
   if (value === undefined || value === null || value === "") return;
   args.push(`--${flag}`, String(value));
+}
+
+/** Bare-boolean CLI flags (`--dry-run`, `--next`, ...) — `pushArg` only emits `--flag value`. */
+function pushFlag(args, flag, value) {
+  if (value === true) args.push(`--${flag}`);
+}
+
+function err(text) {
+  return { content: [{ type: "text", text }], isError: true };
 }
 
 export async function callTool(name, input) {
@@ -225,6 +406,160 @@ export async function callTool(name, input) {
     }
     case "roster_teams": {
       const args = ["teams"];
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_member": {
+      const action = args_in.action;
+      if (!["init", "add", "edit", "remove"].includes(action)) {
+        return err(`roster_member: "action" must be one of init, add, edit, remove, got ${JSON.stringify(action)}`);
+      }
+      if (action === "init") {
+        if (!args_in.level) return err('roster_member: action "init" requires "level".');
+        if (!args_in.route) return err('roster_member: action "init" requires "route".');
+      }
+      if (action === "add" && !args_in.role) return err('roster_member: action "add" requires "role".');
+      if ((action === "edit" || action === "remove") && !args_in.member) {
+        return err(`roster_member: action "${action}" requires "member".`);
+      }
+
+      const args = [action];
+      pushArg(args, "level", args_in.level);
+      if (action === "init") {
+        pushArg(args, "route", args_in.route);
+        pushArg(args, "layout", args_in.layout);
+      }
+      if (action === "add") pushArg(args, "role", args_in.role);
+      if (action === "edit" || action === "remove") pushArg(args, "member", args_in.member);
+      if (action === "edit") pushArg(args, "role", args_in.role);
+      if (action === "add" || action === "edit") {
+        pushArg(args, "model", args_in.model);
+        pushArg(args, "effort", args_in.effort);
+        pushArg(args, "route", args_in.route);
+        pushArg(args, "auto-mode", args_in.auto_mode);
+      }
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_config": {
+      const target = args_in.target;
+      if (target !== "layout" && target !== "alias") {
+        return err(`roster_config: "target" must be one of layout, alias, got ${JSON.stringify(target)}`);
+      }
+      const args = [target];
+      pushArg(args, "level", args_in.level);
+      if (target === "layout") {
+        pushArg(args, "layout", args_in.layout);
+      } else {
+        pushArg(args, "set", args_in.set);
+        pushFlag(args, "clear", args_in.clear);
+        pushArg(args, "team", args_in.team);
+      }
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_create": {
+      const mode = args_in.mode;
+      if (mode !== "plan" && mode !== "spawn" && mode !== "commit") {
+        return { content: [{ type: "text", text: `roster_create: "mode" must be one of plan, spawn, commit, got ${JSON.stringify(mode)}` }], isError: true };
+      }
+      if (mode === "commit" && typeof args_in.verified !== "string") {
+        return { content: [{ type: "text", text: 'roster_create: mode "commit" requires "verified" (a JSON array string).' }], isError: true };
+      }
+      const args = ["create", `--${mode}`];
+      pushArg(args, "team", args_in.team);
+      pushArg(args, "roster-level", args_in.roster_level);
+      if (mode === "spawn") {
+        pushArg(args, "mode", args_in.layout_mode);
+      }
+      if (mode === "commit") {
+        pushArg(args, "transport", args_in.transport);
+        pushArg(args, "verified", args_in.verified);
+        pushArg(args, "orchestrator-pid", args_in.orchestrator_pid);
+        pushFlag(args, "partial", args_in.partial);
+      }
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_layout_splits": {
+      const args = ["layout-splits"];
+      pushArg(args, "mode", args_in.mode);
+      pushArg(args, "pane-count", args_in.pane_count);
+      pushFlag(args, "next", args_in.next);
+      pushArg(args, "created", args_in.created);
+      pushFlag(args, "apply", args_in.apply);
+      pushArg(args, "target", args_in.target);
+      pushArg(args, "direction", args_in.direction);
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args, new Set([3]));
+    }
+    case "roster_disband": {
+      const mode = args_in.mode || "plan";
+      if (mode !== "plan" && mode !== "commit" && mode !== "keep-sessions") {
+        return { content: [{ type: "text", text: `roster_disband: "mode" must be one of plan, commit, keep-sessions, got ${JSON.stringify(mode)}` }], isError: true };
+      }
+      const args = ["disband"];
+      if (mode === "commit") args.push("--commit");
+      else if (mode === "keep-sessions") args.push("--keep-sessions");
+      pushArg(args, "team", args_in.team);
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_disband_close": {
+      if (args_in.confirm !== true) {
+        return {
+          content: [{ type: "text", text: 'roster_disband_close: "confirm" must be true, and only after the user has been shown the close list and agreed.' }],
+          isError: true,
+        };
+      }
+      if (typeof args_in.plan_token !== "string" || !args_in.plan_token.trim()) {
+        return {
+          content: [{ type: "text", text: 'roster_disband_close: "plan_token" is required — pass the close_token from a preceding roster_disband mode:plan call.' }],
+          isError: true,
+        };
+      }
+      const args = ["disband", "--close", "--confirm", "--plan-token", args_in.plan_token];
+      pushArg(args, "team", args_in.team);
+      pushFlag(args, "allow-global", args_in.allow_global);
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_resync": {
+      const args = ["resync"];
+      pushFlag(args, "dry-run", args_in.dry_run);
+      pushArg(args, "team", args_in.team);
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_move": {
+      if (typeof args_in.name !== "string" || !args_in.name.trim()) {
+        return { content: [{ type: "text", text: 'roster_move: "name" is required.' }], isError: true };
+      }
+      const args = ["move", args_in.name];
+      pushArg(args, "tab", args_in.tab);
+      pushArg(args, "split", args_in.split);
+      pushFlag(args, "new-tab", args_in.new_tab);
+      pushArg(args, "workspace", args_in.workspace);
+      pushFlag(args, "new-workspace", args_in.new_workspace);
+      pushFlag(args, "dry-run", args_in.dry_run);
+      pushFlag(args, "allow-global", args_in.allow_global);
+      pushArg(args, "team", args_in.team);
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_history": {
+      const args = ["history"];
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_spawn_one": {
+      if (typeof args_in.role !== "string" || !args_in.role.trim()) {
+        return { content: [{ type: "text", text: 'roster_spawn_one: "role" is required.' }], isError: true };
+      }
+      const args = ["spawn-one", args_in.role];
+      pushFlag(args, "dry-run", args_in.dry_run);
+      pushFlag(args, "allow-global", args_in.allow_global);
+      pushArg(args, "team", args_in.team);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }

@@ -29,6 +29,15 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-route-gate.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "mcp__ah__roster_disband_close",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-disband-close-gate.mjs\""
+          }
+        ]
       }
     ],
     "SubagentStop": [

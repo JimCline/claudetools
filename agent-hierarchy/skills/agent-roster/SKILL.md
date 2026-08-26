@@ -1,6 +1,6 @@
 ---
 name: agent-roster
-description: Define, edit, or inspect the agent-hierarchy roster (which roles exist, their model/effort/route), spawn the roster as a live Team, or disband one. Use for /agent-roster, for "set up my team", "add a reviewer peer", "spawn the team", or "disband the team".
+description: Define, edit, or inspect the agent-hierarchy roster (which roles exist, their model/effort/route), spawn the roster as a live Team, or disband one. Use for /agent-roster, for "set up my team", "add a reviewer peer", "spawn the team", "spawn the architect", "spawn just the reviewer", or "disband the team".
 ---
 
 # agent-roster
@@ -42,7 +42,15 @@ from the roster.
 
 ## Command surface
 
-All subcommands run via `node "$CLAUDE_PLUGIN_ROOT/hooks/roster.mjs" <cmd> ...`
+Each `roster_*` MCP tool maps 1:1 to `node roster.mjs <verb>` with the same
+flags (snake_case tool params ↔ kebab-case CLI flags, e.g. `auto_mode` ↔
+`--auto-mode`). Prefer the tool — `mcp__ah__roster_<verb>` — whenever the `ah`
+MCP server is connected; the model should never need Bash for any roster
+operation. If the server is not connected, fall back to Bash with the CLI
+form below using the same flag mapping. That is the entire fallback story;
+this file does not document both forms per verb.
+
+All CLI subcommands run via `node "$CLAUDE_PLUGIN_ROOT/hooks/roster.mjs" <cmd> ...`
 with `--cwd "$(pwd)"` (or the relevant repo path). Level may be given as
 `--level <L>` or as the first bare word: `roster.mjs add repo --role architect`
 ≡ `--level repo`.
@@ -55,37 +63,47 @@ Omitted, everything is the default team exactly as before — most sessions
 never pass it. See § Create for what happens when a bare `create` collides
 with someone else's live default Team.
 
-- `show [--level global|repo|repo-user]` — resolved roster, or one level's raw file.
-- `init --level <L> --route <peer|subagent> [--layout auto|columns|grid]` — replaces that level's roster wholesale.
-- `add --role <R> [--level L] [--model M] [--effort E] [--route peer|subagent] [--auto-mode A]`
-- `edit --member <NAME> [--level L] [--role R] [--model M] [--effort E] [--route ...] [--auto-mode A]`
-- `remove --member <NAME> [--level L]`
-- `layout [--level <L>] [--layout auto|columns|grid]` — show or set the team-wide pane layout.
-- `create [--plan | --commit ... | --spawn --mode <m>]` — see § Create.
-- `layout-splits --mode <m> --pane-count <n> [--self <id>] [--cwd <p>] [--next|--apply …]` — performs
+- `show [--level global|repo|repo-user]` (`mcp__ah__roster_show`) — resolved roster, or one level's raw file.
+- `init --level <L> --route <peer|subagent> [--layout auto|columns|grid]` (`mcp__ah__roster_member`, `action: "init"`) — replaces that level's roster wholesale.
+- `add --role <R> [--level L] [--model M] [--effort E] [--route peer|subagent] [--auto-mode A]` (`mcp__ah__roster_member`, `action: "add"`)
+- `edit --member <NAME> [--level L] [--role R] [--model M] [--effort E] [--route ...] [--auto-mode A]` (`mcp__ah__roster_member`, `action: "edit"`)
+- `remove --member <NAME> [--level L]` (`mcp__ah__roster_member`, `action: "remove"`)
+- `layout [--level <L>] [--layout auto|columns|grid]` (`mcp__ah__roster_config`, `target: "layout"`) — show or set the team-wide pane layout.
+- `create [--plan | --commit ... | --spawn --mode <m>]` (`mcp__ah__roster_create`, `mode: plan|spawn|commit`) — see § Create.
+- `layout-splits --mode <m> --pane-count <n> [--self <id>] [--cwd <p>] [--next|--apply …]` (`mcp__ah__roster_layout_splits`) — performs
   the herdr layout phase. Used by § Create phase 3a. Not a user-facing command.
 - `next-split --mode <m> --pane-count <n> --self <id> --created <json> --geometry <json>` — the pure
-  decision function, exposed for testing. The skill does not call it; `layout-splits` does.
-- `disband [--commit|--keep-sessions]` — tears down the Team. Bare `disband` emits close commands
-  (read-only); `--commit` removes `team.json` after the skill has actually run them; `--keep-sessions`
-  removes `team.json` without closing anything. See § disband.
-- `resync [--dry-run]` — re-derives every peer member's herdr pane/tab/workspace location from
+  decision function, exposed for testing. The skill does not call it; `layout-splits` does. No
+  tool wraps it — it is unreachable from the skill, so it never forces a Bash fallback; tests keep
+  calling the CLI directly.
+- `disband [--commit|--keep-sessions]` (`mcp__ah__roster_disband`, `mode: plan|commit|keep-sessions`, default `plan`) —
+  tears down the Team. Bare `disband`/`mode: plan` emits close commands (read-only); `--commit`
+  removes `team.json` after the closes have actually run; `--keep-sessions` removes `team.json`
+  without closing anything. **Never closes anything itself** — see § disband and § disband's close
+  step below for the separate, destructive `roster_disband_close`.
+- `disband --close --confirm --plan-token <tok>` (`mcp__ah__roster_disband_close`) — **destructive**:
+  closes the live sessions the preceding plan call named. Gated by default: the harness itself
+  prompts the user for `roster_disband_close` (see § disband step 3). Never call it without the
+  `close_token` from a `disband`/`mode: plan` call immediately before it.
+- `resync [--dry-run]` (`mcp__ah__roster_resync`) — re-derives every peer member's herdr pane/tab/workspace location from
   herdr's live topology and rewrites `team.json`. See § resync / move.
 - `move <name> --tab <id> --split right|down | --new-tab [--workspace <id>] | --new-workspace
-  [--dry-run]` — relocates a member's pane via `herdr pane move`, then resyncs its record. See
-  § resync / move.
-- `spawn-one <role> [--cwd <path>] [--dry-run] [--allow-global]` — stands up ONE missing or dead
+  [--dry-run] [--allow-global]` (`mcp__ah__roster_move`) — relocates a member's pane via `herdr pane move`, then resyncs its record.
+  Needs `--allow-global` whenever the roster resolves at the global level, exactly like `spawn-one`/`create --spawn` (§4.4) —
+  `move` relocates a live agent pane, so it gets the same confirm-gate protection. See § resync / move.
+- `spawn-one <role> [--cwd <path>] [--dry-run] [--allow-global]` (`mcp__ah__roster_spawn_one`) — stands up ONE missing or dead
   peer and persists it into `team.json`, without touching any other member. Prefer this over
   Create when a Team already exists and only one role needs (re)starting — Create refuses to run
-  against a live Team. See § spawn-one.
-- `alias [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]` — read, set, or
+  against a live Team. The direct match for "spawn the architect" / "spawn just the reviewer"
+  style requests. See § spawn-one.
+- `alias [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]` (`mcp__ah__roster_config`, `target: "alias"`) — read, set, or
   clear the repo's `teamAlias` (the team-prefix members are named under). No `--set`/`--clear`
   reads the currently-effective alias; `--level` is required with `--set`/`--clear` when it can't
   be inferred from an already-resolving roster. Never accepts `--level global` — an alias is
   repo-scoped. `--set`/`--clear` refuse while `--team` is active (the team name already is
   that team's prefix); `alias` (read-only) reports both the config alias and the active team
   scope, distinguished.
-- `teams [--cwd <path>]` — read-only: every team file in this hierarchy dir (default plus every
+- `teams [--cwd <path>]` (`mcp__ah__roster_teams`) — read-only: every team file in this hierarchy dir (default plus every
   named team), with member count, orchestrator pid, whether that pid is alive, and whether it's
   this session's own. Use it to see a stale or a sibling orchestrator's Team before `create`.
 
@@ -164,6 +182,19 @@ live Team, verified via check-in. `roster.mjs create` only ever does file
 I/O; spawning sessions and calling `ListAgents` are things only this skill's
 running session can do — drive the sequence yourself:
 
+**Reuse a recent team (spec 0015).** Before planning a Team from the roster
+files, offer to reuse a recent one: run `roster.mjs history --json`
+(`mcp__ah__roster_history`), and if it returns any entries, present them via
+**AskUserQuestion** (label, role list, active/idle, last-used) alongside a
+"start fresh from the roster" option. If the user picks an entry, run
+`roster.mjs create --from <id> --commit --spawn` (its own id, not the alias)
+in place of the roster-driven plan below — same downstream steps (layout
+confirmation, spawn, check-in) apply unchanged. This capability is skill-only
+— `--from` composes with `roster.mjs create` directly and is deliberately
+**not** an MCP tool, for the same reason `create --spawn`/`--commit` aren't
+skipped over: recreating a Team still needs 0009's confirm gates, which only
+fire on the CLI/skill path.
+
 0. **Confirm the layout.** Read the roster's `layout` (via `roster.mjs show`;
    it is `auto` unless set). Ask the user to confirm it for this Team with
    AskUserQuestion, marking the stored value "(current default)": `auto` —
@@ -235,7 +266,7 @@ running session can do — drive the sequence yourself:
 
    **`auto` mode:** run one command:
 
-       roster.mjs create --spawn --mode <layout_plan.mode> [--roster-level <L>] [--orchestrator-pid <pid>] --cwd <repo root>
+       roster.mjs create --spawn --mode <layout_plan.mode> [--roster-level <L>] --cwd <repo root>
 
    It resolves the roster, runs the layout phase, asserts one distinct
    non-empty target id per peer-routed member before launching anything, then
@@ -395,7 +426,7 @@ Bare `disband` tears the Team all the way down by default. It is a **two-call
 contract**, mirroring `create`'s `--plan`/`--commit` split, so removal cannot
 happen before the real closes do:
 
-1. Run `roster.mjs disband`. Read-only — `team.json` is untouched. For the
+1. Run `roster_disband` (`mode: plan`, or bare `roster.mjs disband`). Read-only — `team.json` is untouched. Its output now carries a `close_token`, bound to this exact plan — keep it, step 3 needs it. For the
    herdr transport it resyncs the member list **in memory** first (never
    persisted), so the plan targets each member's *current* pane rather than
    the one it was spawned into — you do **not** need to run `resync` first;
@@ -410,18 +441,29 @@ happen before the real closes do:
    nothing inside `roster.mjs` can close that window, it's bounded by how
    long your step-2 confirmation takes.
 2. Prompt the user once: "this will close N live sessions — proceed?",
-   naming the members. Stop here if they decline.
-3. Run every non-null `command` in **one** Bash invocation and report, per
-   member, whether its session actually closed or the close call failed
-   (e.g. the pane was already gone) — a failed close is reported, not fatal.
-4. Only now run `roster.mjs disband --commit` to remove `team.json`. If it
-   reports no active team (e.g. a retry after step 4 already ran), that's
-   fine — the teardown already completed.
+   naming the members. Stop here if they decline. This conversational
+   confirmation is still required and is not replaced by step 3's harness
+   prompt below — the two are independent layers, both intended.
+3. Call `roster_disband_close` with `confirm: true` and the `close_token`
+   from step 1. The harness will *also* prompt the user interactively for
+   `roster_disband_close` — every time, unconditionally — before it runs; that
+   prompt is enforced by the plugin itself and cannot be satisfied by this
+   session on its own. Report, per member, whether its session actually
+   closed or the close call failed (e.g. the pane was already gone) — a
+   failed close is reported, not fatal. If the token is stale (the topology
+   changed since step 1), it refuses — go back to step 1, plan again, and
+   redo steps 2–3 with the fresh token.
+4. Only now run `roster_disband` `mode: commit` (or `roster.mjs disband --commit`)
+   to remove `team.json`. If it reports no active team (e.g. a retry after
+   step 4 already ran), that's fine — the teardown already completed.
 
-Never call `--commit` before running the closes from the plan call, and never
-skip the plan call's confirmation step — folding the two into one call is
-exactly what would leave `team.json` gone before a declined prompt or a
-failed close could be honored.
+Never call `mode: commit` before running the close from the plan call, and
+never skip the plan call's confirmation step — folding plan → confirm → close
+→ commit into fewer calls is exactly what would leave `team.json` gone before
+a declined prompt or a failed close could be honored. `roster_disband`'s
+non-destructive modes (`plan`/`commit`/`keep-sessions`) never close anything;
+only `roster_disband_close` does, and it is deliberately a separate tool so it
+can carry its own always-ask permission gate without gating the harmless modes.
 
 **`roster.mjs disband --keep-sessions`** — the safe form: removes `team.json`
 and closes nothing, since sessions may hold work that already cost tokens.

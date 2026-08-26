@@ -111,8 +111,13 @@ notify("notifications/initialized", {});
 
 const toolsList = await call("tools/list", {});
 const names = (toolsList && toolsList.result && toolsList.result.tools || []).map((t) => t.name).sort();
-const expected = ["msg_index", "msg_list", "msg_new", "msg_roster", "roster_show", "roster_teams"];
-report("tools/list returns exactly the 6-tool inventory", JSON.stringify(names) === JSON.stringify(expected), JSON.stringify(names));
+const expected = [
+  "msg_index", "msg_list", "msg_new", "msg_roster",
+  "roster_config", "roster_create", "roster_disband", "roster_disband_close",
+  "roster_history", "roster_layout_splits", "roster_member", "roster_move",
+  "roster_resync", "roster_show", "roster_spawn_one", "roster_teams",
+].sort();
+report("tools/list returns exactly the 16-tool inventory (spec 0015/0016/0017)", JSON.stringify(names) === JSON.stringify(expected), JSON.stringify(names));
 
 const ping = await call("ping", {});
 report("ping answered", Boolean(ping && ping.result && typeof ping.result === "object" && !ping.error), JSON.stringify(ping));
@@ -258,6 +263,37 @@ console.log(okA && okB && okC && okD ? 'PASS' : 'FAIL ' + JSON.stringify({okA,ok
 check "mapExecResult: exit 0 + stderr appended, exit 2 -> isError w/ exit=2 prefix, spawn failure names script path, clean exit 0 untouched" \
   '[ "$MAP_CHECK" = "PASS" ]'
 
+# ---- spec 0016 §5: an expected non-zero exit (layout-splits' partial exit 3) must surface as
+# usable data, not an error — full stdout payload intact, exit code prefixed like exit=2 already
+# is. Must fail before this change (absorbed into the generic isError:true else-branch) and pass
+# after — a version that merely stops erroring but drops the payload does not pass.
+EXPECTED_NONZERO_CHECK="$(node --input-type=module -e "
+import { mapExecResult } from '$SERVER';
+const partial = mapExecResult({code:3, stdout:'{\"complete\":false,\"panes\":[\"P1\"],\"failed_at\":2}', stderr:'', scriptPath:'x', expectedNonZero: new Set([3])});
+const okPartial = !partial.isError && partial.content[0].text.startsWith('exit=3') && partial.content[0].text.includes('\"complete\":false') && partial.content[0].text.includes('\"panes\":[\"P1\"]') && partial.content[0].text.includes('\"failed_at\":2');
+const unexpected = mapExecResult({code:3, stdout:'{\"complete\":false}', stderr:'boom', scriptPath:'x'});
+const okUnexpected = unexpected.isError === true;
+console.log(okPartial && okUnexpected ? 'PASS' : 'FAIL ' + JSON.stringify({okPartial,okUnexpected}));
+" 2>&1)"
+check "mapExecResult: exit 3 in expectedNonZero -> not isError, full payload preserved, exit=3 prefixed; exit 3 without expectedNonZero -> still isError (every other tool unaffected)" \
+  '[ "$EXPECTED_NONZERO_CHECK" = "PASS" ]'
+
+# ---- callTool pre-checks that must refuse BEFORE spawning the CLI at all (spec 0016 §4.2/§4.5)
+PRECHECK="$(node --input-type=module -e "
+import { callTool } from '$SERVER';
+const noVerified = await callTool('roster_create', { cwd: '/tmp', mode: 'commit' });
+const okNoVerified = noVerified.isError === true && noVerified.content[0].text.toLowerCase().includes('verified');
+const noConfirm = await callTool('roster_disband_close', { cwd: '/tmp', plan_token: 'x' });
+const okNoConfirm = noConfirm.isError === true && noConfirm.content[0].text.toLowerCase().includes('confirm');
+const falseConfirm = await callTool('roster_disband_close', { cwd: '/tmp', confirm: false, plan_token: 'x' });
+const okFalseConfirm = falseConfirm.isError === true;
+const noToken = await callTool('roster_disband_close', { cwd: '/tmp', confirm: true });
+const okNoToken = noToken.isError === true && noToken.content[0].text.toLowerCase().includes('plan_token');
+console.log(okNoVerified && okNoConfirm && okFalseConfirm && okNoToken ? 'PASS' : 'FAIL ' + JSON.stringify({okNoVerified,okNoConfirm,okFalseConfirm,okNoToken}));
+" 2>&1)"
+check "callTool: roster_create mode:commit without verified, and roster_disband_close without confirm:true/plan_token, all refuse before invoking the CLI" \
+  '[ "$PRECHECK" = "PASS" ]'
+
 # ---------------------------------------------------------------------------
 # Test 5: directive/doc static greps.
 # ---------------------------------------------------------------------------
@@ -366,6 +402,166 @@ check "plugin.json and marketplace.json mcpServers.ah blocks are deep-equal" \
 GATE_DIFF_HITS="$(git -C "$GIT_ROOT" diff --name-only HEAD -- agent-hierarchy/hooks/gate.mjs agent-hierarchy/hooks/lib-gate.mjs)"
 check "gate.mjs and lib-gate.mjs are untouched by this spec's changes" \
   '[ -z "$GATE_DIFF_HITS" ]'
+
+# ---------------------------------------------------------------------------
+# roster_create's `verified` JSON, containing nested double quotes and an
+# apostrophe, reaches roster.mjs's --verified argv element unmodified — argv,
+# not a shell string, so no re-interpretation or escaping loss.
+# ---------------------------------------------------------------------------
+cat > "$TMP/verified-roundtrip.mjs" <<'JSEOF'
+import { readFileSync } from "node:fs";
+const { callTool } = await import(process.env.SERVER_PATH);
+const cwd = process.env.TEST_REPO;
+const weirdName = 'weird "quoted" and \'apostrophe\' name';
+const verified = JSON.stringify([{ role: "architect", name: weirdName, model: "opus", route: "peer", autoMode: null }]);
+const res = await callTool("roster_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo" });
+const ok1 = !res.isError;
+const team = JSON.parse(readFileSync(cwd + "/.claude/hierarchy/team.json", "utf8"));
+const ok2 = team.members[0].name === weirdName;
+console.log(ok1 && ok2 ? "PASS" : "FAIL " + JSON.stringify({ ok1, ok2, got: team.members && team.members[0] && team.members[0].name }));
+JSEOF
+VERIFIED_ROUNDTRIP="$(SERVER_PATH="$SERVER" TEST_REPO="$REPO_B" node "$TMP/verified-roundtrip.mjs" 2>&1)"
+check "roster_create: verified JSON with nested quotes/apostrophes reaches --verified unmodified" \
+  '[ "$VERIFIED_ROUNDTRIP" = "PASS" ]'
+
+# ---------------------------------------------------------------------------
+# spec 0017 §7: roster_member / roster_config callTool pre-checks that must
+# refuse BEFORE spawning the CLI (mirrors the roster_create/roster_disband_close
+# block above).
+# ---------------------------------------------------------------------------
+PRECHECK2="$(node --input-type=module -e "
+import { callTool } from '$SERVER';
+const badAction = await callTool('roster_member', { cwd: '/tmp', action: 'bogus' });
+const okBadAction = badAction.isError === true && badAction.content[0].text.toLowerCase().includes('action');
+const initNoLevel = await callTool('roster_member', { cwd: '/tmp', action: 'init', route: 'peer' });
+const okInitNoLevel = initNoLevel.isError === true && initNoLevel.content[0].text.toLowerCase().includes('level');
+const initNoRoute = await callTool('roster_member', { cwd: '/tmp', action: 'init', level: 'repo' });
+const okInitNoRoute = initNoRoute.isError === true && initNoRoute.content[0].text.toLowerCase().includes('route');
+const addNoRole = await callTool('roster_member', { cwd: '/tmp', action: 'add' });
+const okAddNoRole = addNoRole.isError === true && addNoRole.content[0].text.toLowerCase().includes('role');
+const editNoMember = await callTool('roster_member', { cwd: '/tmp', action: 'edit' });
+const okEditNoMember = editNoMember.isError === true && editNoMember.content[0].text.toLowerCase().includes('member');
+const removeNoMember = await callTool('roster_member', { cwd: '/tmp', action: 'remove' });
+const okRemoveNoMember = removeNoMember.isError === true && removeNoMember.content[0].text.toLowerCase().includes('member');
+const badTarget = await callTool('roster_config', { cwd: '/tmp', target: 'bogus' });
+const okBadTarget = badTarget.isError === true && badTarget.content[0].text.toLowerCase().includes('target');
+const ok = okBadAction && okInitNoLevel && okInitNoRoute && okAddNoRole && okEditNoMember && okRemoveNoMember && okBadTarget;
+console.log(ok ? 'PASS' : 'FAIL ' + JSON.stringify({okBadAction,okInitNoLevel,okInitNoRoute,okAddNoRole,okEditNoMember,okRemoveNoMember,okBadTarget}));
+" 2>&1)"
+check "callTool: roster_member bad/missing action, per-action missing-required fields, and roster_config bad/missing target all refuse before invoking the CLI" \
+  '[ "$PRECHECK2" = "PASS" ]'
+
+# ---------------------------------------------------------------------------
+# spec 0017 §7/§9: argv equivalence, per action/target (6 cases) — the
+# collapsed tool must produce the same effect as the pre-collapse tool did.
+# Compared against a direct `node roster.mjs <verb> …` run with the same
+# inputs, on two identically-named (same basename) fresh repos so derived
+# member/alias prefixes match.
+# ---------------------------------------------------------------------------
+cat > "$TMP/argv-equivalence.mjs" <<'JSEOF'
+import { spawnSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
+
+const { callTool } = await import(process.env.SERVER_PATH);
+const rosterCli = process.env.ROSTER_CLI;
+const base = process.env.EQ_BASE;
+
+function cli(verb, flags, cwd) {
+  const r = spawnSync(process.execPath, [rosterCli, verb, ...flags, "--cwd", cwd], { encoding: "utf8" });
+  return { code: r.status, out: r.stdout };
+}
+function pair(name) {
+  const a = `${base}/${name}/a/proj`;
+  const b = `${base}/${name}/b/proj`;
+  mkdirSync(a, { recursive: true });
+  mkdirSync(b, { recursive: true });
+  spawnSync("git", ["init", "-q"], { cwd: a });
+  spawnSync("git", ["init", "-q"], { cwd: b });
+  return { a, b };
+}
+function eq(mcpResult, cliResult, a, b) {
+  if (mcpResult.isError) return { ok: false, why: "mcp errored: " + mcpResult.content[0].text };
+  if (cliResult.code !== 0) return { ok: false, why: "cli errored: " + cliResult.out };
+  const mcpText = mcpResult.content[0].text.split(a).join("<CWD>");
+  const cliText = cliResult.out.split(b).join("<CWD>");
+  let mcpJson, cliJson;
+  try { mcpJson = JSON.parse(mcpText); } catch { return { ok: false, why: "mcp output not JSON: " + mcpText }; }
+  try { cliJson = JSON.parse(cliText); } catch { return { ok: false, why: "cli output not JSON: " + cliText }; }
+  const same = JSON.stringify(mcpJson) === JSON.stringify(cliJson);
+  return same ? { ok: true } : { ok: false, why: `mismatch: mcp=${JSON.stringify(mcpJson)} cli=${JSON.stringify(cliJson)}` };
+}
+
+const results = {};
+
+{
+  const { a, b } = pair("init");
+  const mcpRes = await callTool("roster_member", { cwd: a, action: "init", level: "repo", route: "peer", layout: "columns" });
+  const cliRes = cli("init", ["--level", "repo", "--route", "peer", "--layout", "columns"], b);
+  results.init = eq(mcpRes, cliRes, a, b);
+}
+{
+  const { a, b } = pair("add");
+  cli("init", ["--level", "repo", "--route", "peer"], a);
+  cli("init", ["--level", "repo", "--route", "peer"], b);
+  const mcpRes = await callTool("roster_member", { cwd: a, action: "add", level: "repo", role: "implementor", model: "sonnet", effort: "medium", route: "peer", auto_mode: "acceptEdits" });
+  const cliRes = cli("add", ["--level", "repo", "--role", "implementor", "--model", "sonnet", "--effort", "medium", "--route", "peer", "--auto-mode", "acceptEdits"], b);
+  results.add = eq(mcpRes, cliRes, a, b);
+}
+{
+  const { a, b } = pair("edit");
+  cli("init", ["--level", "repo", "--route", "peer"], a);
+  cli("init", ["--level", "repo", "--route", "peer"], b);
+  const setupA = cli("add", ["--level", "repo", "--role", "architect"], a);
+  cli("add", ["--level", "repo", "--role", "architect"], b);
+  const member = JSON.parse(setupA.out).members?.[0]?.name || JSON.parse(setupA.out).member?.name;
+  const mcpRes = await callTool("roster_member", { cwd: a, action: "edit", level: "repo", member, model: "opus" });
+  const cliRes = cli("edit", ["--level", "repo", "--member", member, "--model", "opus"], b);
+  results.edit = eq(mcpRes, cliRes, a, b);
+}
+{
+  const { a, b } = pair("remove");
+  cli("init", ["--level", "repo", "--route", "peer"], a);
+  cli("init", ["--level", "repo", "--route", "peer"], b);
+  const setupA = cli("add", ["--level", "repo", "--role", "architect"], a);
+  cli("add", ["--level", "repo", "--role", "architect"], b);
+  const member = JSON.parse(setupA.out).members?.[0]?.name || JSON.parse(setupA.out).member?.name;
+  const mcpRes = await callTool("roster_member", { cwd: a, action: "remove", level: "repo", member });
+  const cliRes = cli("remove", ["--level", "repo", "--member", member], b);
+  results.remove = eq(mcpRes, cliRes, a, b);
+}
+{
+  const { a, b } = pair("layout");
+  cli("init", ["--level", "repo", "--route", "peer"], a);
+  cli("init", ["--level", "repo", "--route", "peer"], b);
+  const mcpRes = await callTool("roster_config", { cwd: a, target: "layout", level: "repo", layout: "grid" });
+  const cliRes = cli("layout", ["--level", "repo", "--layout", "grid"], b);
+  results.layout = eq(mcpRes, cliRes, a, b);
+}
+{
+  // Read-only (no set/clear) so --team doesn't collide with 0011 §7.4's
+  // set/clear-vs-active-team-scope refusal — this is the call shape that
+  // actually exercises `team`, the one field §4.1 forwards for "alias" and
+  // withholds for "layout".
+  const { a, b } = pair("alias");
+  const mcpRes = await callTool("roster_config", { cwd: a, target: "alias", level: "repo", team: "eqteam" });
+  const cliRes = cli("alias", ["--level", "repo", "--team", "eqteam"], b);
+  results.alias = eq(mcpRes, cliRes, a, b);
+}
+
+const outFile = process.env.EQ_OUT_FILE;
+const { writeFileSync } = await import("node:fs");
+writeFileSync(outFile, JSON.stringify(results));
+console.log(JSON.stringify(results));
+JSEOF
+EQ_OUT_FILE="$TMP/eq-results.json"
+EQ_OUT="$(SERVER_PATH="$SERVER" ROSTER_CLI="$ROSTER_CLI" EQ_BASE="$TMP/eq" EQ_OUT_FILE="$EQ_OUT_FILE" node "$TMP/argv-equivalence.mjs" 2>&1)"
+for case_name in init add edit remove layout alias; do
+  check "roster_member/roster_config argv equivalence with pre-collapse CLI: $case_name" \
+    'node -e "const r=JSON.parse(require(\"fs\").readFileSync(\"$EQ_OUT_FILE\",\"utf8\")); process.exit(r.'"$case_name"' && r.'"$case_name"'.ok ? 0 : 1)"'
+done
+if ! [ -s "$EQ_OUT_FILE" ] || ! node -e "const r=JSON.parse(require('fs').readFileSync('$EQ_OUT_FILE','utf8')); process.exit(Object.values(r).every(v=>v&&v.ok)?0:1)" 2>/dev/null; then
+  echo "argv-equivalence detail: $EQ_OUT"
+fi
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"

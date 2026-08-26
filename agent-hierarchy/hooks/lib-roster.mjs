@@ -9,13 +9,51 @@
  * registry), so a back-import would form a cycle. Callers that also need
  * lib-hier.mjs helpers (hierarchyDir, newId, localIso, ...) are leaf scripts
  * (roster.mjs, sessionstart.mjs, pretooluse-route-gate.mjs) that import both
- * directly.
+ * directly. (pidAlive/ageSecOf/newId/localIso are duplicated below for
+ * teamIsLive/team-history — see the ponytail note at their definitions.)
  */
 
 import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
 import { delimiter, dirname, join } from "node:path";
 
 import { ROLES, VALID_MODELS_BY_ROLE } from "./lib-config.mjs";
+
+// ponytail: pidAlive/ageSecOf/newId/localIso duplicated from lib-hier.mjs rather than imported —
+// lib-hier.mjs imports readTeam/resolveMemberTeam/teamMemberByName from here, and a back-import
+// closes a real cycle (lib-config → lib-roster → lib-hier → lib-config) that broke lib-hier.mjs's
+// top-level `MSG_ROLES = [...ROLES]` with a TDZ ReferenceError. Upgrade path: hoist these four to
+// a leaf module both files import, if lib-hier.mjs ever needs its own copy to drift from this one.
+const pad = (n, w = 2) => String(n).padStart(w, "0");
+
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err && err.code === "EPERM";
+  }
+}
+
+function ageSecOf(ts, now = Date.now()) {
+  const t = Date.parse(ts);
+  return Number.isFinite(t) ? Math.max(0, (now - t) / 1000) : Infinity;
+}
+
+function newId(now = new Date()) {
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  let rand = "";
+  while (rand.length < 4) rand += randomBytes(4).readUInt32BE(0).toString(36);
+  return `${stamp}-${rand.slice(0, 4)}`;
+}
+
+function localIso(now = new Date()) {
+  const off = -now.getTimezoneOffset();
+  const sign = off >= 0 ? "+" : "-";
+  const abs = Math.abs(off);
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}
 
 /** A roster member's route: "peer" (SendMessage to a live session) or "subagent" (spawned in-process). */
 export const ROSTER_ROUTE_VALUES = ["peer", "subagent"];
@@ -116,13 +154,17 @@ export function readTeam(dir, team = null) {
   }
 }
 
-/** Atomic write: `<path>.tmp` then rename. `team` names which file (default when omitted). */
-export function writeTeam(dir, teamData, team = null) {
-  const path = teamPath(dir, team);
+/** Atomic write: `<path>.tmp` then rename, for any JSON file under `dir` (team.json, team-history.json). */
+function atomicWriteJson(path, data) {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(teamData, null, 2) + "\n", "utf8");
+  writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
   renameSync(tmp, path);
+}
+
+/** Atomic write: `<path>.tmp` then rename. `team` names which file (default when omitted). */
+export function writeTeam(dir, teamData, team = null) {
+  atomicWriteJson(teamPath(dir, team), teamData);
 }
 
 /** Unlink team.json (or a named team's file); no-op if absent. */
@@ -185,4 +227,140 @@ export function resolveMemberTeam(dir, name) {
     if (teamMemberNameSet(dir, team).has(name)) return { found: true, team };
   }
   return { found: false, team: null };
+}
+
+// ---------------------------------------------------------------- team history (spec 0015)
+
+// ponytail: 24h is a blunt fixed ceiling, not a config knob — see spec 0001 §5.3.
+/** A team is "live" when its orchestrator pid is alive and it isn't past the stale-age cutoff. */
+export const TEAM_STALE_AGE_SEC = 24 * 3600;
+
+/** Same predicate sessionstart.mjs's stale-team sweep uses. */
+export function teamIsLive(t) {
+  if (!t) return false;
+  const pid = t.orchestrator && t.orchestrator.pid;
+  return pidAlive(pid) && ageSecOf(t.created) <= TEAM_STALE_AGE_SEC;
+}
+
+/** `team-history.json` for this hierarchy dir. */
+export const historyPath = (dir) => join(dir, "team-history.json");
+
+/** `{version, teams:[]}`, always — a missing or corrupt file reads back as empty, never throws. */
+export function readHistory(dir) {
+  const path = historyPath(dir);
+  if (!existsSync(path)) return { version: 1, teams: [] };
+  try {
+    const data = JSON.parse(readFileSync(path, "utf8"));
+    return data && typeof data === "object" && Array.isArray(data.teams) ? data : { version: 1, teams: [] };
+  } catch {
+    return { version: 1, teams: [] };
+  }
+}
+
+/** Atomic write of the whole history document. */
+export function writeHistory(dir, h) {
+  atomicWriteJson(historyPath(dir), h);
+}
+
+/**
+ * Config-only fingerprint of a roster (spec 0015 §3.1): stable across re-runs of the same
+ * roster, so re-committing the same config updates one entry instead of piling up duplicates.
+ * `members` must already be normalized (normalizeMembers) — config fields only, role-sorted.
+ */
+export function fingerprint({ roster_level, transport, members }) {
+  const canonical = JSON.stringify({ roster_level: roster_level || null, transport: transport || null, members });
+  return createHash("sha256").update(canonical).digest("hex").slice(0, 8);
+}
+
+/**
+ * Strips a committed team's members down to the config that reproduces them (spec 0015 §3.1):
+ * role, model, effort, route, auto_mode. No name, ref, transport_id, or any other runtime/launch
+ * field. Sorted by role so fingerprint/output ordering is stable.
+ */
+export function normalizeMembers(members) {
+  const list = Array.isArray(members) ? members : [];
+  return list
+    .slice()
+    .sort((a, b) => ((a && a.role) || "").localeCompare((b && b.role) || ""))
+    .map((m) => {
+      const out = {};
+      for (const key of ["role", "model", "effort", "route"]) {
+        const value = m ? m[key] : undefined;
+        if (value !== undefined && value !== null) out[key] = value;
+      }
+      // Committed members carry camelCase `autoMode` (spec 0015 §3.1's evidence amendment — the
+      // spec's own on-disk example uses snake_case `auto_mode`, so store under that key regardless
+      // of which case the source member used).
+      const autoMode = m ? (m.auto_mode !== undefined ? m.auto_mode : m.autoMode) : undefined;
+      if (autoMode !== undefined && autoMode !== null) out.auto_mode = autoMode;
+      return out;
+    });
+}
+
+/** True iff `e` is the history entry behind the currently-live team for its alias. */
+export function historyEntryIsActive(dir, e) {
+  const t = readTeam(dir, e.alias || null);
+  return teamIsLive(t) && t.team_id === e.last_team_id;
+}
+
+/**
+ * Evict least-recently-used, never-active entries until at most 5 remain (spec 0015 §6, amended).
+ * `justUpsertedId` is excluded from candidates unconditionally, regardless of liveness — without
+ * this, the entry just inserted/refreshed by this same write is the only non-active candidate
+ * whenever the other 5 are all live, and gets evicted on the write that created it.
+ */
+function evictHistory(dir, h, justUpsertedId) {
+  while (h.teams.length > 5) {
+    const candidates = h.teams.filter((e) => e.id !== justUpsertedId && !historyEntryIsActive(dir, e));
+    if (!candidates.length) break;
+    candidates.sort((a, b) =>
+      a.last_used !== b.last_used
+        ? a.last_used < b.last_used
+          ? -1
+          : 1
+        : a.created_at !== b.created_at
+          ? a.created_at < b.created_at
+            ? -1
+            : 1
+          : a.id < b.id
+            ? -1
+            : 1,
+    );
+    const victim = candidates[0];
+    h.teams = h.teams.filter((t) => t !== victim);
+  }
+}
+
+/**
+ * Insert-or-refresh one history entry by fingerprint (spec 0015 §4). `members` must already be
+ * normalized. Returns `{capExceeded}` — true when a live team kept the cap from being enforced.
+ */
+export function upsertHistory(dir, { fingerprint: fp, alias, roster_level, transport, members, team_id }) {
+  const h = readHistory(dir);
+  const now = localIso();
+  const label = `${alias || "default"} (${members.length} role${members.length === 1 ? "" : "s"})`;
+  const idx = h.teams.findIndex((t) => t.fingerprint === fp);
+  let upsertedId;
+  if (idx === -1) {
+    upsertedId = newId();
+    h.teams.push({
+      id: upsertedId,
+      fingerprint: fp,
+      alias: alias || null,
+      label,
+      created_at: now,
+      last_used: now,
+      last_team_id: team_id || null,
+      roster_level: roster_level || null,
+      transport: transport || null,
+      members,
+    });
+  } else {
+    upsertedId = h.teams[idx].id;
+    h.teams[idx] = { ...h.teams[idx], alias: alias || null, label, last_used: now, last_team_id: team_id || null, roster_level: roster_level || null, transport: transport || null, members };
+  }
+  evictHistory(dir, h, upsertedId);
+  h.teams.sort((a, b) => (a.last_used < b.last_used ? 1 : -1));
+  writeHistory(dir, h);
+  return { capExceeded: h.teams.length > 5 };
 }

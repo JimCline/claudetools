@@ -48,8 +48,8 @@ import {
   resolveConfig,
   teamPrefix,
 } from "./lib-config.mjs";
-import { appendRosterRecord, buildStateBlock, cacheSessionModel, effectiveRoute, ensureHierarchyDir, pidAlive, ageSecOf, sessionModel, sweep, SWEEP_DAYS } from "./lib-hier.mjs";
-import { clearTeam, herdrOnPath, readTeam } from "./lib-roster.mjs";
+import { appendRosterRecord, buildStateBlock, cacheSessionModel, effectiveRoute, ensureHierarchyDir, sessionModel, sweep, SWEEP_DAYS } from "./lib-hier.mjs";
+import { clearTeam, herdrOnPath, readTeam, teamIsLive } from "./lib-roster.mjs";
 
 /** Feature A (spec 0010 §2.5): advisory only, never blocks. */
 function herdrWarning() {
@@ -67,16 +67,10 @@ function herdrWarning() {
   return null;
 }
 
-// ponytail: 24h is a blunt fixed ceiling, not a config knob — see spec 0001 §5.3.
-const TEAM_STALE_AGE_SEC = 24 * 3600;
-
 /** Clear an abandoned team.json (default, or the resolved team's file): dead orchestrator pid or past the age cap. Returns a note string, or null. */
 function sweepStaleTeam(dir, team = null) {
   const t = readTeam(dir, team);
-  if (!t) return null;
-  const orchestratorPid = t.orchestrator && t.orchestrator.pid;
-  const stale = !pidAlive(orchestratorPid) || ageSecOf(t.created) > TEAM_STALE_AGE_SEC;
-  if (!stale) return null;
+  if (!t || teamIsLive(t)) return null;
   clearTeam(dir, team);
   return `cleared stale team ${t.team_id}`;
 }
