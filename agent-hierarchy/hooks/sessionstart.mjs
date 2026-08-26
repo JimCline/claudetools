@@ -70,15 +70,15 @@ function herdrWarning() {
 // ponytail: 24h is a blunt fixed ceiling, not a config knob — see spec 0001 §5.3.
 const TEAM_STALE_AGE_SEC = 24 * 3600;
 
-/** Clear an abandoned team.json: dead orchestrator pid or past the age cap. Returns a note string, or null. */
-function sweepStaleTeam(dir) {
-  const team = readTeam(dir);
-  if (!team) return null;
-  const orchestratorPid = team.orchestrator && team.orchestrator.pid;
-  const stale = !pidAlive(orchestratorPid) || ageSecOf(team.created) > TEAM_STALE_AGE_SEC;
+/** Clear an abandoned team.json (default, or the resolved team's file): dead orchestrator pid or past the age cap. Returns a note string, or null. */
+function sweepStaleTeam(dir, team = null) {
+  const t = readTeam(dir, team);
+  if (!t) return null;
+  const orchestratorPid = t.orchestrator && t.orchestrator.pid;
+  const stale = !pidAlive(orchestratorPid) || ageSecOf(t.created) > TEAM_STALE_AGE_SEC;
   if (!stale) return null;
-  clearTeam(dir);
-  return `cleared stale team ${team.team_id}`;
+  clearTeam(dir, team);
+  return `cleared stale team ${t.team_id}`;
 }
 
 const input = await readHookInput();
@@ -105,7 +105,7 @@ if (!isSubagent(input)) {
       // roster is best-effort; the notice still goes out
     }
   } else {
-    const resolved = resolveConfig(cwd);
+    const resolved = resolveConfig(cwd, { sessionId: input.session_id || null });
     if (!resolved.configured) context = buildNudge(resolved);
     else if (resolved.enabled) {
       let dir = null;
@@ -123,9 +123,9 @@ if (!isSubagent(input)) {
         // Orchestrator's own session before it has written the registry, and never a
         // `--agent <role>` member session (excluded above by the `role` branch, but
         // guarded again here per the spec's exact condition).
-        if (!isTopLevelAgentSession(input)) teamSweepNote = sweepStaleTeam(dir);
+        if (!isTopLevelAgentSession(input)) teamSweepNote = sweepStaleTeam(dir, resolved.team);
         route = effectiveRoute(dir, resolved, input.session_id || null);
-        state = buildStateBlock(dir, resolved, teamPrefix(resolved.cwd), model, input.session_id || null, route);
+        state = buildStateBlock(dir, resolved, teamPrefix(resolved.cwd, resolved.team), model, input.session_id || null, route);
       } catch {
         // state block is best-effort; the directive still goes out
       }

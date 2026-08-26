@@ -32,6 +32,12 @@
  *                       [--dry-run] [--cwd <path>]
  *   roster.mjs spawn-one <role> [--cwd <path>] [--dry-run] [--allow-global]
  *   roster.mjs alias   [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]
+ *   roster.mjs teams   [--cwd <path>]
+ *
+ * `--team <name>` (spec 0011 §5.1) selects a named team's `teams/<name>.json`
+ * in place of the default `team.json`, on every subcommand above that touches
+ * a team file; omitted, everything resolves the default team exactly as
+ * before. `create --team <T>` (§5.2) writes `teams/<T>.json`.
  *
  * `--level`/the positional bare word are equivalent; `add`/`edit`/`remove`
  * with neither default to the level the roster currently resolves from
@@ -55,14 +61,14 @@ import { dirname } from "node:path";
 
 import { CONFIG_VERSION, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, teamPrefix, teamPrefixInfo, validateTeamAlias } from "./lib-config.mjs";
 import { ageSecOf, latestRoster, newId, localIso, pidAlive, ROSTER_FRESH_SEC } from "./lib-hier.mjs";
-import { clearTeam, herdrOnPath, readTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamPath, validateMember, validateRosterBlock, writeTeam } from "./lib-roster.mjs";
+import { clearTeam, herdrOnPath, listTeamNames, readTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamPath, validateMember, validateRosterBlock, writeTeam } from "./lib-roster.mjs";
 
 const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear"]);
-const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "cwd"]);
-const RESYNC_FLAGS = new Set(["dry-run", "cwd"]);
-const MOVE_FLAGS = new Set(["tab", "split", "new-tab", "workspace", "new-workspace", "dry-run", "cwd"]);
-const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global"]);
-const ALIAS_FLAGS = new Set(["level", "set", "clear", "cwd"]);
+const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "cwd", "team"]);
+const RESYNC_FLAGS = new Set(["dry-run", "cwd", "team"]);
+const MOVE_FLAGS = new Set(["tab", "split", "new-tab", "workspace", "new-workspace", "dry-run", "cwd", "team"]);
+const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global", "team"]);
+const ALIAS_FLAGS = new Set(["level", "set", "clear", "cwd", "team"]);
 
 function parseArgs(argv) {
   const opts = { _: [] };
@@ -103,7 +109,16 @@ const all = parseArgs(process.argv.slice(2));
 const cmd = all._.shift();
 const opts = all;
 const cwd = typeof opts.cwd === "string" ? opts.cwd : process.cwd();
-const repoBasename = teamPrefix(cwd);
+
+/** `--team <name>` (spec 0011 §5.1), validated once with the same validator 0010's alias uses. */
+function resolveTeamArg() {
+  if (typeof opts.team !== "string") return null;
+  const v = validateTeamAlias(opts.team);
+  if (!v.ok) fail(`--team: ${v.why}`);
+  return opts.team;
+}
+const teamArg = resolveTeamArg();
+const repoBasename = teamPrefix(cwd, teamArg);
 
 function levelArg() {
   if (typeof opts.level === "string") return opts.level;
@@ -120,7 +135,7 @@ function requireLevel(explicit) {
 function targetLevel() {
   const explicit = levelArg();
   if (explicit) return { level: requireLevel(explicit), wasDefaulted: false };
-  const resolved = resolveRoster(cwd);
+  const resolved = resolveRoster(cwd, teamArg);
   if (!resolved) fail("no roster resolves at any level — run `roster.mjs init` first");
   return { level: resolved.level, wasDefaulted: true };
 }
@@ -385,15 +400,53 @@ function runLayoutLoop({ mode, paneCount, self, splitCwd }) {
   return { panes, splits };
 }
 
+/** Spec 0011 §7.2: `--team <T>` cannot equal the effective unscoped prefix while a live default team
+    exists — two teams would derive the same peer names, and tagging cannot fix ListAgents' namespace. */
+function guardTeamPrefixCollision(dir, team) {
+  if (!team) return;
+  const unscoped = teamPrefix(cwd, null);
+  if (team !== unscoped) return;
+  const existing = readTeam(dir, null);
+  if (existing && pidAlive(existing.orchestrator && existing.orchestrator.pid)) {
+    fail(`--team ${JSON.stringify(team)} equals the effective default prefix "${unscoped}", and a live default team (${existing.team_id}) already exists — pick a different --team name`);
+  }
+}
+
+/** Spec 0011 §5.3: effective prefix, then -2, -3, ... until a name has no `teams/<name>.json` yet
+    and is itself `validateTeamAlias`-clean. The bare prefix is never offered here — the caller only
+    reaches this path because a live default team already holds it (§7.2 would refuse it anyway). */
+function deriveTeamCandidate(dir, basePrefix) {
+  for (let n = 2; n <= 1000; n++) {
+    const candidate = `${basePrefix}-${n}`;
+    if (validateTeamAlias(candidate).ok && !readTeam(dir, candidate)) return candidate;
+  }
+  fail(`could not derive a free --team candidate from "${basePrefix}" after 1000 attempts`);
+}
+
+/** Spec 0011 §5.3: the hybrid prompt. `create` cannot read stdin (it runs inside an agent session,
+    not a TTY), so a bare `create` colliding with someone else's live default team refuses with a
+    candidate name instead of guessing — SKILL.md surfaces this via AskUserQuestion. */
+function refuseLiveDefaultTeam(dir, existing) {
+  const basePrefix = teamPrefix(cwd, null);
+  const candidate = deriveTeamCandidate(dir, basePrefix);
+  fail(
+    `a live team "${existing.team_id}" (orchestrator pid ${existing.orchestrator && existing.orchestrator.pid}) already owns the default roster here. ` +
+      `Re-run with --team ${candidate} to accept the auto-derived name, or --team <your-name> to choose your own.`
+  );
+}
+
 /** Shared by `create --plan` and `create --spawn` (spec 0005 §9 item 1): resolve the roster, refuse/clear a stale Team, compute members[] + spawn shapes. */
 function resolveMembersPlan(dir) {
-  const existing = readTeam(dir);
+  const existing = readTeam(dir, teamArg);
   if (existing) {
     const stale = !pidAlive(existing.orchestrator && existing.orchestrator.pid) || Date.now() - Date.parse(existing.created) > 24 * 3600 * 1000;
-    if (!stale) fail(`a live Team ${existing.team_id} already exists — disband it first`);
-    clearTeam(dir);
+    if (!stale) {
+      if (!teamArg) refuseLiveDefaultTeam(dir, existing);
+      fail(`a live Team ${existing.team_id} already exists — disband it first`);
+    }
+    clearTeam(dir, teamArg);
   }
-  const resolved = resolveRoster(cwd);
+  const resolved = resolveRoster(cwd, teamArg);
   if (!resolved) fail("no roster resolves at any level — hand off to `roster.mjs init`");
   const transport = detectTransport();
   const plan = resolved.members.map((m) => {
@@ -409,6 +462,24 @@ function runShell(commandString) {
       resolvePromise({ err, stdout, stderr });
     });
   });
+}
+
+/**
+ * Best-effort peer-pane border label (spec 0014) — herdr's
+ * `show_agent_labels_on_pane_borders` is a boolean, not a template, so no
+ * config key composes "claude" + the member's name. If herdr ever gains a
+ * label template, this workaround should be retired, not extended. Must
+ * never throw: `launchMember()`'s caller (`:538`) maps a rejected promise to
+ * `launch_status: "failed"`, and a cosmetic label error is not a launch
+ * outcome.
+ */
+function labelPane(member) {
+  try {
+    herdrCall(["pane", "rename", member.transport_id, "claude", "-", member.name]);
+    return null;
+  } catch {
+    return "failed";
+  }
 }
 
 /**
@@ -435,7 +506,12 @@ async function launchMember(member, transport) {
       } catch {
         /* non-JSON success output — reported as ready with a null launch_result */
       }
-      return { ...member, launch_status: "ready", launch_result: parsed, retried };
+      const result = { ...member, launch_status: "ready", launch_result: parsed, retried };
+      if (member.transport_id && herdrOnPath()) {
+        const labelResult = labelPane(member);
+        if (labelResult) result.label = labelResult;
+      }
+      return result;
     }
     return { ...member, launch_status: "failed", launch_result: null, retried, error: errorText() };
   }
@@ -518,7 +594,7 @@ function warnLiveTeamAlias(dir, newPrefix) {
 /** Spec 0010 §7.2/§7.4: `spawn-one` after an alias change can add a member under a different
     prefix than the Team's existing members — no auto-rename, no auto-disband, just a warning. */
 function warnMixedPrefixSpawnOne(dir, member) {
-  const team = readTeam(dir);
+  const team = readTeam(dir, teamArg);
   if (!team || !Array.isArray(team.members) || team.members.length === 0) return;
   const newPrefix = prefixOfMemberName(member.name, member.role);
   const mismatched = team.members.find((m) => m.name && m.role && prefixOfMemberName(m.name, m.role) !== newPrefix);
@@ -544,7 +620,7 @@ function memberIsLive(dir, name) {
 async function createSpawn(dir) {
   const mode = opts.mode;
   if (!ROSTER_LAYOUT_VALUES.includes(mode)) fail(`--mode must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(mode)}`);
-  const preResolved = resolveRoster(cwd);
+  const preResolved = resolveRoster(cwd, teamArg);
   if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
   const { level, transport, layout_plan, members } = resolveMembersPlan(dir);
   const peerMembers = members.filter((m) => m.route === "peer");
@@ -557,6 +633,7 @@ async function createSpawn(dir) {
     const lm = launchByName.get(m.name);
     const entry = { role: m.role, name: m.name, model: m.model, route: m.route, autoMode: m.autoMode, transport_id: m.transport_id, launch_status: lm.launch_status, launch_result: lm.launch_result, retried: lm.retried };
     if (lm.error) entry.error = lm.error;
+    if (lm.label) entry.label = lm.label;
     // Spec 0008 §6: populate tab_id/workspace_id from the launch result when it carries them.
     // No new herdr query on this path — if absent, the first `resync` fills them in.
     const launchedPane = transport === "herdr" && lm.launch_result && lm.launch_result.result && lm.launch_result.result.pane;
@@ -576,8 +653,8 @@ try {
         const level = requireLevel(explicit);
         const path = rosterLevelPaths(cwd)[level];
         const data = readLevelFile(path);
-        const resolved = resolveRoster(cwd);
-        const effective = teamPrefixInfo(cwd);
+        const resolved = resolveRoster(cwd, teamArg);
+        const effective = teamPrefixInfo(cwd, teamArg);
         out({
           level,
           path,
@@ -588,7 +665,7 @@ try {
           effectiveTeamAliasSource: effective.source,
         });
       } else {
-        out(resolveRoster(cwd) || { roster: null });
+        out(resolveRoster(cwd, teamArg) || { roster: null });
       }
       break;
     }
@@ -698,9 +775,15 @@ try {
     case "alias": {
       for (const key of Object.keys(opts)) {
         if (key === "_") continue;
-        if (!ALIAS_FLAGS.has(key)) fail(`alias: unrecognized flag --${key} (use --level, --set, --clear, or --cwd)`);
+        if (!ALIAS_FLAGS.has(key)) fail(`alias: unrecognized flag --${key} (use --level, --set, --clear, --team, or --cwd)`);
       }
       if (opts.set !== undefined && opts.clear === true) fail("alias: --set and --clear are mutually exclusive");
+      // Spec 0011 §7.4: the alias writes a repo/repo-user CONFIG file, which is not team-scoped —
+      // setting one from inside a team scope would rename a team the caller isn't in. The team name
+      // already IS that team's prefix, so --set/--clear only ever make sense for the default team.
+      if ((opts.set !== undefined || opts.clear === true) && teamArg) {
+        fail(`alias: a team scope is active ("${teamArg}") — the team name is the prefix; alias --set/--clear only affect the default team's config alias`);
+      }
       const dir = hierarchyDir(cwd);
 
       if (opts.set !== undefined) {
@@ -713,7 +796,7 @@ try {
         const data = readLevelFile(path);
         data.teamAlias = opts.set;
         writeLevelFile(path, data);
-        const prefix = teamPrefixInfo(cwd).prefix;
+        const prefix = teamPrefixInfo(cwd, teamArg).prefix;
         warnLiveTeamAlias(dir, prefix);
         out({ level, path, teamAlias: opts.set, prefix });
         break;
@@ -726,15 +809,17 @@ try {
         const data = readLevelFile(path);
         delete data.teamAlias;
         writeLevelFile(path, data);
-        const prefix = teamPrefixInfo(cwd).prefix;
+        const prefix = teamPrefixInfo(cwd, teamArg).prefix;
         warnLiveTeamAlias(dir, prefix);
         out({ level, path, teamAlias: null, prefix });
         break;
       }
 
-      // Read-only.
-      const info = teamPrefixInfo(cwd);
-      out({ alias: info.alias, source: info.source, prefix: info.prefix, effective_names_sample: `${info.prefix}-architect` });
+      // Read-only. `alias`/`source` report the config-level alias regardless of team scope;
+      // `teamScope`/`prefix` report what's actually active — spec 0011 §5.4 wants both, distinguished.
+      const info = teamPrefixInfo(cwd, teamArg);
+      const underlying = teamArg ? teamPrefixInfo(cwd, null) : info;
+      out({ alias: underlying.alias, source: underlying.source, teamScope: teamArg, prefix: info.prefix, effective_names_sample: `${info.prefix}-architect` });
       break;
     }
 
@@ -821,6 +906,7 @@ try {
         fail("create: --plan, --commit, and --spawn are mutually exclusive");
       }
       const dir = hierarchyDir(cwd);
+      guardTeamPrefixCollision(dir, teamArg);
       if (opts.spawn === true) {
         await createSpawn(dir);
         break;
@@ -847,7 +933,7 @@ try {
           members: verified,
           partial: opts.partial === true,
         };
-        writeTeam(dir, team);
+        writeTeam(dir, team, teamArg);
         out({ committed: true, team });
         break;
       }
@@ -871,25 +957,25 @@ try {
       // --commit: removes team.json only, never re-reads the member list (spec 0002 §8.1/§8.3,
       // spec 0006 §5.2 — no longer gated on --kill).
       if (opts.commit === true) {
-        const team = readTeam(dir);
+        const team = readTeam(dir, teamArg);
         if (!team) {
           out({ removed: false, reason: "no active team" });
           break;
         }
-        clearTeam(dir);
-        out({ removed: teamPath(dir) });
+        clearTeam(dir, teamArg);
+        out({ removed: teamPath(dir, teamArg) });
         break;
       }
 
       // --keep-sessions: the old safe default (spec 0006 §5.3) — single call, removes team.json,
       // emits nothing, closes nothing.
       if (opts["keep-sessions"] === true) {
-        const team = readTeam(dir);
+        const team = readTeam(dir, teamArg);
         if (!team) {
           out({ disbanded: false, reason: "no active team" });
           break;
         }
-        clearTeam(dir);
+        clearTeam(dir, teamArg);
         out({ disbanded: true, team_id: team.team_id, members: team.members.map((m) => ({ role: m.role, name: m.name, transport_id: m.transport_id })) });
         break;
       }
@@ -898,7 +984,7 @@ try {
       // emits the close plan, writes nothing. Spec 0008 §5.6 (AMENDMENT): for herdr, resync the
       // member list in memory first — the plan then targets each member's *current* pane — but
       // never persist the heal and never fail() on a query error (degrade to the stored ids).
-      const team = readTeam(dir);
+      const team = readTeam(dir, teamArg);
       if (!team) {
         out({ disbanded: false, reason: "no active team" });
         break;
@@ -935,10 +1021,10 @@ try {
     case "resync": {
       for (const key of Object.keys(opts)) {
         if (key === "_") continue;
-        if (!RESYNC_FLAGS.has(key)) fail(`resync: unrecognized flag --${key} (use --dry-run or --cwd)`);
+        if (!RESYNC_FLAGS.has(key)) fail(`resync: unrecognized flag --${key} (use --dry-run, --team, or --cwd)`);
       }
       const dir = hierarchyDir(cwd);
-      const team = readTeam(dir);
+      const team = readTeam(dir, teamArg);
       if (!team) {
         out({ resynced: false, reason: "no active team" });
         break;
@@ -960,7 +1046,7 @@ try {
       });
       if (!dryRun) {
         team.members = result.members.map(stripResyncMeta);
-        writeTeam(dir, team);
+        writeTeam(dir, team, teamArg);
       }
       const resyncOut = { resynced: true, dry_run: dryRun, transport: "herdr", members: membersOut, counts: result.counts };
       if (result.warning) resyncOut.warning = result.warning;
@@ -975,7 +1061,7 @@ try {
       }
       const name = typeof opts._[0] === "string" ? opts._[0] : fail("move needs a member name: roster.mjs move <name> --tab <id> [--split right|down] | --new-tab [--workspace <id>] | --new-workspace");
       const dir = hierarchyDir(cwd);
-      const team = readTeam(dir);
+      const team = readTeam(dir, teamArg);
       const teamMembers = team && Array.isArray(team.members) ? team.members : [];
       const member = teamMembers.find((m) => m.name === name);
       if (!member) fail(`move: no member named ${JSON.stringify(name)} — known members: ${teamMembers.map((m) => m.name).filter(Boolean).join(", ") || "(none)"}`);
@@ -1023,7 +1109,7 @@ try {
         break;
       }
       team.members = result.members.map(stripResyncMeta);
-      writeTeam(dir, team);
+      writeTeam(dir, team, teamArg);
       const healed = result.members.find((m) => m.name === name);
       const resyncOut = { ok: true, status: healed.status };
       if (healed.status === "updated") {
@@ -1040,11 +1126,11 @@ try {
       // dead or never launched. Extracted, not forked, from `createSpawn`'s launch path.
       for (const key of Object.keys(opts)) {
         if (key === "_") continue;
-        if (!SPAWN_ONE_FLAGS.has(key)) fail(`spawn-one: unrecognized flag --${key} (use --cwd, --dry-run, or --allow-global)`);
+        if (!SPAWN_ONE_FLAGS.has(key)) fail(`spawn-one: unrecognized flag --${key} (use --cwd, --dry-run, --allow-global, or --team)`);
       }
       const role = opts._[0];
       if (!PEER_ELIGIBLE_ROLES.includes(role)) fail(`spawn-one: role must be one of ${PEER_ELIGIBLE_ROLES.join(", ")}, got ${JSON.stringify(role)}`);
-      const resolved = resolveRoster(cwd);
+      const resolved = resolveRoster(cwd, teamArg);
       if (!resolved) fail(`no roster configured for ${cwd}; run the /agent-roster skill's Init flow`);
       requireAllowGlobal(resolved.level, resolved.path);
       const member = resolved.members.find((m) => m.role === role);
@@ -1054,7 +1140,7 @@ try {
       }
 
       const dir = hierarchyDir(cwd);
-      const team = readTeam(dir);
+      const team = readTeam(dir, teamArg);
       const existing = team && Array.isArray(team.members) ? team.members.find((m) => m.role === role) : null;
       if (existing && memberIsLive(dir, existing.name)) {
         out({ spawned: false, reason: "already live", member: existing });
@@ -1098,13 +1184,37 @@ try {
       const idx = outTeam.members.findIndex((m) => m.role === role);
       if (idx === -1) outTeam.members.push(newRecord);
       else outTeam.members[idx] = newRecord;
-      writeTeam(dir, outTeam);
-      out({ spawned: true, member: newRecord, team_id: outTeam.team_id, roster_level: outTeam.roster_level });
+      writeTeam(dir, outTeam, teamArg);
+      const outMember = launched.label ? { ...newRecord, label: launched.label } : newRecord;
+      out({ spawned: true, member: outMember, team_id: outTeam.team_id, roster_level: outTeam.roster_level });
+      break;
+    }
+
+    case "teams": {
+      // Spec 0011 §5.4: read-only inventory of every team file in this hierarchy dir — otherwise a
+      // stale or a sibling orchestrator's team is invisible. Never writes.
+      const dir = hierarchyDir(cwd);
+      const myPid = Number(process.env.CLAUDE_PID);
+      const describe = (name) => {
+        const t = readTeam(dir, name);
+        if (!t) return null;
+        const pid = t.orchestrator && t.orchestrator.pid;
+        return {
+          name,
+          team_id: t.team_id,
+          members: Array.isArray(t.members) ? t.members.length : 0,
+          orchestrator_pid: pid ?? null,
+          pid_alive: pidAlive(pid),
+          own: Number.isInteger(myPid) && pid === myPid,
+        };
+      };
+      const teams = [describe(null), ...listTeamNames(dir).map(describe)].filter(Boolean);
+      out({ teams });
       break;
     }
 
     default:
-      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one [--commit|--keep-sessions] [--level global|repo|repo-user] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
+      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one|teams [--commit|--keep-sessions] [--level global|repo|repo-user] [--team <name>] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
   }
 } catch (err) {
   fail(err && err.message ? err.message : String(err));

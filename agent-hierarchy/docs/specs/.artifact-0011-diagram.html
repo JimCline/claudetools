@@ -1,0 +1,235 @@
+<title>Two Teams, One Repo</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root{
+    --paper:#f4f5f7;
+    --paper-raised:#ffffff;
+    --ink:#1a2029;
+    --ink-soft:#4b535f;
+    --line:#d7dbe1;
+    --line-soft:#e7e9ed;
+    --alpha:#1f6f68;      /* teal — team alpha */
+    --alpha-soft:#e2f0ee;
+    --beta:#a3433a;       /* rust — team beta */
+    --beta-soft:#f7e9e7;
+    --shared:#3a4656;     /* slate ink — the shared pool */
+    --shared-soft:#e9ebee;
+    --amber:#a9700f;
+    --amber-soft:#faf0dd;
+    --mono-bg:#eef0f3;
+    --shadow: 0 1px 2px rgba(20,24,32,.04), 0 8px 24px rgba(20,24,32,.06);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#12161d; --paper-raised:#181d26; --ink:#e8eaee; --ink-soft:#a3acb9;
+      --line:#2b323d; --line-soft:#232933;
+      --alpha:#5bb3a8; --alpha-soft:#16302d;
+      --beta:#d68b83; --beta-soft:#301c1a;
+      --shared:#aab4c2; --shared-soft:#232a35;
+      --amber:#e0ac5a; --amber-soft:#2e2413;
+      --mono-bg:#1c222c;
+      --shadow: 0 1px 2px rgba(0,0,0,.35), 0 10px 30px rgba(0,0,0,.4);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#12161d; --paper-raised:#181d26; --ink:#e8eaee; --ink-soft:#a3acb9;
+    --line:#2b323d; --line-soft:#232933;
+    --alpha:#5bb3a8; --alpha-soft:#16302d;
+    --beta:#d68b83; --beta-soft:#301c1a;
+    --shared:#aab4c2; --shared-soft:#232a35;
+    --amber:#e0ac5a; --amber-soft:#2e2413;
+    --mono-bg:#1c222c;
+    --shadow: 0 1px 2px rgba(0,0,0,.35), 0 10px 30px rgba(0,0,0,.4);
+  }
+
+  *{box-sizing:border-box;}
+  @media (prefers-reduced-motion: reduce){ *{animation:none !important; transition:none !important;} }
+
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:'Public Sans', system-ui, sans-serif; line-height:1.55;
+  }
+  h1,h2,h3{ font-family:'Source Serif 4', Georgia, serif; text-wrap:balance; margin:0; color:var(--ink); }
+  code{ font-family:'IBM Plex Mono', ui-monospace, monospace; font-size:.86em; background:var(--mono-bg); padding:.1em .36em; border-radius:3px; }
+
+  .page{ max-width:1080px; margin:0 auto; padding:52px 28px 80px; }
+
+  header{ text-align:center; margin-bottom:8px; }
+  .kicker{ font-size:.72rem; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-soft); font-weight:600; }
+  h1{ font-size:2.5rem; margin-top:10px; }
+  .subtitle{ color:var(--ink-soft); max-width:56ch; margin:14px auto 0; font-size:1.08rem; }
+
+  /* ================= DIAGRAM ================= */
+  .diagram{ margin-top:56px; }
+
+  .teams-row{ display:grid; grid-template-columns:1fr 1fr; gap:40px; align-items:start; }
+  @media (max-width:760px){ .teams-row{ grid-template-columns:1fr; } }
+
+  .team-col{ display:flex; flex-direction:column; align-items:center; gap:0; }
+
+  .node{
+    background:var(--paper-raised); border:1.5px solid var(--line); border-radius:8px;
+    box-shadow:var(--shadow); padding:16px 20px; width:100%; text-align:center;
+  }
+  .node .label{ font-size:.68rem; letter-spacing:.09em; text-transform:uppercase; font-weight:700; }
+  .node .sub{ color:var(--ink-soft); font-size:.82rem; margin-top:4px; }
+  .node.orch{ border-color: var(--c); }
+  .node.orch .label{ color:var(--c); }
+  .team-col.alpha{ --c:var(--alpha); }
+  .team-col.beta{ --c:var(--beta); }
+
+  .team-col.alpha .node.team-file{ background:var(--alpha-soft); border-color:var(--alpha); }
+  .team-col.beta .node.team-file{ background:var(--beta-soft); border-color:var(--beta); }
+  .node.team-file .filename{ font-family:'IBM Plex Mono'; font-weight:600; font-size:.9rem; color:var(--c); }
+  .node.team-file .members{ font-family:'IBM Plex Mono'; font-size:.76rem; color:var(--ink-soft); margin-top:6px; line-height:1.6; }
+
+  .wire{ display:flex; flex-direction:column; align-items:center; }
+  .wire .stem{ width:2px; height:26px; background:var(--c); }
+  .wire .arrowhead{ width:0; height:0; border-left:5px solid transparent; border-right:5px solid transparent; border-top:7px solid var(--c); margin-top:-1px; }
+  .wire .caption{ font-size:.7rem; color:var(--c); font-weight:600; letter-spacing:.03em; margin:4px 0; text-align:center; white-space:nowrap; }
+
+  /* the shared pool, spanning full width */
+  .pool-wrap{ margin:6px 0; display:flex; justify-content:center; }
+  .pool{
+    width:100%; max-width:640px; background:var(--shared); color:#fff; border-radius:10px;
+    padding:22px 26px; box-shadow:var(--shadow); position:relative;
+  }
+  .pool .pool-kicker{ font-size:.68rem; letter-spacing:.12em; text-transform:uppercase; font-weight:700; opacity:.75; }
+  .pool h3{ color:#fff; font-size:1.15rem; margin-top:6px; }
+  .pool .files{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:16px; }
+  .pool .file{
+    background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.18); border-radius:6px;
+    padding:10px 8px; text-align:center; font-family:'IBM Plex Mono'; font-size:.78rem;
+  }
+  .pool .file .tag{ display:block; font-size:.63rem; opacity:.65; margin-top:3px; font-family:'Public Sans'; letter-spacing:.02em; }
+  .pool .note{ margin-top:14px; font-size:.82rem; opacity:.85; max-width:52ch; }
+
+  .results-row{ display:grid; grid-template-columns:1fr 1fr; gap:40px; margin-top:0; }
+  @media (max-width:760px){ .results-row{ grid-template-columns:1fr; } }
+  .result{
+    border-radius:8px; padding:14px 18px; font-family:'IBM Plex Mono'; font-size:.82rem;
+  }
+  .team-col.alpha .result{ background:var(--alpha-soft); border:1px solid var(--alpha); color:var(--ink); }
+  .team-col.beta .result{ background:var(--beta-soft); border:1px solid var(--beta); color:var(--ink); }
+  .result .kicker2{ font-family:'Public Sans'; font-size:.68rem; letter-spacing:.08em; text-transform:uppercase; font-weight:700; }
+  .team-col.alpha .kicker2{ color:var(--alpha); }
+  .team-col.beta .kicker2{ color:var(--beta); }
+  .result ul{ margin:8px 0 0; padding-left:1.1em; }
+  .result li{ margin-top:2px; }
+  .result li.dim{ color:var(--ink-soft); }
+
+  /* naming strip */
+  .naming{
+    margin-top:52px; border-top:1px dashed var(--line); padding-top:26px;
+  }
+  .naming-head{ display:flex; align-items:center; gap:10px; justify-content:center; }
+  .naming-head .dot{ width:8px; height:8px; border-radius:50%; background:var(--amber); }
+  .naming-head span{ font-size:.72rem; letter-spacing:.1em; text-transform:uppercase; font-weight:700; color:var(--amber); }
+  .naming p{ text-align:center; color:var(--ink-soft); max-width:58ch; margin:10px auto 0; font-size:.92rem; }
+  .name-tags{ display:flex; justify-content:center; gap:14px; margin-top:18px; flex-wrap:wrap; }
+  .name-tag{
+    font-family:'IBM Plex Mono'; font-size:.85rem; padding:8px 16px; border-radius:20px;
+    border:1px solid var(--line); background:var(--paper-raised);
+  }
+  .name-tag.alpha{ color:var(--alpha); border-color:var(--alpha); }
+  .name-tag.beta{ color:var(--beta); border-color:var(--beta); }
+  .name-tag .strike{ text-decoration:line-through; opacity:.4; margin-right:6px; }
+
+  footer{ text-align:center; margin-top:56px; color:var(--ink-soft); font-size:.82rem; }
+</style>
+
+<div class="page">
+  <header>
+    <div class="kicker">Agent-hierarchy · spec 0011, at a glance</div>
+    <h1>Two teams, one repo.</h1>
+    <p class="subtitle">Each orchestrator keeps its own <code>team.json</code>. Everything else — peers, messages, gates — stays one shared set of files, filtered by team membership every time it's read.</p>
+  </header>
+
+  <div class="diagram">
+    <div class="teams-row">
+      <div class="team-col alpha">
+        <div class="node orch">
+          <div class="label">Orchestrator A</div>
+          <div class="sub">team scope: <code>alpha</code></div>
+        </div>
+        <div class="wire"><div class="stem"></div><div class="arrowhead"></div><div class="caption">owns</div></div>
+        <div class="node team-file">
+          <div class="filename">teams/alpha.json</div>
+          <div class="members">alpha-architect<br>alpha-implementor<br>alpha-reviewer</div>
+        </div>
+        <div class="wire"><div class="stem"></div><div class="arrowhead"></div><div class="caption">writes tagged records</div></div>
+      </div>
+
+      <div class="team-col beta">
+        <div class="node orch">
+          <div class="label">Orchestrator B</div>
+          <div class="sub">team scope: <code>beta</code></div>
+        </div>
+        <div class="wire"><div class="stem"></div><div class="arrowhead"></div><div class="caption">owns</div></div>
+        <div class="node team-file">
+          <div class="filename">teams/beta.json</div>
+          <div class="members">beta-architect<br>beta-implementor<br>beta-reviewer</div>
+        </div>
+        <div class="wire"><div class="stem"></div><div class="arrowhead"></div><div class="caption">writes tagged records</div></div>
+      </div>
+    </div>
+
+    <div class="pool-wrap">
+      <div class="pool">
+        <div class="pool-kicker">One shared surface</div>
+        <h3>Every record lands here, regardless of team</h3>
+        <div class="files">
+          <div class="file">peers.jsonl<span class="tag">who's alive</span></div>
+          <div class="file">msgs/<span class="tag">briefs &amp; replies</span></div>
+          <div class="file">gates.jsonl<span class="tag">confirmations</span></div>
+        </div>
+        <p class="note">Nothing here is split by team. A record either carries a <code>team:</code> tag, or its <code>name</code> is looked up against each team's member list — whichever is available. No file lives in two places.</p>
+      </div>
+    </div>
+
+    <div class="teams-row" style="margin-top:0;">
+      <div class="team-col alpha">
+        <div class="wire"><div class="caption" style="margin-top:0;">reads, filtered by membership</div><div class="stem"></div><div class="arrowhead"></div></div>
+        <div class="result">
+          <div class="kicker2">Team Alpha sees</div>
+          <ul>
+            <li>alpha-architect, alpha-implementor, alpha-reviewer</li>
+            <li class="dim">— none of Beta's peers, same file</li>
+          </ul>
+        </div>
+      </div>
+      <div class="team-col beta">
+        <div class="wire"><div class="caption" style="margin-top:0;">reads, filtered by membership</div><div class="stem"></div><div class="arrowhead"></div></div>
+        <div class="result">
+          <div class="kicker2">Team Beta sees</div>
+          <ul>
+            <li>beta-architect, beta-implementor, beta-reviewer</li>
+            <li class="dim">— none of Alpha's peers, same file</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="naming">
+    <div class="naming-head"><span class="dot"></span><span>What this doesn't fix</span></div>
+    <p>Every spawned peer still lands in one flat, machine-global name list. Filtering solves what the hierarchy's own files show a team — it can't rename a process. That's why each team's prefix must differ:</p>
+    <div class="name-tags">
+      <div class="name-tag alpha"><span class="strike">myrepo-architect</span> alpha-architect</div>
+      <div class="name-tag beta"><span class="strike">myrepo-architect</span> beta-architect</div>
+    </div>
+  </div>
+
+  <div class="naming">
+    <div class="naming-head"><span class="dot"></span><span>The first team gets asked too</span></div>
+    <p>The prefix a team gets isn't just a collision fallback — it's every name that will ever show up in <code>ListAgents</code> for that team, so the very first <code>create</code> in a fresh repo asks, the same way a second team's does.</p>
+    <div class="name-tags">
+      <div class="name-tag alpha">accept → <span class="strike" style="text-decoration:none; opacity:1;">myrepo-*</span></div>
+      <div class="name-tag alpha">override → <code style="background:none; padding:0;">alias --set &lt;name&gt;</code>, then create</div>
+    </div>
+    <p style="margin-top:10px; font-size:.82rem;">Accepting changes nothing — it's the prefix <code>create</code> would have used anyway. Overriding is exactly what <code>alias --set</code> already does today, just offered up front instead of discovered later.</p>
+  </div>
+
+  <footer>Default team, no <code>--team</code> flag: behaves exactly as it does today once named — this whole two-team picture only appears once a second team exists.</footer>
+</div>

@@ -35,12 +35,14 @@ import { fileURLToPath } from "node:url";
 // bodies called later (statusReport here; validateMember/validateRosterBlock there). Keep it that
 // way — a top-level use on either side would risk the top-level-await deadlock class documented
 // in lib-roster.mjs's header.
-import { readTeam } from "./lib-roster.mjs";
+import { listTeamNames, readTeam } from "./lib-roster.mjs";
 
 /** Absolute path to the escalation-gate CLI, resolved from this file so it survives wherever the plugin is installed. */
 const GATE_CLI = join(dirname(fileURLToPath(import.meta.url)), "gate.mjs");
 /** Absolute path to the message-file CLI, same resolution as GATE_CLI. */
 export const MSG_CLI = join(dirname(fileURLToPath(import.meta.url)), "msg.mjs");
+/** Absolute path to the roster CLI, same resolution as GATE_CLI/MSG_CLI. */
+export const ROSTER_CLI = join(dirname(fileURLToPath(import.meta.url)), "roster.mjs");
 
 /** Message-file enforcement: "required" gates role dispatches and responses on message files; "off" disables both gates (CLI and listing stay). */
 export const MSGS_MODES = ["required", "off"];
@@ -360,8 +362,14 @@ export function isValidTeamAlias(alias) {
  * not inside a git checkout), byte-identical to the pre-alias behavior.
  * `teamPrefix` is a thin wrapper over this — keep it that way, one
  * implementation.
+ *
+ * `team`, when a non-empty string, short-circuits everything below it: an
+ * active named-team scope (spec 0011 §3.3) outranks repo-user/repo/default,
+ * since the team name itself is the prefix members are dispatched-named
+ * under.
  */
-export function teamPrefixInfo(cwd) {
+export function teamPrefixInfo(cwd, team) {
+  if (typeof team === "string" && team) return { prefix: team, alias: team, source: "team" };
   const resolvedCwd = resolve(typeof cwd === "string" && cwd ? cwd : process.cwd());
   const repoRoot = findGitRoot(resolvedCwd) || resolvedCwd;
   const paths = rosterLevelPaths(cwd);
@@ -386,8 +394,8 @@ export function teamPrefixInfo(cwd) {
 }
 
 /** The winning naming prefix for a repo — see `teamPrefixInfo`. */
-export function teamPrefix(cwd) {
-  return teamPrefixInfo(cwd).prefix;
+export function teamPrefix(cwd, team) {
+  return teamPrefixInfo(cwd, team).prefix;
 }
 
 /**
@@ -397,9 +405,9 @@ export function teamPrefix(cwd) {
  * path, teamAlias, teamAliasSource}` (`layout` defaults to "auto" when absent
  * — the sole default site, spec 0004 §4.3) or null when no level has one.
  */
-export function resolveRoster(cwd) {
+export function resolveRoster(cwd, team) {
   const paths = rosterLevelPaths(cwd);
-  const { prefix, alias, source } = teamPrefixInfo(cwd);
+  const { prefix, alias, source } = teamPrefixInfo(cwd, team);
   for (const level of ROSTER_LEVELS) {
     const path = paths[level];
     if (!existsSync(path)) continue;
@@ -450,14 +458,42 @@ function loadScope(path, scope, warnings) {
 }
 
 /**
+ * The active team scope (spec 0011 §4.4): (1) `opts.team` if given —
+ * trusted as-is, the CLI layer validates it with `validateTeamAlias` before
+ * we ever see it; (2) the team (default or named) whose `team.json` binds
+ * `orchestrator.session_id === opts.sessionId`, letting an orchestrator omit
+ * `--team` after `create`; (3) `null`, the default team. Any read failure
+ * (missing team file, unreadable member list) degrades to `null` rather than
+ * throwing — 0009 §8.12's fail-open catch, extended to team resolution.
+ */
+function resolveTeamScope(cwd, opts) {
+  if (opts && typeof opts.team === "string" && opts.team) return opts.team;
+  if (opts && opts.sessionId) {
+    try {
+      const dir = hierarchyDir(cwd);
+      const base = readTeam(dir);
+      if (base && base.orchestrator && base.orchestrator.session_id === opts.sessionId) return null;
+      for (const name of listTeamNames(dir)) {
+        const team = readTeam(dir, name);
+        if (team && team.orchestrator && team.orchestrator.session_id === opts.sessionId) return name;
+      }
+    } catch {
+      // fail-open to default — see doc comment above.
+    }
+  }
+  return null;
+}
+
+/**
  * Resolve the effective hierarchy for a session.
  *
  * @returns {{configured: boolean, enabled: boolean, roles: object, sources: object,
- *            shadowed: string[], layers: object[], warnings: string[]}}
+ *            shadowed: string[], layers: object[], warnings: string[], team: string|null}}
  */
-export function resolveConfig(cwd) {
+export function resolveConfig(cwd, opts = {}) {
   const warnings = [];
   const resolvedCwd = resolve(typeof cwd === "string" && cwd ? cwd : process.cwd());
+  const team = resolveTeamScope(resolvedCwd, opts);
   const userPath = userConfigPath();
   const projectPath = projectConfigPath(cwd);
   const repoUserPath = rosterLevelPaths(cwd)["repo-user"];
@@ -506,6 +542,7 @@ export function resolveConfig(cwd) {
       cwd: resolvedCwd,
       roster: null,
       rosterLevel: null,
+      team,
     };
   }
 
@@ -604,7 +641,7 @@ export function resolveConfig(cwd) {
     }
   }
 
-  const rosterResult = resolveRoster(cwd);
+  const rosterResult = resolveRoster(cwd, team);
   return {
     configured: true,
     enabled,
@@ -621,6 +658,7 @@ export function resolveConfig(cwd) {
     cwd: resolvedCwd,
     roster: rosterResult,
     rosterLevel: rosterResult ? rosterResult.level : null,
+    team,
   };
 }
 
@@ -736,7 +774,7 @@ export function buildDirective(resolved, sessionId, extra = {}) {
   const model = extra && typeof extra.model === "string" ? extra.model : null;
   const route = extra && extra.route && typeof extra.route.value === "string" ? extra.route : null;
   const confirm = resolved.handoffs === "confirm";
-  const repoBasename = teamPrefix(resolved.cwd);
+  const repoBasename = teamPrefix(resolved.cwd, resolved.team);
   const needsPeerConfirmation = ROLES.some(
     (role) =>
       PEER_ELIGIBLE_ROLES.includes(role) && resolved.roles[role].dispatch === "peer" && resolved.roles[role].peer === "auto"
@@ -824,7 +862,7 @@ export function statusReport(cwd) {
   out.push("");
   out.push("Resolved effective table:");
   out.push(`  Orchestrator  ${"session model".padEnd(14)} fixed (this session's agent)`);
-  const aliasInfo = teamPrefixInfo(resolved.cwd);
+  const aliasInfo = teamPrefixInfo(resolved.cwd, resolved.team);
   const repoBasename = aliasInfo.prefix;
   for (const role of ROLES) {
     const entry = resolved.roles[role];
@@ -861,7 +899,7 @@ export function statusReport(cwd) {
   if (userScopeRoles.length) {
     out.push(`  — role config for ${userScopeRoles.map((role) => ROLE_LABELS[role]).join(", ")} comes from user scope; confirmation required (spec 0009 §4).`);
   }
-  out.push(`Stand up one missing peer: roster.mjs spawn-one <role> --cwd ${resolved.cwd}. Full-team Create is the /agent-roster skill's job — do not hand-assemble create calls.`);
+  out.push(`Stand up one missing peer: node "${ROSTER_CLI}" spawn-one <role> --cwd ${resolved.cwd}. Full-team Create is the /agent-roster skill's job — do not hand-assemble create calls.`);
   let team = null;
   try {
     team = readTeam(hierarchyDir(resolved.cwd));

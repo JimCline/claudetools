@@ -12,8 +12,8 @@
  * directly.
  */
 
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 
 import { ROLES, VALID_MODELS_BY_ROLE } from "./lib-config.mjs";
 
@@ -29,7 +29,8 @@ export const EFFORT_VALUES = ["low", "medium", "high", "xhigh", "max"];
 /** `claude --permission-mode <mode>` values (verified via `claude --help`, NEEDS-EVIDENCE #2). */
 export const AUTO_MODE_VALUES = ["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"];
 
-export const teamPath = (dir) => join(dir, "team.json");
+/** `team.json` for the default team, or `teams/<team>.json` for a named one (spec 0011 §3). */
+export const teamPath = (dir, team = null) => (team ? join(dir, "teams", `${team}.json`) : join(dir, "team.json"));
 
 // ---------------------------------------------------------------- herdr transport presence (spec 0010 §2.4)
 
@@ -103,9 +104,9 @@ export function validateRosterBlock(roster) {
 
 // ---------------------------------------------------------------- check-in registry (team.json)
 
-/** The active Team for this hierarchy dir, or null if none/unreadable. */
-export function readTeam(dir) {
-  const path = teamPath(dir);
+/** The active Team for this hierarchy dir (default, or `team` if named), or null if none/unreadable. */
+export function readTeam(dir, team = null) {
+  const path = teamPath(dir, team);
   if (!existsSync(path)) return null;
   try {
     const data = JSON.parse(readFileSync(path, "utf8"));
@@ -115,18 +116,18 @@ export function readTeam(dir) {
   }
 }
 
-/** Atomic write: `team.json.tmp` then rename. */
-export function writeTeam(dir, team) {
-  mkdirSync(dir, { recursive: true });
-  const path = teamPath(dir);
+/** Atomic write: `<path>.tmp` then rename. `team` names which file (default when omitted). */
+export function writeTeam(dir, teamData, team = null) {
+  const path = teamPath(dir, team);
+  mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(team, null, 2) + "\n", "utf8");
+  writeFileSync(tmp, JSON.stringify(teamData, null, 2) + "\n", "utf8");
   renameSync(tmp, path);
 }
 
-/** Unlink team.json; no-op if absent. */
-export function clearTeam(dir) {
-  const path = teamPath(dir);
+/** Unlink team.json (or a named team's file); no-op if absent. */
+export function clearTeam(dir, team = null) {
+  const path = teamPath(dir, team);
   if (!existsSync(path)) return;
   try {
     unlinkSync(path);
@@ -136,15 +137,52 @@ export function clearTeam(dir) {
 }
 
 /** The Team member whose derived name matches, or null. */
-export function teamMemberByName(dir, name) {
-  const team = readTeam(dir);
-  if (!team || !Array.isArray(team.members) || !name) return null;
-  return team.members.find((m) => m.name === name) || null;
+export function teamMemberByName(dir, name, team = null) {
+  const t = readTeam(dir, team);
+  if (!t || !Array.isArray(t.members) || !name) return null;
+  return t.members.find((m) => m.name === name) || null;
 }
 
 /** Peer-routed Team members for a role (subagent-routed members are recorded but are never dispatch targets by name). */
-export function teamMembersForRole(dir, role) {
-  const team = readTeam(dir);
-  if (!team || !Array.isArray(team.members)) return [];
-  return team.members.filter((m) => m.role === role && m.route === "peer");
+export function teamMembersForRole(dir, role, team = null) {
+  const t = readTeam(dir, team);
+  if (!t || !Array.isArray(t.members)) return [];
+  return t.members.filter((m) => m.role === role && m.route === "peer");
+}
+
+/** Basenames (sans `.json`) of every named team under `dir/teams/` — does NOT include the default team. */
+export function listTeamNames(dir) {
+  const teamsDir = join(dir, "teams");
+  if (!existsSync(teamsDir)) return [];
+  try {
+    return readdirSync(teamsDir)
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => f.slice(0, -5));
+  } catch {
+    return [];
+  }
+}
+
+/** The member-name set of one team (default when `team` is omitted). */
+export function teamMemberNameSet(dir, team = null) {
+  const t = readTeam(dir, team);
+  if (!t || !Array.isArray(t.members)) return new Set();
+  return new Set(t.members.map((m) => m.name).filter(Boolean));
+}
+
+/**
+ * Which team currently lists `name` as a member (spec 0011 §4.1) — checked
+ * against the default team first, then every named team. `{found:false}`
+ * when no team's member set contains it; `{found:true, team:null}` for the
+ * default team; `{found:true, team:"<name>"}` for a named one. `team:null`
+ * on its own is ambiguous between "default team" and "not found" — always
+ * branch on `found`, never on `team` alone.
+ */
+export function resolveMemberTeam(dir, name) {
+  if (!name) return { found: false, team: null };
+  if (teamMemberNameSet(dir, null).has(name)) return { found: true, team: null };
+  for (const team of listTeamNames(dir)) {
+    if (teamMemberNameSet(dir, team).has(name)) return { found: true, team };
+  }
+  return { found: false, team: null };
 }

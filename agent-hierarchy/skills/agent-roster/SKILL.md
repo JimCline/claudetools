@@ -6,9 +6,10 @@ description: Define, edit, or inspect the agent-hierarchy roster (which roles ex
 # agent-roster
 
 The roster is a `roster` block in the existing `agent-hierarchy.json` config,
-at one of three levels (§ Levels below). `hooks/roster.mjs` does all the file
-I/O and validation; this skill is the interactive prose surface that drives
-it — do not hand-edit the JSON, and do not duplicate its validation here.
+at one of three levels (§ Levels below). `$CLAUDE_PLUGIN_ROOT/hooks/roster.mjs`
+(preferably via `mcp__ah__roster_show` for reads) does all the file I/O and
+validation; this skill is the interactive prose surface that drives it — do
+not hand-edit the JSON, and do not duplicate its validation here.
 
 Full spec: `docs/specs/0001-agent-roster.md`. This document is the operational
 surface; if the two disagree, the spec is authoritative and this file has
@@ -24,8 +25,9 @@ drifted — say so rather than silently picking one.
 
 Resolution is **whole-level replace**, not a per-key merge: the winning
 level's `roster` block is used in its entirety — a member defined only at a
-losing level does not appear. `roster.mjs show` (no `--level`) always prints
-the resolved (winning) roster; `roster.mjs show --level <L>` prints one
+losing level does not appear. Prefer `mcp__ah__roster_show` (MCP tool) when
+available; otherwise `roster.mjs show`. With no `--level`/`level` argument
+it always prints the resolved (winning) roster; with one, it prints that
 level's raw file and says if it's shadowed.
 
 Member names are **derived, never stored**: the first member of a role at the
@@ -44,6 +46,14 @@ All subcommands run via `node "$CLAUDE_PLUGIN_ROOT/hooks/roster.mjs" <cmd> ...`
 with `--cwd "$(pwd)"` (or the relevant repo path). Level may be given as
 `--level <L>` or as the first bare word: `roster.mjs add repo --role architect`
 ≡ `--level repo`.
+
+`--team <name>` (spec 0011) lets one repo host more than one Team, each owned
+by a distinct orchestrator session: it points every verb that reads or writes
+`team.json` at `teams/<name>.json` instead of the default `team.json`, and
+scopes the derived name-prefix to `<name>` instead of the repo's alias.
+Omitted, everything is the default team exactly as before — most sessions
+never pass it. See § Create for what happens when a bare `create` collides
+with someone else's live default Team.
 
 - `show [--level global|repo|repo-user]` — resolved roster, or one level's raw file.
 - `init --level <L> --route <peer|subagent> [--layout auto|columns|grid]` — replaces that level's roster wholesale.
@@ -72,7 +82,12 @@ with `--cwd "$(pwd)"` (or the relevant repo path). Level may be given as
   clear the repo's `teamAlias` (the team-prefix members are named under). No `--set`/`--clear`
   reads the currently-effective alias; `--level` is required with `--set`/`--clear` when it can't
   be inferred from an already-resolving roster. Never accepts `--level global` — an alias is
-  repo-scoped.
+  repo-scoped. `--set`/`--clear` refuse while `--team` is active (the team name already is
+  that team's prefix); `alias` (read-only) reports both the config alias and the active team
+  scope, distinguished.
+- `teams [--cwd <path>]` — read-only: every team file in this hierarchy dir (default plus every
+  named team), with member count, orchestrator pid, whether that pid is alive, and whether it's
+  this session's own. Use it to see a stale or a sibling orchestrator's Team before `create`.
 
 `add`/`edit`/`remove` with no `--level` operate on whichever level currently
 resolves (repo-user > repo > global) and print which level they picked — say
@@ -168,6 +183,46 @@ running session can do — drive the sequence yourself:
    and `launch` command lists for the detected transport, plus how to thread
    the target id from one to the other). If it errors because no roster
    resolves, hand off to § Init.
+
+   **First-create naming confirmation (spec 0011 §5.3.1-§5.3.3, amendment
+   (c)).** Before the very first `create` in a fresh repo (no existing
+   `team.json` anywhere under this hierarchy dir), surface the repo-derived
+   candidate — the prefix `roster.mjs alias` (read-only) reports, itself the
+   repo basename or an existing 0010 alias — via **AskUserQuestion**, before
+   running `create --plan`. Offer:
+   - **Accept `<candidate>` (Recommended)** — proceed with `create` exactly
+     as below. Nothing is written that isn't written today; this is
+     byte-identical to not asking at all.
+   - **Use a different name** — run `roster.mjs alias --set <name>` first,
+     then proceed with `create`. This is 0010's existing alias verb,
+     unchanged, and the override **persists for the repo** (config-level,
+     not a one-off for this session) — say so when offering it.
+
+   `roster.mjs create` itself never prompts, refuses, or reads stdin for
+   this — it runs the same in tests, CI, and scripts either way; asking is
+   entirely this skill's job, done once, here, before the first `create`. A
+   repo that already has a live default Team is past this trigger — do not
+   ask again; renaming later is `alias --set`, offered only if the user asks.
+
+   **Second-Team collision (spec 0011 §5.3).** A bare `create` (no `--team`)
+   can fail because a *different*, live orchestrator already owns the default
+   Team here — the CLI cannot read stdin to ask, so it refuses and hands back
+   the live Team's name and pid plus an auto-derived candidate team name. Do
+   not retry with `--team <candidate>` on your own judgment: surface it to the
+   user with **AskUserQuestion**, offering the candidate as the first option
+   ("Start a second Team named `<candidate>`") and free-text override as the
+   second ("Use a different name"). Re-run `create --plan --team <name>` (the
+   accepted or overridden name) only after the user answers — the candidate
+   never applies unconfirmed. Every subsequent step (`--spawn`, `--commit`,
+   `spawn-one`, `disband`, `resync`, `move`, `msg.mjs new`, `msg.mjs list`)
+   then needs that same `--team <name>` to keep operating on this Team
+   instead of the default one. `roster.mjs` subcommands require the flag
+   explicitly. `msg.mjs new`/`msg.mjs list` also auto-resolve the active team
+   (spec 0011 §4.4 rung 3) when run from this Team's own orchestrator process
+   — `CLAUDE_PID`, `pidAlive`-guarded, matched against the Team's recorded
+   `orchestrator.pid` — but pass `--team <name>` explicitly whenever you are
+   not certain that rung will fire (e.g. tooling running outside the
+   orchestrator's own process).
 2. **`manual` mode**: before each spawn, show the intended placement (name,
    role, transport) and let the user override it (different pane, skip it,
    change the name) before proceeding. `auto` mode spawns straight through.

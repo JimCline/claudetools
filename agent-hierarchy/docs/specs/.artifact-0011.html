@@ -1,0 +1,537 @@
+<title>Multi-Roster Orchestration</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root{
+    --paper:#f4f5f7;
+    --paper-raised:#ffffff;
+    --ink:#1a2029;
+    --ink-soft:#4b535f;
+    --line:#d7dbe1;
+    --line-soft:#e7e9ed;
+    --teal:#1f6f68;
+    --teal-soft:#e2f0ee;
+    --rust:#a3433a;
+    --rust-soft:#f7e9e7;
+    --amber:#a9700f;
+    --amber-soft:#faf0dd;
+    --mono-bg:#eef0f3;
+    --shadow: 0 1px 2px rgba(20,24,32,.04), 0 6px 20px rgba(20,24,32,.05);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#12161d;
+      --paper-raised:#181d26;
+      --ink:#e8eaee;
+      --ink-soft:#a3acb9;
+      --line:#2b323d;
+      --line-soft:#232933;
+      --teal:#5bb3a8;
+      --teal-soft:#16302d;
+      --rust:#d68b83;
+      --rust-soft:#301c1a;
+      --amber:#e0ac5a;
+      --amber-soft:#2e2413;
+      --mono-bg:#1c222c;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 24px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#12161d;
+    --paper-raised:#181d26;
+    --ink:#e8eaee;
+    --ink-soft:#a3acb9;
+    --line:#2b323d;
+    --line-soft:#232933;
+    --teal:#5bb3a8;
+    --teal-soft:#16302d;
+    --rust:#d68b83;
+    --rust-soft:#301c1a;
+    --amber:#e0ac5a;
+    --amber-soft:#2e2413;
+    --mono-bg:#1c222c;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 6px 24px rgba(0,0,0,.35);
+  }
+
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  @media (prefers-reduced-motion: reduce){ html{scroll-behavior:auto;} *{animation:none !important; transition:none !important;} }
+
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'Public Sans', system-ui, -apple-system, sans-serif;
+    font-size:16px;
+    line-height:1.6;
+  }
+
+  h1,h2,h3{
+    font-family:'Source Serif 4', Georgia, serif;
+    text-wrap:balance;
+    color:var(--ink);
+    margin:0;
+  }
+
+  .mono{ font-family:'IBM Plex Mono', ui-monospace, monospace; }
+  code, .path{
+    font-family:'IBM Plex Mono', ui-monospace, monospace;
+    font-size:.86em;
+    background:var(--mono-bg);
+    padding:.1em .38em;
+    border-radius:3px;
+    white-space:nowrap;
+  }
+
+  a{ color:var(--teal); }
+
+  .shell{
+    max-width:1180px;
+    margin:0 auto;
+    display:grid;
+    grid-template-columns:230px minmax(0,1fr);
+    gap:48px;
+    padding:48px 32px 96px;
+  }
+  @media (max-width:880px){
+    .shell{grid-template-columns:1fr; padding:28px 18px 72px;}
+    nav.toc{display:none;}
+  }
+
+  /* ---- Sidebar ---- */
+  nav.toc{ position:sticky; top:32px; align-self:start; }
+  .toc-eyebrow{
+    font-size:.68rem; letter-spacing:.11em; text-transform:uppercase;
+    color:var(--ink-soft); font-weight:600; margin-bottom:14px;
+  }
+  nav.toc ul{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px; }
+  nav.toc a{
+    display:block; text-decoration:none; color:var(--ink-soft);
+    font-size:.86rem; padding:6px 10px; border-radius:5px;
+    border-left:2px solid transparent;
+  }
+  nav.toc a:hover{ color:var(--ink); background:var(--line-soft); }
+  nav.toc .badge-row{ display:flex; flex-wrap:wrap; gap:6px; margin-top:22px; }
+
+  /* ---- Header ---- */
+  header.doc-head{ margin-bottom:44px; }
+  .kicker{
+    font-size:.72rem; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--teal); font-weight:600; margin-bottom:10px;
+  }
+  h1.title{ font-size:2.6rem; font-weight:600; letter-spacing:-.01em; }
+  .subtitle{ color:var(--ink-soft); font-size:1.15rem; margin-top:8px; max-width:56ch; }
+
+  .status-strip{
+    display:flex; flex-wrap:wrap; gap:8px; margin-top:22px;
+  }
+  .pill{
+    display:inline-flex; align-items:center; gap:6px;
+    font-size:.76rem; font-weight:600; letter-spacing:.02em;
+    padding:5px 11px; border-radius:20px; border:1px solid var(--line);
+    background:var(--paper-raised); color:var(--ink-soft);
+  }
+  .pill.on{ color:var(--teal); border-color:var(--teal); background:var(--teal-soft); }
+  .pill.warn{ color:var(--amber); border-color:var(--amber); background:var(--amber-soft); }
+  .pill.rust{ color:var(--rust); border-color:var(--rust); background:var(--rust-soft); }
+  .pill::before{ content:''; width:6px; height:6px; border-radius:50%; background:currentColor; }
+
+  /* ---- Sections ---- */
+  section{ margin-bottom:56px; scroll-margin-top:24px; }
+  .section-num{
+    font-family:'IBM Plex Mono'; font-size:.75rem; color:var(--ink-soft);
+    letter-spacing:.04em;
+  }
+  h2.section-title{ font-size:1.55rem; margin-top:4px; }
+  .lede{ color:var(--ink-soft); max-width:68ch; margin-top:10px; font-size:1.02rem; }
+
+  p{ max-width:68ch; }
+  .prose p + p{ margin-top:.9em; }
+
+  /* ---- Cards ---- */
+  .card{
+    background:var(--paper-raised); border:1px solid var(--line);
+    border-radius:6px; padding:20px 22px; box-shadow:var(--shadow);
+  }
+  .stack{ display:flex; flex-direction:column; gap:16px; }
+
+  /* ---- Timeline ---- */
+  .timeline{ position:relative; padding-left:28px; margin-top:24px; }
+  .timeline::before{
+    content:''; position:absolute; left:6px; top:6px; bottom:6px; width:2px;
+    background:var(--line);
+  }
+  .tl-item{ position:relative; padding-bottom:28px; }
+  .tl-item:last-child{ padding-bottom:0; }
+  .tl-item::before{
+    content:''; position:absolute; left:-28px; top:4px; width:13px; height:13px;
+    border-radius:50%; border:2px solid var(--paper); box-shadow:0 0 0 2px var(--dot,var(--line));
+    background:var(--dot,var(--ink-soft));
+  }
+  .tl-item.rust{ --dot:var(--rust); }
+  .tl-item.amber{ --dot:var(--amber); }
+  .tl-item.teal{ --dot:var(--teal); }
+  .tl-tag{
+    font-size:.7rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase;
+    display:inline-block; margin-bottom:6px;
+  }
+  .tl-item.rust .tl-tag{ color:var(--rust); }
+  .tl-item.amber .tl-tag{ color:var(--amber); }
+  .tl-item.teal .tl-tag{ color:var(--teal); }
+  .tl-item h3{ font-size:1.08rem; margin-bottom:6px; }
+  .tl-item .body{ color:var(--ink-soft); max-width:66ch; }
+  .tl-item .body strong{ color:var(--ink); }
+  .tl-item ul{ margin:.6em 0 0; padding-left:1.15em; color:var(--ink-soft); }
+  .tl-item li + li{ margin-top:.35em; }
+
+  /* ---- File tree block ---- */
+  .filetree{
+    background:var(--mono-bg); border:1px solid var(--line); border-radius:6px;
+    padding:18px 20px; font-family:'IBM Plex Mono'; font-size:.84rem; line-height:1.85;
+    overflow-x:auto; color:var(--ink);
+  }
+  .filetree .shared{ color:var(--teal); }
+  .filetree .split{ color:var(--rust); }
+  .filetree .comment{ color:var(--ink-soft); }
+
+  /* ---- two-column grid ---- */
+  .twocol{ display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  @media (max-width:700px){ .twocol{ grid-template-columns:1fr; } }
+
+  /* ---- tables ---- */
+  .tbl-wrap{ overflow-x:auto; border:1px solid var(--line); border-radius:6px; }
+  table{ border-collapse:collapse; width:100%; font-size:.88rem; background:var(--paper-raised); }
+  th{
+    text-align:left; font-size:.7rem; letter-spacing:.07em; text-transform:uppercase;
+    color:var(--ink-soft); font-weight:600; padding:11px 14px; border-bottom:1px solid var(--line);
+    background:var(--line-soft); white-space:nowrap;
+  }
+  td{ padding:11px 14px; border-bottom:1px solid var(--line-soft); vertical-align:top; }
+  tr:last-child td{ border-bottom:none; }
+  td.path{ white-space:nowrap; }
+
+  /* ---- rung list ---- */
+  .rungs{ counter-reset:rung; list-style:none; margin:18px 0 0; padding:0; display:flex; flex-direction:column; gap:12px; }
+  .rungs li{
+    counter-increment:rung; position:relative; padding-left:44px; min-height:28px;
+  }
+  .rungs li::before{
+    content:counter(rung); position:absolute; left:0; top:-2px;
+    width:28px; height:28px; border-radius:50%; background:var(--teal-soft); color:var(--teal);
+    font-family:'IBM Plex Mono'; font-weight:600; font-size:.85rem;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .rungs .rung-body{ color:var(--ink-soft); }
+  .rungs strong{ color:var(--ink); }
+
+  /* ---- alert ---- */
+  .alert{
+    border:1px solid var(--amber); background:var(--amber-soft); border-radius:6px;
+    padding:22px 24px;
+  }
+  .alert .alert-kicker{
+    font-size:.72rem; font-weight:700; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--amber); display:flex; align-items:center; gap:8px; margin-bottom:10px;
+  }
+  .alert .alert-kicker::before{ content:'▲'; font-size:.7rem; }
+  .alert h3{ font-size:1.15rem; margin-bottom:8px; }
+  .alert .trace{ margin-top:14px; display:flex; flex-direction:column; gap:8px; }
+  .trace-line{
+    display:grid; grid-template-columns:auto 1fr; gap:12px; font-size:.9rem;
+    align-items:baseline;
+  }
+  .trace-line .loc{ color:var(--amber); font-weight:600; white-space:nowrap; }
+
+  /* ---- verification checklist ---- */
+  .checklist{ display:flex; flex-direction:column; gap:0; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .check-row{
+    display:grid; grid-template-columns:34px 1fr auto; gap:14px; align-items:start;
+    padding:14px 18px; border-bottom:1px solid var(--line-soft); background:var(--paper-raised);
+  }
+  .check-row:last-child{ border-bottom:none; }
+  .check-row .num{ font-family:'IBM Plex Mono'; font-size:.8rem; color:var(--ink-soft); padding-top:2px; }
+  .check-row .desc{ color:var(--ink-soft); font-size:.93rem; }
+  .check-row .desc strong{ color:var(--ink); }
+  .check-row .flag{
+    font-size:.68rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
+    padding:4px 9px; border-radius:20px; white-space:nowrap; align-self:center;
+  }
+  .flag.blocking{ background:var(--amber-soft); color:var(--amber); }
+  .flag.hard{ background:var(--rust-soft); color:var(--rust); }
+  .flag.std{ background:var(--line-soft); color:var(--ink-soft); }
+
+  /* ---- retro / lessons ---- */
+  .lesson{
+    display:grid; grid-template-columns:32px 1fr; gap:14px; padding:16px 0;
+    border-bottom:1px solid var(--line-soft);
+  }
+  .lesson:last-child{ border-bottom:none; }
+  .lesson .n{ font-family:'IBM Plex Mono'; color:var(--rust); font-weight:600; }
+  .lesson p{ color:var(--ink-soft); margin:0; max-width:64ch; }
+  .lesson strong{ color:var(--ink); }
+  .maxim{
+    margin-top:18px; padding:16px 18px; border-left:3px solid var(--teal);
+    background:var(--teal-soft); border-radius:0 6px 6px 0; font-size:.95rem; color:var(--ink);
+  }
+
+  footer.doc-foot{
+    margin-top:64px; padding-top:24px; border-top:1px solid var(--line);
+    color:var(--ink-soft); font-size:.85rem; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;
+  }
+</style>
+
+<div class="shell">
+  <nav class="toc">
+    <div class="toc-eyebrow">Spec 0011</div>
+    <ul>
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#history">Amendment history</a></li>
+      <li><a href="#mechanism">Mechanism</a></li>
+      <li><a href="#resolution">Resolution logic</a></li>
+      <li><a href="#composition">Composition (0008–0010)</a></li>
+      <li><a href="#files">Files to change</a></li>
+      <li><a href="#blackout">Gate blackout</a></li>
+      <li><a href="#verification">Verification</a></li>
+      <li><a href="#lessons">Confidence &amp; lessons</a></li>
+    </ul>
+    <div class="badge-row">
+      <span class="pill warn">1 blocking</span>
+      <span class="pill on">no escalation</span>
+    </div>
+  </nav>
+
+  <main>
+    <header class="doc-head" id="overview">
+      <div class="kicker">Agent-hierarchy · design spec</div>
+      <h1 class="title">Multiple rosters,<br>one repo.</h1>
+      <p class="subtitle">Today, every orchestrator in a working directory shares one <code>team.json</code>, one <code>peers.jsonl</code>, one prefix. Spec 0011 lets N independent teams coexist — scoped by tagging records, not by splitting the hierarchy directory.</p>
+      <div class="status-strip">
+        <span class="pill on">Specified</span>
+        <span class="pill">Implementation in progress</span>
+        <span class="pill rust">Amended twice</span>
+        <span class="pill warn">1 blocking item (B3)</span>
+        <span class="pill on">0 open questions</span>
+      </div>
+    </header>
+
+    <section id="goal">
+      <div class="section-num">01 — Goal</div>
+      <h2 class="section-title">Nothing stops two orchestrators sharing a directory.</h2>
+      <div class="prose lede">
+        <p>Two top-level sessions — or two <code>/pane</code> sessions — in the same working directory resolve to the identical <code>teamPrefix</code>, the identical <code>team.json</code>, the identical <code>peers.jsonl</code>. The second <code>create --spawn</code> either fights the first team or silently adopts it.</p>
+        <p><strong>Backward compatibility is a hard requirement.</strong> A repo with exactly one orchestrator must behave identically to today, with zero extra setup.</p>
+      </div>
+    </section>
+
+    <section id="history">
+      <div class="section-num">02 — History</div>
+      <h2 class="section-title">Two amendments, both self-corrections</h2>
+      <p class="lede">The mechanism changed shape twice after evidence — not opinion — invalidated its own premises. Both times, the correction shrank the design.</p>
+
+      <div class="timeline">
+        <div class="tl-item teal">
+          <div class="tl-tag">Original — withdrawn</div>
+          <h3>Directory scoping</h3>
+          <div class="body">Scope the whole hierarchy directory per team: <code>&lt;dir&gt;/teams/&lt;name&gt;/</code> holding its own <code>team.json</code>, <code>peers.jsonl</code>, <code>msgs/</code>. Motivated by a claim that one team's brief could reach another team's peer.</div>
+        </div>
+        <div class="tl-item rust">
+          <div class="tl-tag">Amendment (a)</div>
+          <h3>Evidence killed the premise</h3>
+          <div class="body">The mis-delivery claim was <strong>false</strong> — briefs travel as absolute paths over <code>SendMessage</code>, never by directory polling. Real damage was contaminated <em>counts</em>, not misrouted work. Directory scoping dropped in favor of the user's own proposal: shared files, tagged records, filtered on read.
+            <ul>
+              <li>~4 call sites need to change, against 20 for the directory approach.</li>
+              <li>Requires the spawned peer to know <em>nothing</em> — decisive, since no env channel to a spawned peer exists.</li>
+              <li>Untagged records degrade to the default team for free. Migration is a no-op.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="tl-item amber">
+          <div class="tl-tag">Amendment (b) — post-review</div>
+          <h3>A gate went dark</h3>
+          <div class="body">Review found three defects, all in the spec, all accepted. The most serious: a hook exemption written before amendment (a) was never re-checked against it, and spec 0009's safety gate silently stopped firing for named teams. Traced to one file, then found in three more.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="mechanism">
+      <div class="section-num">03 — Mechanism</div>
+      <h2 class="section-title">One shared set of files. Only <code>team.json</code> splits.</h2>
+      <p class="lede">Team identity is carried by the peer's <em>name</em> and resolved against the caller's own <code>team.json</code> — never by where a file lives.</p>
+
+      <div class="filetree" role="img" aria-label="Hierarchy directory layout">&lt;hierarchyDir(cwd)&gt;/
+  team.json            <span class="comment">← the default team (today's file, untouched)</span>
+  <span class="split">teams/&lt;name&gt;.json   ← one file per named team, same schema</span>
+  <span class="shared">peers.jsonl          ← shared, records tagged, filtered on read</span>
+  <span class="shared">msgs/                ← shared, frontmatter tagged, filtered on read</span>
+  <span class="shared">gates.jsonl          ← shared, unchanged</span></div>
+
+      <div class="twocol" style="margin-top:22px;">
+        <div class="card">
+          <h3 style="font-size:1rem;">Not conceded</h3>
+          <ul style="color:var(--ink-soft); padding-left:1.1em; margin:10px 0 0;">
+            <li><code>team.json</code> still splits per team — one slot describing one team's membership can't be coherently tagged.</li>
+            <li>The naming prefix is still team-scoped. Tagging fixes what this tool reads; it does nothing about <code>ListAgents</code>, which is machine-global.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3 style="font-size:1rem;">Who tags what</h3>
+          <div class="tbl-wrap" style="border:none; margin-top:8px;">
+            <table style="font-size:.82rem;">
+              <tr><th>Record</th><th>Written by</th><th>Tagged?</th></tr>
+              <tr><td><code>peers.jsonl</code> <code>up</code></td><td>the peer</td><td>No — unattributed until named</td></tr>
+              <tr><td><code>peers.jsonl</code> <code>seen</code>/<code>briefed</code></td><td>orchestrator</td><td>Yes — <code>team</code> field</td></tr>
+              <tr><td><code>msgs/</code> frontmatter</td><td>orchestrator</td><td>Yes — <code>team:</code> field</td></tr>
+              <tr><td><code>team.json</code></td><td>orchestrator</td><td>n/a — the file <em>is</em> the team</td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+      <p class="lede" style="margin-top:16px;">Name-membership is the primary filter; the tag is a redundant confirmation. <strong>Where they disagree, name-membership wins</strong> — <code>team.json</code> is the single writer of truth (spec 0008 §3).</p>
+    </section>
+
+    <section id="resolution">
+      <div class="section-num">04 — Resolution logic</div>
+      <h2 class="section-title">Two different questions, previously conflated</h2>
+      <p class="lede">The original design answered "which team am I in?" everywhere, including where the real question was "which team owns this name?" — and the second question needs no session identity at all.</p>
+
+      <div class="twocol">
+        <div class="card">
+          <h3 style="font-size:1.05rem;">(A) Which team owns this <em>name</em>?</h3>
+          <p style="color:var(--ink-soft); margin-top:8px;">Asked by anything resolving a peer name to a role. Search every team file for a member with that name — works identically in hooks with a session id, hooks without one, and CLIs. This is the primary mechanism.</p>
+        </div>
+        <div class="card">
+          <h3 style="font-size:1.05rem;">(B) Which team am <em>I</em> in?</h3>
+          <p style="color:var(--ink-soft); margin-top:8px;">Only asked when no name is in hand — an orchestrator scoping its own <code>create</code> or state block. Resolved by a four-rung fallback:</p>
+        </div>
+      </div>
+
+      <ol class="rungs">
+        <li><span class="rung-body"><strong>Explicit <code>--team &lt;name&gt;</code> flag.</strong> CLIs only.</span></li>
+        <li><span class="rung-body"><strong>Session id match</strong> against a team's <code>orchestrator.session_id</code> — available in hooks that receive one (e.g. route-gate, sessionstart); not in <code>posttooluse-roster.mjs</code>.</span></li>
+        <li><span class="rung-body"><strong><code>CLAUDE_PID</code> match</strong> against a team's <code>orchestrator.pid</code>, gated by <code>pidAlive</code>. This is what actually delivers "omit <code>--team</code> after <code>create</code>" for the CLIs — a recycled pid from a dead orchestrator must never match.</span></li>
+        <li><span class="rung-body"><strong>Fall through to the default team.</strong> Today's behaviour, exactly.</span></li>
+      </ol>
+    </section>
+
+    <section id="composition">
+      <div class="section-num">05 — Composition</div>
+      <h2 class="section-title">How this sits against 0008 / 0009 / 0010</h2>
+      <div class="stack">
+        <div class="card">
+          <h3 style="font-size:1rem;">0008 — roster relocation</h3>
+          <p style="color:var(--ink-soft); margin-top:6px;">Single-writer rule for <code>team.json</code> <strong>preserved</strong> — load-bearing for the tag/membership tiebreak. §5.1 amended: <code>resync</code>/<code>move</code> locate <code>team.json</code> by <code>--cwd</code> <em>and</em> active team scope. <code>teamPrefix</code> unification preserved — none of its 20 call sites move.</p>
+        </div>
+        <div class="card">
+          <h3 style="font-size:1rem;">0009 — global-scope confirm gate</h3>
+          <p style="color:var(--ink-soft); margin-top:6px;"><strong>No amendment.</strong> Its predicates read config files (per-repo/per-user), not team files — so <code>gates.jsonl</code> stays shared, unchanged, one confirmation per repo. Its fail-open catch (§8.12) is preserved and now covers more failure modes. Its gate firing correctly, though, is exactly what amendment (b) found broken — see §07.</p>
+        </div>
+        <div class="card">
+          <h3 style="font-size:1rem;">0010 — herdr dependency &amp; team alias</h3>
+          <p style="color:var(--ink-soft); margin-top:6px;"><code>validateTeamAlias</code> reused verbatim for team names. <strong>No amendment required</strong> — its relocation into <code>lib-config.mjs</code> is exactly what makes the reuse free.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="files">
+      <div class="section-num">06 — Files to change</div>
+      <h2 class="section-title">Nine hooks, two docs, one new test file</h2>
+      <div class="tbl-wrap">
+        <table>
+          <tr><th>File</th><th>Change</th></tr>
+          <tr><td class="path"><code>lib-config.mjs</code></td><td>Team-aware <code>teamPrefixInfo</code>/<code>teamPrefix</code>; <code>resolveConfig</code> gains team/session args; rung 3 (<code>CLAUDE_PID</code> + <code>pidAlive</code>).</td></tr>
+          <tr><td class="path"><code>lib-roster.mjs</code></td><td><code>teamPath</code> → <code>teams/&lt;team&gt;.json</code>; team-aware read/write/clear; all-teams member search for (A).</td></tr>
+          <tr><td class="path"><code>lib-hier.mjs</code></td><td><code>roster()</code> filters by membership + <code>unattributed</code> bucket, subject to the default-team carve-out; exchanges filtered by team; <code>roleForPeerName</code> team-aware.</td></tr>
+          <tr><td class="path"><code>roster.mjs</code></td><td><code>--team</code> flag; <code>create</code> writes <code>teams/&lt;T&gt;.json</code>; new <code>teams</code> verb; naming-collision refusal flow.</td></tr>
+          <tr><td class="path"><code>msg.mjs</code></td><td><code>--team</code>; <code>new</code> writes <code>team:</code> frontmatter; <code>list</code> filters; reads <code>CLAUDE_PID</code> for rung 3.</td></tr>
+          <tr><td class="path"><code>posttooluse-roster.mjs</code></td><td class="rust-cell">Tags <code>seen</code>/<code>briefed</code> records; scopes its <code>teamPrefix</code> call — part of the gate-blackout fix.</td></tr>
+          <tr><td class="path"><code>sessionstart.mjs</code></td><td>Passes team scope into the prefix. Roster-record write itself is unchanged.</td></tr>
+          <tr><td class="path"><code>pretooluse-route-gate.mjs</code></td><td><strong style="color:var(--amber);">Blocking — see §07.</strong></td></tr>
+          <tr><td class="path"><code>pretooluse-msg-gate.mjs</code></td><td>Scopes its <code>teamPrefix</code> call — part of the gate-blackout fix.</td></tr>
+          <tr><td class="path"><code>pretooluse-ultra-gate.mjs</code></td><td>Scopes its <code>teamPrefix</code> call — the site no file list had named until amendment (b).</td></tr>
+          <tr><td class="path"><code>docs/specs/0008-…</code></td><td>§5.1 amendment: team scope added to the resync/move lookup rule.</td></tr>
+          <tr><td class="path"><code>SKILL.md</code></td><td><code>--team</code>, <code>teams</code> verb, hybrid-naming refusal flow, which commands need <code>--team</code> every time.</td></tr>
+          <tr><td class="path"><code>test-roster-multi-team.sh</code></td><td>New — ten verification tests, §07.</td></tr>
+          <tr><td class="path"><code>plugin.json</code> + <code>marketplace.json</code></td><td>Version bump, both files.</td></tr>
+        </table>
+      </div>
+      <p class="lede" style="margin-top:14px;"><strong>Not changed:</strong> <code>subagentstop-msg-nudge.mjs</code>, <code>sessionend-roster.mjs</code>, <code>tests/test-roster.sh</code> — baseline invariance requires this file stay untouched.</p>
+    </section>
+
+    <section id="blackout">
+      <div class="section-num">07 — The gate blackout</div>
+      <h2 class="section-title">Finding B3 — blocking</h2>
+      <div class="alert">
+        <div class="alert-kicker">Security-adjacent · confirmed at source · widened past the original report</div>
+        <h3>A safety gate stopped firing, silently, for named teams.</h3>
+        <p style="color:var(--ink); max-width:66ch;">Route-gate was exempted from every team-scoping change on the grounds that <code>hierarchyDir</code> is no longer re-scoped. True — and irrelevant, because amendment (a) had already made the prefix and every name-lookup team-sensitive, and the exemption was never re-checked against that.</p>
+        <div class="trace">
+          <div class="trace-line"><span class="loc mono">:235</span><span><code>resolveConfig(cwd)</code> — no session id passed, even though one is available two lines later.</span></div>
+          <div class="trace-line"><span class="loc mono">:237</span><span><code>teamPrefix(cwd)</code> — unscoped.</span></div>
+          <div class="trace-line"><span class="loc mono">:254–259</span><span>All three role-resolution paths miss a named team's own members. No <code>roleFromName</code> fallback exists on this path.</span></div>
+          <div class="trace-line"><span class="loc mono">→</span><span><strong>Role resolves to <code>null</code>.</strong> Spec 0009's global-scope confirm gate and the route-preference gate both stop evaluating — for a named team, silently.</span></div>
+        </div>
+        <p style="margin-top:16px; color:var(--ink);"><strong>Wider than reported.</strong> The same single-argument <code>teamPrefix(cwd)</code> call also appears in <code>pretooluse-msg-gate.mjs</code>, <code>pretooluse-ultra-gate.mjs</code>, and <code>posttooluse-roster.mjs</code> — three sites no prior file list had named.</p>
+      </div>
+
+      <div class="twocol" style="margin-top:18px;">
+        <div class="card">
+          <h3 style="font-size:.95rem; color:var(--teal);">Deliberate: widen the fallback</h3>
+          <p style="color:var(--ink-soft); margin-top:6px; font-size:.92rem;">Route-gate gains the same <code>roleFromName</code> fallback <code>roleForPeerName</code> already ends with. A previously-null name now resolves to a role — a real behaviour change, named rather than smuggled in.</p>
+        </div>
+        <div class="card">
+          <h3 style="font-size:.95rem; color:var(--rust);">Must not change: the failure posture</h3>
+          <p style="color:var(--ink-soft); margin-top:6px; font-size:.92rem;"><code>null</code> role must keep <em>allowing</em>. Flipping to fail-closed would contradict 0009 §8.12's deliberate fail-open design and could wedge a session.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="verification">
+      <div class="section-num">08 — Verification</div>
+      <h2 class="section-title">Ten tests, run in a specific order</h2>
+      <p class="lede">Test 1 runs first, not last — everything else is additive, and nothing may be allowed to regress the case that has no <code>--team</code> at all.</p>
+      <div class="checklist">
+        <div class="check-row"><span class="num">01</span><span class="desc"><strong>Baseline invariance.</strong> No <code>--team</code> anywhere → existing suite passes unchanged.</span><span class="flag hard">Hard req.</span></div>
+        <div class="check-row"><span class="num">02</span><span class="desc"><strong>Two teams, isolated rosters.</strong> Alpha's roster lists exactly alpha's members from the shared <code>peers.jsonl</code>.</span><span class="flag std">Standard</span></div>
+        <div class="check-row"><span class="num">03</span><span class="desc"><strong>Exchange-count isolation,</strong> including the <code>to_name: null</code> fan-out case.</span><span class="flag std">Standard</span></div>
+        <div class="check-row"><span class="num">04</span><span class="desc"><strong>Unattributed bucket, both sides of the carve-out</strong> — named team excludes it from every role bucket; default team synthesizes it exactly as before, in one test.</span><span class="flag std">Standard</span></div>
+        <div class="check-row"><span class="num">05</span><span class="desc"><strong>Static grep</strong> — no file outside <code>lib-roster.mjs</code> constructs a <code>team.json</code> path.</span><span class="flag std">Standard</span></div>
+        <div class="check-row"><span class="num">06</span><span class="desc"><strong>Static grep</strong> — no file in <code>hooks/</code> calls <code>teamPrefix(</code>/<code>teamPrefixInfo(</code> with one argument. Would have caught B3 and its three missed sites.</span><span class="flag blocking">Blocking</span></div>
+        <div class="check-row"><span class="num">07</span><span class="desc"><strong>Gate liveness under a named team.</strong> Assert the 0009 gate positively <em>fired</em> — silence is the failing state, so absence-of-crash doesn't prove it.</span><span class="flag blocking">Blocking</span></div>
+        <div class="check-row"><span class="num">08</span><span class="desc"><strong>Degradation.</strong> A missing <code>teams/&lt;T&gt;.json</code> or untagged record resolves to the default team without throwing.</span><span class="flag std">Standard</span></div>
+        <div class="check-row"><span class="num">09</span><span class="desc"><strong>CLI rung 3.</strong> Live <code>CLAUDE_PID</code> match resolves the team without <code>--team</code>; a dead pid falls through to default.</span><span class="flag std">Standard</span></div>
+        <div class="check-row"><span class="num">10</span><span class="desc"><strong>Collision, alias, and rename cases</strong> — naming refusal, alias-while-scoped refusal, membership-wins-on-rename.</span><span class="flag std">Standard</span></div>
+      </div>
+    </section>
+
+    <section id="lessons">
+      <div class="section-num">09 — Confidence &amp; lessons</div>
+      <h2 class="section-title">High on the mechanism. No escalation.</h2>
+      <p class="lede">The original escalation trigger — "if peers can't get a team scope without a race, ask Ultra-Advisor how" — came back negative, and turned out to be the wrong question. Peers need no team scope at all. Four self-reported defects share one shape.</p>
+
+      <div class="card" style="margin-top:20px;">
+        <div class="lesson">
+          <span class="n">01</span>
+          <p><strong>Asserted a delivery mechanism never traced.</strong> The claim that a brief could reach the wrong team's architect drove the entire withdrawn design — and was false.</p>
+        </div>
+        <div class="lesson">
+          <span class="n">02</span>
+          <p><strong>A test asserted an unverified fact.</strong> "Only one file calls <code>hierarchyDir(</code>" was flagged as unchecked, then built into a test anyway. 20 sites, 9 files.</p>
+        </div>
+        <div class="lesson">
+          <span class="n">03</span>
+          <p><strong>Two absolutes stated without checking the baseline they had to coexist with.</strong> An existing test already required exactly the behaviour the new rule forbade.</p>
+        </div>
+        <div class="lesson">
+          <span class="n">04</span>
+          <p><strong>An exemption survived a change to its own premise.</strong> The reasoning that justified it was true and irrelevant — the real dependency had moved.</p>
+        </div>
+        <div class="maxim">When a spec is amended, every exemption and "not changed" claim must be re-derived against the new premise — those entries state a <em>negative</em>, and a stale negative is invisible.</div>
+      </div>
+    </section>
+
+    <footer class="doc-foot">
+      <span>agent-hierarchy · spec 0011</span>
+      <span>Reviewed for the Orchestrator by the design lead, not the Architect who wrote it.</span>
+    </footer>
+  </main>
+</div>

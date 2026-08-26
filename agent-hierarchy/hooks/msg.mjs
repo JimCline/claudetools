@@ -4,8 +4,8 @@
  *
  *   msg.mjs new --to <role> --from <role> --slug <s> [--to-name <n>] [--from-name <n>]
  *               [--parent <id>] [--reason context|second-opinion|parallel]
- *               [--type request|response] [--id <id>]
- *   msg.mjs list [--open|--closed|--all] [--to <role>] [--json] [--plain]
+ *               [--type request|response] [--id <id>] [--team <name>]
+ *   msg.mjs list [--open|--closed|--all] [--to <role>] [--team <name>] [--json] [--plain]
  *   msg.mjs index <path>
  *   msg.mjs sweep [--days 7]
  *   msg.mjs roster
@@ -17,9 +17,18 @@
  * never hand-roll ids or skeletons — `new` is the only way a file is born.
  * Bad args or a response without its request exit non-zero with one line on
  * stderr.
+ *
+ * `--team <name>` (spec 0011 §5.1) scopes `new`/`list`/`roster` to a named
+ * team instead of the default. Omitted, `new`/`list` fall through to spec
+ * 0011 §4.4 rung 3: `CLAUDE_PID` matched against a team's `orchestrator.pid`
+ * (`pidAlive`-guarded), so a CLI launched from a named-team orchestrator
+ * resolves that team without the flag; no match resolves the default team,
+ * same as before this rung existed. `route`/`global-scope` write
+ * `gates.jsonl`, which spec 0011 §6.2 leaves shared and unscoped — no
+ * `--team` there.
  */
 
-import { PEER_ELIGIBLE_ROLES, resolveConfig, ROUTE_VALUES, teamPrefix } from "./lib-config.mjs";
+import { PEER_ELIGIBLE_ROLES, resolveConfig, ROUTE_VALUES, teamPrefix, validateTeamAlias } from "./lib-config.mjs";
 import {
   appendGate,
   createMessage,
@@ -30,6 +39,7 @@ import {
   hierarchyDir,
   indexAnchors,
   listExchanges,
+  pidAlive,
   readMsgFile,
   recordRoute,
   roster,
@@ -37,6 +47,7 @@ import {
   sweep,
   SWEEP_DAYS,
 } from "./lib-hier.mjs";
+import { listTeamNames, readTeam } from "./lib-roster.mjs";
 
 const BOOL_FLAGS = new Set(["plain", "json", "open", "closed", "all"]);
 
@@ -75,6 +86,43 @@ const opts = all;
 const cwd = typeof opts.cwd === "string" ? opts.cwd : process.cwd();
 const plain = opts.plain === true;
 
+/**
+ * `--team <name>` if given (validated with 0010's alias validator); else
+ * spec 0011 §4.4 rung 3 — `CLAUDE_PID` matched against a team's
+ * `orchestrator.pid`, `pidAlive`-guarded so a recycled pid from a dead
+ * orchestrator never matches a stale team. No match falls through to the
+ * default team (null), same as before this rung existed.
+ */
+function resolveTeamArg() {
+  if (typeof opts.team === "string") {
+    const v = validateTeamAlias(opts.team);
+    if (!v.ok) fail(`--team: ${v.why}`);
+    return opts.team;
+  }
+  const pid = Number(process.env.CLAUDE_PID);
+  if (Number.isInteger(pid) && pid > 0 && pidAlive(pid)) {
+    try {
+      const dir = hierarchyDir(cwd);
+      const base = readTeam(dir);
+      if (base && base.orchestrator && base.orchestrator.pid === pid) return null;
+      for (const name of listTeamNames(dir)) {
+        const team = readTeam(dir, name);
+        if (team && team.orchestrator && team.orchestrator.pid === pid) return name;
+      }
+    } catch {
+      // fail-open to default — 0009 §8.12 pattern extended to team resolution.
+    }
+  }
+  return null;
+}
+const teamArg = resolveTeamArg();
+
+/** The `team:` tag an exchange's request was written with (null = default team or untagged, §7.6). */
+function itemTeamTag(item) {
+  const parsed = readMsgFile(item.request.path);
+  return (parsed && parsed.fm && parsed.fm.team) || null;
+}
+
 try {
   switch (cmd) {
     case "new": {
@@ -91,6 +139,7 @@ try {
         reason: typeof opts.reason === "string" ? opts.reason : null,
         toName: typeof opts["to-name"] === "string" ? opts["to-name"] : null,
         fromName: typeof opts["from-name"] === "string" ? opts["from-name"] : null,
+        team: teamArg,
       });
       out(plain ? `${res.id}  ${res.path}` : { id: res.id, path: res.path }, plain);
       break;
@@ -102,6 +151,7 @@ try {
       if (which === "open") items = items.filter((e) => e.open);
       if (which === "closed") items = items.filter((e) => !e.open);
       if (typeof opts.to === "string") items = items.filter((e) => e.to === opts.to);
+      items = items.filter((e) => itemTeamTag(e) === teamArg);
       const rows = items.map((e) => ({
         id: e.id,
         to: e.to,
@@ -135,8 +185,8 @@ try {
     }
     case "roster": {
       const dir = hierarchyDir(cwd);
-      const resolved = resolveConfig(cwd);
-      const ros = roster(dir, resolved, teamPrefix(resolved.cwd));
+      const resolved = resolveConfig(cwd, { team: teamArg });
+      const ros = roster(dir, resolved, teamPrefix(resolved.cwd, resolved.team));
       if (plain) {
         const lines = [];
         for (const role of PEER_ELIGIBLE_ROLES) {

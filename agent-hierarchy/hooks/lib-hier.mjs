@@ -21,7 +21,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renam
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_LABELS, ROUTE_VALUES, TIER, resolvedPeerTargets, roleFromName, tierOf } from "./lib-config.mjs";
-import { readTeam, teamMemberByName } from "./lib-roster.mjs";
+import { readTeam, resolveMemberTeam, teamMemberByName } from "./lib-roster.mjs";
 
 export { hierarchyDir };
 
@@ -181,7 +181,7 @@ function skeletonBody(keys) {
 }
 
 function frontmatterText(fields) {
-  const order = ["id", "type", "to", "from", "slug", "parent", "reason", "to_name", "from_name", "created"];
+  const order = ["id", "type", "to", "from", "slug", "parent", "reason", "to_name", "from_name", "team", "created"];
   const lines = ["---"];
   for (const key of order) lines.push(`${key}: ${fields[key] === null || fields[key] === undefined ? "null" : fields[key]}`);
   lines.push("---", "");
@@ -239,6 +239,7 @@ export function createMessage(dir, opts) {
       reason: opts.reason || null,
       to_name: opts.toName || null,
       from_name: opts.fromName || null,
+      team: opts.team || null,
       created: localIso(now),
     };
   } else {
@@ -258,6 +259,7 @@ export function createMessage(dir, opts) {
       reason: null,
       to_name: opts.toName || rf.from_name || null,
       from_name: opts.fromName || rf.to_name || null,
+      team: opts.team || rf.team || null,
       created: localIso(now),
     };
   }
@@ -280,8 +282,23 @@ export function listExchanges(dir) {
     .map((e) => ({ ...e, open: !e.response, to: e.request.meta.to, slug: e.request.meta.slug }));
 }
 
-export function openExchanges(dir) {
-  return listExchanges(dir).filter((e) => e.open);
+/**
+ * Open exchanges, optionally filtered to one team. `team` omitted (not even
+ * `null`) returns every open exchange, untagged and tagged alike; passing
+ * `team` (a name, or `null` for the default team) keeps only exchanges whose
+ * frontmatter `team:` tag matches — an untagged exchange's tag reads as
+ * `null` (§7.6 degradation), so it matches the default team. This is what
+ * closes the `to_name: null` cross-team fan-out (spec 0011 §7.7): callers
+ * that bucket peers by team must filter here BEFORE reading `to_name`.
+ */
+export function openExchanges(dir, team) {
+  const list = listExchanges(dir).filter((e) => e.open);
+  if (team === undefined) return list;
+  return list.filter((e) => {
+    const parsed = readMsgFile(e.request.path);
+    const tag = (parsed && parsed.fm && parsed.fm.team) || null;
+    return tag === (team || null);
+  });
 }
 
 /** Frontmatter `created` if parseable, else file mtime, as epoch ms. */
@@ -403,8 +420,31 @@ export function effectiveRoute(dir, resolved, sessionId) {
  */
 export function roleForPeerName(name, resolved, repoBasename) {
   try {
-    const member = teamMemberByName(hierarchyDir(resolved.cwd), name);
+    const member = teamMemberByName(hierarchyDir(resolved.cwd), name, resolved && resolved.team);
     if (member) return member.role;
+  } catch {
+    // team lookup is best-effort; fall through to the existing paths
+  }
+  for (const role of PEER_ELIGIBLE_ROLES) {
+    if (resolvedPeerTargets(role, resolved.roles[role], repoBasename).includes(name)) return role;
+  }
+  return roleFromName(name);
+}
+
+/**
+ * Mechanism (A) — spec 0011 §4.4.1: "what role is this name", searched across
+ * every team by name (`resolveMemberTeam`), not scoped to `resolved.team`.
+ * For callers that need the role of an arbitrary name regardless of whether
+ * team scope itself resolved correctly — unlike `roleForPeerName`, which
+ * answers (B) "who is on my team" and is the wrong mechanism for these.
+ */
+export function roleForAnyPeerName(dir, name, resolved, repoBasename) {
+  try {
+    const membership = resolveMemberTeam(dir, name);
+    if (membership.found) {
+      const member = teamMemberByName(dir, name, membership.team);
+      if (member) return member.role;
+    }
   } catch {
     // team lookup is best-effort; fall through to the existing paths
   }
@@ -454,12 +494,24 @@ export function pidAlive(pid) {
 /**
  * Per role, a list of peer instances, live-first then freshest:
  * `{name, live, how, ageSec, busy, openBriefs, unassigned}`. `down` records
- * are not candidates and are dropped.
+ * are not candidates and are dropped. Records are attributed to
+ * `resolved.team` (spec 0011 §4.1-§4.3): a nameless record always lands in
+ * the returned `unattributed` array (never guessed, never dropped, §4.2),
+ * and additionally in its role bucket under a synthesized `role@session`
+ * name when the caller is the default team (baseline invariance — a
+ * specifically-named team's roster stays isolated from it); a
+ * named record's effective team is a fresh name-membership lookup — if the
+ * record's stored `team` tag disagrees with that lookup (a stale claim,
+ * §7.5) it also lands in `unattributed`; otherwise it's included here only
+ * if its effective team matches `resolved.team` (a sibling team's member is
+ * silently absent, not flagged).
  */
 export function roster(dir, resolved, repoBasename, now = Date.now()) {
   const out = {};
   for (const role of PEER_ELIGIBLE_ROLES) out[role] = [];
-  const open = openExchanges(dir).map((e) => {
+  const unattributed = [];
+  const team = (resolved && resolved.team) || null;
+  const open = openExchanges(dir, team).map((e) => {
     const parsed = readMsgFile(e.request.path);
     return { to: e.to, toName: parsed && parsed.fm ? parsed.fm.to_name : null };
   });
@@ -476,16 +528,43 @@ export function roster(dir, resolved, repoBasename, now = Date.now()) {
     } else if (rec.status === "seen" || rec.status === "briefed") {
       live = ageSec < ROSTER_FRESH_SEC;
     }
-    const name = rec.name || `${role}@${String(rec.session_id || "").slice(0, 8)}`;
-    const mine = open.filter((o) => o.to === role && (o.toName === name || o.toName === null));
+    const base = { role, live, how, ageSec, busy: rec.busy === true, task: rec.task || null };
+
+    if (!rec.name) {
+      unattributed.push({ name: null, ...base });
+      // Baseline (pre-0011) behaviour: a nameless record still surfaces in
+      // its role bucket under a synthesized `role@session` name, but only
+      // for the default team — an explicitly-named team's roster stays
+      // isolated (spec 0011 §4.2/§11 test 4), while the default team keeps
+      // exactly the display every existing no-`--team` caller depends on.
+      if (team === null) {
+        const name = `${role}@${String(rec.session_id || "").slice(0, 8)}`;
+        const mine = open.filter((o) => o.to === role && (o.toName === name || o.toName === null));
+        out[role].push({ ...base, name, openBriefs: mine.length, unassigned: mine.filter((o) => o.toName === null).length });
+      }
+      continue;
+    }
+
+    const membership = resolveMemberTeam(hierarchyDir(resolved.cwd), rec.name);
+    const tag = rec.team !== undefined ? rec.team : null;
+    if (tag !== null && (!membership.found || membership.team !== tag)) {
+      unattributed.push({ name: rec.name, ...base });
+      continue;
+    }
+    const recTeam = membership.found ? membership.team : null;
+    if (recTeam !== team) {
+      // §4.5 row 4 (named-team scope only): a name owned by no team at all is
+      // `unattributed`, not silently dropped — distinct from row 3, where the
+      // name belongs to another team (`membership.found` true) and is excluded
+      // entirely.
+      if (team !== null && !membership.found) unattributed.push({ name: rec.name, ...base });
+      continue;
+    }
+
+    const mine = open.filter((o) => o.to === role && (o.toName === rec.name || o.toName === null));
     out[role].push({
-      name,
-      role,
-      live,
-      how,
-      ageSec,
-      busy: rec.busy === true,
-      task: rec.task || null,
+      ...base,
+      name: rec.name,
       openBriefs: mine.length,
       unassigned: mine.filter((o) => o.toName === null).length,
     });
@@ -493,6 +572,7 @@ export function roster(dir, resolved, repoBasename, now = Date.now()) {
   for (const role of Object.keys(out)) {
     out[role].sort((a, b) => Number(b.live) - Number(a.live) || a.ageSec - b.ageSec);
   }
+  out.unattributed = unattributed;
   return out;
 }
 
@@ -576,12 +656,12 @@ export function routeLine(route) {
  * degrades to the generic form.
  */
 export function buildStateBlock(dir, resolved, repoBasename, model, sessionId = null, route = null, now = Date.now()) {
-  const open = openExchanges(dir);
+  const open = openExchanges(dir, (resolved && resolved.team) || null);
   const shown = open.slice(0, 10).map((e) => `${e.id} ${e.to} ${e.slug} ${fmtAge(exchangeAgeSec(e, now))}`);
   const openLine = open.length
     ? `open exchanges: ${open.length} — ${shown.join(", ")}${open.length > 10 ? ` +${open.length - 10} more: msg.mjs list` : ""}`
     : "open exchanges: none";
-  const team = readTeam(dir);
+  const team = readTeam(dir, (resolved && resolved.team) || null);
   let peersLine;
   if (team && Array.isArray(team.members) && team.members.length) {
     const ros = roster(dir, resolved, repoBasename, now);

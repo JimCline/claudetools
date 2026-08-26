@@ -82,7 +82,8 @@ Your contract:
   sentences, `file:line` over prose, lists over paragraphs.
 - **BRIEF INTAKE / REPORT via message files.** When your brief is a file — the
   dispatch carries `[hierarchy-msg <path>]` — run `grep -n '^## \[' <path>`
-  for the index and Read only the sections you need. To report, write the
+  for the index and Read only the sections you need. To report, prefer
+  `mcp__ah__msg_new` (MCP tool) when available; otherwise write the
   response with the plugin's msg CLI (`msg.mjs new --type response --id <id>
   --to <from> --from reviewer`, id and from come from the request's
   frontmatter) and fill it: bullets, no prose, status first. Your final

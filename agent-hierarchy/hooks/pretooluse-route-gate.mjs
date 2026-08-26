@@ -73,7 +73,7 @@
  * independent.
  */
 
-import { hierarchyRoleOf, isSubagent, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolvedPeerTargets, ROLE_LABELS, teamPrefix, tierOf } from "./lib-config.mjs";
+import { hierarchyRoleOf, isSubagent, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolvedPeerTargets, roleFromName, ROLE_LABELS, teamPrefix, tierOf } from "./lib-config.mjs";
 import {
   appendGate,
   describeInstance,
@@ -87,7 +87,7 @@ import {
   roster,
   sessionModel,
 } from "./lib-hier.mjs";
-import { teamMemberByName } from "./lib-roster.mjs";
+import { resolveMemberTeam, teamMemberByName } from "./lib-roster.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
 
 const TIER_ROLES = ["architect", "ultra-advisor"];
@@ -232,11 +232,11 @@ try {
 
   const toolInput = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
-  const resolved = resolveConfig(cwd);
-  if (!resolved.enabled) decide(null);
-  const repoBasename = teamPrefix(cwd);
-  const dir = hierarchyDir(cwd);
   const sessionId = typeof input.session_id === "string" && input.session_id ? input.session_id : "__nosession__";
+  const resolved = resolveConfig(cwd, { sessionId: sessionId !== "__nosession__" ? sessionId : undefined });
+  if (!resolved.enabled) decide(null);
+  const repoBasename = teamPrefix(cwd, resolved.team);
+  const dir = hierarchyDir(cwd);
 
   let rosterCache = null;
   const getRoster = () => rosterCache || (rosterCache = roster(dir, resolved, repoBasename));
@@ -250,14 +250,18 @@ try {
     text = typeof toolInput.message === "string" ? toolInput.message : "";
     if (!parseSentinel(text)) decide(null);
     const to = typeof toolInput.to === "string" ? stripRef(toolInput.to.trim()) : "";
-    // Team-first (ADR 0002): the active Team's check-in registry is authoritative once it exists.
-    const teamMember = to ? teamMemberByName(dir, to) : null;
+    // Mechanism (A) — spec 0011 §4.4.1/§9.1: "what role is this name" is
+    // answered by an all-teams name search, independent of `resolved.team` —
+    // the team-scoped form has a silent-null failure mode when rung 2 misses.
+    const membership = to ? resolveMemberTeam(dir, to) : { found: false, team: null };
+    const teamMember = membership.found ? teamMemberByName(dir, to, membership.team) : null;
     role = teamMember ? teamMember.role : null;
     if (!role) role = PEER_ELIGIBLE_ROLES.find((r) => resolvedPeerTargets(r, resolved.roles[r], repoBasename).includes(to)) || null;
     if (!role && to) {
       const ros = getRoster();
       role = PEER_ELIGIBLE_ROLES.find((r) => (ros[r] || []).some((i) => i.name === to)) || null;
     }
+    if (!role && to) role = roleFromName(to);
   }
 
   // ---- scope A/B: global-scope confirm gate (spec 0009 §4), evaluated before

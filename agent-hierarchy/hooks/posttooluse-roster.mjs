@@ -16,8 +16,19 @@
  */
 
 import { isSubagent, readHookInput, resolveConfig, teamPrefix } from "./lib-config.mjs";
-import { appendRosterRecord, hierarchyDir, roleForPeerName } from "./lib-hier.mjs";
+import { appendRosterRecord, hierarchyDir, roleForAnyPeerName } from "./lib-hier.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
+import { resolveMemberTeam } from "./lib-roster.mjs";
+
+/**
+ * The team tag for a roster record (spec 0011 §4.3): a fresh name-membership
+ * lookup, since this hook has no session_id to resolve `resolved.team` from
+ * (§4.4 rung 2 is unavailable here) — it only ever tags names it just read.
+ */
+function teamTagFor(dir, name) {
+  const membership = resolveMemberTeam(dir, name);
+  return membership.found ? membership.team : null;
+}
 
 const LINE_RE = /^\s*(.+?) \[([0-9a-f]+)\]\s+·\s+(\w+)\s+·\s+(idle|busy)\s+·/;
 
@@ -40,7 +51,7 @@ try {
   if (!isSubagent(input)) {
     const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
     const resolved = resolveConfig(cwd);
-    const repoBasename = teamPrefix(cwd);
+    const repoBasename = teamPrefix(cwd, resolved.team);
     const dir = hierarchyDir(cwd);
     const toolInput = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
 
@@ -52,17 +63,17 @@ try {
         const m = line.match(LINE_RE);
         if (!m) continue;
         const name = m[1].trim();
-        const role = roleForPeerName(name, resolved, repoBasename);
+        const role = roleForAnyPeerName(dir, name, resolved, repoBasename);
         if (!role) continue;
-        appendRosterRecord(dir, { status: "seen", name, ref: m[2], role, busy: m[4] === "busy" });
+        appendRosterRecord(dir, { status: "seen", name, ref: m[2], role, busy: m[4] === "busy", team: teamTagFor(dir, name) });
       }
     } else if (input.tool_name === "SendMessage") {
       const message = typeof toolInput.message === "string" ? toolInput.message : "";
       const sentinel = parseSentinel(message);
       const to = typeof toolInput.to === "string" ? stripRef(toolInput.to.trim()) : "";
       if (sentinel && to) {
-        const role = roleForPeerName(to, resolved, repoBasename);
-        appendRosterRecord(dir, { status: "briefed", name: to, role, task: sentinel.task || null });
+        const role = roleForAnyPeerName(dir, to, resolved, repoBasename);
+        appendRosterRecord(dir, { status: "briefed", name: to, role, task: sentinel.task || null, team: teamTagFor(dir, to) });
       }
     }
   }

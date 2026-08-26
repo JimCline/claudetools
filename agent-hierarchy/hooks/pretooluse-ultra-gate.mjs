@@ -30,8 +30,9 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { peerName, readHookInput, resolveConfig, resolvedPeerTargets, teamPrefix } from "./lib-config.mjs";
-import { getDecision, isGatedPeerTarget, isGatedSubagentType, normalizeSessionId } from "./lib-gate.mjs";
+import { hierarchyDir, peerName, readHookInput, resolveConfig, resolvedPeerTargets, teamPrefix } from "./lib-config.mjs";
+import { getDecision, isGatedPeerTarget, isGatedSubagentType, NO_SESSION_KEY, normalizeSessionId } from "./lib-gate.mjs";
+import { listTeamNames } from "./lib-roster.mjs";
 
 const GATE_CLI = join(dirname(fileURLToPath(import.meta.url)), "gate.mjs");
 
@@ -99,31 +100,32 @@ if (!isDispatch && !isSend) decide(null);
 
 const toolInput = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
 const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
-const repoBasename = teamPrefix(cwd);
+const sessionId = normalizeSessionId(input.session_id);
 
-// Cheap string check first, against the shipped "<repo>-ultra-advisor"
-// convention — this alone gates every install that hasn't set a custom peer
-// name, so the common case still never pays for a config-file read. Only a
-// SendMessage that misses this fast path falls through to one, because a
-// custom `peer` value for the ultra-advisor role can only be known by
-// reading the config that holds it. Agent/Task dispatches are matched by
-// subagent_type and never need the fallback.
+// Team scope must be resolved before repoBasename/teamPrefix — spec 0011
+// §9.1 requires every team-scoped prefix call to pass the resolved team, not
+// just the cwd — which costs the config read the fast path below used to
+// skip for non-gated tool calls.
+const resolved = resolveConfig(cwd, { sessionId: sessionId !== NO_SESSION_KEY ? sessionId : undefined });
+if (!resolved.enabled) decide(null);
+const repoBasename = teamPrefix(cwd, resolved.team);
+
+// spec 0011 §9.5, predicate (ii): a session that could not resolve its own
+// team cannot compute the one correct prefix, so when named teams exist it
+// tests every team's prefix instead of silently testing only the default
+// one — 0009's escalation gate is a per-session consent control, and a name
+// that cannot be right must not stand in for one that could be. When
+// `resolved.team` resolves, or no named teams exist, this is a single-
+// element array identical to today's `repoBasename`.
+const teamNames = resolved.team === null ? listTeamNames(hierarchyDir(cwd)) : [];
+const gatedPrefixes = teamNames.length > 0 ? [repoBasename, ...teamNames.map((team) => teamPrefix(cwd, team))] : [repoBasename];
+
 let gated = isDispatch
   ? isGatedSubagentType(toolInput.subagent_type)
-  : isGatedPeerTarget(toolInput.to, peerName(repoBasename, "ultra-advisor"));
-
-let resolved = null;
-if (!gated && isSend) {
-  resolved = resolveConfig(cwd);
-  gated = resolvedPeerTargets("ultra-advisor", resolved.roles["ultra-advisor"], repoBasename).some((name) => isGatedPeerTarget(toolInput.to, name));
-}
+  : gatedPrefixes.some((prefix) => isGatedPeerTarget(toolInput.to, peerName(prefix, "ultra-advisor"))) ||
+    resolvedPeerTargets("ultra-advisor", resolved.roles["ultra-advisor"], repoBasename).some((name) => isGatedPeerTarget(toolInput.to, name));
 if (!gated) decide(null);
 
-// A disabled hierarchy has no Ultra-Advisor role to gate.
-resolved ||= resolveConfig(cwd);
-if (!resolved.enabled) decide(null);
-
-const sessionId = normalizeSessionId(input.session_id);
 const model = resolved.roles["ultra-advisor"].model;
 
 switch (getDecision(sessionId)) {

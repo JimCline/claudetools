@@ -136,6 +136,12 @@ gives the caller a loud error instead of silence. Accepted-and-ignored was the o
 option and is rejected: 0006 §5.4 uses that pattern only for `--kill`, a flag that had
 to stay parseable for existing 0002-era callers. No such caller exists here.
 
+**Amended (c) — spec 0011.** "`--cwd` alone" is amended to "`--cwd` and the active
+team scope": `resync` and `move` locate `team.json` by `--cwd` plus whichever
+`--team <name>` was given (default team when omitted) — spec 0011 §4.4's
+`--team` flag, not a new location parameter. `--level` remains not accepted;
+nothing above changes.
+
 **Algorithm:**
 
 1. `readTeam(dir)`. If null → `out({ resynced: false, reason: "no active team" })`,

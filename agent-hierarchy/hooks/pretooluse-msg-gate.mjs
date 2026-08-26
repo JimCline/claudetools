@@ -65,12 +65,13 @@ try {
     if (!parseSentinel(text)) decide(null);
   }
 
-  const resolved = resolveConfig(cwd);
+  const sessionId = typeof input.session_id === "string" && input.session_id ? input.session_id : "__nosession__";
+  const resolved = resolveConfig(cwd, { sessionId: sessionId !== "__nosession__" ? sessionId : undefined });
   if (!resolved.enabled || resolved.msgs === "off") decide(null);
 
   if (isSend) {
     const to = typeof toolInput.to === "string" ? stripRef(toolInput.to.trim()) : "";
-    const repoBasename = teamPrefix(cwd);
+    const repoBasename = teamPrefix(cwd, resolved.team);
     role = PEER_ELIGIBLE_ROLES.find((r) => resolvedPeerTargets(r, resolved.roles[r], repoBasename).includes(to)) || null;
   }
 

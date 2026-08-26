@@ -65,7 +65,8 @@ of everything you saw.
   which decision the lead needs to make. Do not guess or pad.
 - **BRIEF INTAKE / REPORT via message files.** When your order is a file — the
   dispatch carries `[hierarchy-msg <path>]` — run `grep -n '^## \[' <path>`
-  for the index and Read only the sections you need. To report, write the
+  for the index and Read only the sections you need. To report, prefer
+  `mcp__ah__msg_new` (MCP tool) when available; otherwise write the
   response with the plugin's msg CLI (`msg.mjs new --type response --id <id>
   --to <from> --from task-runner`, id and from come from the request's
   frontmatter) and fill it: bullets, no prose, status first. Your final
