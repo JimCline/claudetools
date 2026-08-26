@@ -29,11 +29,12 @@
  *                       <name> --new-tab [--workspace <id>]
  *                       <name> --new-workspace
  *                       [--dry-run] [--cwd <path>]
- *   roster.mjs spawn-one <role> [--cwd <path>] [--dry-run] [--allow-global]
+ *   roster.mjs spawn-one <role> [--cwd <path>] [--dry-run] [--allow-global] [--orchestrator-pid <pid>]
  *   roster.mjs alias   [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]
- *   roster.mjs teams   [--cwd <path>]
+ *   roster.mjs teams   [--cwd <path>] [--orchestrator-pid <pid>]
  *   roster.mjs history [--cwd <path>]
  *   roster.mjs create  --from <id|alias> [--team <T>] [--plan|--commit|--spawn] [--cwd <path>]
+ *   roster.mjs adopt   --orchestrator-pid <pid> [--team <T>] [--cwd <path>]
  *
  * `--team <name>` (spec 0011 §5.1) selects a named team's `teams/<name>.json`
  * in place of the default `team.json`, on every subcommand above that touches
@@ -69,8 +70,9 @@ const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manua
 const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "close", "confirm", "plan-token", "allow-global", "cwd", "team"]);
 const RESYNC_FLAGS = new Set(["dry-run", "cwd", "team"]);
 const MOVE_FLAGS = new Set(["tab", "split", "new-tab", "workspace", "new-workspace", "dry-run", "allow-global", "cwd", "team"]);
-const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global", "team"]);
+const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global", "team", "orchestrator-pid"]);
 const ALIAS_FLAGS = new Set(["level", "set", "clear", "cwd", "team"]);
+const ADOPT_FLAGS = new Set(["orchestrator-pid", "team", "cwd"]);
 
 function parseArgs(argv) {
   const opts = { _: [] };
@@ -1034,13 +1036,21 @@ try {
         // invariant); an explicit --orchestrator-pid overrides it for tests or an
         // unusual environment where the env var isn't propagated.
         const orchestratorPid = typeof opts["orchestrator-pid"] === "string" ? Number(opts["orchestrator-pid"]) : Number(process.env.CLAUDE_PID);
+        // Spec 0018 §3: an unresolvable or dead owner pid must refuse, not write null — a null
+        // pid reads as dead and gets the team swept (deleted) on the next SessionStart.
+        if (!Number.isInteger(orchestratorPid)) {
+          fail("create --commit: no orchestrator pid resolvable (CLAUDE_PID unset and no --orchestrator-pid given) — refusing to write a team with an unowned pid");
+        }
+        if (!pidAlive(orchestratorPid)) {
+          fail(`create --commit: --orchestrator-pid ${orchestratorPid} is not a live process — refusing to write a team owned by a dead pid`);
+        }
         const team = {
           version: 1,
           team_id: newId(),
           created: localIso(),
           roster_level: rosterLevel,
           transport,
-          orchestrator: { session_id: typeof opts.session === "string" ? opts.session : null, pid: Number.isInteger(orchestratorPid) ? orchestratorPid : null },
+          orchestrator: { session_id: typeof opts.session === "string" ? opts.session : null, pid: orchestratorPid },
           members: verified,
           partial: opts.partial === true,
         };
@@ -1301,7 +1311,7 @@ try {
       // dead or never launched. Extracted, not forked, from `createSpawn`'s launch path.
       for (const key of Object.keys(opts)) {
         if (key === "_") continue;
-        if (!SPAWN_ONE_FLAGS.has(key)) fail(`spawn-one: unrecognized flag --${key} (use --cwd, --dry-run, --allow-global, or --team)`);
+        if (!SPAWN_ONE_FLAGS.has(key)) fail(`spawn-one: unrecognized flag --${key} (use --cwd, --dry-run, --allow-global, --team, or --orchestrator-pid)`);
       }
       const role = opts._[0];
       if (!PEER_ELIGIBLE_ROLES.includes(role)) fail(`spawn-one: role must be one of ${PEER_ELIGIBLE_ROLES.join(", ")}, got ${JSON.stringify(role)}`);
@@ -1316,6 +1326,19 @@ try {
 
       const dir = hierarchyDir(cwd);
       const team = readTeam(dir, teamArg);
+      // Spec 0018 §3/§4.3: creating a new team here needs a resolvable, live owner pid — refuse
+      // before anything spawns, so a half-launched team (panes up, no persisted owner) never
+      // happens. Only relevant when no team file exists yet; an existing team already has one.
+      let newTeamOrchestratorPid = null;
+      if (!team) {
+        newTeamOrchestratorPid = typeof opts["orchestrator-pid"] === "string" ? Number(opts["orchestrator-pid"]) : Number(process.env.CLAUDE_PID);
+        if (!Number.isInteger(newTeamOrchestratorPid)) {
+          fail("spawn-one: no orchestrator pid resolvable (CLAUDE_PID unset and no --orchestrator-pid given) — refusing to create a team with an unowned pid");
+        }
+        if (!pidAlive(newTeamOrchestratorPid)) {
+          fail(`spawn-one: --orchestrator-pid ${newTeamOrchestratorPid} is not a live process — refusing to create a team owned by a dead pid`);
+        }
+      }
       const existing = team && Array.isArray(team.members) ? team.members.find((m) => m.role === role) : null;
       if (existing && memberIsLive(dir, existing.name)) {
         out({ spawned: false, reason: "already live", member: existing });
@@ -1344,14 +1367,13 @@ try {
 
       let outTeam = team;
       if (!outTeam) {
-        const orchestratorPid = Number(process.env.CLAUDE_PID);
         outTeam = {
           version: 1,
           team_id: newId(),
           created: localIso(),
           roster_level: resolved.level,
           transport,
-          orchestrator: { session_id: null, pid: Number.isInteger(orchestratorPid) ? orchestratorPid : null },
+          orchestrator: { session_id: null, pid: newTeamOrchestratorPid },
           members: [],
           partial: resolved.members.length > 1,
         };
@@ -1365,11 +1387,35 @@ try {
       break;
     }
 
+    case "adopt": {
+      // Spec 0018 §5: recovery for a team whose owner pid is null or dead (e.g. hit by the
+      // pre-fix null-pid bug) — re-stamps orchestrator.pid without touching members/team_id.
+      // Not a hijack primitive: refuses whenever the recorded owner is alive and different.
+      for (const key of Object.keys(opts)) {
+        if (key === "_") continue;
+        if (!ADOPT_FLAGS.has(key)) fail(`adopt: unrecognized flag --${key} (use --orchestrator-pid, --team, or --cwd)`);
+      }
+      const suppliedPid = typeof opts["orchestrator-pid"] === "string" ? Number(opts["orchestrator-pid"]) : NaN;
+      if (!Number.isInteger(suppliedPid)) fail("adopt needs --orchestrator-pid <pid>");
+      if (!pidAlive(suppliedPid)) fail(`adopt: --orchestrator-pid ${suppliedPid} is not a live process`);
+      const dir = hierarchyDir(cwd);
+      const team = readTeam(dir, teamArg);
+      if (!team) fail("adopt: no team file at this scope to adopt");
+      const currentPid = team.orchestrator && team.orchestrator.pid;
+      if (currentPid != null && pidAlive(currentPid) && currentPid !== suppliedPid) {
+        fail(`adopt: team is owned by live pid ${currentPid} — refusing to hijack a live team (no --force)`);
+      }
+      team.orchestrator = { ...(team.orchestrator || {}), pid: suppliedPid };
+      writeTeam(dir, team, teamArg);
+      out({ adopted: true, team_id: team.team_id, orchestrator: team.orchestrator });
+      break;
+    }
+
     case "teams": {
       // Spec 0011 §5.4: read-only inventory of every team file in this hierarchy dir — otherwise a
       // stale or a sibling orchestrator's team is invisible. Never writes.
       const dir = hierarchyDir(cwd);
-      const myPid = Number(process.env.CLAUDE_PID);
+      const myPid = typeof opts["orchestrator-pid"] === "string" ? Number(opts["orchestrator-pid"]) : Number(process.env.CLAUDE_PID);
       const describe = (name) => {
         const t = readTeam(dir, name);
         if (!t) return null;
@@ -1409,7 +1455,7 @@ try {
     }
 
     default:
-      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one|teams|history [--commit|--keep-sessions] [--level global|repo|repo-user] [--team <name>] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
+      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one|adopt|teams|history [--commit|--keep-sessions] [--level global|repo|repo-user] [--team <name>] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
   }
 } catch (err) {
   fail(err && err.message ? err.message : String(err));

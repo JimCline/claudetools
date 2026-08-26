@@ -194,7 +194,7 @@ run_spawn() { # <extra_env> <args...> -- create --spawn
 }
 run_one() { # <extra_env> <args...> -- spawn-one
   local extra_env=$1; shift
-  OUT=$(eval "env -u HERDR_ENV HOME=\"$FAKEHOME\" HERDR_PANE_ID=p0 PATH=\"$SANDBOX/bin:$NODE_DIR\" FAKE_STATE_DIR=\"$FAKE_STATE_DIR\" $extra_env node \"$H/roster.mjs\" spawn-one $* --cwd \"$PROJ\" 2>&1"); RC=$?
+  OUT=$(eval "env -u HERDR_ENV HOME=\"$FAKEHOME\" HERDR_PANE_ID=p0 PATH=\"$SANDBOX/bin:$NODE_DIR\" FAKE_STATE_DIR=\"$FAKE_STATE_DIR\" CLAUDE_PID=$$ $extra_env node \"$H/roster.mjs\" spawn-one $* --cwd \"$PROJ\" 2>&1"); RC=$?
 }
 
 # ==== 1 — right label, right pane: two members, one `pane rename` per member,
@@ -285,7 +285,7 @@ check "6c: the other (successful) member still got its rename" \
 # succeeds via the terminal transport; no rename is attempted because there is
 # no herdr call of any kind. ====
 reset_state; clear_hierarchy; init_geometry 180 42; setup_roster 1
-OUT=$(env -u HERDR_ENV HOME="$FAKEHOME" PATH="$SANDBOX/bin-claude-only:$NODE_DIR" FAKE_STATE_DIR="$FAKE_STATE_DIR" node "$H/roster.mjs" spawn-one ultra-advisor --cwd "$PROJ" 2>&1); RC=$?
+OUT=$(env -u HERDR_ENV HOME="$FAKEHOME" PATH="$SANDBOX/bin-claude-only:$NODE_DIR" FAKE_STATE_DIR="$FAKE_STATE_DIR" CLAUDE_PID=$$ node "$H/roster.mjs" spawn-one ultra-advisor --cwd "$PROJ" 2>&1); RC=$?
 check "7: herdr absent from PATH -> spawn still succeeds (terminal transport) — this is the real assertion" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"spawned\": true"'
 check "7b: consistency check only — no calls dir populated (PATH excludes the stub entirely here, so this can't fail either way regardless of whether the herdrOnPath() guard exists; test 8a is what actually discriminates the guard, with the stub present but transport=tmux)" \

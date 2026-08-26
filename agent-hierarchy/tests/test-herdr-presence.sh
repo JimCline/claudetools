@@ -124,7 +124,7 @@ setup_roster 1
 TEAM_FILE="$PROJ/.claude/hierarchy/team.json"
 
 # ==== 10 — spawn-one: HERDR_ENV=1, no herdr on PATH -> hard fail, no team.json written ====
-OUT=$(env -u HERDR_ENV HOME="$FAKEHOME" HERDR_PANE_ID=p0 PATH="$WITHOUT_HERDR_PATH" HERDR_ENV=1 "$NODE_BIN" "$H/roster.mjs" spawn-one ultra-advisor --cwd "$PROJ" 2>&1); RC=$?
+OUT=$(env -u HERDR_ENV HOME="$FAKEHOME" HERDR_PANE_ID=p0 PATH="$WITHOUT_HERDR_PATH" HERDR_ENV=1 CLAUDE_PID=$$ "$NODE_BIN" "$H/roster.mjs" spawn-one ultra-advisor --cwd "$PROJ" 2>&1); RC=$?
 check "10: spawn-one, HERDR_ENV=1 + no herdr -> non-zero, §2.6 message" \
   '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "no" && echo "$OUT" | grep -q "binary is on PATH"'
 check "10b: spawn-one never wrote team.json" '[ ! -f "$TEAM_FILE" ]'

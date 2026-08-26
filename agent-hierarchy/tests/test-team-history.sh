@@ -35,8 +35,18 @@ member() {
 }
 
 commit() {
-  # commit <pid> <verified_json_array> [--team T]
+  # commit <pid|DEAD_PID> <verified_json_array> [--team T]
+  # spec 0018 §3: create --commit needs a genuinely live pid at write time. LIVE_PID ($$,
+  # this script) stays alive for the whole run. DEAD_PID is a sentinel: spawn a real
+  # process, commit with its (momentarily live) pid, then kill it — the entry reads
+  # non-live immediately after, matching every caller's original "not live" intent.
   local pid=$1; local verified=$2; shift 2
+  if [ "$pid" = "$DEAD_PID" ]; then
+    ( sleep 30 ) & pid=$!
+    run create --commit --verified "$verified" --transport terminal --roster-level repo --orchestrator-pid "$pid" "$@"
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    return
+  fi
   run create --commit --verified "$verified" --transport terminal --roster-level repo --orchestrator-pid "$pid" "$@"
 }
 
@@ -166,7 +176,9 @@ FROM_ALIASED_ID=$(json_field "o.teams.find(t=>t.alias===\"origteam\").id")
 run create --from "$FROM_ALIASED_ID" --plan
 check "create --from without --team: name uses the entry's own alias as prefix" \
   'echo "$OUT" | grep -q "origteam-reviewer"'
-run create --from "$FROM_ALIASED_ID" --commit --transport terminal --verified "[$(member reviewer opus medium peer acceptEdits)]" --roster-level repo --orchestrator-pid "$DEAD_PID"
+( sleep 30 ) & FROM_COMMIT_PID=$!
+run create --from "$FROM_ALIASED_ID" --commit --transport terminal --verified "[$(member reviewer opus medium peer acceptEdits)]" --roster-level repo --orchestrator-pid "$FROM_COMMIT_PID"
+kill "$FROM_COMMIT_PID" 2>/dev/null; wait "$FROM_COMMIT_PID" 2>/dev/null
 check "create --from without --team: commit writes teams/origteam.json" '[ -e "$PROJ/.claude/hierarchy/teams/origteam.json" ]'
 run history
 check "create --from without --team: history row's alias is still origteam (not overwritten to null)" \

@@ -28,6 +28,14 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const MSG_CLI = join(HERE, "..", "hooks", "msg.mjs");
 const ROSTER_CLI = join(HERE, "..", "hooks", "roster.mjs");
 
+// The session pid, captured at startup (spec 0018 §4.1): this server is a direct child of the
+// Claude Code session, and CLAUDE_PID is not exported to MCP server subprocesses. Read once —
+// after the parent exits this process is reparented (typically to pid 1), which reads as alive
+// forever; capturing later would stamp a lie, so it is captured exactly once, here, and never
+// re-read.
+const PPID_AT_STARTUP = process.ppid;
+const SESSION_PID = PPID_AT_STARTUP === 1 ? null : PPID_AT_STARTUP;
+
 const PROTOCOL_VERSION = "2024-11-05";
 const PLUGIN_MANIFEST = JSON.parse(readFileSync(join(HERE, "..", ".claude-plugin", "plugin.json"), "utf8"));
 
@@ -120,6 +128,7 @@ export const TOOLS = [
       type: "object",
       properties: {
         cwd: cwdSchema,
+        orchestrator_pid: { type: "integer", description: "Override for the `own` field's identity check. Defaults to the calling session's pid, derived automatically." },
       },
       required: ["cwd"],
     },
@@ -172,12 +181,26 @@ export const TOOLS = [
         team: teamSchema,
         roster_level: { type: "string" },
         layout_mode: { type: "string", description: "Layout mode, with mode: spawn." },
-        orchestrator_pid: { type: "integer", description: "Override, with mode: commit." },
+        orchestrator_pid: { type: "integer", description: "Override, with mode: commit. Defaults to the calling session's pid, derived automatically — supply only to override." },
+        orchestrator_session_id: { type: "string", description: "Optional, with mode: commit." },
         transport: { type: "string", description: "With mode: commit." },
         verified: { type: "string", description: "JSON array, passed to --verified verbatim. Required with mode: commit." },
         partial: { type: "boolean", description: "With mode: commit." },
       },
       required: ["cwd", "mode"],
+    },
+  },
+  {
+    name: "roster_adopt",
+    description: "Re-stamp orchestrator.pid on an existing, orphaned team.json via roster.mjs adopt. Recovery only — refuses to hijack a live team.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        team: teamSchema,
+        orchestrator_pid: { type: "integer", description: "Defaults to the calling session's pid, derived automatically — supply only to override." },
+      },
+      required: ["cwd"],
     },
   },
   {
@@ -281,6 +304,7 @@ export const TOOLS = [
         role: { type: "string" },
         dry_run: { type: "boolean" },
         allow_global: { type: "boolean" },
+        orchestrator_pid: { type: "integer", description: "Owner pid when this call creates a new team. Defaults to the calling session's pid, derived automatically — supply only to override." },
       },
       required: ["cwd", "role"],
     },
@@ -406,6 +430,7 @@ export async function callTool(name, input) {
     }
     case "roster_teams": {
       const args = ["teams"];
+      pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
@@ -475,7 +500,9 @@ export async function callTool(name, input) {
       if (mode === "commit") {
         pushArg(args, "transport", args_in.transport);
         pushArg(args, "verified", args_in.verified);
-        pushArg(args, "orchestrator-pid", args_in.orchestrator_pid);
+        // Spec 0018 §4.2: explicit param wins, else the pid captured at server startup.
+        pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
+        pushArg(args, "session", args_in.orchestrator_session_id);
         pushFlag(args, "partial", args_in.partial);
       }
       pushArg(args, "cwd", cwd);
@@ -559,6 +586,15 @@ export async function callTool(name, input) {
       const args = ["spawn-one", args_in.role];
       pushFlag(args, "dry-run", args_in.dry_run);
       pushFlag(args, "allow-global", args_in.allow_global);
+      pushArg(args, "team", args_in.team);
+      // Spec 0018 §4.2: explicit param wins, else the pid captured at server startup.
+      pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_adopt": {
+      const args = ["adopt"];
+      pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
       pushArg(args, "team", args_in.team);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);

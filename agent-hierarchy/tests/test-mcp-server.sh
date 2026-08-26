@@ -113,11 +113,11 @@ const toolsList = await call("tools/list", {});
 const names = (toolsList && toolsList.result && toolsList.result.tools || []).map((t) => t.name).sort();
 const expected = [
   "msg_index", "msg_list", "msg_new", "msg_roster",
-  "roster_config", "roster_create", "roster_disband", "roster_disband_close",
+  "roster_adopt", "roster_config", "roster_create", "roster_disband", "roster_disband_close",
   "roster_history", "roster_layout_splits", "roster_member", "roster_move",
   "roster_resync", "roster_show", "roster_spawn_one", "roster_teams",
 ].sort();
-report("tools/list returns exactly the 16-tool inventory (spec 0015/0016/0017)", JSON.stringify(names) === JSON.stringify(expected), JSON.stringify(names));
+report("tools/list returns exactly the 17-tool inventory (spec 0015/0016/0017/0018)", JSON.stringify(names) === JSON.stringify(expected), JSON.stringify(names));
 
 const ping = await call("ping", {});
 report("ping answered", Boolean(ping && ping.result && typeof ping.result === "object" && !ping.error), JSON.stringify(ping));
@@ -562,6 +562,49 @@ done
 if ! [ -s "$EQ_OUT_FILE" ] || ! node -e "const r=JSON.parse(require('fs').readFileSync('$EQ_OUT_FILE','utf8')); process.exit(Object.values(r).every(v=>v&&v.ok)?0:1)" 2>/dev/null; then
   echo "argv-equivalence detail: $EQ_OUT"
 fi
+
+# ---------------------------------------------------------------------------
+# spec 0018 §4/§9: SESSION_PID captured exactly once, at module load, from
+# process.ppid — a lazy or repeated read would, after the parent session
+# exits and this process is reparented to pid 1, read as permanently "alive".
+# ---------------------------------------------------------------------------
+PPID_OCCURRENCES="$(grep -o "process\.ppid" "$SERVER" | wc -l | tr -d ' ')"
+check "server.mjs: process.ppid appears exactly once (captured once at module load)" \
+  '[ "$PPID_OCCURRENCES" = "1" ]'
+
+# ---------------------------------------------------------------------------
+# spec 0018 §9: the MCP path's data-loss regression test — a team committed
+# via roster_create with no explicit orchestrator_pid gets the server's own
+# SESSION_PID (this test process's ppid, alive for the run), reads as live,
+# and therefore survives sessionstart.mjs's sweepStaleTeam (which clears any
+# team for which teamIsLive() is false). Also: an explicit orchestrator_pid
+# overrides SESSION_PID (§4.2 resolution order).
+# ---------------------------------------------------------------------------
+REPO_C="$TMP/repo-c"
+mkdir -p "$REPO_C"
+(cd "$REPO_C" && git init -q)
+cat > "$TMP/sweep-survival.mjs" <<'JSEOF'
+const { teamIsLive, readTeam } = await import(process.env.LIB_ROSTER);
+const { callTool } = await import(process.env.SERVER_PATH);
+const cwd = process.env.TEST_REPO;
+const verified = JSON.stringify([{ role: "architect", name: "repoc-architect", model: "opus", route: "peer", autoMode: null }]);
+
+const res = await callTool("roster_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo" });
+const dir = cwd + "/.claude/hierarchy";
+const team = readTeam(dir);
+const sessionPidOwned = !res.isError && team && team.orchestrator.pid != null && team.orchestrator.pid !== 1;
+const survivesSweep = team && teamIsLive(team);
+
+const OVERRIDE_PID = process.pid; // this node process — alive, distinct from the server's own ppid
+const res2 = await callTool("roster_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo", orchestrator_pid: OVERRIDE_PID });
+const team2 = readTeam(dir);
+const overrideWon = !res2.isError && team2 && team2.orchestrator.pid === OVERRIDE_PID;
+
+console.log(sessionPidOwned && survivesSweep && overrideWon ? "PASS" : "FAIL " + JSON.stringify({ sessionPidOwned, survivesSweep, overrideWon, pid: team && team.orchestrator.pid }));
+JSEOF
+SWEEP_SURVIVAL="$(SERVER_PATH="$SERVER" LIB_ROSTER="$REPO_ROOT/hooks/lib-roster.mjs" TEST_REPO="$REPO_C" node "$TMP/sweep-survival.mjs" 2>&1)"
+check "roster_create via MCP: SESSION_PID-owned team is live and survives sweepStaleTeam; explicit orchestrator_pid overrides SESSION_PID" \
+  '[ "$SWEEP_SURVIVAL" = "PASS" ]'
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"

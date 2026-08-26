@@ -378,9 +378,11 @@ fire on the CLI/skill path.
    `ref` from `ListAgents` — do not recompute the rest by hand. Run
    `roster.mjs create --commit --transport <t> --roster-level <L> --verified
    '<json>'` (add `--partial` if any peer-routed member never checked in). The
-   orchestrator pid it records comes from the `CLAUDE_PID` env var by default
-   (the same source `sessionstart.mjs` uses for peer liveness records) — pass
-   `--orchestrator-pid <pid>` only to override that.
+   orchestrator pid it records is supplied automatically — via `mcp__ah__roster_create`
+   (spec 0018), the server derives it from its own process tree; on the Bash CLI path it
+   comes from the `CLAUDE_PID` env var (the same source `sessionstart.mjs` uses for peer
+   liveness records). `--orchestrator-pid <pid>` / `orchestrator_pid` is an override, not
+   a requirement, on either path — pass it only to supply an identity neither source has.
    On a full success, report the Team id and every member. **On partial
    success — the default per spec 0001 §13 — commit anyway with `--partial`,
    and tell the user exactly which member(s) never checked in and that the
@@ -475,6 +477,15 @@ A stale Team (dead orchestrator pid, or older than the fixed 24h cap) is also
 swept automatically on the next plain top-level SessionStart — that sweep
 clears `team.json` directly and never runs `roster.mjs disband`, so it is
 unaffected by which flag is the default here.
+
+**Recovering an orphaned Team (spec 0018 §5).** A Team whose `orchestrator.pid`
+is `null` (a team hit by the pre-0018 MCP bug) reads as dead and is on the same
+sweep clock — it must be re-owned via `mcp__ah__roster_adopt` /
+`roster.mjs adopt --orchestrator-pid <pid>` **before the next SessionStart**,
+or the sweep deletes it (members, refs, `transport_id`s — everything) before
+`adopt` gets a chance to run. `adopt` refuses to touch a Team whose recorded
+owner is alive and different — it is recovery for an orphan, not a way to
+steal a live Team.
 
 ## `resync` / `move`
 

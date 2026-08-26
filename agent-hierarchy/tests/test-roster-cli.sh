@@ -73,11 +73,29 @@ check "create --plan: herdr spawn step carries agent flags after --, includes --
   'echo "$OUT" | grep -q "herdr agent start myrepo-architect --kind claude --pane <TARGET> -- --agent ah:architect --name myrepo-architect --model opus"'
 
 # ---- create --commit: orchestrator pid comes from CLAUDE_PID, not the CLI's own ppid
+# (spec 0018 §3: the pid must be live at write time, so these use real backgrounded
+# sleeps rather than arbitrary numbers — both alive and, by construction, distinct
+# from $$, the shell that's actually this script's own pid / roster.mjs's ppid.)
 VERIFIED='[{"role":"architect","name":"myrepo-architect","ref":"r1","route":"peer","model":"opus","transport_id":null,"checked_in":"2026-01-01T00:00:00Z"}]'
-OUT=$(HOME="$FAKEHOME" CLAUDE_PID=424242 node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --verified "$VERIFIED" --cwd "$PROJ" 2>&1); RC=$?
-check "create --commit: orchestrator.pid taken from CLAUDE_PID env, not process.ppid" 'echo "$OUT" | grep -q "\"pid\": 424242" && ! echo "$OUT" | grep -q "\"pid\": $$"'
-OUT=$(HOME="$FAKEHOME" node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --verified "$VERIFIED" --orchestrator-pid 313131 --cwd "$PROJ" 2>&1); RC=$?
-check "create --commit: --orchestrator-pid overrides the env var" 'echo "$OUT" | grep -q "\"pid\": 313131"'
+( sleep 30 ) & ALIVEPID_A=$!
+( sleep 30 ) & ALIVEPID_B=$!
+OUT=$(HOME="$FAKEHOME" CLAUDE_PID="$ALIVEPID_A" node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --verified "$VERIFIED" --cwd "$PROJ" 2>&1); RC=$?
+check "create --commit: orchestrator.pid taken from CLAUDE_PID env, not process.ppid" 'echo "$OUT" | grep -q "\"pid\": $ALIVEPID_A" && ! echo "$OUT" | grep -q "\"pid\": $$"'
+OUT=$(HOME="$FAKEHOME" node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --verified "$VERIFIED" --orchestrator-pid "$ALIVEPID_B" --cwd "$PROJ" 2>&1); RC=$?
+check "create --commit: --orchestrator-pid overrides the env var" 'echo "$OUT" | grep -q "\"pid\": $ALIVEPID_B"'
+kill "$ALIVEPID_A" "$ALIVEPID_B" 2>/dev/null
+
+# ---- spec 0018 §3/§9: Bash-path refusals — create --commit and spawn-one must never
+# write orchestrator.pid: null or a dead pid; both write sites, both distinct messages.
+rm -f "$PROJ/.claude/hierarchy/team.json"
+OUT=$(env -u CLAUDE_PID HOME="$FAKEHOME" node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --verified "$VERIFIED" --cwd "$PROJ" 2>&1); RC=$?
+check "create --commit: CLAUDE_PID unset, no --orchestrator-pid -> refuses, exit 2" '[ "$RC" -eq 2 ]'
+check "create --commit: CLAUDE_PID unset -> no team.json written" '[ ! -e "$PROJ/.claude/hierarchy/team.json" ]'
+MISSING_PID_MSG="$OUT"
+OUT=$(env -u CLAUDE_PID HOME="$FAKEHOME" node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --verified "$VERIFIED" --orchestrator-pid 99999999 --cwd "$PROJ" 2>&1); RC=$?
+check "create --commit: --orchestrator-pid <dead pid> -> refuses, exit 2" '[ "$RC" -eq 2 ]'
+check "create --commit: dead --orchestrator-pid -> no team.json written" '[ ! -e "$PROJ/.claude/hierarchy/team.json" ]'
+check "create --commit: missing-pid and dead-pid refusals have distinct messages" '[ "$OUT" != "$MISSING_PID_MSG" ]'
 
 # ---- 0004 §11.2: roster.layout validation and the `layout` subcommand
 cat > "$SANDBOX/validate-layout.mjs" <<EOF
