@@ -338,6 +338,12 @@ mechanism that no longer exists.
 - **Candidate set** — `[P0, ...member panes]`, in that order. Panes that exist in the reported
   geometry but were neither P0 nor created by this loop (someone else's pane in the same tab) are
   **not** candidates: this procedure only subdivides its own screen real estate.
+  **Amendment (`0023` §3.7):** the parenthetical clause is amended — the candidate set becomes
+  `[P0, ...live panes of this team's peer members, ...panes created by this loop]`. A pane belonging
+  to this team's own peer member, created by a previous run of this same procedure, is its own real
+  estate; it was excluded only because "created by this loop" was a proxy for ownership, and that
+  proxy breaks under incremental spawning (`spawn-one`). Foreign panes — anything not P0 and not a
+  recorded member of this team — remain excluded, unconditionally.
 - **Total pane count** — `layout_plan.pane_count` member panes, i.e. `pane_count + 1` panes including
   P0. Known before the first split runs.
 - **Visual aspect.** Terminal cells are roughly twice as tall as they are wide, so a pane that is

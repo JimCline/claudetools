@@ -25,6 +25,8 @@ check() {
   if eval "$@"; then PASS=$((PASS+1)); echo "PASS: $name"; else FAIL=$((FAIL+1)); echo "FAIL: $name (RC=$RC OUT=${OUT:0:400})"; fi
 }
 
+# A second fake herdr lives in tests/test-roster-layout-splits.sh, covering pane layout/split geometry
+# in isolation. Both model herdr's split geometry; keep those models in agreement.
 # ---- fake herdr/tmux: identical to test-roster-create-spawn.sh's per-invocation-append stub.
 cat > "$SANDBOX/bin/herdr" <<EOF
 #!$(command -v node)
@@ -393,6 +395,80 @@ check "19a: no team record for either candidate does not fool the gate — exit 
   '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"spawned\": false" && echo "$OUT" | grep -q "\"reason\": \"already live\""'
 check "19b: no agent-start call was made for the registry-live -2 (no collision attempt)" \
   '[ "$(call_count "c.argv[0]===\"agent\" && c.argv[1]===\"start\" && c.argv[2]===\"myrepo-implementor-2\"")" -eq 0 ]'
+
+split_directions() { # reads the fake herdr's call log, returns a JSON array of split directions
+  node -e '
+    const fs = require("fs");
+    const dir = process.argv[1];
+    let files = [];
+    try { files = fs.readdirSync(dir); } catch { files = []; }
+    const dirs = files.map((f) => JSON.parse(fs.readFileSync(dir + "/" + f, "utf8")))
+      .filter((c) => c.argv[0] === "pane" && c.argv[1] === "split")
+      .map((c) => c.argv[c.argv.indexOf("--direction") + 1]);
+    console.log(JSON.stringify(dirs));
+  ' "$FAKE_STATE_DIR/calls"
+}
+
+# ==== A1 — spec 0023 §8.1 A1: sequential spawn-one tiles a grid, not a row (the reported bug). ====
+reset_state; clear_hierarchy; init_geometry 180 42
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" layout --level repo --layout grid --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
+run_one "HERDR_ENV=1" ultra-advisor
+run_one "HERDR_ENV=1" architect
+check "A1: two distinct y-values across the 3 panes after two sequential spawn-one calls (0023 §8.1 A1)" \
+  '[ "$(node -e "const s=JSON.parse(require(\"fs\").readFileSync(\"$FAKE_STATE_DIR/geometry.json\",\"utf8\"));console.log(new Set(Object.values(s.panes).map(r=>r.y)).size)")" -eq 2 ]'
+
+# ==== A2 — spec 0023 §8.1 A2: three sequential spawn-one calls under grid yield four panes within
+#           5% area, with a decision sequence containing at least one down and one right. Run from
+#           two start rects so the assertion is about the rule, not one tab.
+#           A2-neg (§8.1): batch parity is NOT asserted here or anywhere in this file — by design. ====
+for dims in "180 42" "200 50"; do
+  set -- $dims
+  reset_state; clear_hierarchy; init_geometry "$1" "$2"
+  HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
+  HOME="$FAKEHOME" node "$H/roster.mjs" layout --level repo --layout grid --cwd "$PROJ" >/dev/null
+  HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
+  HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
+  HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
+  run_one "HERDR_ENV=1" ultra-advisor
+  run_one "HERDR_ENV=1" architect
+  run_one "HERDR_ENV=1" reviewer
+  check "A2: four panes within 5% area at ${1}x${2} (0023 §8.1 A2)" \
+    'node -e "const s=JSON.parse(require(\"fs\").readFileSync(\"$FAKE_STATE_DIR/geometry.json\",\"utf8\"));const ids=Object.keys(s.panes);const areas=ids.map(id=>s.panes[id].width*s.panes[id].height);const max=Math.max(...areas),min=Math.min(...areas);process.exit(ids.length===4&&ids.includes(\"p0\")&&(max-min)/max<=0.05?0:1)"'
+  DIRS=$(split_directions)
+  check "A2b: decision sequence at ${1}x${2} contains at least one down and one right" \
+    'echo "$DIRS" | grep -q "\"down\"" && echo "$DIRS" | grep -q "\"right\""'
+done
+
+# ==== A4 — spec 0023 §8.1 A4: a stale seed transport_id (absent from live geometry) must not fail
+#           the spawn and must not inflate the tiling total. Must be shown to fail with the
+#           nextSplit "is not present in the reported geometry" hard-fail if the per-iteration
+#           geometry filter (§3.3) is omitted — verified by hand against the pre-fix loop body. ====
+reset_state; clear_hierarchy; init_geometry 180 42
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" layout --level repo --layout grid --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
+write_team "$(node -e '
+  console.log(JSON.stringify({
+    version: 1, team_id: "T-fixture-A4", created: new Date().toISOString(), roster_level: "repo",
+    transport: "herdr", orchestrator: { session_id: null, pid: process.ppid },
+    members: [
+      { role: "ultra-advisor", name: "myrepo-ultra-advisor", route: "peer", model: "opus", effort: null, autoMode: null, transport_id: "p99" }
+    ],
+    partial: true,
+  }))
+')"
+run_one "HERDR_ENV=1" architect
+check "A4a: exit 0, spawned true despite a stale seed transport_id absent from geometry" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"spawned\": true"'
+check "A4b: does not hard-fail with the geometry-absence message" \
+  '! echo "$OUT" | grep -qi "is not present in the reported geometry"'
+check "A4c: total sized for surviving panes only — 2 panes total (p0 + the new one), not inflated by the stale seed" \
+  '[ "$(node -e "console.log(Object.keys(JSON.parse(require(\"fs\").readFileSync(\"$FAKE_STATE_DIR/geometry.json\",\"utf8\")).panes).length)")" -eq 2 ]'
 
 # ==== 10 — regression: the two extraction-adjacent suites must pass UNMODIFIED ====
 CS_OUT=$(bash "$PLUGIN/tests/test-roster-create-spawn.sh" 2>&1); CS_RC=$?

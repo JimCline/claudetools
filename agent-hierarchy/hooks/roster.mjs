@@ -403,7 +403,7 @@ function transportNoop(transport) {
 }
 
 /** Spec 0004 §6.6 sequential split loop, shared by `layout-splits` (bare form) and `create --spawn`'s layout phase (spec 0005 §4 step 3). Stops at the first failure. */
-function runLayoutLoop({ mode, paneCount, self, splitCwd }) {
+function runLayoutLoop({ mode, paneCount, self, splitCwd, seedPanes = [] }) {
   const panes = [];
   const splits = [];
   for (let i = 1; i <= paneCount; i++) {
@@ -415,7 +415,20 @@ function runLayoutLoop({ mode, paneCount, self, splitCwd }) {
       partial({ panes, splits, mode, pane_count: paneCount, complete: false, failed_at: i, attempted: null, error: err.message });
     }
     const geometry = geomResult.result.layout.panes;
-    const decision = nextSplit({ mode, paneCount, self, created: panes, geometry });
+
+    // Seed the candidate set with sibling panes that are actually on screen right now.
+    // Filtered against live geometry every iteration: a stale transport_id in team.json is
+    // routine (it is why `resync` exists), and an absent candidate is a hard fail in nextSplit.
+    const present = new Set(geometry.map((g) => g.pane_id));
+    const liveSeed = [...new Set(seedPanes)].filter((id) => id !== self && present.has(id));
+
+    const decision = nextSplit({
+      mode,
+      paneCount: liveSeed.length + paneCount, // live total: what is on screen + what we are adding
+      self,
+      created: [...liveSeed, ...panes],
+      geometry,
+    });
     let splitResult;
     try {
       splitResult = herdrCall(["pane", "split", "--pane", decision.target, "--direction", decision.direction, "--cwd", splitCwd, "--no-focus"]);
@@ -613,7 +626,7 @@ async function launchMember(member, transport) {
  * Mutates `peerMembers` in place (`transport_id`); returns launch results aligned to `peerMembers`.
  * Shared by `createSpawn` (spec 0005) and `spawn-one` (spec 0009 §6) — one implementation.
  */
-async function layoutAndLaunch(peerMembers, transport, mode, splitCwd, callerLabel) {
+async function layoutAndLaunch(peerMembers, transport, mode, splitCwd, callerLabel, layoutOpts = {}) {
   let panes = [];
   if (transport === "herdr" && peerMembers.length > 0) {
     if (!herdrOnPath()) {
@@ -621,7 +634,7 @@ async function layoutAndLaunch(peerMembers, transport, mode, splitCwd, callerLab
     }
     const self = process.env.HERDR_PANE_ID;
     if (!self) fail(`${callerLabel} needs HERDR_PANE_ID in the environment`);
-    ({ panes } = runLayoutLoop({ mode, paneCount: peerMembers.length, self, splitCwd }));
+    ({ panes } = runLayoutLoop({ mode, paneCount: peerMembers.length, self, splitCwd, seedPanes: layoutOpts.seedPanes || [] }));
   } else if (transport === "tmux") {
     for (let i = 0; i < peerMembers.length; i++) {
       try {
@@ -1503,7 +1516,14 @@ try {
         resyncOut.to = healed.to;
       }
       if (result.warning) resyncOut.warning = result.warning;
-      out({ moved: true, member: { role: member.role, name: member.name }, command: commandString, resync: resyncOut });
+      const noop = healed.status === "unchanged";
+      const payload = { moved: !noop, member: { role: member.role, name: member.name }, command: commandString, resync: resyncOut };
+      if (noop) {
+        payload.reason =
+          `no-op: herdr accepted the command but pane ${member.transport_id} is in the same tab and ` +
+          `workspace as before (re-query reports no change)`;
+      }
+      out(payload);
       break;
     }
 
@@ -1588,7 +1608,13 @@ try {
         break;
       }
 
-      const [launched] = await layoutAndLaunch([planEntry], transport, mode, cwd, "spawn-one");
+      const seedPanes = team && Array.isArray(team.members)
+        ? team.members
+            .filter((m) => m.route === "peer" && m.transport_id != null && m.name !== member.name)
+            .map((m) => m.transport_id)
+        : [];
+
+      const [launched] = await layoutAndLaunch([planEntry], transport, mode, cwd, "spawn-one", { seedPanes });
       if (launched.launch_status === "failed") fail(launched.error || "spawn-one launch failed");
 
       const newRecord = { role: member.role, name: member.name, route: "peer", model: member.model, effort: member.effort, autoMode: member.autoMode, transport_id: launched.transport_id };

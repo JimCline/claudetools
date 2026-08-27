@@ -538,6 +538,14 @@ a change to `createSpawn`'s existing flag, which stays exactly as it is.
    fork it** — same rule as 0008 §5.1's `resyncMembers`. `createSpawn`'s observable
    behaviour must not change. *(`paneCount: 1` confirmed workable — NEEDS-EVIDENCE item 6,
    resolved.)*
+   **Correction (`0023` §2.4): `paneCount: 1` is superseded.** "Confirmed workable" only
+   established that the call completes and returns one pane id — it did not establish that
+   the resulting arrangement honours `roster.layout`, which it does not (a single-candidate,
+   `total`-always-2 loop right-splits P0 every time). `0023` fixes this by seeding
+   `runLayoutLoop` with the team's live sibling pane ids and deriving the tiling total from
+   that seed, rather than passing `paneCount: 1`. Everything else in this step — the liveness
+   short-circuit, the merge-write, the persistence requirement, the shared-implementation
+   rule — stands unchanged.
 6. `--dry-run` → emit the resolved member, mode, and launch command; execute nothing,
    write nothing.
 7. On launch success, **merge-write `team.json`** (single writer, whole-file rewrite —

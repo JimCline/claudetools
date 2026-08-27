@@ -248,6 +248,29 @@ check "move: post-move query failure -> moved true, resync.ok false" \
 check "move: post-move query failure -> team.json left unhealed (unwritten)" \
   '[ "$(cat "$TEAM_FILE")" = "$BEFORE" ]'
 
+# ---- move (spec 0023 §8.2 B1): same-tab no-op — resync reports status "unchanged" -> moved false,
+# a reason key naming the no-op, exit 0. Must be shown to fail against pre-bug-B-fix code, which
+# reported moved:true unconditionally regardless of resync.status (verified by hand, scratch copy).
+write_team herdr
+write_agents '[{"name":"myrepo-architect","pane_id":"w2:pD","tab_id":"w2:t1","workspace_id":"w2"}]'
+run move myrepo-architect --tab w2:t1 --split down
+check "move (B1): same-tab no-op -> moved false, exit 0" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"moved\": false"'
+check "move (B1): resync.status is unchanged" \
+  'echo "$OUT" | grep -q "\"status\": \"unchanged\""'
+check "move (B1): a reason key is present naming the no-op" \
+  'echo "$OUT" | grep -q "\"reason\":" && echo "$OUT" | grep -qi "no-op"'
+
+# ---- move (spec 0023 §8.2 B3): post-move resync reports not_found -> moved stays true, UNREGRESSED
+# by bug B's fix. Guards against an over-reaching fix that flips every non-"updated" status to false.
+write_team herdr
+write_agents '[]'
+run move myrepo-architect --new-tab
+check "move (B3): not_found after move -> moved true (unregressed), exit 0" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"moved\": true"'
+check "move (B3): resync.status is not_found" \
+  'echo "$OUT" | grep -q "\"status\": \"not_found\""'
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

@@ -23,6 +23,8 @@ check() {
   if eval "$@"; then PASS=$((PASS+1)); echo "PASS: $name"; else FAIL=$((FAIL+1)); echo "FAIL: $name (RC=$RC OUT=${OUT:0:400})"; fi
 }
 
+# A second fake herdr lives in tests/test-roster-spawn-one.sh, covering agent-start/team.json/roster.
+# Both model herdr's split geometry; keep those models in agreement.
 # ---- the stateful fake herdr: a small node script backed by a JSON state file
 cat > "$SANDBOX/bin/herdr" <<EOF
 #!/usr/bin/env node
