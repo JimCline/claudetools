@@ -30,7 +30,7 @@ check "task-runner: tools allowlist does not grant advisor" '! fm task-runner.md
 
 # ---- the denies this plugin already relies on must not have been dropped
 check "reviewer: still denies Edit, Write, NotebookEdit" 'fm reviewer.md | grep -E "^disallowedTools:" | grep -qw Edit && fm reviewer.md | grep -E "^disallowedTools:" | grep -qw Write && fm reviewer.md | grep -E "^disallowedTools:" | grep -qw NotebookEdit'
-check "architect: still denies Edit, NotebookEdit" 'fm architect.md | grep -E "^disallowedTools:" | grep -qw Edit && fm architect.md | grep -E "^disallowedTools:" | grep -qw NotebookEdit'
+check "architect: still denies NotebookEdit, does not deny Edit (spec: allowed to Edit spec files in place)" 'fm architect.md | grep -E "^disallowedTools:" | grep -qw NotebookEdit && ! fm architect.md | grep -E "^disallowedTools:" | grep -qw Edit'
 # The Architect is design-only: no execution by any means. Bash is denied
 # mechanically, and the body must carry both halves of the rule — the
 # NEEDS-EVIDENCE hand-back and the no-execution-via-runner clause (a live
