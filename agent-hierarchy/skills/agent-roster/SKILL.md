@@ -67,7 +67,8 @@ with someone else's live default Team.
 - `init --level <L> --route <peer|subagent> [--layout auto|columns|grid]` (`mcp__ah__roster_member`, `action: "init"`) — replaces that level's roster wholesale.
 - `add --role <R> [--level L] [--model M] [--effort E] [--route peer|subagent] [--auto-mode A]` (`mcp__ah__roster_member`, `action: "add"`)
 - `edit --member <NAME> [--level L] [--role R] [--model M] [--effort E] [--route ...] [--auto-mode A]` (`mcp__ah__roster_member`, `action: "edit"`)
-- `remove --member <NAME> [--level L]` (`mcp__ah__roster_member`, `action: "remove"`)
+- `remove --member <NAME> [--level L]` (`mcp__ah__roster_member`, `action: "remove"`) — edits the
+  roster **config**, not a live Team; see § dismiss for the live-Team equivalent.
 - `layout [--level <L>] [--layout auto|columns|grid]` (`mcp__ah__roster_config`, `target: "layout"`) — show or set the team-wide pane layout.
 - `create [--plan | --commit ... | --spawn --mode <m>]` (`mcp__ah__roster_create`, `mode: plan|spawn|commit`) — see § Create.
 - `layout-splits --mode <m> --pane-count <n> [--self <id>] [--cwd <p>] [--next|--apply …]` (`mcp__ah__roster_layout_splits`) — performs
@@ -96,6 +97,9 @@ with someone else's live default Team.
   Create when a Team already exists and only one role needs (re)starting — Create refuses to run
   against a live Team. The direct match for "spawn the architect" / "spawn just the reviewer"
   style requests. See § spawn-one.
+- `dismiss <name> [--plan | --close --confirm --plan-token <tok> | --commit [--also-config]]`
+  (`mcp__ah__roster_dismiss`/`roster_dismiss_close`) — drops ONE member from a live Team by its
+  derived name, the inverse of `spawn-one`. See § dismiss.
 - `alias [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]` (`mcp__ah__roster_config`, `target: "alias"`) — read, set, or
   clear the repo's `teamAlias` (the team-prefix members are named under). No `--set`/`--clear`
   reads the currently-effective alias; `--level` is required with `--set`/`--clear` when it can't
@@ -174,6 +178,15 @@ the exact result the CLI returns, including which level it defaulted to when
 Layout (`roster.layout`) is team-wide, not a per-member field — there is no
 `--layout` on `add`/`edit`. Use `roster.mjs layout` (§ Command surface) to
 change it outside of `init`.
+
+`--on-missing auto|prompt|never` (spec 0021, peer-routed members only) sets
+what the route gate does when this role has no live peer: `prompt` (default)
+is today's three-option ask; `never` falls straight through to a subagent,
+no prompt; `auto` denies once naming the `spawn-one` command instead of
+asking — **spawn without asking**, still one orchestrator turn, never a
+zero-turn spawn. It never bypasses the global-scope confirm gate (§4.4 of the
+spec) — a global-level roster still asks before it is used at all, regardless
+of any member's `onMissing`.
 
 ## Create
 
@@ -522,8 +535,11 @@ so once a Team exists and one role has died — or was never launched — there
 is no supported way to stand up just that role. `spawn-one` closes that one
 gap; it is not a lighter-weight alternative to Create for a full team.
 
-- **`roster.mjs spawn-one <role> [--cwd <path>] [--dry-run] [--allow-global]`**
+- **`roster.mjs spawn-one <role> [--member <name>] [--cwd <path>] [--dry-run] [--allow-global]`**
   — resolves the roster, finds `<role>`'s member, and:
+  - bare `spawn-one <role>` picks the first member of that role that is not
+    live; `--member <name>` targets one specific same-role instance by its
+    derived name (spec 0019).
   - a live team member for that role already exists → no-op,
     `{spawned:false, reason:"already live"}`.
   - otherwise → places one pane, launches and verifies it the same way
@@ -555,6 +571,37 @@ only when a roster entry for that role exists at a usable level), (2) spawn a
 one-off subagent instead, (3) neither — wait. This replaces the previous
 subagent-only recommendation; a real, persisted peer is now the default
 fallback, not a disposable subagent.
+
+## `dismiss`
+
+Spec 0020. `remove --member <NAME>` edits the roster **config** (the template
+for future Teams); `dismiss <name>` edits the **live Team's `team.json`** —
+they write different stores, and each names the store it wrote in its output.
+`dismiss` mirrors `disband`'s plan/close/commit split, scoped to one member:
+
+1. `roster_dismiss` `mode: plan` (or bare `roster.mjs dismiss <name>`) —
+   read-only, resyncs that one member in memory for herdr, and returns
+   `member`/`live`/`close_token`/`remaining`. `live` reads the check-in
+   registry; a stale-registry member can still report a non-null `command`.
+2. If `live` is true and the session should actually close, prompt the user,
+   then call `roster_dismiss_close` with `confirm: true` and the `close_token`
+   from step 1 — same always-ask harness gate as `roster_disband_close`. This
+   never touches `team.json`.
+3. `roster_dismiss` `mode: commit` (or `roster.mjs dismiss <name> --commit`)
+   removes the member's record from `team.json`. Safe to call directly,
+   skipping 1-2, when the member is already dead (the common case: pruning a
+   stale record). A commit against a still-live member succeeds but warns.
+
+`--also-config` (commit only) additionally removes the matching roster config
+entry, so a future `create`/`spawn-one` doesn't rebuild the instance just
+dismissed. Default off — plain `dismiss` never touches the config. Removing a
+non-last same-role config entry re-ordinals later siblings' derived names
+(§3.5.1) — the CLI warns and reports it (`config.reordinaled`); live
+`team.json` records keep their original names regardless.
+
+Dismissing the last member leaves `team.json` with `members: []` rather than
+removing the file — `team_empty: true` in the output flags this; point the
+user at `disband --commit` if they meant to end the Team entirely.
 
 ## Check-in registry (`team.json`)
 

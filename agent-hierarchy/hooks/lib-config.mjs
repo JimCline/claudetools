@@ -880,8 +880,22 @@ export function statusReport(cwd) {
     const r = resolved.roster;
     out.push(`Roster: level=${r.level} route=${r.route} path=${r.path}`);
     for (const m of r.members) {
+      // spec 0021: default ("prompt") is resolved here at the display site, not stamped onto the
+      // member — literal, not imported, to avoid a lib-roster.mjs -> lib-config.mjs import cycle
+      // (lib-roster.mjs already imports ROLES/VALID_MODELS_BY_ROLE from this file).
+      const onMissingDefaulted = m.onMissing === undefined || m.onMissing === null;
+      const onMissingEffective = onMissingDefaulted ? "prompt" : m.onMissing;
+      // §3.3: name the reason, not a bare "(inert)" — non-peer-eligible role and subagent route are
+      // two different causes with two different fixes.
+      const onMissingTag = !PEER_ELIGIBLE_ROLES.includes(m.role)
+        ? " (inert: role is not peer-eligible)"
+        : (m.route || r.route) === "subagent"
+          ? " (inert: route is subagent)"
+          : onMissingDefaulted
+            ? " (default)"
+            : "";
       out.push(
-        `  ${m.name.padEnd(24)} ${ROLE_LABELS[m.role] || m.role} model=${m.model || "?"} effort=${m.effort || "-"} route=${m.route || r.route} auto-mode=${m.autoMode || "-"}`
+        `  ${m.name.padEnd(24)} ${ROLE_LABELS[m.role] || m.role} model=${m.model || "?"} effort=${m.effort || "-"} route=${m.route || r.route} auto-mode=${m.autoMode || "-"} on-missing=${onMissingEffective}${onMissingTag}`
       );
     }
   } else {

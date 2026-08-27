@@ -8,9 +8,9 @@
  *   roster.mjs show   [global|repo|repo-user] [--level L] [--cwd <path>]
  *   roster.mjs init    [level] [--level L] --route <peer|subagent> [--layout <mode>] [--cwd <path>]
  *   roster.mjs add     [level] [--level L] --role <R> [--model M] [--effort E]
- *                       [--route peer|subagent] [--auto-mode A] [--cwd <path>]
+ *                       [--route peer|subagent] [--auto-mode A] [--on-missing auto|prompt|never] [--cwd <path>]
  *   roster.mjs edit    [level] [--level L] --member <NAME> [--role R] [--model M]
- *                       [--effort E] [--route ...] [--auto-mode A] [--cwd <path>]
+ *                       [--effort E] [--route ...] [--auto-mode A] [--on-missing auto|prompt|never] [--cwd <path>]
  *   roster.mjs remove  [level] [--level L] --member <NAME> [--cwd <path>]
  *   roster.mjs layout  [level] [--level L] [--layout <auto|columns|grid>] [--cwd <path>]
  *   roster.mjs create  [--plan] [--commit --verified <json> --transport <t>
@@ -24,12 +24,15 @@
  *   roster.mjs layout-splits --mode <m> --pane-count <n> [--self <id>] [--cwd <p>]
  *                       (or --next --created <json>, or --apply --target <id> --direction <right|down>)
  *   roster.mjs disband [--commit|--keep-sessions] [--cwd <path>]
+ *   roster.mjs dismiss <name> [--plan] [--cwd <path>] [--team <T>]
+ *   roster.mjs dismiss <name> --close --confirm --plan-token <tok> [--allow-global] [--cwd <path>] [--team <T>]
+ *   roster.mjs dismiss <name> --commit [--also-config] [--level L] [--cwd <path>] [--team <T>]
  *   roster.mjs resync  [--dry-run] [--cwd <path>]
  *   roster.mjs move    <name> --tab <tab_id> [--split right|down]
  *                       <name> --new-tab [--workspace <id>]
  *                       <name> --new-workspace
  *                       [--dry-run] [--cwd <path>]
- *   roster.mjs spawn-one <role> [--cwd <path>] [--dry-run] [--allow-global] [--orchestrator-pid <pid>]
+ *   roster.mjs spawn-one <role> [--member <name>] [--cwd <path>] [--dry-run] [--allow-global] [--orchestrator-pid <pid>]
  *   roster.mjs alias   [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]
  *   roster.mjs teams   [--cwd <path>] [--orchestrator-pid <pid>]
  *   roster.mjs history [--cwd <path>]
@@ -66,11 +69,12 @@ import { CONFIG_VERSION, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS
 import { ageSecOf, latestRoster, newId, localIso, pidAlive, ROSTER_FRESH_SEC } from "./lib-hier.mjs";
 import { clearTeam, fingerprint, herdrOnPath, historyEntryIsActive, listTeamNames, normalizeMembers, readHistory, readTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamIsLive, teamPath, upsertHistory, validateMember, validateRosterBlock, writeTeam } from "./lib-roster.mjs";
 
-const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm"]);
+const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config"]);
 const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "close", "confirm", "plan-token", "allow-global", "cwd", "team"]);
+const DISMISS_FLAGS = new Set(["plan", "close", "commit", "confirm", "plan-token", "also-config", "level", "allow-global", "cwd", "team"]);
 const RESYNC_FLAGS = new Set(["dry-run", "cwd", "team"]);
 const MOVE_FLAGS = new Set(["tab", "split", "new-tab", "workspace", "new-workspace", "dry-run", "allow-global", "cwd", "team"]);
-const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global", "team", "orchestrator-pid"]);
+const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global", "team", "orchestrator-pid", "member"]);
 const ALIAS_FLAGS = new Set(["level", "set", "clear", "cwd", "team"]);
 const ADOPT_FLAGS = new Set(["orchestrator-pid", "team", "cwd"]);
 
@@ -167,6 +171,26 @@ function namedMembers(members) {
 
 function findMemberIndex(members, name) {
   return namedMembers(members).findIndex((m) => m.name === name);
+}
+
+/** Spec 0020 §3.5/§3.6: remove one member by derived name from a roster CONFIG level (the
+    template for future teams) — shared by `remove` and `dismiss --also-config` so there is
+    exactly one config-edit path. Resolves the level exactly as `remove` always has
+    (targetLevel()). Writes nothing when the member isn't found. */
+function removeConfigMember(name) {
+  const { level, wasDefaulted } = targetLevel();
+  const path = rosterLevelPaths(cwd)[level];
+  const data = readLevelFile(path);
+  if (!data.roster || !Array.isArray(data.roster.members)) {
+    return { level, path, wasDefaulted, removed: false, reason: `no roster at level "${level}" — run \`roster.mjs init\` first` };
+  }
+  const idx = findMemberIndex(data.roster.members, name);
+  if (idx === -1) return { level, path, wasDefaulted, removed: false, reason: "no such member" };
+  const before = namedMembers(data.roster.members);
+  data.roster.members.splice(idx, 1);
+  const after = namedMembers(data.roster.members);
+  writeLevelFile(path, data);
+  return { level, path, wasDefaulted, removed: true, idx, before, after };
 }
 
 function detectTransport() {
@@ -799,6 +823,11 @@ try {
       if (typeof opts.effort === "string") member.effort = opts.effort;
       if (typeof opts.route === "string") member.route = opts.route;
       if (typeof opts["auto-mode"] === "string") member.autoMode = opts["auto-mode"];
+      if (opts["on-missing"] === true) fail("add: --on-missing requires a value (auto, prompt, or never)");
+      if (typeof opts["on-missing"] === "string") member.onMissing = opts["on-missing"];
+      if (member.onMissing !== undefined && (member.route || data.roster.route) === "subagent") {
+        fail('on-missing applies only to peer-routed members (this member\'s route is "subagent")');
+      }
       const memberErrors = validateMember(member);
       if (memberErrors.length) fail(memberErrors.join("; "));
       if (member.autoMode === "bypassPermissions" && (member.route || data.roster.route) === "peer") {
@@ -827,6 +856,23 @@ try {
       if (typeof opts.effort === "string") updated.effort = opts.effort;
       if (typeof opts.route === "string") updated.route = opts.route;
       if (typeof opts["auto-mode"] === "string") updated.autoMode = opts["auto-mode"];
+      if (opts["on-missing"] === true) fail("edit: --on-missing requires a value (auto, prompt, or never)");
+      // §3.2.1: supplied-ness must be read from `opts`, never from `updated` — `updated` already
+      // carries a value merged in via {...existing}, so once merged, "supplied now" and "was already
+      // there" are indistinguishable on `updated` alone. That conflation is the trap amendment (c) fixes.
+      const onMissingSupplied = typeof opts["on-missing"] === "string";
+      if (onMissingSupplied) updated.onMissing = opts["on-missing"];
+      if (onMissingSupplied && (updated.route || data.roster.route) === "subagent") {
+        // §3.2(i): both supplied in one invocation — a contradiction, never guess which one wins.
+        fail('on-missing applies only to peer-routed members (this member\'s route is "subagent")');
+      }
+      if (!onMissingSupplied && updated.route === "subagent" && updated.onMissing !== undefined) {
+        // §3.2(ii): a route switch stranded an inherited onMissing — clear it and say so, rather than
+        // silently discarding something the user configured earlier or making the switch unreachable.
+        const dropped = updated.onMissing;
+        delete updated.onMissing;
+        process.stderr.write(`roster.mjs: ah: dropped on-missing "${dropped}" — it applies only to peer-routed members, and this member is now route "subagent"\n`);
+      }
       if (updated.role === "orchestrator") fail('role "orchestrator" is not a roster member');
       const errors = validateMember(updated);
       if (errors.length) fail(errors.join("; "));
@@ -842,16 +888,10 @@ try {
 
     case "remove": {
       const memberName = typeof opts.member === "string" ? opts.member : fail("remove needs --member <derived-name>");
-      const { level, wasDefaulted } = targetLevel();
-      const path = rosterLevelPaths(cwd)[level];
-      const data = readLevelFile(path);
-      if (!data.roster || !Array.isArray(data.roster.members)) fail(`no roster at level "${level}" — run \`roster.mjs init\` first`);
-      const idx = findMemberIndex(data.roster.members, memberName);
-      if (idx === -1) fail(`no member named ${JSON.stringify(memberName)} at level "${level}"`);
-      data.roster.members.splice(idx, 1);
-      writeLevelFile(path, data);
-      if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — removed from the currently-resolving level "${level}"\n`);
-      out({ level, path, wasDefaulted, removed: memberName });
+      const result = removeConfigMember(memberName);
+      if (!result.removed) fail(result.reason === "no such member" ? `no member named ${JSON.stringify(memberName)} at level "${result.level}"` : result.reason);
+      if (result.wasDefaulted) process.stderr.write(`roster.mjs: no --level given — removed from the currently-resolving level "${result.level}"\n`);
+      out({ level: result.level, path: result.path, wasDefaulted: result.wasDefaulted, removed: memberName, store: `roster config at "${result.level}" (${result.path})` });
       break;
     }
 
@@ -1201,6 +1241,167 @@ try {
       break;
     }
 
+    case "dismiss": {
+      // Spec 0020: the missing inverse of `spawn-one` — drop ONE member from a live team.
+      // Mirrors disband's plan/close/commit split exactly, scoped to one member; reuses every
+      // close-path helper verbatim (§2/§3.3). Do not fork a second close implementation.
+      for (const key of Object.keys(opts)) {
+        if (key === "_") continue;
+        if (!DISMISS_FLAGS.has(key)) fail(`dismiss: unrecognized flag --${key} (use --plan, --close --confirm --plan-token <tok>, or --commit [--also-config] [--level L])`);
+      }
+      if (opts.close === true && opts.commit === true) fail("dismiss --close cannot be combined with --commit");
+      if (opts.plan === true && (opts.close === true || opts.commit === true)) fail("dismiss --plan cannot be combined with --close or --commit");
+      if ((opts["also-config"] === true || typeof opts.level === "string") && opts.commit !== true) {
+        fail("dismiss: --also-config and --level are only valid with --commit");
+      }
+      const name = typeof opts._[0] === "string" ? opts._[0] : fail("dismiss needs a member name: roster.mjs dismiss <name> [--plan|--close --confirm --plan-token <tok>|--commit [--also-config]]");
+      const dir = hierarchyDir(cwd);
+      const team = readTeam(dir, teamArg);
+      if (!team) {
+        out({ dismissed: false, reason: "no active team" });
+        break;
+      }
+      const target = team.members.find((m) => m.name === name);
+      if (!target) {
+        if (team.members.some((m) => m.role === name)) {
+          fail(`dismiss: no member named ${JSON.stringify(name)} in team ${team.team_id} — that is a role, not a member name; dismiss takes a derived name (0019 §3.2)`);
+        }
+        fail(`dismiss: no member named ${JSON.stringify(name)} in team ${team.team_id} — it has: ${team.members.map((m) => m.name).join(", ") || "(none)"}`);
+      }
+
+      // --close --confirm --plan-token <tok>: reuse disband --close's machinery verbatim.
+      if (opts.close === true) {
+        let healedMembers = team.members;
+        if (team.transport === "herdr") {
+          const result = resyncMembers(team);
+          if (result.query_ok) healedMembers = result.members;
+        }
+        const healedTarget = healedMembers.find((m) => m.name === name) || target;
+        const closable = closableMembers([healedTarget]);
+        if (closable.length === 0) {
+          fail(`dismiss --close: ${name} has no addressable pane (route=${target.route}, transport_id=${target.transport_id ?? null}) — use --commit to prune the record`);
+        }
+        const closeList = closable.map((m) => ({ name: m.name, transport_id: m.transport_id }));
+        if (opts.confirm !== true) {
+          fail(`dismiss --close: --confirm is required to close a live session. Close list: ${JSON.stringify(closeList)}`);
+        }
+        if (typeof opts["plan-token"] !== "string" || !opts["plan-token"]) {
+          fail("dismiss --close needs --plan-token <tok>, from a preceding `dismiss <name>` (plan) call");
+        }
+        // §3.3: token scoping is load-bearing and falls out for free — closeToken hashes
+        // {team_id, ids:[...]} over exactly THIS member's closable set (one id here, vs a
+        // whole-team disband plan's every-id set), so a whole-team token can never authorise
+        // this close and this token can never authorise a whole-team close. Do not widen the
+        // hash input to "simplify" this later.
+        const expectedToken = closeToken(team.team_id, closable);
+        if (opts["plan-token"] !== expectedToken) {
+          fail("dismiss --close: --plan-token does not match the current close plan (the topology may have changed) — re-run `dismiss` and retry with the fresh token");
+        }
+        const preResolved = resolveRoster(cwd, teamArg);
+        if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
+        const results = closable.map((m) => {
+          try {
+            closeMemberPane(team.transport, m.transport_id);
+            return { name: m.name, transport_id: m.transport_id, closed: true, error: null };
+          } catch (err) {
+            return { name: m.name, transport_id: m.transport_id, closed: false, error: err.message };
+          }
+        });
+        out({ closed: results.every((r) => r.closed), results });
+        break;
+      }
+
+      // --commit [--also-config]: merge-write team.json minus this member. Closes nothing.
+      if (opts.commit === true) {
+        const outTeam = { ...team, members: team.members.filter((m) => m.name !== name) };
+        writeTeam(dir, outTeam, teamArg);
+        // §3.4: a commit on a still-live member is allowed, but must never be silent about it.
+        if (memberIsLive(dir, target.name)) {
+          let command = null;
+          if (target.route === "peer" && target.transport_id) {
+            if (team.transport === "herdr") command = `herdr pane close ${target.transport_id}`;
+            else if (team.transport === "tmux") command = `tmux kill-pane -t ${target.transport_id}`;
+          }
+          process.stderr.write(
+            `roster.mjs: ah: ${target.name} is still live (${team.transport} ${target.transport_id}). Its record is gone from team ${team.team_id}.` +
+              (command ? ` Close it with \`${command}\` if you did not mean to leave it running.\n` : "\n")
+          );
+        }
+        const teamEmpty = outTeam.members.length === 0;
+        if (teamEmpty) {
+          process.stderr.write(`roster.mjs: ah: team ${team.team_id} has no members left. If you meant to end the team entirely, use \`disband --commit\`.\n`);
+        }
+        const dismissOut = {
+          dismissed: true,
+          member: { role: target.role, name: target.name },
+          team_id: team.team_id,
+          remaining: outTeam.members.map((m) => m.name),
+          team_empty: teamEmpty,
+          config: null,
+          store: `team ${JSON.stringify(team.team_id)}`,
+        };
+        if (opts["also-config"] === true) {
+          const result = removeConfigMember(target.name);
+          if (!result.removed) {
+            process.stderr.write(
+              `roster.mjs: ah: dismissed ${target.name} from team ${team.team_id}, but no roster member named ${target.name} exists at level "${result.level}" — the config was not changed.\n`
+            );
+            dismissOut.config = { removed: false, level: result.level, reason: result.reason };
+          } else {
+            // §3.5.1: ordinal shift. `result.before`/`result.after` are the config's
+            // ordinal-derived names before/after this removal, in array order. Everything at or
+            // before the removed index is unaffected; every later same-role sibling's ordinal
+            // (and therefore derived name) shifts down by one. Warn — never refuse — whenever a
+            // shifted name belongs to a member team.json still records as live under the OLD name.
+            const reordinaled = [];
+            for (let i = result.idx; i < result.before.length - 1; i++) {
+              const oldName = result.before[i + 1].name;
+              const newName = result.after[i].name;
+              if (oldName === newName) continue;
+              const teamHasRecord = outTeam.members.some((m) => m.name === oldName);
+              if (teamHasRecord && memberIsLive(dir, oldName)) reordinaled.push({ from: oldName, to: newName });
+            }
+            dismissOut.config = { removed: true, level: result.level, path: result.path, reordinaled };
+            if (reordinaled.length > 0) {
+              const pairs = reordinaled.map((r) => `${r.from} is now derived as ${r.to}`).join(", ");
+              process.stderr.write(
+                `roster.mjs: ah: removing ${target.name} from the roster re-ordinals later ${target.role} members: ${pairs}. ` +
+                  `Live team records keep their original names and still dispatch correctly; a future create/spawn-one will use the new names.\n`
+              );
+            }
+          }
+        }
+        out(dismissOut);
+        break;
+      }
+
+      // Bare dismiss / --plan: read-only. For herdr, resync in memory first (0008 §5.6) so the
+      // plan names the member's current pane; never persist the heal.
+      let healedMembers = team.members;
+      if (team.transport === "herdr") {
+        const result = resyncMembers(team);
+        healedMembers = result.query_ok ? result.members : team.members.map((m) => ({ ...m, status: "unqueried" }));
+      }
+      const healedTarget = healedMembers.find((m) => m.name === name) || target;
+      let command = null;
+      if (healedTarget.route === "peer" && healedTarget.transport_id) {
+        if (team.transport === "herdr") command = `herdr pane close ${healedTarget.transport_id}`;
+        else if (team.transport === "tmux") command = `tmux kill-pane -t ${healedTarget.transport_id}`;
+      }
+      // §3.2 store split (0019 §3.3.1): `live` reads the registry; `command` reads team.json's
+      // transport_id regardless of `live` — a stale-registry member still yields a close command.
+      const memberOut = { role: healedTarget.role, name: healedTarget.name, route: healedTarget.route, transport: team.transport, transport_id: healedTarget.transport_id, command };
+      if (team.transport === "herdr") memberOut.resync_status = healedTarget.status || "unqueried";
+      out({
+        member: memberOut,
+        live: memberIsLive(dir, target.name),
+        close_token: closeToken(team.team_id, closableMembers([healedTarget])),
+        team_id: team.team_id,
+        remaining: team.members.filter((m) => m.name !== name).map((m) => m.name),
+      });
+      break;
+    }
+
     case "resync": {
       for (const key of Object.keys(opts)) {
         if (key === "_") continue;
@@ -1311,20 +1512,33 @@ try {
       // dead or never launched. Extracted, not forked, from `createSpawn`'s launch path.
       for (const key of Object.keys(opts)) {
         if (key === "_") continue;
-        if (!SPAWN_ONE_FLAGS.has(key)) fail(`spawn-one: unrecognized flag --${key} (use --cwd, --dry-run, --allow-global, --team, or --orchestrator-pid)`);
+        if (!SPAWN_ONE_FLAGS.has(key)) fail(`spawn-one: unrecognized flag --${key} (use --cwd, --dry-run, --allow-global, --team, --orchestrator-pid, or --member)`);
       }
       const role = opts._[0];
       if (!PEER_ELIGIBLE_ROLES.includes(role)) fail(`spawn-one: role must be one of ${PEER_ELIGIBLE_ROLES.join(", ")}, got ${JSON.stringify(role)}`);
       const resolved = resolveRoster(cwd, teamArg);
       if (!resolved) fail(`no roster configured for ${cwd}; run the /agent-roster skill's Init flow`);
       requireAllowGlobal(resolved.level, resolved.path);
-      const member = resolved.members.find((m) => m.role === role);
-      if (!member) {
+      const candidates = resolved.members.filter((m) => m.role === role);
+      if (candidates.length === 0) {
         const roles = [...new Set(resolved.members.map((m) => m.role))];
         fail(`spawn-one: no ${role} member in the roster — roles it defines: ${roles.join(", ") || "(none)"}`);
       }
-
       const dir = hierarchyDir(cwd);
+      // §3.2: --member is value-taking; parseArgs sets it to `true` (not a string) when given
+      // with no value or immediately followed by another flag — that must fail loudly, never
+      // silently fall through to implicit selection.
+      if (opts["member"] === true) fail("spawn-one: --member requires a value (the derived member name)");
+      let member;
+      if (typeof opts["member"] === "string") {
+        member = candidates.find((m) => m.name === opts["member"]);
+        if (!member) fail(`spawn-one: no member named ${opts["member"]} for role ${role} in the roster — it defines: ${candidates.map((m) => m.name).join(", ") || "(none)"}`);
+      } else if (candidates.length === 1) {
+        member = candidates[0];
+      } else {
+        member = candidates.find((m) => !memberIsLive(dir, m.name)) || candidates[candidates.length - 1];
+      }
+
       const team = readTeam(dir, teamArg);
       // Spec 0018 §3/§4.3: creating a new team here needs a resolvable, live owner pid — refuse
       // before anything spawns, so a half-launched team (panes up, no persisted owner) never
@@ -1339,9 +1553,26 @@ try {
           fail(`spawn-one: --orchestrator-pid ${newTeamOrchestratorPid} is not a live process — refusing to create a team owned by a dead pid`);
         }
       }
-      const existing = team && Array.isArray(team.members) ? team.members.find((m) => m.role === role) : null;
-      if (existing && memberIsLive(dir, existing.name)) {
-        out({ spawned: false, reason: "already live", member: existing });
+      const byName = candidates.length > 1;
+      const matches = (m) => (byName ? m.name === member.name : m.role === role);
+      const existing = team && Array.isArray(team.members) ? team.members.find(matches) : null;
+      // §3.3(i)/§3.3.1, amendment (b): the already-live decision is a disjunction over TWO names,
+      // both asked of the registry (`memberIsLive`) — never the team-record lookup by itself.
+      // - memberIsLive(dir, member.name): the name we're about to launch is already running
+      //   (population 1 — a live member whose team.json slot got overwritten by a sibling spawn).
+      // - liveRecord: this slot's EXISTING record is live under a different (stale-drifted) name
+      //   (population 2 — alias drift, spec 0010 §7.2). A dead existing record must NOT block a
+      //   legitimate spawn, which is why liveness is asked about its name too, not just its presence.
+      // Collapsing to either disjunct alone reopens the other population — see §3.3.1.
+      const liveRecord = existing && memberIsLive(dir, existing.name) ? existing : null;
+      if (memberIsLive(dir, member.name) || liveRecord) {
+        const out_member = liveRecord || existing || { role: member.role, name: member.name };
+        if (byName && typeof opts["member"] !== "string") {
+          const candidatesLive = candidates.filter((c) => memberIsLive(dir, c.name)).map((c) => c.name);
+          out({ spawned: false, reason: "already live", member: out_member, role, candidates_live: candidatesLive });
+        } else {
+          out({ spawned: false, reason: "already live", member: out_member });
+        }
         break;
       }
       warnMixedPrefixSpawnOne(dir, member);
@@ -1378,7 +1609,7 @@ try {
           partial: resolved.members.length > 1,
         };
       }
-      const idx = outTeam.members.findIndex((m) => m.role === role);
+      const idx = outTeam.members.findIndex(matches);
       if (idx === -1) outTeam.members.push(newRecord);
       else outTeam.members[idx] = newRecord;
       writeTeam(dir, outTeam, teamArg);

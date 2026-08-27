@@ -148,6 +148,7 @@ export const TOOLS = [
         effort: { type: "string", description: "With action: add, edit." },
         route: { type: "string", enum: ["peer", "subagent"], description: "Required with action: init." },
         auto_mode: { type: "string", description: "With action: add, edit." },
+        on_missing: { type: "string", enum: ["auto", "prompt", "never"], description: "With action: add, edit. Peer-routed members only." },
         layout: { type: "string", enum: ["auto", "columns", "grid"], description: "With action: init." },
       },
       required: ["cwd", "action"],
@@ -302,11 +303,44 @@ export const TOOLS = [
         cwd: cwdSchema,
         team: teamSchema,
         role: { type: "string" },
+        member: { type: "string", description: "Derived member name, to disambiguate two same-role roster members." },
         dry_run: { type: "boolean" },
         allow_global: { type: "boolean" },
         orchestrator_pid: { type: "integer", description: "Owner pid when this call creates a new team. Defaults to the calling session's pid, derived automatically — supply only to override." },
       },
       required: ["cwd", "role"],
+    },
+  },
+  {
+    name: "roster_dismiss",
+    description: "Dismiss ONE member from a live team's check-in registry by derived name (e.g. 'dismiss bps-implementor-2'). Does not close sessions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        team: teamSchema,
+        name: { type: "string", description: "Derived member name from team.json, not a role." },
+        mode: { type: "string", enum: ["plan", "commit"], description: "plan (default) is read-only; commit rewrites team.json minus this member." },
+        also_config: { type: "boolean", description: "With mode:commit, also remove the matching roster config entry so a future create does not rebuild it." },
+        level: { type: "string", enum: ["global", "repo", "repo-user"], description: "Config level for also_config; defaults to the resolving level." },
+      },
+      required: ["cwd", "name"],
+    },
+  },
+  {
+    name: "roster_dismiss_close",
+    description: "Close ONE live team member's session. Destructive; requires prior user confirmation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        team: teamSchema,
+        name: { type: "string" },
+        confirm: { type: "boolean", description: "Must be true, and only after the user has been shown the close list and agreed." },
+        plan_token: { type: "string", description: "close_token from the preceding roster_dismiss mode:plan call." },
+        allow_global: { type: "boolean" },
+      },
+      required: ["cwd", "name", "confirm", "plan_token"],
     },
   },
 ];
@@ -462,6 +496,7 @@ export async function callTool(name, input) {
         pushArg(args, "effort", args_in.effort);
         pushArg(args, "route", args_in.route);
         pushArg(args, "auto-mode", args_in.auto_mode);
+        pushArg(args, "on-missing", args_in.on_missing);
       }
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
@@ -584,11 +619,50 @@ export async function callTool(name, input) {
         return { content: [{ type: "text", text: 'roster_spawn_one: "role" is required.' }], isError: true };
       }
       const args = ["spawn-one", args_in.role];
+      pushArg(args, "member", args_in.member);
       pushFlag(args, "dry-run", args_in.dry_run);
       pushFlag(args, "allow-global", args_in.allow_global);
       pushArg(args, "team", args_in.team);
       // Spec 0018 §4.2: explicit param wins, else the pid captured at server startup.
       pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_dismiss": {
+      if (typeof args_in.name !== "string" || !args_in.name.trim()) {
+        return { content: [{ type: "text", text: 'roster_dismiss: "name" is required.' }], isError: true };
+      }
+      const mode = args_in.mode || "plan";
+      if (mode !== "plan" && mode !== "commit") {
+        return { content: [{ type: "text", text: `roster_dismiss: "mode" must be one of plan, commit, got ${JSON.stringify(mode)}` }], isError: true };
+      }
+      const args = ["dismiss", args_in.name];
+      if (mode === "commit") args.push("--commit");
+      pushFlag(args, "also-config", args_in.also_config);
+      pushArg(args, "level", args_in.level);
+      pushArg(args, "team", args_in.team);
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_dismiss_close": {
+      if (typeof args_in.name !== "string" || !args_in.name.trim()) {
+        return { content: [{ type: "text", text: 'roster_dismiss_close: "name" is required.' }], isError: true };
+      }
+      if (args_in.confirm !== true) {
+        return {
+          content: [{ type: "text", text: 'roster_dismiss_close: "confirm" must be true, and only after the user has been shown the close list and agreed.' }],
+          isError: true,
+        };
+      }
+      if (typeof args_in.plan_token !== "string" || !args_in.plan_token.trim()) {
+        return {
+          content: [{ type: "text", text: 'roster_dismiss_close: "plan_token" is required — pass the close_token from a preceding roster_dismiss mode:plan call.' }],
+          isError: true,
+        };
+      }
+      const args = ["dismiss", args_in.name, "--close", "--confirm", "--plan-token", args_in.plan_token];
+      pushArg(args, "team", args_in.team);
+      pushFlag(args, "allow-global", args_in.allow_global);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }

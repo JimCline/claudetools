@@ -45,7 +45,16 @@
  *     user (via AskUserQuestion) whether to fall back to a subagent for that
  *     specific role; the identical re-issue then passes regardless of the
  *     answer — this is a reminder gate, not an enforced no. Record:
- *     `{type:"peer-fallback-ask", session_id, role}`.
+ *     `{type:"peer-fallback-ask", session_id, role}`. Per-member `onMissing`
+ *     (spec 0021) overrides this default before the ask fires: "never" falls
+ *     straight through to the subagent every time, no gate; "auto" denies
+ *     once naming the `spawn-one` command instead of asking (record
+ *     `{type:"on-missing-auto", session_id, role}`), degrading to the
+ *     "prompt" behaviour above when no usable roster entry exists for the
+ *     role (spec 0009 §5.2's rule: recommending a command that will fail is
+ *     worse than not recommending one). Resolved from the role's FIRST
+ *     roster member in roster order — this is a role-level question,
+ *     independent of 0019's per-instance spawn-one selection.
  *   - `prefer-peers`: an Agent/Task spawn is denied only while a live
  *     instance is NOT busy; allowed — without asking — when every live
  *     instance is busy or none is live (the user already opted into silent
@@ -87,7 +96,7 @@ import {
   roster,
   sessionModel,
 } from "./lib-hier.mjs";
-import { resolveMemberTeam, teamMemberByName } from "./lib-roster.mjs";
+import { ON_MISSING_DEFAULT, resolveMemberTeam, teamMemberByName } from "./lib-roster.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
 
 const TIER_ROLES = ["architect", "ultra-advisor"];
@@ -148,6 +157,21 @@ function peerFallbackAskReason(role, resolved, dir, sessionId, cwd) {
   }
   const why = resolved.rosterLevel === "global" && !rosterUsable ? "global roster not confirmed" : `no roster entry for ${ROLE_LABELS[role]}`;
   return `ah: route is peers this session, but no live instance of ${ROLE_LABELS[role]} exists to route to (${why}). Ask the user with AskUserQuestion: "No live ${ROLE_LABELS[role]} peer is available — spawn a subagent for this role instead?", options "Yes, spawn a subagent (Recommended)" and "No, wait — I'll start the peer myself". If yes, re-issue this exact dispatch. If no, do not dispatch — wait for the peer to come up or tell the user you're blocked on ${ROLE_LABELS[role]}.`;
+}
+
+function onMissingFor(resolved, role) {
+  // §4: a role-level question ("is a peer of this kind available"), not a per-instance one —
+  // 0019's per-instance selection belongs to spawn-one, not here. First member in roster order.
+  const member = resolved.roster && Array.isArray(resolved.roster.members) ? resolved.roster.members.find((m) => m.role === role) : null;
+  return (member && member.onMissing) || ON_MISSING_DEFAULT;
+}
+
+function onMissingAutoReason(role, cwd) {
+  return [
+    `ah: no live ${ROLE_LABELS[role]} peer, and its on-missing policy is "auto".`,
+    `Run: node "$CLAUDE_PLUGIN_ROOT/hooks/roster.mjs" spawn-one ${role} --cwd ${cwd}`,
+    "Then SendMessage the peer instead of re-issuing this dispatch. Do not ask the user — this is configured.",
+  ].join("\n");
 }
 
 function preferPeersDenyReason(role, live) {
@@ -306,6 +330,26 @@ try {
             decide("deny", peersDenyReason(role, live));
           }
         } else {
+          // spec 0021 §4: per-member on-missing policy overrides the default "ask" behaviour.
+          const policy = onMissingFor(resolved, role);
+          if (policy === "never") {
+            decide(null, null, `ah: no live ${ROLE_LABELS[role]} peer, and its on-missing policy is "never" — spawning the subagent.`);
+          }
+          if (policy === "auto") {
+            // §4.3: identical availability guard to peerFallbackAskReason's roster-usable check —
+            // recommending a spawn-one command that will fail is worse than not recommending one.
+            const rosterUsable = !!resolved.roster && (resolved.rosterLevel !== "global" || globalScopeAnswer(dir, sessionId, "roster") === "allow");
+            const member = rosterUsable ? resolved.roster.members.find((m) => m.role === role) : null;
+            if (member) {
+              const askedAuto = hasGate(dir, (r) => r.type === "on-missing-auto" && r.session_id === sessionId && r.role === role);
+              if (!askedAuto) {
+                appendGate(dir, { type: "on-missing-auto", session_id: sessionId, role });
+                decide("deny", onMissingAutoReason(role, cwd));
+              }
+              decide(null, null, `ah: no live ${ROLE_LABELS[role]} peer; its on-missing policy is "auto" and spawn-one was already recommended this session — spawning the subagent.`);
+            }
+            // !rosterUsable or no roster member for the role: degrade to "prompt" below (§4.3).
+          }
           const askedFallback = hasGate(dir, (r) => r.type === "peer-fallback-ask" && r.session_id === sessionId && r.role === role);
           if (!askedFallback) {
             appendGate(dir, { type: "peer-fallback-ask", session_id: sessionId, role });

@@ -31,7 +31,7 @@
         ]
       },
       {
-        "matcher": "mcp__ah__roster_disband_close",
+        "matcher": "mcp__ah__roster_disband_close|mcp__ah__roster_dismiss_close",
         "hooks": [
           {
             "type": "command",

@@ -114,10 +114,11 @@ const names = (toolsList && toolsList.result && toolsList.result.tools || []).ma
 const expected = [
   "msg_index", "msg_list", "msg_new", "msg_roster",
   "roster_adopt", "roster_config", "roster_create", "roster_disband", "roster_disband_close",
+  "roster_dismiss", "roster_dismiss_close",
   "roster_history", "roster_layout_splits", "roster_member", "roster_move",
   "roster_resync", "roster_show", "roster_spawn_one", "roster_teams",
 ].sort();
-report("tools/list returns exactly the 17-tool inventory (spec 0015/0016/0017/0018)", JSON.stringify(names) === JSON.stringify(expected), JSON.stringify(names));
+report("tools/list returns exactly the 19-tool inventory (spec 0015/0016/0017/0018/0020)", JSON.stringify(names) === JSON.stringify(expected), JSON.stringify(names));
 
 const ping = await call("ping", {});
 report("ping answered", Boolean(ping && ping.result && typeof ping.result === "object" && !ping.error), JSON.stringify(ping));
@@ -666,6 +667,30 @@ mkdir -p "$REPO_E"
 SPAWN_ONE_OWN="$(env -u HERDR_ENV PATH="$BIN_CLAUDE_ONLY:$NODE_DIR" SERVER_PATH="$SERVER" LIB_ROSTER="$REPO_ROOT/hooks/lib-roster.mjs" TEST_REPO="$REPO_E" node "$TMP/spawn-one-own.mjs" 2>&1)"
 check "roster_spawn_one via MCP: new team is SESSION_PID-owned and live, not null" \
   '[ "$SPAWN_ONE_OWN" = "PASS" ]'
+
+
+# ---------------------------------------------------------------------------
+# spec 0019 §3.6: roster_spawn_one passes an optional `member` param through
+# to `--member <name>`, to disambiguate two same-role roster members.
+# ---------------------------------------------------------------------------
+cat > "$TMP/spawn-one-member.mjs" <<'JSEOF'
+const { callTool } = await import(process.env.SERVER_PATH);
+const cwd = process.env.TEST_REPO;
+
+await callTool("roster_member", { cwd, action: "init", level: "repo", route: "peer" });
+await callTool("roster_member", { cwd, action: "add", level: "repo", role: "architect", model: "opus" });
+await callTool("roster_member", { cwd, action: "add", level: "repo", role: "architect", model: "opus" });
+const res = await callTool("roster_spawn_one", { cwd, role: "architect", member: "bogus-member-name" });
+const text = (res.content && res.content[0] && res.content[0].text) || "";
+const ok = res.isError === true && text.includes("bogus-member-name") && text.includes("-architect-2");
+console.log(ok ? "PASS" : "FAIL " + JSON.stringify({ res }));
+JSEOF
+REPO_F="$TMP/repo-f"
+mkdir -p "$REPO_F"
+(cd "$REPO_F" && git init -q)
+SPAWN_ONE_MEMBER="$(env -u HERDR_ENV PATH="$BIN_CLAUDE_ONLY:$NODE_DIR" SERVER_PATH="$SERVER" TEST_REPO="$REPO_F" node "$TMP/spawn-one-member.mjs" 2>&1)"
+check "roster_spawn_one via MCP: member param passes through to --member and disambiguates same-role members" \
+  '[ "$SPAWN_ONE_MEMBER" = "PASS" ]'
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"

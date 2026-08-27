@@ -215,6 +215,55 @@ check "26b: warns that names are frozen, using the first member as the example" 
 check "26c: live-team warning never mentions disband/teardown" '! echo "$OUT" | grep -qiE "disband|teardown"'
 check "26d: the write actually happened despite the warning" 'grep -q "\"teamAlias\": \"newalias\"" "$REPO_PATH"'
 
+# ==== 12 — spec 0019 §6 case 12 / amendment (b): record-live under a stale name (population 2),
+#            single-candidate role. team.json holds "old-implementor", live in the registry; the
+#            alias then changes so the roster derives "new-implementor". spawn-one must treat this
+#            as a no-op — never launch a second pane for the same role, never overwrite the still-
+#            live "old-implementor" row. Assert all four: spawned:false/already-live; claude/herdr
+#            never invoked; team.json byte-identical; member.name is old-implementor not
+#            new-implementor. Existing case 25 does NOT cover this — it seeds a cross-role stale
+#            record with no registry entry, so existingRecord is null under both old and new code
+#            and passes either way; this needs a same-role, registry-live stale record. ====
+reset_levels
+PEERS_FILE="$HIER_DIR/peers.jsonl"
+seed_peer() { # <name> <role> <status> <pid>
+  mkdir -p "$(dirname "$PEERS_FILE")"
+  "$NODE_BIN" -e 'const fs=require("fs");const[f,n,r,st,p]=process.argv.slice(1);
+    fs.appendFileSync(f,JSON.stringify({type:"peer",status:st,name:n,role:r,pid:Number(p)||undefined,ts:new Date().toISOString()})+"\n");' \
+    "$PEERS_FILE" "$1" "$2" "$3" "$4"
+}
+run_roster init --level repo --route peer --cwd "$PROJ" >/dev/null
+run_roster alias --set old --level repo --cwd "$PROJ" >/dev/null
+run_roster add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+mkdir -p "$HIER_DIR"
+cat > "$TEAM_FILE" <<EOF
+{ "version": 1, "team_id": "t12", "roster_level": "repo", "transport": "herdr",
+  "orchestrator": { "session_id": null, "pid": $$ },
+  "members": [ { "name": "old-implementor", "role": "implementor", "route": "peer", "model": "opus", "effort": null, "autoMode": null, "transport_id": "p1" } ] }
+EOF
+BEFORE_TEAM12=$(cat "$TEAM_FILE")
+seed_peer "old-implementor" "implementor" "up" "$$"
+# alias changes AFTER the team was created — roster now derives "new-implementor" for this role.
+run_roster alias --set new --level repo --cwd "$PROJ" >/dev/null
+HERDR_MARKER="$SANDBOX/herdr-invoked-12"
+HERDR_STUB_DIR="$SANDBOX/herdr-stub-bin-12"
+mkdir -p "$HERDR_STUB_DIR"
+cat > "$HERDR_STUB_DIR/herdr" <<STUBEOF
+#!/bin/sh
+echo "HERDR INVOKED: \$@" >> "$HERDR_MARKER"
+exit 1
+STUBEOF
+chmod +x "$HERDR_STUB_DIR/herdr"
+NODE_DIR="$(dirname "$NODE_BIN")"
+OUT=$(env -u HERDR_ENV HOME="$FAKEHOME" HERDR_PANE_ID=p0 PATH="$HERDR_STUB_DIR:$NODE_DIR" HERDR_ENV=1 \
+  "$NODE_BIN" "$H/roster.mjs" spawn-one implementor --cwd "$PROJ" 2>&1); RC=$?
+check "12a: spawned false, reason already live" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"spawned\": false" && echo "$OUT" | grep -q "\"reason\": \"already live\""'
+check "12b: herdr never invoked (no launch attempt for the drifted name)" '[ ! -f "$HERDR_MARKER" ]'
+check "12c: team.json byte-identical afterward" '[ "$(cat "$TEAM_FILE")" = "$BEFORE_TEAM12" ]'
+check "12d: emitted member.name is the live old-implementor, not the drifted new-implementor" \
+  'echo "$OUT" | grep -q "\"name\": \"old-implementor\"" && ! echo "$OUT" | grep -q "\"name\": \"new-implementor\""'
+
 # ==== 29 — role-token collision (amendment (d), §4.4): validateTeamAlias rejects ====
 evalc "C.validateTeamAlias('architect').ok"
 check "29a: alias equal to a role token -> rejected" '[ "$OUT" = false ]'

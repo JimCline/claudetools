@@ -234,6 +234,166 @@ run_spawn "HERDR_ENV=1" --mode auto --allow-global
 check "9e: create --spawn --allow-global proceeds against a global-level roster" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"partial\": false"'
 
+# ==== 11 — spec 0019 §6.2: THE REPORTED BUG. implementor + implementor-2, implementor
+#            already live -> spawn-one implementor spawns implementor-2, and team.json
+#            keeps BOTH records afterward (this is the repro that fails on unmodified code:
+#            unmodified code would try to relaunch the already-live implementor and either
+#            short-circuit on it or overwrite its team.json slot). ====
+reset_state; clear_hierarchy; init_geometry 180 42
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+write_team "$(node -e '
+  console.log(JSON.stringify({
+    version: 1, team_id: "T-fixture-2", created: new Date().toISOString(), roster_level: "repo",
+    transport: "herdr", orchestrator: { session_id: null, pid: process.ppid },
+    members: [
+      { role: "implementor", name: "myrepo-implementor", route: "peer", model: "opus", effort: null, autoMode: null, transport_id: "p1" }
+    ],
+    partial: true,
+  }))
+')"
+seed_peer "myrepo-implementor" "implementor" "up" "$$"
+run_one "HERDR_ENV=1" implementor
+check "11a: spawn-one implementor spawns the -2 instance (the missing one), not the live -1" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"spawned\": true" && echo "$OUT" | grep -q "\"name\": \"myrepo-implementor-2\""'
+check "11b: no slot loss (§6.9) — team.json has BOTH records, distinct names, both role implementor" \
+  'node -e "const t=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));const names=t.members.map(m=>m.name).sort();process.exit(t.members.length===2 && names[0]===\"myrepo-implementor\" && names[1]===\"myrepo-implementor-2\" && t.members.every(m=>m.role===\"implementor\")?0:1)" "$TEAM_FILE"'
+
+# ==== 12 — spec 0019 §6.3: ordering — -2 live, -1 absent -> spawns -1 (roster order,
+#            first-not-live — not "next after the live one"). ====
+reset_state; clear_hierarchy; init_geometry 180 42
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+write_team "$(node -e '
+  console.log(JSON.stringify({
+    version: 1, team_id: "T-fixture-3", created: new Date().toISOString(), roster_level: "repo",
+    transport: "herdr", orchestrator: { session_id: null, pid: process.ppid },
+    members: [
+      { role: "implementor", name: "myrepo-implementor-2", route: "peer", model: "opus", effort: null, autoMode: null, transport_id: "p2" }
+    ],
+    partial: true,
+  }))
+')"
+seed_peer "myrepo-implementor-2" "implementor" "up" "$$"
+run_one "HERDR_ENV=1" implementor
+check "12: spawns -1 (first-not-live in roster order), not -2 again" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"name\": \"myrepo-implementor\"" && ! echo "$OUT" | grep -q "\"name\": \"myrepo-implementor-2\""'
+
+# ==== 13 — spec 0019 §6.4: all candidates live -> spawned false, reason already live,
+#            candidates_live lists both, nothing launched. ====
+reset_state; clear_hierarchy; init_geometry 180 42
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+write_team "$(node -e '
+  console.log(JSON.stringify({
+    version: 1, team_id: "T-fixture-4", created: new Date().toISOString(), roster_level: "repo",
+    transport: "herdr", orchestrator: { session_id: null, pid: process.ppid },
+    members: [
+      { role: "implementor", name: "myrepo-implementor", route: "peer", model: "opus", effort: null, autoMode: null, transport_id: "p1" },
+      { role: "implementor", name: "myrepo-implementor-2", route: "peer", model: "opus", effort: null, autoMode: null, transport_id: "p2" }
+    ],
+    partial: false,
+  }))
+')"
+seed_peer "myrepo-implementor" "implementor" "up" "$$"
+seed_peer "myrepo-implementor-2" "implementor" "up" "$$"
+BEFORE_TEAM4=$(cat "$TEAM_FILE")
+run_one "HERDR_ENV=1" implementor
+check "13a: all live -> spawned false, reason already live" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"spawned\": false" && echo "$OUT" | grep -q "\"reason\": \"already live\""'
+check "13b: candidates_live is an array containing both member names (spec 0019 §6 case 4)" \
+  'node -e "const o=JSON.parse(process.argv[1]);const cl=o.candidates_live||[];process.exit(Array.isArray(cl)&&cl.includes(\"myrepo-implementor\")&&cl.includes(\"myrepo-implementor-2\")&&cl.length===2?0:1)" "$OUT"'
+check "13c: team.json unchanged, nothing launched" \
+  '[ "$(cat "$TEAM_FILE")" = "$BEFORE_TEAM4" ] && [ "$(call_count "c.argv[0]===\"agent\" && c.argv[1]===\"start\"")" -eq 0 ]'
+
+# ==== 14 — spec 0019 §6.5: --member hit -> spawns the named instance, neither live. ====
+reset_state; clear_hierarchy; init_geometry 180 42
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+run_one "HERDR_ENV=1" implementor --member myrepo-implementor-2
+check "14: --member myrepo-implementor-2 spawns -2, not the default (-1)" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"name\": \"myrepo-implementor-2\""'
+
+# ==== 15 — spec 0019 §6.6: --member miss -> non-zero, message lists the real names. ====
+run_one "HERDR_ENV=1" implementor --member myrepo-implementor-9
+check "15: --member miss -> non-zero, lists the real defined names" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "myrepo-implementor" && echo "$OUT" | grep -q "myrepo-implementor-2"'
+
+# ==== 16 — spec 0019 §6.7: --member cross-role -> non-zero. Must use a MULTI-CANDIDATE role
+#            (implementor + implementor-2) alongside the cross-role name, not a single-candidate
+#            setup — a single-candidate variant would pass for the wrong reason (byName false). ====
+reset_state; clear_hierarchy; init_geometry 180 42
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
+run_one "HERDR_ENV=1" implementor --member myrepo-reviewer
+check "16: --member names a reviewer while role is implementor (multi-candidate role) -> non-zero" '[ "$RC" -ne 0 ]'
+
+# ==== 17 — spec 0019 §6.8: --dry-run with two candidates, #1 live -> names -2, launches nothing. ====
+reset_state; clear_hierarchy; init_geometry 180 42
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+write_team "$(node -e '
+  console.log(JSON.stringify({
+    version: 1, team_id: "T-fixture-5", created: new Date().toISOString(), roster_level: "repo",
+    transport: "herdr", orchestrator: { session_id: null, pid: process.ppid },
+    members: [
+      { role: "implementor", name: "myrepo-implementor", route: "peer", model: "opus", effort: null, autoMode: null, transport_id: "p1" }
+    ],
+    partial: true,
+  }))
+')"
+seed_peer "myrepo-implementor" "implementor" "up" "$$"
+run_one "HERDR_ENV=1" implementor --dry-run
+check "17a: --dry-run names -2 (skips the live -1)" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"dry_run\": true" && echo "$OUT" | grep -q "\"name\": \"myrepo-implementor-2\""'
+check "17b: --dry-run launches nothing" '[ "$(call_count "c.argv[0]===\"agent\" && c.argv[1]===\"start\"")" -eq 0 ]'
+
+# ==== 18 — spec 0019 §6 case 10: --member with no value -> non-zero, names --member.
+#            Must NOT silently parse as member:true plus dry-run:true (§3.2). ====
+reset_state; clear_hierarchy; init_geometry 180 42
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+run_one "HERDR_ENV=1" implementor --member --dry-run
+check "18a: --member with no value -> non-zero" '[ "$RC" -ne 0 ]'
+check "18b: failure names --member, not a silent implicit-selection dry-run" \
+  'echo "$OUT" | grep -q -- "--member" && ! echo "$OUT" | grep -q "\"dry_run\": true"'
+
+# ==== 19 — spec 0019 §6 case 11 / amendment (a): registry-live, team-record-absent (defect C's
+#            population). implementor + implementor-2, BOTH live in the registry (peers.jsonl),
+#            but team.json has NO record for either (empty members array — the state defect C
+#            leaves behind). §3.1 selects the last candidate (-2, since all are live); the gate
+#            must catch that from the registry directly and refuse to launch, even though no
+#            team record exists to consult. Configured so a launch attempt (the pre-amendment
+#            bug's outcome) fails loudly via the fake herdr stub, rather than silently
+#            succeeding into a name collision. ====
+reset_state; clear_hierarchy; init_geometry 180 42
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+write_team "$(node -e '
+  console.log(JSON.stringify({
+    version: 1, team_id: "T-fixture-6", created: new Date().toISOString(), roster_level: "repo",
+    transport: "herdr", orchestrator: { session_id: null, pid: process.ppid },
+    members: [],
+    partial: true,
+  }))
+')"
+seed_peer "myrepo-implementor" "implementor" "up" "$$"
+seed_peer "myrepo-implementor-2" "implementor" "up" "$$"
+run_one "HERDR_ENV=1 FAKE_HERDR_FAIL_ALWAYS_NAME=myrepo-implementor-2" implementor
+check "19a: no team record for either candidate does not fool the gate — exit 0, spawned false, already live" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"spawned\": false" && echo "$OUT" | grep -q "\"reason\": \"already live\""'
+check "19b: no agent-start call was made for the registry-live -2 (no collision attempt)" \
+  '[ "$(call_count "c.argv[0]===\"agent\" && c.argv[1]===\"start\" && c.argv[2]===\"myrepo-implementor-2\"")" -eq 0 ]'
+
 # ==== 10 — regression: the two extraction-adjacent suites must pass UNMODIFIED ====
 CS_OUT=$(bash "$PLUGIN/tests/test-roster-create-spawn.sh" 2>&1); CS_RC=$?
 check "10a: test-roster-create-spawn.sh passes unmodified" '[ "$CS_RC" -eq 0 ]'

@@ -67,6 +67,10 @@ export const EFFORT_VALUES = ["low", "medium", "high", "xhigh", "max"];
 /** `claude --permission-mode <mode>` values (verified via `claude --help`, NEEDS-EVIDENCE #2). */
 export const AUTO_MODE_VALUES = ["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"];
 
+/** What the peer-fallback gate does when this member has no live instance (spec 0021). */
+export const ON_MISSING_VALUES = ["auto", "prompt", "never"];
+export const ON_MISSING_DEFAULT = "prompt";
+
 /** `team.json` for the default team, or `teams/<team>.json` for a named one (spec 0011 §3). */
 export const teamPath = (dir, team = null) => (team ? join(dir, "teams", `${team}.json`) : join(dir, "team.json"));
 
@@ -111,6 +115,9 @@ export function validateMember(m) {
   }
   if (m.autoMode !== undefined && m.autoMode !== null && !AUTO_MODE_VALUES.includes(m.autoMode)) {
     errors.push(`auto-mode must be one of ${AUTO_MODE_VALUES.join(", ")}, got ${JSON.stringify(m.autoMode)}`);
+  }
+  if (m.onMissing !== undefined && m.onMissing !== null && !ON_MISSING_VALUES.includes(m.onMissing)) {
+    errors.push(`on-missing must be one of ${ON_MISSING_VALUES.join(", ")}, got ${JSON.stringify(m.onMissing)}`);
   }
   if (m.name !== undefined) errors.push('member must not carry a stored "name" — it is derived at resolve time (spec §3.4)');
   return errors;

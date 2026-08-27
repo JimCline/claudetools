@@ -52,6 +52,73 @@ check "edit: updates by derived name" 'echo "$OUT" | grep -q "\"model\": \"sonne
 run edit --member no-such-member --model sonnet
 check "edit: unknown member name rejected" '[ "$RC" -ne 0 ]'
 
+# spec 0021: --on-missing round-trips through add/edit/show; invalid value and subagent-route
+# combination are rejected; a missing value is never silently parsed as `true`.
+run edit --member myrepo-implementor --on-missing auto
+check "edit --on-missing: persists the value" 'echo "$OUT" | grep -q "\"onMissing\": \"auto\"" && [ "$RC" -eq 0 ]'
+run show
+check "edit --on-missing: a subsequent show reports it" 'echo "$OUT" | grep -q "\"onMissing\": \"auto\""'
+
+run edit --member myrepo-implementor --on-missing bogus
+check "edit --on-missing: invalid value rejected, listing the three values" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "auto" && echo "$OUT" | grep -q "prompt" && echo "$OUT" | grep -q "never"'
+
+run add --role reviewer --route subagent --on-missing auto
+check "add --on-missing with route subagent: rejected" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "on-missing applies only to peer-routed members"'
+
+run add --role reviewer --on-missing
+check "add --on-missing with no value: rejected, names --on-missing (never parsed as true)" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q -- "--on-missing"'
+
+# spec 0021 §3.3 (amendment (c) reviewer nit): a non-peer-eligible role's onMissing is inert, and
+# show must name the reason, not a bare "(inert)".
+run add --role task-runner --on-missing auto
+check "add: task-runner accepts on-missing (inert, but not rejected at write time)" '[ "$RC" -eq 0 ]'
+STATUS_OUT=$(HOME="$FAKEHOME" node --input-type=module -e '
+  import { statusReport } from "'"$H"'/lib-config.mjs";
+  process.stdout.write(statusReport(process.argv[1]));
+' "$PROJ" 2>&1)
+check "statusReport: task-runner's on-missing is marked inert WITH the reason (role is not peer-eligible), not a bare (inert)" \
+  'echo "$STATUS_OUT" | grep -q "inert: role is not peer-eligible" && ! echo "$STATUS_OUT" | grep -qE "\(inert\)[^:]"'
+run remove --member myrepo-task-runner
+check "cleanup: task-runner removed" '[ "$RC" -eq 0 ]'
+
+# spec 0021 §3.2, amendment (c) — the two cases must not collapse into one answer (§3.2.1).
+# myrepo-implementor is peer-routed and currently carries onMissing:"auto" from the round-trip
+# test above.
+run edit --member myrepo-implementor --route subagent --on-missing auto
+check "12: edit, --on-missing supplied THIS invocation + route subagent: fails, names the route" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "route is \"subagent\""'
+run show
+check "12: the failed edit did not mutate the member (still peer, still onMissing auto)" \
+  'echo "$OUT" | grep -q "\"name\": \"myrepo-implementor\"" && echo "$OUT" | grep -q "\"onMissing\": \"auto\""'
+
+# ---- 13: the trap — a route switch with NO --on-missing supplied must clear an inherited value
+# and warn, never carry it forward into an invalid route:subagent + onMissing:auto state, and never
+# hard-fail on a value the user did not type this time.
+#
+# The must-fail-against-pre-amendment-(c)-code proof was run once by hand (not automated here): a
+# validation rule written against a merged `updated` object, without reading supplied-ness from
+# `opts` first, hard-fails this exact edit — treating the carried-forward value as "supplied" — which
+# is the amendment-(c) defect this fix closes. Not re-automated as a self-mutating test: it would have
+# to patch the real `$H/roster.mjs` (this file's own product code) in place, with no interrupt-safe
+# restore path, which is unsafe regardless of how careful the backup/restore bookkeeping is. A future
+# re-automation belongs in a $SANDBOX-copied, patched fixture — never a write to $PLUGIN — the way
+# 0020's hooks.json-matcher must-fail proofs already do it.
+run edit --member myrepo-implementor --route subagent
+check "13 (post-fix): exit 0" '[ "$RC" -eq 0 ]'
+check "13 (post-fix): stderr names the dropped value" 'echo "$OUT" | grep -q "dropped on-missing \"auto\""'
+run show
+check "13 (post-fix): member's route is now subagent" 'echo "$OUT" | grep -q "\"name\": \"myrepo-implementor\"" && echo "$OUT" | grep -q "\"route\": \"subagent\""'
+check "13 (post-fix): onMissing key is absent from the level file (not null, not retained)" \
+  '! (echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const m=JSON.parse(s).members.find(x=>x.name===\"myrepo-implementor\");process.exit(\"onMissing\" in m?0:1)})")'
+
+# ---- 14: round-trip — the transition is not one-way
+run edit --member myrepo-implementor --route peer --on-missing prompt
+check "14: switching back to peer + supplying on-missing again succeeds" '[ "$RC" -eq 0 ]'
+run show
+check "14: onMissing is back" 'echo "$OUT" | grep -q "\"onMissing\": \"prompt\""'
+
 run show
 check "show: resolved roster lists 3 members" 'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>process.exit(JSON.parse(s).members.length===3?0:1))"'
 
