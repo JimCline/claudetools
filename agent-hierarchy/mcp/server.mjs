@@ -37,7 +37,12 @@ const PPID_AT_STARTUP = process.ppid;
 const SESSION_PID = PPID_AT_STARTUP === 1 ? null : PPID_AT_STARTUP;
 
 const PROTOCOL_VERSION = "2024-11-05";
-const PLUGIN_MANIFEST = JSON.parse(readFileSync(join(HERE, "..", ".claude-plugin", "plugin.json"), "utf8"));
+let PLUGIN_MANIFEST;
+try {
+  PLUGIN_MANIFEST = JSON.parse(readFileSync(join(HERE, "..", ".claude-plugin", "plugin.json"), "utf8"));
+} catch {
+  PLUGIN_MANIFEST = { version: "unknown" };
+}
 
 const cwdSchema = {
   type: "string",
