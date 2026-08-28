@@ -185,7 +185,7 @@ function removeConfigMember(name) {
   const path = rosterLevelPaths(cwd)[level];
   const data = readLevelFile(path);
   if (!data.roster || !Array.isArray(data.roster.members)) {
-    return { level, path, wasDefaulted, removed: false, reason: `no roster at level "${level}" — run \`roster.mjs init\` first` };
+    return { level, path, wasDefaulted, removed: false, reason: `no roster at level "${level}" (${path}) — run \`roster.mjs init\` first` };
   }
   const idx = findMemberIndex(data.roster.members, name);
   if (idx === -1) return { level, path, wasDefaulted, removed: false, reason: "no such member" };
@@ -1003,7 +1003,7 @@ try {
       const { level, wasDefaulted } = targetLevel();
       const path = rosterLevelPaths(cwd)[level];
       const data = readLevelFile(path);
-      if (!data.roster || !Array.isArray(data.roster.members)) fail(`no roster at level "${level}" — run \`roster.mjs init\` first`);
+      if (!data.roster || !Array.isArray(data.roster.members)) fail(`no roster at level "${level}" (${path}) — run \`roster.mjs init\` first`);
       const role = opts.role;
       if (role === "orchestrator") fail('role "orchestrator" is not a roster member — the Orchestrator is whatever session runs /agent-roster create');
       if (!ROLES.includes(role)) fail(`--role must be one of ${ROLES.join(", ")}, got ${JSON.stringify(role)}`);
@@ -1025,7 +1025,7 @@ try {
       const blockErrors = validateRosterBlock(data.roster);
       if (blockErrors.length) fail(blockErrors.join("; "));
       writeLevelFile(path, data);
-      if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — added at the currently-resolving level "${level}"\n`);
+      if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — added at the currently-resolving level "${level}" (${path})\n`);
       out({ level, path, wasDefaulted, member: namedMembers(data.roster.members).at(-1) });
       break;
     }
@@ -1035,7 +1035,7 @@ try {
       const { level, wasDefaulted } = targetLevel();
       const path = rosterLevelPaths(cwd)[level];
       const data = readLevelFile(path);
-      if (!data.roster || !Array.isArray(data.roster.members)) fail(`no roster at level "${level}" — run \`roster.mjs init\` first`);
+      if (!data.roster || !Array.isArray(data.roster.members)) fail(`no roster at level "${level}" (${path}) — run \`roster.mjs init\` first`);
       const idx = findMemberIndex(data.roster.members, memberName);
       if (idx === -1) fail(`no member named ${JSON.stringify(memberName)} at level "${level}"`);
       const updated = { ...data.roster.members[idx] };
@@ -1069,7 +1069,7 @@ try {
       }
       data.roster.members[idx] = updated;
       writeLevelFile(path, data);
-      if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — edited at the currently-resolving level "${level}"\n`);
+      if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — edited at the currently-resolving level "${level}" (${path})\n`);
       out({ level, path, wasDefaulted, member: namedMembers(data.roster.members)[idx] });
       break;
     }
@@ -1078,7 +1078,7 @@ try {
       const memberName = typeof opts.member === "string" ? opts.member : fail("remove needs --member <derived-name>");
       const result = removeConfigMember(memberName);
       if (!result.removed) fail(result.reason === "no such member" ? `no member named ${JSON.stringify(memberName)} at level "${result.level}"` : result.reason);
-      if (result.wasDefaulted) process.stderr.write(`roster.mjs: no --level given — removed from the currently-resolving level "${result.level}"\n`);
+      if (result.wasDefaulted) process.stderr.write(`roster.mjs: no --level given — removed from the currently-resolving level "${result.level}" (${result.path})\n`);
       out({ level: result.level, path: result.path, wasDefaulted: result.wasDefaulted, removed: memberName, store: `roster config at "${result.level}" (${result.path})` });
       break;
     }
@@ -1095,7 +1095,7 @@ try {
         if (blockErrors.length) fail(blockErrors.join("; "));
         writeLevelFile(path, data);
       }
-      if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — using the currently-resolving level "${level}"\n`);
+      if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — using the currently-resolving level "${level}" (${path})\n`);
       out({ level, path, wasDefaulted, layout: data.roster.layout || "auto" });
       break;
     }

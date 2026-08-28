@@ -25,7 +25,7 @@
  * the current working directory — that is what `/hierarchy status` uses.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -303,6 +303,54 @@ export function rosterLevelPaths(cwd) {
 }
 
 /**
+ * Main checkout root when `worktreeRoot` is a linked worktree, else null.
+ * A worktree's `.git` is a FILE holding `gitdir: <main>/.git/worktrees/<name>`;
+ * that dir's `commondir` file points back at the main `.git`. A submodule uses
+ * the same `.git`-file mechanism but resolves under `.git/modules/`, so the
+ * `worktrees` check below is what keeps submodules out.
+ */
+function mainCheckoutRoot(worktreeRoot) {
+  const dotgit = join(worktreeRoot, ".git");
+  let raw;
+  try {
+    if (!statSync(dotgit).isFile()) return null; // normal checkout: .git is a dir
+    raw = readFileSync(dotgit, "utf8");
+  } catch {
+    return null;
+  }
+  const m = /^gitdir:\s*(.+)$/m.exec(raw);
+  if (!m) return null;
+  const gitdir = resolve(worktreeRoot, m[1].trim()); // pointer may be relative
+  if (basename(dirname(gitdir)) !== "worktrees") return null; // submodule, or unknown layout
+  let commonDir;
+  try {
+    commonDir = resolve(gitdir, readFileSync(join(gitdir, "commondir"), "utf8").trim());
+  } catch {
+    commonDir = dirname(dirname(gitdir)); // .../.git/worktrees/<n> -> .../.git
+  }
+  // Only a `<root>/.git` common dir implies a working tree at `<root>`. A bare
+  // repo's is `<name>.git` and `--separate-git-dir`'s is an arbitrary path;
+  // deriving a root from either names a directory that is not a checkout.
+  if (basename(commonDir) !== ".git") return null;
+  const root = dirname(commonDir);
+  return root && root !== worktreeRoot ? root : null;
+}
+
+/** Candidate config paths per roster level, most specific first. */
+export function rosterLevelCandidates(cwd) {
+  const resolvedCwd = resolve(typeof cwd === "string" && cwd ? cwd : process.cwd());
+  const repoRoot = findGitRoot(resolvedCwd) || resolvedCwd;
+  const roots = [repoRoot];
+  const main = mainCheckoutRoot(repoRoot);
+  if (main) roots.push(main); // empty for a normal checkout
+  return {
+    "repo-user": roots.map((r) => join(homedir(), ".claude", "agent-hierarchy", "projects", pathSlug(r), CONFIG_BASENAME)),
+    repo: roots.map((r) => join(r, ".claude", CONFIG_BASENAME)),
+    global: [userConfigPath()],
+  };
+}
+
+/**
  * Derive each member's dispatch name (§3.4): first member of a role gets
  * `peerName(repoBasename, role)`, later same-role members get `-2`, `-3`, ...
  * in array order. `peerName` stays the ordinal-1 case of this function.
@@ -406,29 +454,30 @@ export function teamPrefix(cwd, team) {
  * — the sole default site, spec 0004 §4.3) or null when no level has one.
  */
 export function resolveRoster(cwd, team) {
-  const paths = rosterLevelPaths(cwd);
+  const candidates = rosterLevelCandidates(cwd);
   const { prefix, alias, source } = teamPrefixInfo(cwd, team);
   for (const level of ROSTER_LEVELS) {
-    const path = paths[level];
-    if (!existsSync(path)) continue;
-    let data;
-    try {
-      data = JSON.parse(readFileSync(path, "utf8"));
-    } catch {
-      continue;
+    for (const path of candidates[level]) {
+      if (!existsSync(path)) continue;
+      let data;
+      try {
+        data = JSON.parse(readFileSync(path, "utf8"));
+      } catch {
+        continue;
+      }
+      if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+      const r = data.roster;
+      if (!r || typeof r !== "object" || Array.isArray(r) || !Array.isArray(r.members) || r.members.length === 0) continue;
+      return {
+        level,
+        route: r.route,
+        layout: r.layout || "auto",
+        members: rosterMemberNames(r.members, prefix),
+        path,
+        teamAlias: alias,
+        teamAliasSource: source,
+      };
     }
-    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
-    const r = data.roster;
-    if (!r || typeof r !== "object" || Array.isArray(r) || !Array.isArray(r.members) || r.members.length === 0) continue;
-    return {
-      level,
-      route: r.route,
-      layout: r.layout || "auto",
-      members: rosterMemberNames(r.members, prefix),
-      path,
-      teamAlias: alias,
-      teamAliasSource: source,
-    };
   }
   return null;
 }
