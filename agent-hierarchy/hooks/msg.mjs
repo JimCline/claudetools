@@ -125,9 +125,10 @@ function itemTeamTag(item) {
   return (parsed && parsed.fm && parsed.fm.team) || null;
 }
 
-/** `<root_from_name> → <from_name> → <to>: <slug>  (id <id>, parent <parent>)` — spec 0026 §4.3. */
+/** `<root_from_name> → <from_name> → <to>: <slug>  (id <id>, parent <parent>[, role-only])` — spec 0026 §4.3. */
 function downstreamLine(d) {
-  return `${d.root_from_name} → ${d.from_name} → ${d.to}: ${d.slug}  (id ${d.id}, parent ${d.parent})`;
+  const tag = d.identity === "role-only" ? ", role-only" : "";
+  return `${d.root_from_name} → ${d.from_name} → ${d.to}: ${d.slug}  (id ${d.id}, parent ${d.parent}${tag})`;
 }
 
 try {

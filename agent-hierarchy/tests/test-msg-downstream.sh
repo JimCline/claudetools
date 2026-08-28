@@ -28,6 +28,19 @@ mk_req() { # <to> <from> <slug> <from-name> <to-name> [--parent <id>] -> sets ID
   ID=$(node -e 'const o=JSON.parse(process.argv[1]);process.stdout.write(o.id)' "$OUT")
   REQPATH=$(node -e 'const o=JSON.parse(process.argv[1]);process.stdout.write(o.path)' "$OUT")
 }
+mk_req_noname() { # <to> <from> <slug> <to-name> [--parent <id>] -> sets ID (no --from-name passed)
+  local to=$1 from=$2 slug=$3 tname=$4; shift 4
+  msg new --to "$to" --from "$from" --slug "$slug" --to-name "$tname" "$@"
+  ID=$(node -e 'const o=JSON.parse(process.argv[1]);process.stdout.write(o.id)' "$OUT")
+}
+row_field() { # <id> <field> -- prints the JSON value of <field> on the downstream row for <id>, or MISSING
+  echo "$OUT" | node -e '
+    let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
+      const arr=JSON.parse(s); const [id,f]=process.argv.slice(1);
+      const r=arr.find(x=>x.id===id);
+      process.stdout.write(r?JSON.stringify(r[f]):"MISSING");
+    });' "$1" "$2"
+}
 
 # ---- item 14: empty msgs/ dir -> listDownstreamDispatches empty, list prints no downstream: header
 msg downstream --plain
@@ -57,6 +70,58 @@ mk_req reviewer orchestrator r2-follow orch-self peer-b --parent "$R2_ID"
 FOLLOW_ID=$ID
 msg downstream
 check "10: own follow-up (same from_name as root) contributes no row" '! echo "$OUT" | grep -q "\"id\":\"$FOLLOW_ID\""'
+
+# ---- item 10a (§4.1 condition 2, explicit): parentless request, no from_name -> zero rows.
+# OUTCOME assertion, not falsifiable against the current implementation: rootOf returns the
+# message's own frontmatter object for a parentless message, so any sender comparison is
+# reflexive and excludes it regardless. Guards a FUTURE change where rootOf stops
+# self-referencing — item 10e pins that dependency directly.
+mk_req_noname reviewer orchestrator root-10a peer-e
+R10A_ID=$ID
+msg downstream
+check "10a: parentless, unnamed sender -> no row" '! echo "$OUT" | grep -q "\"id\":\"$R10A_ID\""'
+
+# ---- item 10b: root unnamed, descendant named, different roles -> exactly one row,
+# root_from_name null, root_from the root's role, identity role-only.
+mk_req_noname reviewer orchestrator root-10b peer-f
+R10B_ROOT=$ID
+mk_req implementor reviewer desc-10b named-desc peer-g --parent "$R10B_ROOT"
+R10B_DESC=$ID
+msg downstream
+check "10b: row present" '[ "$(row_field "$R10B_DESC" id)" != "MISSING" ]'
+check "10b: root_from_name null, root_from is the root's role, identity role-only" \
+  '[ "$(row_field "$R10B_DESC" root_from_name)" = "null" ] && [ "$(row_field "$R10B_DESC" root_from)" = "\"orchestrator\"" ] && [ "$(row_field "$R10B_DESC" identity)" = "\"role-only\"" ]'
+
+# ---- item 10c: root unnamed AND descendant unnamed, different roles -> exactly one row,
+# identity role-only. THE FALSE NEGATIVE BEING CLOSED: pre-fix, this returns zero rows.
+mk_req_noname reviewer orchestrator root-10c peer-h
+R10C_ROOT=$ID
+mk_req_noname implementor reviewer desc-10c peer-i --parent "$R10C_ROOT"
+R10C_DESC=$ID
+msg downstream
+check "10c: unnamed root + unnamed descendant, different roles -> row present" '[ "$(row_field "$R10C_DESC" id)" != "MISSING" ]'
+check "10c: identity role-only" '[ "$(row_field "$R10C_DESC" identity)" = "\"role-only\"" ]'
+msg downstream --plain
+check "10c: plain-text output tags the role-only row" 'echo "$OUT" | grep -q "id $R10C_DESC.*, role-only)"'
+
+# ---- item 10d: root unnamed AND descendant unnamed, SAME role -> zero rows (§4.1 known residual).
+mk_req_noname reviewer orchestrator root-10d peer-j
+R10D_ROOT=$ID
+mk_req_noname reviewer orchestrator desc-10d peer-k --parent "$R10D_ROOT"
+R10D_DESC=$ID
+msg downstream
+check "10d: unnamed root + unnamed descendant, same role -> no row" '! echo "$OUT" | grep -q "\"id\":\"$R10D_DESC\""'
+
+# ---- item 10e: rootOf's self-reference contract, isolated (unit-level, falsifiable). For a
+# parentless message, rootOf(byId, id).fm must be the SAME REFERENCE as byId.get(id) -- items 10a
+# and the root.id === id guard both silently depend on this.
+ROOTOF_OUT=$(node -e '
+  import("'"$H"'/lib-hier.mjs").then((L) => {
+    const byId = new Map([["x", { parent: null, from: "a", from_name: null }]]);
+    const root = L.rootOf(byId, "x");
+    process.stdout.write(String(root.fm === byId.get("x")));
+  });')
+check "10e: rootOf returns the SAME fm reference for a parentless message" '[ "$ROOTOF_OUT" = "true" ]'
 
 # ---- item 11: a response file sharing an id with a request -> zero rows from it
 msg new --type response --id "$ROOT_ID"

@@ -291,7 +291,7 @@ export function listExchanges(dir) {
  * guessing a root would make §4.1 condition 3's answer a guess too, and a
  * downstream row is a positive claim about who dispatched what.
  */
-function rootOf(byId, startId) {
+export function rootOf(byId, startId) {
   const seen = new Set([startId]);
   let id = startId;
   let fm = byId.get(id);
@@ -311,6 +311,14 @@ function rootOf(byId, startId) {
  * Returns newest-first: { id, parent, root_id, root_from, root_from_name,
  *                         from, from_name, to, to_name, slug, created }
  */
+// `from_name` is optional (msg.mjs:147-148), so absence must never read as a
+// value. Confirm sameness on names when both are present; otherwise fall back
+// to the always-present role. Unconfirmed sameness is not sameness.
+function bothNamed(a, b) { return Boolean(a.from_name && b.from_name); }
+function sameSender(a, b) {
+  return bothNamed(a, b) ? a.from_name === b.from_name : a.from === b.from;
+}
+
 export function listDownstreamDispatches(dir) {
   const byId = new Map();
   for (const f of requestFiles(dir)) {
@@ -320,10 +328,10 @@ export function listDownstreamDispatches(dir) {
   }
   const out = [];
   for (const [id, fm] of byId) {
+    if (!fm.parent) continue; // §4.1 condition 2, explicit
     const root = rootOf(byId, id);
-    // A parentless message roots itself, so `root.fm === fm` and the name-equality
-    // check below excludes it too — no separate "has a parent" check needed.
-    if (!root || root.fm.from_name === fm.from_name) continue;
+    if (!root || root.id === id) continue; // unresolvable, or self-rooted (cycle)
+    if (sameSender(root.fm, fm)) continue; // §4.1 condition 3
     out.push({
       id,
       parent: fm.parent,
@@ -336,6 +344,7 @@ export function listDownstreamDispatches(dir) {
       to_name: fm.to_name,
       slug: fm.slug,
       created: fm.created,
+      identity: bothNamed(root.fm, fm) ? "name" : "role-only",
     });
   }
   return out.sort((a, b) => (a.id < b.id ? 1 : -1));

@@ -164,6 +164,21 @@ LATEST_ROSTER_OUT=$(AGENT_HIERARCHY_DIR="$LATEST_ROSTER_DIR" node -e '
   });')
 check "8b: latestRoster drops the nameless, session_id:null record" '[ "$LATEST_ROSTER_OUT" = "[]" ]'
 
+# ---- item 8c (§3.1.1): the sentinel/null mismatch, isolated (unit-level, falsifiable). The record
+# is NAMED, so §3.1.2's key-truthiness drop is out of the picture — only the "__nosession__" vs
+# null mismatch can prevent a match. Pins §3.1.1 directly; 8b pins §3.1.2 directly; 8a is the
+# combined outcome that survives either one being changed.
+SENTINEL_DIR="$SANDBOX/hier8c"
+mkdir -p "$SENTINEL_DIR"
+node -e 'const fs=require("fs");const[f]=process.argv.slice(1);
+  fs.appendFileSync(f,JSON.stringify({type:"peer",status:"up",name:"anything",session_id:null,role:"implementor",pid:999999,ts:new Date().toISOString()})+"\n");' \
+  "$SENTINEL_DIR/peers.jsonl"
+SENTINEL_OUT=$(AGENT_HIERARCHY_DIR="$SENTINEL_DIR" node -e '
+  import("'"$H"'/lib-hier.mjs").then((L) => {
+    process.stdout.write(JSON.stringify(L.upRecordFor(process.env.AGENT_HIERARCHY_DIR, "__nosession__")));
+  });')
+check "8c: upRecordFor(dir, \"__nosession__\") is null for a named, session_id:null record" '[ "$SENTINEL_OUT" = "null" ]'
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

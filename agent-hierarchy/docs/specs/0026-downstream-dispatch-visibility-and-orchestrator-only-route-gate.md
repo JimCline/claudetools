@@ -214,8 +214,10 @@ record via TWO independent mechanisms — this one, and §3.1.1's sentinel-vs-nu
 mismatch between a missing `session_id` in the hook input (held as the
 `"__nosession__"` sentinel) and a peers.jsonl record's `session_id: null`.
 Each masks the other, so neither can be neutralised alone to make the
-combined outcome flip. §6 items 8a and 8b are split along exactly that line:
-8a asserts the outcome, 8b falsifiably pins this mechanism.
+combined outcome flip. §6 items 8a, 8b and 8c are split along exactly that line: 8a asserts the
+combined outcome, 8b falsifiably pins this mechanism, and 8c falsifiably pins
+§3.1.1's — using a NAMED record with `session_id: null`, which survives this
+drop and therefore isolates the sentinel mismatch on its own.
 
 Discovered by the Implementor while attempting to prove item 8a catches a
 regression — the attempt failed, and the failure was the finding. That is the
@@ -335,12 +337,37 @@ identify the originating session. A message with `parent: null` is its own root.
    `listExchanges` (`lib-hier.mjs:272-283`), so they are never children and must
    never be reported as downstream dispatches.
 2. `M.parent` is non-null and resolves to an existing message.
-3. `root(M).from_name !== M.from_name` — a *different* session created `M` than
-   the one that rooted the chain.
+3. `root(M)` and `M` were created by *confirmably different* senders — see the
+   sender-identity rule below. Note this is NOT `root(M).from_name !==
+   M.from_name`, which is what this spec said before 2026-08-28 and what the
+   first implementation encoded.
 
 Condition 3 is what makes this "downstream" rather than merely "a follow-up":
 an Orchestrator sending a second request parented to its own first request is
 not a downstream dispatch and must not be reported as one.
+
+**Sender-identity rule (amendment, 2026-08-28).** `from_name` is OPTIONAL:
+`msg.mjs:147-148` defaults it to null and `lib-hier.mjs:240-241` writes
+`opts.fromName || null`. A bare `!==` therefore reads absence as a value, and
+gets both directions wrong — two unnamed senders compare *equal* and the
+dispatch is silently dropped.
+
+Suppress a row only on a CONFIRMED same-sender match:
+  - Both `from_name`s present → compare them. Names are authoritative.
+  - Otherwise → compare `from` (the role), which is always present.
+
+Emit when the comparison does not confirm sameness. This deliberately inverts
+§3.1.2's refuse-on-unresolvable rule: §3.1.2 guards a GATE, where a false match
+grants something; this is a MONITOR, where a false negative hides the very thing
+being surfaced. Unconfirmed ⇒ surface and mark, never hide.
+
+**Known residual.** Two DIFFERENT sessions of the SAME role, neither stamping
+`from_name`, still compare equal and emit no row. This cannot be closed without
+either resolving E-3 (senders stamp `from_name`) or adding `session_id` to
+message frontmatter. Do not attempt to close it with a roster lookup keyed on
+role — role is not unique, and that fabricates an identity. Reopen this when
+E-3 lands or frontmatter gains `session_id`; either makes the fix safe and
+small.
 
 Worked example, the reported case:
 
@@ -405,6 +432,49 @@ Requirements:
   therefore rootless for exactly the same reason a cycle is; treating it any
   other way would reintroduce the same defect behind a rarer trigger.
 - Sort newest-first, consistent with `listExchanges`.
+- **Condition 2 must be checked explicitly.** The first implementation elided it
+  (`lib-hier.mjs:324-325`: "a parentless message roots itself... no separate
+  'has a parent' check needed") and let name-equality exclude parentless
+  messages instead.
+
+  That worked because `rootOf` returns the message's own frontmatter object for
+  a parentless message, so ANY sender comparison — the old `!==` or the new
+  `sameSender` — is reflexive and excludes it. The exclusion is correct but
+  emergent: it depends on an object-identity property of `rootOf` that nothing
+  states or tests, rather than on the condition the spec actually specifies.
+
+  Check condition 2 explicitly anyway. This is a clarity and durability change,
+  NOT a bug fix: it makes the spec's stated condition the reason the behaviour
+  holds, and it survives a `rootOf` that stops self-referencing. It changes no
+  output today and is safe to land independently of the sender-identity change.
+  (Corrected 2026-08-28: an earlier revision of this bullet claimed the two
+  changes were coupled and that splitting them caused false positives. That was
+  wrong — see item 10a.)
+
+- Rows carry an `identity` field, `"name"` or `"role-only"`, recording which
+  comparison decided the row. `msg.mjs` marks role-only rows in its output so a
+  reader can tell a confirmed cross-session dispatch from an inferred one.
+
+```js
+for (const [id, fm] of byId) {
+  if (!fm.parent) continue;                          // §4.1 condition 2, explicit
+  const root = rootOf(byId, id);
+  if (!root || root.id === id) continue;             // unresolvable, or self-rooted
+  if (sameSender(root.fm, fm)) continue;             // §4.1 condition 3
+  out.push({ ..., identity: bothNamed(root.fm, fm) ? "name" : "role-only" });
+}
+
+// `from_name` is optional (msg.mjs:147-148), so absence must never read as a
+// value. Confirm sameness on names when both are present; otherwise fall back
+// to the always-present role. Unconfirmed sameness is not sameness.
+function bothNamed(a, b) { return Boolean(a.from_name && b.from_name); }
+function sameSender(a, b) {
+  return bothNamed(a, b) ? a.from_name === b.from_name : a.from === b.from;
+}
+```
+`root.id === id` is belt-and-braces given the explicit parent check above; keep it — a cycle is the one other way a message can resolve to itself.
+
+Note the `{ ..., identity: ... }` object literal above is illustrative — preserve every other existing field on the emitted row (id/parent/root_id/root_from/root_from_name/from/from_name/to/to_name/slug/created per the original §4.2 spec), just add `identity`.
 
 This function is pure and read-only. It adds no writes, no frontmatter fields,
 and no state, which is what the dispatch's constraint asked for.
@@ -552,14 +622,30 @@ merely that something was allowed:
     to make this test fail, so do NOT attempt to prove it fails by breaking one;
     that attempt is what surfaced §3.1.2 in the first place. Its value is as a
     regression guard on the combined outcome. Each underlying mechanism gets its
-    own falsifiable test: §3.1.1's sentinel/null mismatch's is item 8b below, and 8a's
-    outcome is what survives if either mechanism is later changed.
+    own falsifiable test: §3.1.2's drop is
+    item 8b and §3.1.1's sentinel mismatch is item 8c. 8a asserts the outcome
+    that must survive either mechanism being changed.
 8b. `latestRoster` drops unidentifiable records (unit-level, falsifiable). A
     peers.jsonl containing exactly one record with no `name` and
     `session_id: null` → `latestRoster(dir)` returns `[]`.
 
     This test pins §3.1.2's rule directly and WILL fail if `rosterKey`'s
     truthiness check is relaxed. It is the falsifiable half that 8a cannot be.
+8c. §3.1.1's sentinel/null mismatch, isolated (unit-level, falsifiable).
+    peers.jsonl containing exactly one record:
+      {"type":"peer","status":"up","name":"anything","session_id":null,
+       "role":"implementor"}
+    → `upRecordFor(dir, "__nosession__") === null`.
+
+    The record is NAMED, so `rosterKey` is truthy and `latestRoster` keeps it —
+    §3.1.2's drop is deliberately taken out of the picture, leaving the
+    sentinel/null mismatch as the only thing that can prevent a match. This
+    test WILL fail if `"__nosession__"` is ever coerced to null (or vice versa)
+    at any point on the resolution path.
+
+    8b and 8c together are the falsifiable halves of 8a: 8b pins the drop, 8c
+    pins the sentinel mismatch, 8a asserts the combined outcome that survives
+    either one being changed.
 
 Bug 1 — `listDownstreamDispatches`:
 
@@ -568,6 +654,46 @@ Bug 1 — `listDownstreamDispatches`:
     the ultra-advisor's.
 10. An Orchestrator's own follow-up request parented to its own earlier request
     (same `from_name` as the root) → **zero rows**.
+10a. Parentless request, NO `from_name` → zero rows.
+
+     OUTCOME assertion, not falsifiable against the current implementation.
+     Three independent mechanisms each guarantee it today: the explicit
+     `if (!fm.parent) continue`, the `root.id === id` guard, and — underneath
+     both — `rootOf` returning the message's OWN frontmatter object for a
+     parentless message, which makes any sender comparison reflexively true.
+     Do NOT attempt to prove this test fails by reverting the comparator; it
+     will not, and that attempt is what produced this correction.
+
+     Its value is as a guard on a FUTURE change: if `rootOf` is ever altered to
+     return a copy or a distinct object for a parentless message, reflexivity
+     disappears and the explicit condition-2 check becomes the only thing
+     excluding these rows. Item 10e pins that dependency directly.
+10b. Root unnamed, descendant named, different roles → exactly one row, with
+     `root_from_name: null`, `root_from` set to the root's role, and
+     `identity: "role-only"`. The live-verified case; asserts a null name is
+     displayed, not treated as an error.
+10c. Root unnamed AND descendant unnamed, different roles → exactly one row,
+     `identity: "role-only"`. **This is the false negative being closed** — the
+     pre-amendment implementation returns zero rows here. The regression test
+     that matters most for item A.
+10d. Root unnamed AND descendant unnamed, SAME role → zero rows. Pins §4.1's
+     known residual as a deliberate, documented limitation rather than an
+     untested edge. If this item ever starts failing, E-3 or a frontmatter
+     `session_id` has landed and §4.1's residual paragraph should be revisited.
+
+     Items 9 and 10 (existing) are unaffected in outcome but now pass for the
+     right reason (item 10's fixture stamps the same name on both sides, so the
+     name branch decides it, not an accidental null-equality).
+10e. `rootOf` self-reference contract (unit-level, falsifiable). For a message
+     with `parent: null`, `rootOf(byId, id)` returns an object whose `fm` is the
+     SAME REFERENCE as `byId.get(id)`.
+
+     Items 10a and the `root.id === id` guard both silently depend on this. It
+     is currently an unstated implementation detail; this test makes it a pinned
+     contract, and WILL fail if `rootOf` is changed to return a copy or a
+     reconstructed object. That change would be reasonable-looking and would
+     silently remove one of 10a's three guarantees, which is precisely why it
+     needs a test rather than a comment.
 11. A response file sharing an id with a request → zero rows from it.
 12. A message whose `parent` names a nonexistent id → zero rows, no throw.
 13. A hand-made cycle (A.parent=B, B.parent=A) → zero rows, no throw, and the
