@@ -94,6 +94,9 @@ if (!isSubagent(input)) {
         pid: process.ppid,
         ppid: process.ppid,
         cwd,
+        pane_id: process.env.HERDR_PANE_ID || null,
+        tab_id: process.env.HERDR_TAB_ID || null,
+        workspace_id: process.env.HERDR_WORKSPACE_ID || null,
       });
     } catch {
       // roster is best-effort; the notice still goes out

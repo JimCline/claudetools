@@ -123,6 +123,38 @@ export function validateMember(m) {
   return errors;
 }
 
+/**
+ * Validation errors for one TEAM member object (`team.json`'s `members[]`, spec 0025 §3); empty
+ * array = valid. Deliberately NOT `validateMember` — that one rejects any stored `name`, which is
+ * correct for roster-config members (derived at resolve time) but wrong here: the spawn path
+ * writes team members WITH a `name` (roster.mjs:768, roster.mjs:1620).
+ */
+export function validateTeamMember(m) {
+  if (!m || typeof m !== "object" || Array.isArray(m)) return [`member must be an object, got ${JSON.stringify(m)}`];
+  const errors = [];
+  if (!ROLES.includes(m.role)) errors.push(`role must be one of ${ROLES.join(", ")}, got ${JSON.stringify(m.role)}`);
+  // Spec 0025 §3 amendment: name addresses a pane, so it's load-bearing only for route "peer" —
+  // a subagent-routed member legitimately has no pane and no name (SKILL.md's hand-built recipe).
+  if (m.name === "") {
+    errors.push(`name must not be an empty string`);
+  } else if (m.route === "peer" && (typeof m.name !== "string" || !m.name)) {
+    errors.push(`name is required and must be a non-empty string when route is "peer", got ${JSON.stringify(m.name)}`);
+  } else if (m.route !== "peer" && m.name !== undefined && m.name !== null && typeof m.name !== "string") {
+    errors.push(`name must be a non-empty string or null, got ${JSON.stringify(m.name)}`);
+  }
+  if (!ROSTER_ROUTE_VALUES.includes(m.route)) errors.push(`route must be one of ${ROSTER_ROUTE_VALUES.join(", ")}, got ${JSON.stringify(m.route)}`);
+  if (m.transport_id !== undefined && m.transport_id !== null && typeof m.transport_id !== "string") {
+    errors.push(`transport_id must be a string or null, got ${JSON.stringify(m.transport_id)}`);
+  }
+  if (m.tab_id !== undefined && m.tab_id !== null && typeof m.tab_id !== "string") {
+    errors.push(`tab_id must be a string or null, got ${JSON.stringify(m.tab_id)}`);
+  }
+  if (m.workspace_id !== undefined && m.workspace_id !== null && typeof m.workspace_id !== "string") {
+    errors.push(`workspace_id must be a string or null, got ${JSON.stringify(m.workspace_id)}`);
+  }
+  return errors;
+}
+
 /** Validation errors for a whole `roster` block (`{route, members}`); empty array = valid. */
 export function validateRosterBlock(roster) {
   if (!roster || typeof roster !== "object" || Array.isArray(roster)) return ["roster must be an object"];

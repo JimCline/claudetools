@@ -334,7 +334,7 @@ check "19: unknown flag: no plan on stdout" '! echo "$OUT" | grep -q "\"close_to
 # ===========================================================================
 write_team
 BEFORE20=$(cat "$TEAM_FILE")
-run create --team named1 --commit --verified '[{"name":"named1-reviewer","role":"reviewer"}]' --transport terminal --roster-level repo --orchestrator-pid "$$"
+run create --team named1 --commit --verified '[{"name":"named1-reviewer","role":"reviewer","route":"peer"}]' --transport terminal --roster-level repo --orchestrator-pid "$$"
 check "20 setup: create --team named1 --commit succeeds" '[ "$RC" -eq 0 ]'
 run dismiss named1-reviewer --commit --team named1
 check "20: dismiss --team named1 --commit succeeds" '[ "$RC" -eq 0 ]'

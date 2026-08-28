@@ -49,9 +49,9 @@ OUT=$(bash "$PLUGIN/tests/test-roster.sh" 2>&1); RC=$?
 check "1: baseline invariance — test-roster.sh (no --team anywhere) passes unchanged" '[ "$RC" -eq 0 ]'
 
 # ==== 2 — two teams, isolated rosters from the shared peers.jsonl ====
-run_roster create --team alpha --commit --verified '[{"name":"alpha-reviewer","role":"reviewer"}]' --transport terminal --roster-level repo --orchestrator-pid "$$"
+run_roster create --team alpha --commit --verified '[{"name":"alpha-reviewer","role":"reviewer","route":"peer"}]' --transport terminal --roster-level repo --orchestrator-pid "$$"
 check "2a: create --team alpha --commit succeeds" '[ "$RC" -eq 0 ]'
-run_roster create --team beta --commit --verified '[{"name":"beta-reviewer","role":"reviewer"}]' --transport terminal --roster-level repo --orchestrator-pid "$$"
+run_roster create --team beta --commit --verified '[{"name":"beta-reviewer","role":"reviewer","route":"peer"}]' --transport terminal --roster-level repo --orchestrator-pid "$$"
 check "2b: create --team beta --commit succeeds" '[ "$RC" -eq 0 ]'
 append_peer '"status":"seen","role":"reviewer","name":"alpha-reviewer","team":"alpha"'
 append_peer '"status":"seen","role":"reviewer","name":"beta-reviewer","team":"beta"'
@@ -233,7 +233,7 @@ S14="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-multi-team-freshcreate-test.XX
 S14="$(cd "$S14" && pwd -P)"
 S14HOME="$S14/home"; S14HD="$S14/hier"; S14PROJ="$S14/myrepo"
 mkdir -p "$S14HOME/.claude" "$S14PROJ/.claude" "$S14HD"
-OUT=$(HOME="$S14HOME" AGENT_HIERARCHY_DIR="$S14HD" "$NODE_BIN" "$H/roster.mjs" create --commit --verified '[{"name":"myrepo-reviewer","role":"reviewer"}]' --transport terminal --roster-level repo --orchestrator-pid "$$" --cwd "$S14PROJ" </dev/null 2>&1); RC=$?
+OUT=$(HOME="$S14HOME" AGENT_HIERARCHY_DIR="$S14HD" "$NODE_BIN" "$H/roster.mjs" create --commit --verified '[{"name":"myrepo-reviewer","role":"reviewer","route":"peer"}]' --transport terminal --roster-level repo --orchestrator-pid "$$" --cwd "$S14PROJ" </dev/null 2>&1); RC=$?
 check "14a: bare create --commit in a fresh repo succeeds unprompted, no TTY/stdin answer" '[ "$RC" -eq 0 ]'
 check "14b: base team.json was written" '[ -f "$S14HD/team.json" ]'
 rm -rf "$S14"

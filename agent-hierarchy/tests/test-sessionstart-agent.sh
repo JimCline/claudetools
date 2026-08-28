@@ -18,6 +18,7 @@ check() {
 
 # The pane env var is case 1 of the branch and would shadow everything below.
 unset AGENT_HIERARCHY_PANE_DIR AGENT_HIERARCHY_PANE_ROLE AGENT_HIERARCHY_PANE_KEY
+unset HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID
 
 # A throwaway cwd with no project config, so the resolver sees a stable world.
 # HOME and the hierarchy runtime dir are redirected: the hook now writes roster
@@ -74,6 +75,17 @@ check "top-level --agent role: no role->model table" '! echo "$ROLE_OUT" | grep 
 check "top-level --agent role: no pane/relay talk" '! echo "$ROLE_OUT" | grep -qiE "pane|relay"'
 check "top-level --agent role: peer msg-protocol addendum" 'echo "$ROLE_OUT" | grep -q "hierarchy-msg"'
 check "top-level --agent role: up roster record written" 'grep -q "\"status\":\"up\"" "$HD/peers.jsonl" && grep -q "\"role\":\"architect\"" "$HD/peers.jsonl"'
+
+# ---- 4a (spec 0025 §14 item 19): herdr env vars unset -> pane_id/tab_id/workspace_id null, no throw
+check "top-level --agent role: pane_id/tab_id/workspace_id null when env unset" \
+  'grep -q "\"pane_id\":null" "$HD/peers.jsonl" && grep -q "\"tab_id\":null" "$HD/peers.jsonl" && grep -q "\"workspace_id\":null" "$HD/peers.jsonl"'
+
+# ---- 4b (spec 0025 §14 item 19): herdr env vars set -> written verbatim, no throw
+rm -f "$HD/peers.jsonl"
+PANE_OUT="$(echo "{\"session_id\":\"s4b\",\"cwd\":\"$TMP\",\"agent_type\":\"ah:architect\",\"source\":\"startup\",\"hook_event_name\":\"SessionStart\"}" | HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" HERDR_PANE_ID="wG:p1" HERDR_TAB_ID="wG:t1" HERDR_WORKSPACE_ID="wG" node "$H/sessionstart.mjs" 2>/dev/null)"
+check "top-level --agent role: herdr env set -> still emits the role notice, no throw" '[ -n "$PANE_OUT" ]'
+check "top-level --agent role: pane_id/tab_id/workspace_id written from env" \
+  'grep -q "\"pane_id\":\"wG:p1\"" "$HD/peers.jsonl" && grep -q "\"tab_id\":\"wG:t1\"" "$HD/peers.jsonl" && grep -q "\"workspace_id\":\"wG\"" "$HD/peers.jsonl"'
 
 # ---- 5 + 6a: a non-hierarchy --agent session and an ordinary session agree,
 #      and both match what the builders produce for this cwd. Unconfigured cwd

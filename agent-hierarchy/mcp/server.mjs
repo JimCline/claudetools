@@ -190,7 +190,7 @@ export const TOOLS = [
         orchestrator_pid: { type: "integer", description: "Override, with mode: commit. Defaults to the calling session's pid, derived automatically — supply only to override." },
         orchestrator_session_id: { type: "string", description: "Optional, with mode: commit." },
         transport: { type: "string", description: "With mode: commit." },
-        verified: { type: "string", description: "JSON array, passed to --verified verbatim. Required with mode: commit." },
+        verified: { type: "string", description: "JSON array, passed to --verified verbatim. Required with mode: commit. Either a JSON array of member objects (from the spawn/check-in cycle) or a JSON array of member-name strings (hydrated from the roster)." },
         partial: { type: "boolean", description: "With mode: commit." },
       },
       required: ["cwd", "mode"],
@@ -264,6 +264,7 @@ export const TOOLS = [
         cwd: cwdSchema,
         team: teamSchema,
         dry_run: { type: "boolean" },
+        bind: { type: "string" },
       },
       required: ["cwd"],
     },
@@ -595,6 +596,7 @@ export async function callTool(name, input) {
       const args = ["resync"];
       pushFlag(args, "dry-run", args_in.dry_run);
       pushArg(args, "team", args_in.team);
+      pushArg(args, "bind", args_in.bind);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }

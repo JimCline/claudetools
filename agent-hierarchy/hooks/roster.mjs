@@ -14,6 +14,9 @@
  *   roster.mjs remove  [level] [--level L] --member <NAME> [--cwd <path>]
  *   roster.mjs layout  [level] [--level L] [--layout <auto|columns|grid>] [--cwd <path>]
  *   roster.mjs create  [--plan] [--commit --verified <json> --transport <t>
+ *                       (--verified: JSON array of member objects from the spawn/check-in
+ *                       cycle, OR a JSON array of member-name strings hydrated from the
+ *                       --roster-level roster)
  *                       --roster-level <L> [--partial]
  *                       [--orchestrator-pid <pid>]] [--cwd <path>]
  *   roster.mjs create  --spawn --mode <auto|columns|grid> [--roster-level <L>] [--cwd <path>]
@@ -60,19 +63,19 @@
  * memory only (no write) — see docs/specs/0008-roster-relocate.md.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 
-import { CONFIG_VERSION, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, teamPrefix, teamPrefixInfo, validateTeamAlias } from "./lib-config.mjs";
+import { CONFIG_VERSION, findGitRoot, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, teamPrefix, teamPrefixInfo, validateTeamAlias } from "./lib-config.mjs";
 import { ageSecOf, latestRoster, newId, localIso, pidAlive, ROSTER_FRESH_SEC } from "./lib-hier.mjs";
-import { clearTeam, fingerprint, herdrOnPath, historyEntryIsActive, listTeamNames, normalizeMembers, readHistory, readTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamIsLive, teamPath, upsertHistory, validateMember, validateRosterBlock, writeTeam } from "./lib-roster.mjs";
+import { clearTeam, fingerprint, herdrOnPath, historyEntryIsActive, listTeamNames, normalizeMembers, readHistory, readTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamIsLive, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
 
 const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config"]);
 const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "close", "confirm", "plan-token", "allow-global", "cwd", "team"]);
 const DISMISS_FLAGS = new Set(["plan", "close", "commit", "confirm", "plan-token", "also-config", "level", "allow-global", "cwd", "team"]);
-const RESYNC_FLAGS = new Set(["dry-run", "cwd", "team"]);
+const RESYNC_FLAGS = new Set(["dry-run", "cwd", "team", "bind"]);
 const MOVE_FLAGS = new Set(["tab", "split", "new-tab", "workspace", "new-workspace", "dry-run", "allow-global", "cwd", "team"]);
 const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global", "team", "orchestrator-pid", "member"]);
 const ALIAS_FLAGS = new Set(["level", "set", "clear", "cwd", "team"]);
@@ -323,13 +326,29 @@ function herdrCall(args) {
  * Live herdr topology: agent name (if any) plus pane/tab/workspace ids for every live pane
  * (spec 0008 §5.2). `herdr agent list` is the preferred single-call source — field names
  * (`.result.agents[].{name?,pane_id,tab_id,workspace_id}`) verified against a live herdr this
- * session; `name` is absent for a pane hosting no `herdr agent start`-named agent.
+ * session; `name` is absent for a pane hosting no `herdr agent start`-named agent. `cwd` (spec
+ * 0025 §12.3) is read from either `cwd` or `foreground_cwd` — the true key is unconfirmed and
+ * this repo consumed neither before now, so both are read as cheap insurance.
  */
 function queryHerdrTopology() {
   const result = herdrCall(["agent", "list"]);
   const agents = result && result.result && Array.isArray(result.result.agents) ? result.result.agents : null;
   if (!agents) throw new Error("herdr agent list produced unexpected shape (missing .result.agents)");
-  return agents.map((a) => ({ name: a.name || null, pane_id: a.pane_id, tab_id: a.tab_id, workspace_id: a.workspace_id }));
+  return agents.map((a) => ({ name: a.name || null, pane_id: a.pane_id, tab_id: a.tab_id, workspace_id: a.workspace_id, cwd: a.cwd || a.foreground_cwd || null }));
+}
+
+/**
+ * Realpath-normalise a cwd for comparison (spec 0025 §12.3). No existing repo helper does this —
+ * a direct search found none despite the spec expecting one — so this is a new, local one; falls
+ * back to the raw path if it does not resolve (e.g. the directory is gone).
+ */
+function realCwd(p) {
+  if (!p) return p;
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
 }
 
 /** Spec 0008 §5.3: name first (durable across workspace moves), pane id second, else no match. */
@@ -346,13 +365,24 @@ function matchMemberToPane(member, topology) {
 }
 
 /**
- * Pure heal pass over `team.members` against live herdr topology (spec 0008 §5.1). No I/O beyond
- * the topology query — never writes team.json. Shared by `resync` (persists the result) and
- * `disband`'s bare/`--plan` path (does not persist) — one implementation, two callers.
- * Returns `{ members, counts, query_ok, query_error, warning? }`; on query failure `members` and
- * `counts` are null and the caller decides whether to fail() (resync/move) or degrade (disband).
+ * Pure heal pass over `team.members` against live herdr topology (spec 0008 §5.1, multi-pass
+ * matching added spec 0025 §12.3-§12.6). No I/O beyond the topology query and, when `dir`/`teamCwd`
+ * are supplied, reading peers.jsonl — never writes team.json. Shared by `resync` (persists the
+ * result, and the only caller that can supply `dir`/`teamCwd`/`selfPaneId`/`bind`) and `disband`'s
+ * bare/`--plan` path plus `move` (both call with no options object, so passes 2/3 and `--bind` are
+ * inert and behavior is byte-identical to before this amendment).
+ *
+ * Returns `{ members, counts, query_ok, query_error, warning?, bind_error? }`; on topology-query
+ * failure `members`/`counts` are null and the caller decides whether to fail() (resync/move) or
+ * degrade (disband). On a `--bind` validation failure `members`/`counts` are also null (no partial
+ * application) and `bind_error` names the problem — the caller must fail() before any write.
+ *
+ * Pass 1 (identity, via `matchMemberToPane`) is unchanged in behavior. Passes 2 (peers.jsonl exact
+ * match) and 3 (cwd narrowing) consider only members pass 1 left `not_found` with `transport_id ===
+ * null` — a member that HAD a transport_id and failed pass 1 stays `not_found` forever, since it
+ * moved or died and a weaker signal must not re-home it onto another session's pane.
  */
-function resyncMembers(team) {
+function resyncMembers(team, { dir = null, teamCwd = null, selfPaneId = null, bind = null } = {}) {
   let topology;
   try {
     topology = queryHerdrTopology();
@@ -361,9 +391,17 @@ function resyncMembers(team) {
   }
   const claimed = new Set();
   let duplicate = false;
-  const counts = { updated: 0, unchanged: 0, not_found: 0, skipped: 0 };
+  const counts = { updated: 0, unchanged: 0, not_found: 0, skipped: 0, malformed: 0, ambiguous: 0 };
+
+  // Pass 1 — identity. Behavior for every member matching here is unchanged from before §12.3.
   const members = team.members.map((m) => {
-    if (m.route !== "peer" || m.transport_id == null) {
+    // Spec 0025 §6: a malformed (non-object) entry must round-trip byte-identical, never `{ ...m }` —
+    // spreading a string produces exactly the char-indexed garbage that corrupted team.json in the wild.
+    if (!m || typeof m !== "object" || Array.isArray(m)) {
+      counts.malformed++;
+      return m;
+    }
+    if (m.route !== "peer") {
       counts.skipped++;
       return { ...m, status: "skipped" };
     }
@@ -388,12 +426,149 @@ function resyncMembers(team) {
     counts.unchanged++;
     return { ...healed, status: "unchanged" };
   });
+
+  // --bind (spec 0025 §12.5): validate every entry as a WHOLE before applying any of them, so a
+  // validation failure never partially writes. Claims its panes before pass 2, so an explicit
+  // instruction always outranks an inferred one.
+  if (bind) {
+    const topologyIds = new Set(topology.map((p) => p.pane_id));
+    const knownNames = members.filter((m) => m && typeof m === "object" && !Array.isArray(m)).map((m) => m.name).filter(Boolean);
+    // Seeded from `claimed` and grown as each entry validates, so a later entry in the SAME
+    // --bind object sees an earlier entry's claim — `claimed` alone only reflects pass 1.
+    const willClaim = new Set(claimed);
+    for (const [name, paneId] of Object.entries(bind)) {
+      const idx = members.findIndex((m) => m && typeof m === "object" && !Array.isArray(m) && m.name === name);
+      if (idx === -1) {
+        return { members: null, counts: null, query_ok: true, query_error: null, bind_error: `--bind: unknown member "${name}" (known: ${knownNames.join(", ") || "none"})` };
+      }
+      if (members[idx].route !== "peer") {
+        return { members: null, counts: null, query_ok: true, query_error: null, bind_error: `--bind: member "${name}" has route "${members[idx].route}", not "peer"` };
+      }
+      if (!topologyIds.has(paneId)) {
+        return { members: null, counts: null, query_ok: true, query_error: null, bind_error: `--bind: pane "${paneId}" (for "${name}") is not in live herdr topology` };
+      }
+      if (willClaim.has(paneId)) {
+        return { members: null, counts: null, query_ok: true, query_error: null, bind_error: `--bind: pane "${paneId}" (for "${name}") is already claimed` };
+      }
+      if (selfPaneId && paneId === selfPaneId) {
+        return { members: null, counts: null, query_ok: true, query_error: null, bind_error: `--bind: pane "${paneId}" (for "${name}") is the caller's own pane` };
+      }
+      willClaim.add(paneId);
+    }
+    for (const [name, paneId] of Object.entries(bind)) {
+      const idx = members.findIndex((m) => m.name === name);
+      const m = members[idx];
+      const topo = topology.find((p) => p.pane_id === paneId);
+      const from = { transport_id: m.transport_id, tab_id: m.tab_id, workspace_id: m.workspace_id };
+      const to = { transport_id: topo.pane_id, tab_id: topo.tab_id, workspace_id: topo.workspace_id };
+      const healed = { ...m, transport_id: to.transport_id, tab_id: to.tab_id, workspace_id: to.workspace_id };
+      delete healed.transport_stale;
+      claimed.add(paneId);
+      // Decrement whichever bucket the member actually held before the bind — a --bind target
+      // is not required to be `not_found` (spec 0025 §12.5 lists no such restriction), so it may
+      // already be `updated`/`unchanged` from pass 1.
+      if (m.status === "not_found") counts.not_found--;
+      else if (m.status === "unchanged") counts.unchanged--;
+      else if (m.status === "updated") counts.updated--;
+      counts.updated++;
+      members[idx] = { ...healed, status: "updated", from, to, match_by: "bind" };
+    }
+  }
+
+  // Recomputed fresh each time rather than snapshotted once — pass 2's binds must be visible to
+  // pass 3's gating (exactly one member still awaiting repair).
+  const awaitingRepair = () =>
+    members.map((m, i) => ({ m, i })).filter(({ m }) => m && typeof m === "object" && !Array.isArray(m) && m.status === "not_found" && m.transport_id == null);
+
+  // Pass 2 — peers.jsonl exact match (spec 0025 §12.4). Only runs when the caller can locate both
+  // the peer roster and the team's directory.
+  if (dir && teamCwd) {
+    const teamCwdReal = realCwd(teamCwd);
+    const liveRoster = latestRoster(dir);
+    const topologyIds = new Set(topology.map((p) => p.pane_id));
+    for (const { m, i } of awaitingRepair()) {
+      const candidates = liveRoster.filter(
+        (rec) =>
+          rec.status === "up" &&
+          pidAlive(rec.pid) &&
+          rec.pane_id != null &&
+          rec.cwd != null &&
+          realCwd(rec.cwd) === teamCwdReal &&
+          rec.role === m.role &&
+          topologyIds.has(rec.pane_id) &&
+          !claimed.has(rec.pane_id) &&
+          rec.pane_id !== selfPaneId
+      );
+      // Two members sharing a role and both awaiting repair each see both records here (>1), so
+      // both correctly fall through to pass 3 rather than being zipped — no separate role-grouping
+      // pass needed (spec 0025 §12.4, §14 item 12).
+      if (candidates.length !== 1) continue;
+      const rec = candidates[0];
+      const topo = topology.find((p) => p.pane_id === rec.pane_id);
+      claimed.add(rec.pane_id);
+      counts.not_found--;
+      counts.updated++;
+      const from = { transport_id: null, tab_id: m.tab_id, workspace_id: m.workspace_id };
+      const to = { transport_id: topo.pane_id, tab_id: topo.tab_id, workspace_id: topo.workspace_id };
+      const healed = { ...m, transport_id: to.transport_id, tab_id: to.tab_id, workspace_id: to.workspace_id };
+      delete healed.transport_stale;
+      members[i] = { ...healed, status: "updated", from, to, match_by: "peers_jsonl" };
+    }
+  }
+
+  // Pass 3 — cwd narrowing (spec 0025 §12.5-§12.6). Auto-bind only when the caller's own pane is
+  // known AND excluded, exactly one candidate pane remains, and exactly one member awaits repair —
+  // never zip N members onto N candidates by order (spec 0025 §14 item 9). Every other shape reports
+  // `ambiguous` with the candidate list rather than guessing.
+  if (teamCwd) {
+    const teamCwdReal = realCwd(teamCwd);
+    // Raw candidates (before self-pane exclusion) decide zero vs. many; `candidatePanes` (after
+    // exclusion) decides auto-bind eligibility and what gets reported. A single raw candidate that
+    // turns out to be the caller's own pane is NOT "zero" — a pane genuinely exists there, it is
+    // just unsafe to guess, which is the "ambiguous" case, not "not_found" (spec 0025 §12.5,
+    // Architect ruling 2026-08-27).
+    const rawCandidates = topology.filter((p) => p.cwd != null && realCwd(p.cwd) === teamCwdReal && !claimed.has(p.pane_id));
+    const candidatePanes = rawCandidates.filter((p) => p.pane_id !== selfPaneId);
+    const awaiting = awaitingRepair();
+    const autoBindEligible = selfPaneId != null && candidatePanes.length === 1 && awaiting.length === 1;
+    for (const { m, i } of awaiting) {
+      if (autoBindEligible) {
+        const topo = candidatePanes[0];
+        claimed.add(topo.pane_id);
+        counts.not_found--;
+        counts.updated++;
+        const from = { transport_id: null, tab_id: m.tab_id, workspace_id: m.workspace_id };
+        const to = { transport_id: topo.pane_id, tab_id: topo.tab_id, workspace_id: topo.workspace_id };
+        const healed = { ...m, transport_id: to.transport_id, tab_id: to.tab_id, workspace_id: to.workspace_id };
+        delete healed.transport_stale;
+        members[i] = { ...healed, status: "updated", from, to, match_by: "cwd" };
+      } else if (rawCandidates.length === 0) {
+        // Nothing ambiguous about a member with no candidate pane — it is simply not running,
+        // which is what `not_found` already means on the pass-1 path. `transport_stale` means
+        // "the id we had is now wrong"; a repair-case member never had one, so strip it.
+        const { transport_stale, ...clean } = m;
+        members[i] = { ...clean, status: "not_found" };
+      } else {
+        counts.not_found--;
+        counts.ambiguous++;
+        members[i] = {
+          ...m,
+          status: "ambiguous",
+          candidates: candidatePanes.map((p) => ({ pane_id: p.pane_id, tab_id: p.tab_id, workspace_id: p.workspace_id, cwd: p.cwd })),
+        };
+      }
+    }
+  }
+
   return { members, counts, query_ok: true, query_error: null, warning: duplicate ? "duplicate pane match" : undefined };
 }
 
 /** Strip resyncMembers()'s per-pass bookkeeping fields before a healed member array is persisted. */
 function stripResyncMeta(m) {
-  const { status, from, to, ...member } = m;
+  // A malformed (non-object) passthrough must stay byte-identical — object-destructuring a
+  // string here would recreate the same char-indexed corruption this guards against (spec 0025 §6).
+  if (!m || typeof m !== "object" || Array.isArray(m)) return m;
+  const { status, from, to, match_by, candidates, ...member } = m;
   return member;
 }
 
@@ -1079,8 +1254,40 @@ try {
         // eager check is the only place --from's validation happens on the commit path.
         if (typeof opts.from === "string") validateHistoryMembers(resolveHistoryEntry(dir));
         const verified = typeof opts.verified === "string" ? JSON.parse(opts.verified) : fail("--commit needs --verified <json array>");
+        if (!Array.isArray(verified)) fail(`create --commit: --verified must be a JSON array, got ${typeof verified}`);
         const transport = typeof opts.transport === "string" ? opts.transport : fail("--commit needs --transport");
         const rosterLevel = typeof opts["roster-level"] === "string" ? opts["roster-level"] : fail("--commit needs --roster-level");
+        // Spec 0025 §3/§4: --verified is either a JSON array of member objects (validated per
+        // validateTeamMember, §3) or member-name strings (hydrated from the --roster-level
+        // roster, §4). Mixed shapes, unknown names, or invalid entries fail before any write.
+        const allStrings = verified.length > 0 && verified.every((m) => typeof m === "string");
+        const allObjects = verified.every((m) => m && typeof m === "object" && !Array.isArray(m));
+        let members;
+        let needsResync = false;
+        if (allStrings) {
+          const rosterPath = rosterLevelPaths(cwd)[rosterLevel];
+          const rosterData = rosterPath ? readLevelFile(rosterPath) : null;
+          const rosterMembersRaw = rosterData && rosterData.roster && Array.isArray(rosterData.roster.members) ? rosterData.roster.members : [];
+          const rosterRoute = rosterData && rosterData.roster ? rosterData.roster.route : undefined;
+          const rosterMembers = rosterMemberNames(rosterMembersRaw, repoBasename);
+          members = verified.map((name) => {
+            const found = rosterMembers.find((m) => m.name === name);
+            if (!found) {
+              fail(`create --commit: --verified names no member ${JSON.stringify(name)} in the ${rosterLevel} roster — it defines: ${rosterMembers.map((m) => m.name).join(", ") || "(none)"}`);
+            }
+            return { role: found.role, name: found.name, model: found.model, effort: found.effort, route: found.route || rosterRoute, autoMode: found.autoMode, transport_id: null };
+          });
+          needsResync = true;
+        } else if (allObjects) {
+          const offenses = verified.map((m, i) => ({ i, errs: validateTeamMember(m) })).filter((o) => o.errs.length > 0);
+          if (offenses.length > 0) {
+            const detail = offenses.map((o) => `--verified entry ${o.i} is not a valid member: ${o.errs.join("; ")}`).join(". ");
+            fail(`create --commit: ${detail}. --verified takes either a JSON array of member objects (as produced by the spawn/check-in cycle) or a JSON array of member-name strings (hydrated from the roster at --roster-level).`);
+          }
+          members = verified;
+        } else {
+          fail("create --commit: --verified must be either all member objects or all member-name strings, not a mix");
+        }
         // roster.mjs runs as a transient Bash-tool subprocess, so process.ppid here is
         // that shell, not the orchestrator's own long-lived process — using it would make
         // the staleness sweep (sessionstart.mjs) tear the Team down almost immediately.
@@ -1104,13 +1311,16 @@ try {
           roster_level: rosterLevel,
           transport,
           orchestrator: { session_id: typeof opts.session === "string" ? opts.session : null, pid: orchestratorPid },
-          members: verified,
+          members,
           partial: opts.partial === true,
         };
         writeTeam(dir, team, teamArg);
         // A history-write failure must not fail `create` — the Team is already committed and
         // running; a missing history row is cosmetic (spec 0015 §4).
         const outObj = { committed: true, team };
+        // Spec 0025 §4: a hydrated commit has names but no panes yet — tell the caller the next
+        // step (`resync`) instead of letting `move` fail confusingly on "no pane to move".
+        if (needsResync) outObj.needs_resync = true;
         try {
           const normalized = normalizeMembers(team.members);
           const historyResult = upsertHistory(dir, {
@@ -1418,7 +1628,7 @@ try {
     case "resync": {
       for (const key of Object.keys(opts)) {
         if (key === "_") continue;
-        if (!RESYNC_FLAGS.has(key)) fail(`resync: unrecognized flag --${key} (use --dry-run, --team, or --cwd)`);
+        if (!RESYNC_FLAGS.has(key)) fail(`resync: unrecognized flag --${key} (use --dry-run, --team, --bind, or --cwd)`);
       }
       const dir = hierarchyDir(cwd);
       const team = readTeam(dir, teamArg);
@@ -1430,15 +1640,28 @@ try {
         out({ resynced: false, reason: transportNoop(team.transport) });
         break;
       }
-      const result = resyncMembers(team);
+      let bind = null;
+      if (opts.bind !== undefined) {
+        try {
+          bind = JSON.parse(opts.bind);
+        } catch {
+          fail("resync: --bind is not valid JSON");
+        }
+        if (!bind || typeof bind !== "object" || Array.isArray(bind)) fail("resync: --bind must be a JSON object mapping member name to pane id");
+      }
+      const result = resyncMembers(team, { dir, teamCwd: findGitRoot(cwd) || cwd, selfPaneId: process.env.HERDR_PANE_ID || null, bind });
       if (!result.query_ok) fail(result.query_error);
+      if (result.bind_error) fail(result.bind_error);
       const dryRun = opts["dry-run"] === true;
       const membersOut = result.members.map((m) => {
+        if (!m || typeof m !== "object" || Array.isArray(m)) return { status: "malformed", raw: m };
         const entry = { role: m.role, name: m.name, status: m.status };
         if (m.status === "updated") {
           entry.from = m.from;
           entry.to = m.to;
+          if (m.match_by) entry.match_by = m.match_by;
         }
+        if (m.status === "ambiguous") entry.candidates = m.candidates;
         return entry;
       });
       if (!dryRun) {
@@ -1447,6 +1670,11 @@ try {
       }
       const resyncOut = { resynced: true, dry_run: dryRun, transport: "herdr", members: membersOut, counts: result.counts };
       if (result.warning) resyncOut.warning = result.warning;
+      // Spec 0025 §6: a duplicate-pane warning must not silently drop this one, or vice versa —
+      // distinct key, since `warning` is an established string field callers already match on.
+      if (result.counts.malformed > 0) {
+        resyncOut.warning_malformed = `${result.counts.malformed} member(s) in team.json are malformed (not objects) and were left untouched — re-run \`create --commit\` with --verified as an array of member names to repair (spec 0025 §4)`;
+      }
       out(resyncOut);
       break;
     }
