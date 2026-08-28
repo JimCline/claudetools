@@ -722,6 +722,11 @@ async function handleRequest(msg) {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: { tools: {} },
       serverInfo: { name: "ah", version: PLUGIN_MANIFEST.version },
+      instructions:
+        "To show/inspect the agent-hierarchy roster, call roster_show directly " +
+        "(pass cwd) rather than shelling out — hand-rolled bash/cat reads only " +
+        "the local .claude/agent-hierarchy.json and misses worktree/main-checkout " +
+        "and global fallback resolution that roster_show already implements.",
     });
     return;
   }
