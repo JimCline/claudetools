@@ -6,6 +6,7 @@
  *               [--parent <id>] [--reason context|second-opinion|parallel]
  *               [--type request|response] [--id <id>] [--team <name>]
  *   msg.mjs list [--open|--closed|--all] [--to <role>] [--team <name>] [--json] [--plain]
+ *   msg.mjs downstream [--root-name <name>]
  *   msg.mjs index <path>
  *   msg.mjs sweep [--days 7]
  *   msg.mjs roster
@@ -38,6 +39,7 @@ import {
   fmtAge,
   hierarchyDir,
   indexAnchors,
+  listDownstreamDispatches,
   listExchanges,
   pidAlive,
   readMsgFile,
@@ -123,6 +125,11 @@ function itemTeamTag(item) {
   return (parsed && parsed.fm && parsed.fm.team) || null;
 }
 
+/** `<root_from_name> → <from_name> → <to>: <slug>  (id <id>, parent <parent>)` — spec 0026 §4.3. */
+function downstreamLine(d) {
+  return `${d.root_from_name} → ${d.from_name} → ${d.to}: ${d.slug}  (id ${d.id}, parent ${d.parent})`;
+}
+
 try {
   switch (cmd) {
     case "new": {
@@ -161,7 +168,26 @@ try {
         request: e.request.path,
         response: e.response ? e.response.path : null,
       }));
-      if (plain) out(rows.map((r) => `${r.id}  ${r.to}  ${r.slug}  ${r.age}  ${r.state}`).join("\n"), true);
+      // Spec 0026 §4.3: append a downstream section only when non-empty — no
+      // header when there is nothing to show, so output stays byte-identical
+      // to before this existed until a downstream dispatch actually exists.
+      const downstream = listDownstreamDispatches(dir);
+      if (plain) {
+        const rowsText = rows.map((r) => `${r.id}  ${r.to}  ${r.slug}  ${r.age}  ${r.state}`).join("\n");
+        const text = downstream.length
+          ? (rowsText ? `${rowsText}\n\ndownstream:\n` : "downstream:\n") + downstream.map(downstreamLine).join("\n")
+          : rowsText;
+        out(text, true);
+      } else {
+        out(downstream.length ? { exchanges: rows, downstream } : rows, false);
+      }
+      break;
+    }
+    case "downstream": {
+      const dir = hierarchyDir(cwd);
+      let rows = listDownstreamDispatches(dir);
+      if (typeof opts["root-name"] === "string") rows = rows.filter((r) => r.root_from_name === opts["root-name"]);
+      if (plain) out(rows.map(downstreamLine).join("\n"), true);
       else out(rows, false);
       break;
     }
@@ -233,7 +259,7 @@ try {
       break;
     }
     default:
-      fail(`usage: msg.mjs new|list|index|sweep|roster|route|global-scope [--cwd <path>] [--plain]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
+      fail(`usage: msg.mjs new|list|downstream|index|sweep|roster|route|global-scope [--cwd <path>] [--plain]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
   }
 } catch (err) {
   fail(err && err.message ? err.message : String(err));

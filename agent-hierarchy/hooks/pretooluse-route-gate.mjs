@@ -95,6 +95,7 @@ import {
   roleTier,
   roster,
   sessionModel,
+  upRecordFor,
 } from "./lib-hier.mjs";
 import { ON_MISSING_DEFAULT, resolveMemberTeam, teamMemberByName } from "./lib-roster.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
@@ -262,6 +263,18 @@ try {
   const repoBasename = teamPrefix(cwd, resolved.team);
   const dir = hierarchyDir(cwd);
 
+  // The route question is the Orchestrator's to answer. A session running as a
+  // dispatched subordinate role must resolve routing without a human in the loop
+  // — it is executing someone else's brief, and the human it would interrupt is
+  // not the one who chose to dispatch it. Spec 0026 §3.1.1: `sessionId` is the
+  // "__nosession__" sentinel when the hook input carries none, while
+  // sessionstart.mjs writes `session_id: null` for that same case — they must
+  // NOT be made to agree. The mismatch means `upRecordFor` finds no record,
+  // `selfRole` is null, and the session is treated as Orchestrator: the safe
+  // direction when self-identity can't be resolved.
+  const selfRole = (upRecordFor(dir, sessionId) || {}).role || null;
+  const isSubordinateSession = selfRole !== null && selfRole !== "orchestrator";
+
   let rosterCache = null;
   const getRoster = () => rosterCache || (rosterCache = roster(dir, resolved, repoBasename));
 
@@ -306,14 +319,17 @@ try {
   if (role && PEER_ELIGIBLE_ROLES.includes(role)) {
     const configRoute = resolved.route;
     const routeInfo = effectiveRoute(dir, resolved, sessionId);
-    if (routeInfo.source !== "session" && !configRoute) {
+    if (routeInfo.source !== "session" && !configRoute && !isSubordinateSession) {
       if (!hasGate(dir, (r) => r.type === "route-ask" && r.session_id === sessionId)) {
         appendGate(dir, { type: "route-ask", session_id: sessionId });
         decide("deny", askReason(getRoster(), sessionId));
       }
       // already asked this session and still unanswered: fall through, enforce the "peers" default
     }
-    const route = routeInfo.value;
+    // Spec 0026 §3.3: with the ask suppressed above, a subordinate session with no config route
+    // lands on prefer-peers — the only route with no interactive ask anywhere in it — rather than
+    // the "peers" default, which contains two.
+    const route = isSubordinateSession && routeInfo.source !== "session" && !configRoute ? "prefer-peers" : routeInfo.value;
     const alreadyDenied = hasGate(dir, (r) => r.type === "route-deny" && r.session_id === sessionId && r.role === role && r.route === route);
 
     if (route === "subagents") {
@@ -342,20 +358,29 @@ try {
             const member = rosterUsable ? resolved.roster.members.find((m) => m.role === role) : null;
             if (member) {
               const askedAuto = hasGate(dir, (r) => r.type === "on-missing-auto" && r.session_id === sessionId && r.role === role);
-              if (!askedAuto) {
+              if (!isSubordinateSession && !askedAuto) {
                 appendGate(dir, { type: "on-missing-auto", session_id: sessionId, role });
                 decide("deny", onMissingAutoReason(role, cwd));
               }
-              decide(null, null, `ah: no live ${ROLE_LABELS[role]} peer; its on-missing policy is "auto" and spawn-one was already recommended this session — spawning the subagent.`);
+              // Spec 0026 §3.4: a subordinate session never sees the ask above, so the narration
+              // here must not claim one was already shown this session.
+              const note = isSubordinateSession
+                ? `ah: no live ${ROLE_LABELS[role]} peer; its on-missing policy is "auto" — spawning the subagent (subordinate session, not asking).`
+                : `ah: no live ${ROLE_LABELS[role]} peer; its on-missing policy is "auto" and spawn-one was already recommended this session — spawning the subagent.`;
+              decide(null, null, note);
             }
             // !rosterUsable or no roster member for the role: degrade to "prompt" below (§4.3).
           }
           const askedFallback = hasGate(dir, (r) => r.type === "peer-fallback-ask" && r.session_id === sessionId && r.role === role);
-          if (!askedFallback) {
+          if (!isSubordinateSession && !askedFallback) {
             appendGate(dir, { type: "peer-fallback-ask", session_id: sessionId, role });
             decide("deny", peerFallbackAskReason(role, resolved, dir, sessionId, cwd));
           }
-          decide(null, null, `ah: route is peers this session, no live instance of ${ROLE_LABELS[role]} exists, and the user was already asked this session — spawning the subagent.`);
+          // Spec 0026 §3.4: same narration correction — a subordinate session was never asked.
+          const fallbackNote = isSubordinateSession
+            ? `ah: route is peers this session, no live instance of ${ROLE_LABELS[role]} exists — spawning the subagent (subordinate session, not asking).`
+            : `ah: route is peers this session, no live instance of ${ROLE_LABELS[role]} exists, and the user was already asked this session — spawning the subagent.`;
+          decide(null, null, fallbackNote);
         }
       } else if (route === "prefer-peers") {
         const free = live.filter((i) => !i.busy);

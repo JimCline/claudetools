@@ -283,6 +283,65 @@ export function listExchanges(dir) {
 }
 
 /**
+ * The root of `startId`'s parent chain within `byId` (requests only — a
+ * `parent` naming a response id never resolves here, so it can't be mistaken
+ * for a request), or `null` if the chain never reaches a `parent: null`
+ * message within 32 hops. A cycle, a missing parent, and an exhausted hop cap
+ * all take this same "no root" path (spec 0026 §4.2 amendment, 2026-08-28):
+ * guessing a root would make §4.1 condition 3's answer a guess too, and a
+ * downstream row is a positive claim about who dispatched what.
+ */
+function rootOf(byId, startId) {
+  const seen = new Set([startId]);
+  let id = startId;
+  let fm = byId.get(id);
+  for (let hops = 0; ; hops++) {
+    if (!fm.parent) return { id, fm };
+    if (hops >= 32 || !byId.has(fm.parent) || seen.has(fm.parent)) return null;
+    seen.add(fm.parent);
+    id = fm.parent;
+    fm = byId.get(id);
+  }
+}
+
+/**
+ * Downstream dispatches: requests created by a session other than the one that
+ * rooted their parent chain. Derived entirely from existing frontmatter — no
+ * new persisted field.
+ * Returns newest-first: { id, parent, root_id, root_from, root_from_name,
+ *                         from, from_name, to, to_name, slug, created }
+ */
+export function listDownstreamDispatches(dir) {
+  const byId = new Map();
+  for (const f of requestFiles(dir)) {
+    if (f.meta.type !== "request") continue;
+    const parsed = readMsgFile(f.path);
+    if (parsed && parsed.fm) byId.set(f.meta.id, parsed.fm);
+  }
+  const out = [];
+  for (const [id, fm] of byId) {
+    const root = rootOf(byId, id);
+    // A parentless message roots itself, so `root.fm === fm` and the name-equality
+    // check below excludes it too — no separate "has a parent" check needed.
+    if (!root || root.fm.from_name === fm.from_name) continue;
+    out.push({
+      id,
+      parent: fm.parent,
+      root_id: root.id,
+      root_from: root.fm.from,
+      root_from_name: root.fm.from_name,
+      from: fm.from,
+      from_name: fm.from_name,
+      to: fm.to,
+      to_name: fm.to_name,
+      slug: fm.slug,
+      created: fm.created,
+    });
+  }
+  return out.sort((a, b) => (a.id < b.id ? 1 : -1));
+}
+
+/**
  * Open exchanges, optionally filtered to one team. `team` omitted (not even
  * `null`) returns every open exchange, untagged and tagged alike; passing
  * `team` (a name, or `null` for the default team) keeps only exchanges whose

@@ -99,4 +99,6 @@ Your contract:
 Report back compactly: the ruling, the reasoning that actually drove it, the
 strongest rejected alternative, your confidence and what would overturn it, any
 follow-on work your ruling creates, and anything that must be decided by the
-user. Length is not the measure of depth — do not pad.
+user. Length is not the measure of depth — do not pad. If you dispatched a
+downstream peer while executing this brief, name it in your report: the role,
+the slug, and the msg id.

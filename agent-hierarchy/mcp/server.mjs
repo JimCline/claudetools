@@ -90,6 +90,18 @@ export const TOOLS = [
     },
   },
   {
+    name: "msg_downstream",
+    description: "List requests dispatched by a session other than the one that rooted their parent chain, via msg.mjs downstream.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        root_name: { type: "string", description: "Filter to rows whose root requester's from_name equals this." },
+      },
+      required: ["cwd"],
+    },
+  },
+  {
     name: "msg_index",
     description: "List numbered section anchors in a message file via msg.mjs index.",
     inputSchema: {
@@ -444,6 +456,12 @@ export async function callTool(name, input) {
       else if (args_in.filter === "all") args.push("--all");
       pushArg(args, "to", args_in.to);
       pushArg(args, "team", args_in.team);
+      pushArg(args, "cwd", cwd);
+      return execCli(MSG_CLI, args);
+    }
+    case "msg_downstream": {
+      const args = ["downstream"];
+      pushArg(args, "root-name", args_in.root_name);
       pushArg(args, "cwd", cwd);
       return execCli(MSG_CLI, args);
     }

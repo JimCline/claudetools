@@ -125,4 +125,5 @@ Your contract:
 Report back compactly: the spec path, the design in a few sentences, the key
 decisions and their rationale, open questions for the user, and any risk the
 Implementor should know about. Do not paste the spec into your report — the
-Orchestrator has the path.
+Orchestrator has the path. If you dispatched a downstream peer while executing
+this brief, name it in your report: the role, the slug, and the msg id.
