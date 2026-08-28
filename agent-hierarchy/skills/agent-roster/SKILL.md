@@ -155,14 +155,21 @@ configured at any level), say so and offer to run `init`.
    If the user picks the alias option, run
    `roster.mjs alias --level <L> --set <name>`.
 5. Run `roster.mjs init --level <L> --route <route> [--layout <mode>]`.
-6. **Walk the roles.** For each of `architect`, `implementor`, `reviewer`,
-   `task-runner`, `ultra-advisor` in turn, ask (AskUserQuestion, batched into
-   calls of up to 4 questions) whether to include it, and if so its model,
+6. **Pick the roles.** Ask a single AskUserQuestion call with
+   `multiSelect: true` — one question ("Which roles should this roster
+   include?"), one option per role with a one-line description:
+   `architect` (design authority — specs, never implements), `implementor`
+   (builds exactly what the spec says), `reviewer` (validates an
+   Implementor's diff against the spec), `task-runner` (cheap runner for
+   tests/builds/log-sifting/search), `ultra-advisor` (deepest-reasoning
+   escalation for hard or high-stakes calls). Then, for each role picked,
+   ask (AskUserQuestion, batched into calls of up to 4 questions) its model,
    effort, and auto-mode. Prefill/offer defaults from `ROLE_DEFAULTS` in
    `hooks/lib-config.mjs` — do not invent separate defaults here. For each
-   role the user includes, run `roster.mjs add --level <L> --role <role>
-   [--model ...] [--effort ...] [--auto-mode ...]`. A role can be added more
-   than once if the user wants multiple instances of it.
+   picked role, run `roster.mjs add --level <L> --role <role> [--model ...]
+   [--effort ...] [--auto-mode ...]`. A role can be added more than once —
+   if the user wants multiple instances of a role, that's a follow-up ask,
+   not part of the multiselect (its options must stay distinct picks).
 7. Run `show` and echo the result.
 
 Whole-level replace is a *read* rule; `init` itself only ever writes the one
