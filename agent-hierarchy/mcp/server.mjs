@@ -68,6 +68,7 @@ export const TOOLS = [
         from_name: { type: "string", description: "Sender instance/session name." },
         parent: { type: "string", description: "Parent message id, to link a follow-up." },
         reason: { type: "string", description: "context|second-opinion|parallel" },
+        eta: { type: "string", enum: ["small", "medium", "large"], description: "Expected turnaround: small=5min, medium=10min, large=20min. Only meaningful on a request." },
         type: { type: "string", description: "request|response (default request)." },
         id: { type: "string", description: "Explicit message id — set when writing a response to match its request." },
         team: teamSchema,
@@ -444,6 +445,7 @@ export async function callTool(name, input) {
       pushArg(args, "from-name", args_in.from_name);
       pushArg(args, "parent", args_in.parent);
       pushArg(args, "reason", args_in.reason);
+      pushArg(args, "eta", args_in.eta);
       pushArg(args, "type", args_in.type);
       pushArg(args, "id", args_in.id);
       pushArg(args, "team", args_in.team);

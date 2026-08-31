@@ -15,7 +15,7 @@
  * and `msgs:"off"` in agent-hierarchy.json. Any internal error allows.
  */
 
-import { hierarchyRoleOf, isSubagent, MSG_CLI, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolvedPeerTargets, teamPrefix } from "./lib-config.mjs";
+import { hierarchyRoleOf, isSubagent, MSG_CLI, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolveHierarchyRole, resolvedPeerTargets, teamPrefix } from "./lib-config.mjs";
 import { hierarchyDir, validateRequestToken } from "./lib-hier.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
 
@@ -45,6 +45,15 @@ function denyReason(role, why) {
 try {
   const input = await readHookInput();
   if (isSubagent(input)) decide(null);
+
+  // Spec 0028 §3.2 primary fix: this gate is Orchestrator-only. A caller
+  // positively attributed (§3.7) as a subordinate hierarchy role is not the
+  // Orchestrator, so the gate must not fire for it — role agents never spawn
+  // other gated roles in the first place (see agents/orchestrator.md).
+  {
+    const { role: callerRole, direct: callerDirect } = resolveHierarchyRole(input);
+    if (callerDirect && callerRole) decide(null);
+  }
 
   const toolName = input.tool_name;
   const isDispatch = toolName === "Agent" || toolName === "Task";

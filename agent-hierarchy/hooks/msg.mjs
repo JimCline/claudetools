@@ -4,7 +4,7 @@
  *
  *   msg.mjs new --to <role> --from <role> --slug <s> [--to-name <n>] [--from-name <n>]
  *               [--parent <id>] [--reason context|second-opinion|parallel]
- *               [--type request|response] [--id <id>] [--team <name>]
+ *               [--eta small|medium|large] [--type request|response] [--id <id>] [--team <name>]
  *   msg.mjs list [--open|--closed|--all] [--to <role>] [--team <name>] [--json] [--plain]
  *   msg.mjs downstream [--root-name <name>]
  *   msg.mjs index <path>
@@ -145,6 +145,7 @@ try {
         id: typeof opts.id === "string" ? opts.id : undefined,
         parent: typeof opts.parent === "string" ? opts.parent : null,
         reason: typeof opts.reason === "string" ? opts.reason : null,
+        eta: typeof opts.eta === "string" ? opts.eta : null,
         toName: typeof opts["to-name"] === "string" ? opts["to-name"] : null,
         fromName: typeof opts["from-name"] === "string" ? opts["from-name"] : null,
         team: teamArg,

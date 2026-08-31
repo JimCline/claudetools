@@ -84,7 +84,6 @@ try {
   if (!resolved.enabled || resolved.msgs === "off") allow();
 
   const dir = hierarchyDir(cwd);
-  if (hasGate(dir, (r) => r.type === "nudge" && r.agent_id === agentId)) allow();
 
   let agentTranscript = typeof input.agent_transcript_path === "string" ? input.agent_transcript_path : "";
   if (!agentTranscript && typeof input.transcript_path === "string" && typeof input.session_id === "string") {
@@ -98,6 +97,16 @@ try {
 
   const last = typeof input.last_assistant_message === "string" ? input.last_assistant_message : scanned.lastAssistant;
   if (hasResponseToken(last, meta.id)) allow();
+
+  // Spec 0028 §4.3 (r4, finding 2): the one-shot-per-agent_id bound stays —
+  // a second block here would be unbounded, not a fix. What was missing was
+  // the RECORD: this second stop is a silent give-up (still no response,
+  // already nudged once), so it gets written to the record instead of just
+  // allowed through unmarked.
+  if (hasGate(dir, (r) => r.type === "nudge" && r.agent_id === agentId)) {
+    appendGate(dir, { type: "nudge-unmet", agent_id: agentId, id: meta.id });
+    allow();
+  }
 
   const req = readMsgFile(requestPath);
   const from = req && req.fm && req.fm.from ? req.fm.from : "orchestrator";

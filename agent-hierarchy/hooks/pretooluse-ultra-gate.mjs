@@ -30,7 +30,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { hierarchyDir, peerName, readHookInput, resolveConfig, resolvedPeerTargets, teamPrefix } from "./lib-config.mjs";
+import { hierarchyDir, peerName, readHookInput, resolveConfig, resolveHierarchyRole, resolvedPeerTargets, teamPrefix } from "./lib-config.mjs";
 import { getDecision, isGatedPeerTarget, isGatedSubagentType, NO_SESSION_KEY, normalizeSessionId } from "./lib-gate.mjs";
 import { listTeamNames } from "./lib-roster.mjs";
 
@@ -97,6 +97,15 @@ const toolName = input.tool_name;
 const isDispatch = toolName === "Agent" || toolName === "Task";
 const isSend = toolName === "SendMessage";
 if (!isDispatch && !isSend) decide(null);
+
+// Spec 0028 §3.2 primary fix: this gate is Orchestrator-only. A caller
+// positively attributed (§3.7) as a subordinate hierarchy role is not the
+// Orchestrator, so the gate must not fire for it — an unidentified caller
+// still falls through to the checks below, same as today.
+{
+  const { role: callerRole, direct: callerDirect } = resolveHierarchyRole(input);
+  if (callerDirect && callerRole) decide(null);
+}
 
 const toolInput = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
 const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();

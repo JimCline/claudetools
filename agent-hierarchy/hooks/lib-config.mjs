@@ -36,6 +36,8 @@ import { fileURLToPath } from "node:url";
 // way — a top-level use on either side would risk the top-level-await deadlock class documented
 // in lib-roster.mjs's header.
 import { listTeamNames, readTeam } from "./lib-roster.mjs";
+import { normalizeSessionId } from "./lib-gate.mjs";
+import { readSessionRole } from "./lib-session-role.mjs";
 
 /** Absolute path to the escalation-gate CLI, resolved from this file so it survives wherever the plugin is installed. */
 const GATE_CLI = join(dirname(fileURLToPath(import.meta.url)), "gate.mjs");
@@ -248,6 +250,25 @@ export function isTopLevelAgentSession(input) {
 export function hierarchyRoleOf(agentType) {
   if (typeof agentType !== "string" || !agentType) return null;
   return ROLES.find((role) => agentType === role || agentType.endsWith(`:${role}`)) || null;
+}
+
+/**
+ * Resolve the calling session's hierarchy role — spec 0028 §3.3/§3.7.
+ * Returns `{ role, direct }`: `direct: true` only when the payload itself
+ * identifies the caller (`agent_type`); otherwise falls back to the
+ * session-id-keyed persisted map, with `direct: false`.
+ *
+ * A subagent shares its parent's session_id, so the persisted half answers
+ * "what role is this session", not "what role is this caller" — a caller
+ * that enforces policy MUST check `direct` and act only when it is true. Do
+ * not collapse this to a bare role string; hiding `direct` invites the exact
+ * defect §3.7 describes.
+ */
+export function resolveHierarchyRole(input) {
+  const direct = input && input.agent_type ? hierarchyRoleOf(input.agent_type) : null;
+  if (direct) return { role: direct, direct: true };
+  const persisted = readSessionRole(normalizeSessionId(input && input.session_id));
+  return { role: persisted, direct: false };
 }
 
 export function userConfigPath() {

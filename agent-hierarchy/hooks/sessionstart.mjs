@@ -50,6 +50,7 @@ import {
 } from "./lib-config.mjs";
 import { appendRosterRecord, buildStateBlock, cacheSessionModel, effectiveRoute, ensureHierarchyDir, sessionModel, sweep, SWEEP_DAYS } from "./lib-hier.mjs";
 import { clearTeam, herdrOnPath, readTeam, teamIsLive } from "./lib-roster.mjs";
+import { writeSessionRole } from "./lib-session-role.mjs";
 
 /** Feature A (spec 0010 §2.5): advisory only, never blocks. */
 function herdrWarning() {
@@ -85,6 +86,13 @@ if (!isSubagent(input)) {
 
   if (role) {
     context = buildRoleSessionNotice(role, input.agent_type);
+    // Spec 0028 §3.3: the persisted half of resolveHierarchyRole's fallback —
+    // non-enforcing (§3.7), best-effort like the roster record beside it.
+    try {
+      writeSessionRole(input.session_id || null, role);
+    } catch {
+      // best-effort — the role notice still goes out
+    }
     try {
       const dir = ensureHierarchyDir(cwd);
       appendRosterRecord(dir, {

@@ -93,6 +93,9 @@ REQ2=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).path)' "$OUT")
 ID2=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).id)' "$OUT")
 msg new --type response --id "$ID2"
 RESP2=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).path)' "$OUT")
+# r4's hasResponseToken requires the file itself to carry authored content,
+# not just an existing skeleton pointed to by the pointer text — write some.
+printf '\n- done: PASS\n' >> "$RESP2"
 T2="$PROJDIR/sess1/subagents/agent-a2.jsonl"
 write_transcript "$T2" "[hierarchy-msg $REQ2]" "[hierarchy-msg $RESP2]
 - done: PASS"
@@ -167,6 +170,8 @@ check "peer stop nudge: names msg.mjs new --type response --id <id>" 'echo "$OUT
 check "peer stop nudge: says reply must carry [hierarchy-msg <response path>]" 'echo "$OUT" | grep -q "must carry \[hierarchy-msg <response path>\]"'
 msg new --type response --id "$ID"
 RESP=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).path)' "$OUT")
+# Same as RESP2 above — the file itself must carry authored content under r4.
+printf '\n- done: 3 files\n' >> "$RESP"
 ptu peer1 "uds:/tmp/cc-socks/1.sock" "[hierarchy-msg $RESP]
 - done: 3 files"
 check "peer resolve: matching response pointer + file present -> resolved" '[ "$(last_status peer1)" = resolved ]'

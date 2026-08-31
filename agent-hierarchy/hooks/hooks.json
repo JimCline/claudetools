@@ -38,6 +38,15 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-disband-close-gate.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "AskUserQuestion|ExitPlanMode|SendUserFile|PushNotification",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-conduit-gate.mjs\""
+          }
+        ]
       }
     ],
     "SubagentStop": [
@@ -93,6 +102,10 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-peer-nudge.mjs\""
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-orchestrator-liveness.mjs\""
           }
         ]
       }

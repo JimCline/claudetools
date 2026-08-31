@@ -50,12 +50,22 @@ function block(reason) {
   process.exit(0);
 }
 
-function owedLine(rec) {
-  const base = `you were tasked as a peer (task ${rec.task}) by ${rec.from_name} and have not sent your report: SendMessage it now with to:"${rec.from}"`;
-  if (!rec.msg) return base;
-  const meta = parseMsgFilename(rec.msg);
-  const id = meta ? meta.id : "<id>";
-  return `${base} — your reply must carry [hierarchy-msg <response path>] — write it with node "${MSG_CLI}" new --type response --id ${id}`;
+/**
+ * Spec 0028 §4.3: escalate across the two attempts — the first is a reminder,
+ * the second (`isFinal`, `nudges` has reached `MAX_NUDGES`) states plainly
+ * that stopping now will be recorded as an unmet obligation. The terminal
+ * `status: "waived"` record write (below) already existed pre-0028; this text
+ * is the other half of Hole 2 — the give-up was silent before, now it isn't.
+ */
+function owedLine(rec, isFinal) {
+  let line = `you were tasked as a peer (task ${rec.task}) by ${rec.from_name} and have not sent your report: SendMessage it now with to:"${rec.from}"`;
+  if (rec.msg) {
+    const meta = parseMsgFilename(rec.msg);
+    const id = meta ? meta.id : "<id>";
+    line += ` — your reply must carry [hierarchy-msg <response path>] — write it with node "${MSG_CLI}" new --type response --id ${id}`;
+  }
+  if (isFinal) line += " THIS IS THE LAST ATTEMPT — stopping without sending your report now will be recorded as an unmet obligation.";
+  return line;
 }
 
 function disarmIfArmed(sessionId) {
@@ -102,8 +112,8 @@ try {
 
   const reason =
     toNudge.length === 1
-      ? owedLine(toNudge[0])
-      : ["You have more than one unsent peer report:", ...toNudge.map((rec) => `- ${owedLine(rec)}`)].join("\n");
+      ? owedLine(toNudge[0], toNudge[0].nudges >= MAX_NUDGES)
+      : ["You have more than one unsent peer report:", ...toNudge.map((rec) => `- ${owedLine(rec, rec.nudges >= MAX_NUDGES)}`)].join("\n");
   block(reason);
 } catch {
   // fail open: never trap a session over a tracking failure

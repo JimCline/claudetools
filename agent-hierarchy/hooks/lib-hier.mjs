@@ -28,6 +28,8 @@ export { hierarchyDir };
 export const MSG_ROLES = ["orchestrator", ...ROLES];
 export const MSG_TYPES = ["request", "response"];
 export const REASONS = ["context", "second-opinion", "parallel"];
+/** Complexity scaling for a peer dispatch (spec 0028 §5.6): the liveness check-in threshold. Absent/unrecognised treated as "small". */
+export const ETAS = ["small", "medium", "large"];
 export const REQUEST_KEYS = ["tldr", "goal", "context", "constraints", "files", "acceptance", "want_back"];
 export const RESPONSE_KEYS = ["tldr", "status", "changes", "evidence", "gaps", "open_questions"];
 export const SLUG_RE = /^[a-z0-9-]{1,32}$/;
@@ -181,7 +183,7 @@ function skeletonBody(keys) {
 }
 
 function frontmatterText(fields) {
-  const order = ["id", "type", "to", "from", "slug", "parent", "reason", "to_name", "from_name", "team", "created"];
+  const order = ["id", "type", "to", "from", "slug", "parent", "reason", "eta", "to_name", "from_name", "team", "created"];
   const lines = ["---"];
   for (const key of order) lines.push(`${key}: ${fields[key] === null || fields[key] === undefined ? "null" : fields[key]}`);
   lines.push("---", "");
@@ -226,6 +228,9 @@ export function createMessage(dir, opts) {
     if (opts.reason !== undefined && opts.reason !== null && !REASONS.includes(opts.reason)) {
       throw new Error(`--reason must be one of ${REASONS.join("|")}, got ${JSON.stringify(opts.reason)}`);
     }
+    if (opts.eta !== undefined && opts.eta !== null && !ETAS.includes(opts.eta)) {
+      throw new Error(`--eta must be one of ${ETAS.join("|")}, got ${JSON.stringify(opts.eta)}`);
+    }
     const id = opts.id || newId(now);
     if (!ID_RE.test(id)) throw new Error(`--id must look like YYYYMMDD-HHMMSS-xxxx, got ${JSON.stringify(id)}`);
     if (findByIdAndType(dir, id, "request")) throw new Error(`request ${id} already exists`);
@@ -237,6 +242,7 @@ export function createMessage(dir, opts) {
       slug,
       parent: opts.parent || null,
       reason: opts.reason || null,
+      eta: opts.eta || null,
       to_name: opts.toName || null,
       from_name: opts.fromName || null,
       team: opts.team || null,
@@ -257,6 +263,7 @@ export function createMessage(dir, opts) {
       slug: req.meta.slug,
       parent: rf.parent || null,
       reason: null,
+      eta: null,
       to_name: opts.toName || rf.from_name || null,
       from_name: opts.fromName || rf.to_name || null,
       team: opts.team || rf.team || null,
@@ -429,15 +436,64 @@ export function validateRequestToken(text, dir, expectedTo) {
   return { ok: true, path, fm: parsed.fm };
 }
 
-/** True when text carries `[hierarchy-msg <path>]` naming an existing `--response.md`, optionally for one id. */
+/** The text after the closing frontmatter fence, trimmed; the whole text, trimmed, if there is no fence. */
+function bodyAfterFrontmatter(text) {
+  const fm = parseFrontmatter(text);
+  if (!fm) return text.trim();
+  return text.split("\n").slice(fm.end).join("\n").trim();
+}
+
+/** A `## [n] <key>` section heading — structurally generated, never authored. */
+const SKELETON_HEADING_RE = /^##\s*\[\d+\]\s*\S+/;
+
+/** A bare placeholder bullet — `- none`, or `- [n] <key>:` with nothing typed after the colon. */
+const SKELETON_BULLET_RE = /^-\s*(none|\[\d+\]\s*[^:]+:\s*)$/;
+
+/**
+ * True when at least one line of `body` is not one of the structurally
+ * generated shapes msg.mjs writes into a fresh skeleton (blank, a section
+ * heading, or a bare placeholder bullet) — i.e. the author actually typed
+ * something. Spec 0028 §4.2 (r4): rejected as the fix a byte-identity check
+ * against the skeleton body, since that breaks silently on any wording change
+ * to the skeleton; this asks "did the author write anything" instead, which
+ * survives that kind of edit. One authored line anywhere is enough — a
+ * response filled in one section and left the rest skeleton still counts.
+ */
+function hasAuthoredContent(body) {
+  for (const raw of body.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (SKELETON_HEADING_RE.test(line)) continue;
+    if (SKELETON_BULLET_RE.test(line)) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * True when text carries `[hierarchy-msg <path>]` naming an existing
+ * `--response.md` (optionally for one id) whose body — beyond its
+ * frontmatter — the author actually wrote something into. Spec 0028 §4.2:
+ * the token check alone let a role satisfy its report-back obligation by
+ * emitting the pointer to a file that was never actually filled in (a bare
+ * frontmatter stub, e.g. from a tool that can create the file but cannot
+ * write its body) — existence is not completion, and (r4) neither is an
+ * untouched skeleton body.
+ */
 export function hasResponseToken(text, id) {
   const path = extractMsgToken(text);
   if (!path || !path.endsWith("--response.md") || !existsSync(path)) return false;
   if (id) {
     const meta = parseMsgFilename(path);
-    return !!meta && meta.id === id;
+    if (!meta || meta.id !== id) return false;
   }
-  return true;
+  let body;
+  try {
+    body = readFileSync(path, "utf8");
+  } catch {
+    return false;
+  }
+  return hasAuthoredContent(bodyAfterFrontmatter(body));
 }
 
 // ---------------------------------------------------------------- gates.jsonl
