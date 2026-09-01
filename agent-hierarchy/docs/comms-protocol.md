@@ -1,5 +1,11 @@
 # agent-hierarchy 0.29.0 — file-based messages, peer roster, tier rule
 
+> **Status:** versioned spec, not living documentation. Describes plugin
+> **0.29.0** behaviour; the plugin is now **0.56.0** — later specs (e.g.
+> [0026](./specs/0026-downstream-dispatch-visibility-and-orchestrator-only-route-gate.md),
+> [0028](./specs/0028-orchestrator-conduit-and-liveness.md)) changed gates
+> this document describes. Accuracy against current behaviour is unverified.
+
 Spec. Three rules, one version. Baseline: `49bb157` (0.28.0). Bump plugin.json AND
 root marketplace.json to 0.29.0.
 

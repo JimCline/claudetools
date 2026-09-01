@@ -18,6 +18,13 @@ job.
 lanes, and tiers on one static page
 ([rendered](https://htmlpreview.github.io/?https://github.com/JimCline/claudetools/blob/main/agent-hierarchy/docs/hierarchy.html)).
 
+## Where to read next
+
+- **[Getting started](./docs/getting-started.md)** — zero to a running team, task-ordered.
+- **[MCP tools](./docs/mcp-tools.md)** — the `mcp__ah__*` tool surface and the `msg.mjs` CLI.
+- **[Troubleshooting](./docs/troubleshooting.md)** — symptom → cause → fix.
+- **[Comms protocol](./docs/comms-protocol.md)** — message-file wire format and gates, for contributors.
+
 Run `/hierarchy init` once — user-scoped (`~/.claude/agent-hierarchy.json`) or
 committed per-repo (`<repo>/.claude/agent-hierarchy.json`, project wins) — and
 a `SessionStart` hook injects the resolved role→model table plus the
@@ -317,7 +324,8 @@ Cross-repo limitation: peers in different repos resolve different hierarchy
 dirs and therefore share no roster or messages; point `AGENT_HIERARCHY_DIR`
 at the same directory in both sessions if you need them joined.
 
-**Verified payloads** (Claude Code v2.1.233, probed during the 0.29.0 build):
+**Verified payloads** (verified against Claude Code v2.1.233, probed during
+the 0.29.0 build — not re-verified since):
 SessionStart and PreToolUse hook input carries no `model` field and no
 `CLAUDE_MODEL` env var, so the tier gate is inert unless the model is
 supplied on the dispatch, via env, or from a cached record — the directive
@@ -329,12 +337,24 @@ process, so roster liveness checks that pid. SessionEnd payloads carry no
 `agent_type`, so a peer's `down` record is matched by `session_id` against
 its earlier `up`.
 
+## Internals (for contributors)
+
+Message-file wire format, dispatch/response gates, peer roster, and routing
+preference are documented in
+[docs/comms-protocol.md](./docs/comms-protocol.md) — not restated here.
+Terminology (Roster, Team, Route, Auto-mode, Check-in registry, …) is in
+[CONTEXT.md](./CONTEXT.md). Per-feature design rationale lives in its spec
+under [docs/specs/](./docs/specs/); high-value entry points:
+[0001](./docs/specs/0001-agent-roster.md) (roster),
+[0013](./docs/specs/0013-agent-hierarchy-mcp-server.md) (MCP server),
+[0026](./docs/specs/0026-downstream-dispatch-visibility-and-orchestrator-only-route-gate.md) (route gate),
+[0028](./docs/specs/0028-orchestrator-conduit-and-liveness.md) (conduit/liveness).
+
 ## Commands
 
 ```
 /hierarchy init                     # wizard: scope, flow mode, model per role
 /hierarchy status                   # resolved table + where each value came from
-/hierarchy set <role> <model>       # one role (validated per-role)
 /hierarchy flow [auto|confirm]      # who advances the chain
 /hierarchy gate [status|session|each|off|reset]   # Ultra-Advisor escalation gate (this session)
 /hierarchy usage [day|week|month]   # per-role token report
@@ -343,7 +363,13 @@ its earlier `up`.
 /hierarchy peers                    # live peer roster
 /hierarchy sweep [days]             # archive old closed exchanges
 /hierarchy on | off                 # toggle without losing the config
+/agent-roster [show|init|add|edit|remove|layout|create [auto|manual]|disband]   # define, spawn, or disband the roster
 ```
+
+Model/roster assignment (which roles exist, their model/effort/route) is an
+`/agent-roster` concern, not `/hierarchy`'s — `/hierarchy set <role> <model>`
+was superseded by `/agent-roster edit --member <name> --model <model>`. See
+[docs/getting-started.md](./docs/getting-started.md).
 
 Model validity is per-role: `haiku` is never valid for a reasoning role, and
 the Ultra-Advisor is top-tier only (`fable` or `opus` — inheriting a lesser
@@ -352,32 +378,17 @@ session model would make the tier decorative). `inherit` means "omit the
 
 ## Layout
 
+A hand-maintained per-file list here drifts the moment a hook is added — the
+directory itself is the file list. At a glance:
+
 ```
 agents/          one contract per role (frontmatter pins model + tool denies)
-hooks/
-  sessionstart.mjs               injects the role notice or the directive
-  pretooluse-ultra-gate.mjs      gates Ultra-Advisor escalation on the user
-  subagentstop-usage.mjs         zero-token usage collector
-  usage-report.mjs               standalone reporter
-  gate.mjs                       escalation-gate CLI (set/status/reset)
-  lib-config.mjs                 config resolution + directive text (run directly for status)
-  lib-gate.mjs                   session-scoped gate state
-  lib-peer.mjs                   peer report-back state (sentinel/wrapper parse, JSONL)
-  userpromptsubmit-peer-tracking.mjs   records a peer-brief obligation
-  posttooluse-peer-resolve.mjs         resolves it on a matching SendMessage reply
-  stop-peer-nudge.mjs                  nudges (blocks) until replied or waived
-  lib-hier.mjs                   runtime dir, message files, roster, tier (0.29.0)
-  msg.mjs                        message-file CLI (new/list/index/sweep/roster)
-  pretooluse-msg-gate.mjs        role dispatches must carry a request pointer
-  pretooluse-route-gate.mjs      roster gate (live peer first) + tier gate
-  subagentstop-msg-nudge.mjs     role subagents must return a response pointer
-  posttooluse-roster.mjs         seen/briefed roster records from ListAgents/SendMessage
-  sessionend-roster.mjs          peer session down records
-commands/hierarchy.md        the /hierarchy command
-docs/hierarchy.html          static visual map of roles, lanes, and flow
-docs/retired/                 durable-agents design specs and incident report — feature removed
-tests/                        (HOME-redirected; real config untouched)
-  test-peer-reportback.sh     peer report-back contract: sentinel/wrapper parse, tracking, resolve, nudge/waive
+hooks/           hooks and the libraries they share
+mcp/             the MCP server — see docs/mcp-tools.md
+commands/        the /hierarchy and /agent-roster commands
+skills/          the agent-roster skill
+docs/specs/      per-feature design records
+tests/           HOME-redirected; real config untouched
 ```
 
 ## License
