@@ -56,6 +56,7 @@ try {
           from_name: rec.from_name,
           reply_to: rec.reply_to,
           task: rec.task,
+          armed_by: rec.armed_by,
           ...(msg ? { msg } : {}),
           ts: new Date().toISOString(),
           status: "pending",

@@ -26,6 +26,10 @@
           },
           {
             "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-sendmessage-response.mjs\""
+          },
+          {
+            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-route-gate.mjs\""
           }
         ]

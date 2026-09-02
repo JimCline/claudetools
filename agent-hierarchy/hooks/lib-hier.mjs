@@ -436,6 +436,30 @@ export function validateRequestToken(text, dir, expectedTo) {
   return { ok: true, path, fm: parsed.fm };
 }
 
+/**
+ * Validate the response pointer a SendMessage reply must carry (spec 0031
+ * Fix F). Mirrors `validateRequestToken` above, plus the id check that
+ * function has no equivalent of: without it, a pointer at any older or
+ * unrelated response file would pass, letting a session close an obligation
+ * with a document about something else — worse than a missing token, because
+ * it looks answered. Returns `{ok:true, path, fm}` or `{ok:false, why}`.
+ */
+export function validateResponseToken(text, dir, expectedFrom, expectedId) {
+  const path = extractMsgToken(text);
+  if (!path) return { ok: false, why: "missing token" };
+  if (!isAbsolute(path) || !existsSync(path)) return { ok: false, why: `path not found (${path})` };
+  if (!isUnder(path, msgsDir(dir)) || !path.endsWith("--response.md")) return { ok: false, why: "not a response file" };
+  const parsed = readMsgFile(path);
+  if (!parsed || !parsed.fm || parsed.fm.type !== "response") return { ok: false, why: "not a response file" };
+  if (expectedFrom && parsed.fm.from !== expectedFrom) {
+    return { ok: false, why: `wrong from: (file says ${parsed.fm.from}, expected ${expectedFrom})` };
+  }
+  if (expectedId && parsed.fm.id !== expectedId) {
+    return { ok: false, why: `wrong id: (file says ${parsed.fm.id}, expected ${expectedId})` };
+  }
+  return { ok: true, path, fm: parsed.fm };
+}
+
 /** The text after the closing frontmatter fence, trimmed; the whole text, trimmed, if there is no fence. */
 function bodyAfterFrontmatter(text) {
   const fm = parseFrontmatter(text);

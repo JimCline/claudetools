@@ -17,6 +17,7 @@ others:
 /plugin install task-gopher@claudetools
 /plugin install output-discipline@claudetools
 /plugin install comment-discipline@claudetools
+/plugin install review-guide@claudetools
 ```
 
 ## The two you probably want
@@ -73,6 +74,16 @@ it merges. Public-API contracts and why-this-is-non-obvious explanations
 are explicitly encouraged.
 
 **Docs:** [full README](./comment-discipline/README.md)
+
+### review-guide
+
+Notes a PR's diff as work happens, then compiles a reviewer's walkthrough
+from those notes — narration plus scrutiny flags, not just a diff stat.
+An append-only, per-branch JSONL ledger, a CLI, and a skill. Pure tooling:
+no hooks, nothing enforced, nothing runs on its own — invoke it yourself or
+give the session a standing instruction to run it before opening a PR.
+
+**Docs:** [full README](./review-guide/README.md)
 
 ## Why hooks, not prompts
 

@@ -29,6 +29,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { isGatedPeerTarget } from "./lib-gate.mjs";
+import { parseMsgFilename } from "./lib-hier.mjs";
 
 /** One JSONL record per tracked peer obligation. */
 export function peerPendingPath() {
@@ -73,6 +74,9 @@ export function parseWrapper(text) {
   return { from: from[1], fromName: fromName ? fromName[1] : "" };
 }
 
+/** `[hierarchy-msg <path>]` — matched against the first non-blank line, same anchoring discipline as `SENTINEL_RE` below. */
+const MSG_TOKEN_LINE_RE = /^\[hierarchy-msg\s+([^\]\s]+)\s*\]/;
+
 /**
  * Extract a pending-record payload from a delivered prompt, or null when the
  * text is not a parseable, ANCHORED peer brief.
@@ -92,6 +96,15 @@ export function parseWrapper(text) {
  * envelope is not something a SendMessage delivery produces (E2), so it is
  * treated as unparseable rather than guessed at (fail open: no record,
  * nothing to nudge).
+ *
+ * Spec 0031 Fix D: a second, equally anchored form also arms — an
+ * Orchestrator dispatch carries `[hierarchy-msg <path>]` (not the peer-brief
+ * sentinel) as its first non-blank line, where `<path>` ends `--request.md`,
+ * `parseMsgFilename` accepts it, and the file exists. r2's gate depended on
+ * `pendingFor` being populated on this path and it never was — see spec
+ * 0031 §4.1. `armed_by` records which form armed the record so a consumer
+ * that must not cede on this path (§4.1a) can tell the two apart; the
+ * sentinel path is unchanged in every other respect.
  */
 export function extractPendingRecord(text) {
   if (typeof text !== "string" || !text) return null;
@@ -104,18 +117,38 @@ export function extractPendingRecord(text) {
   if (firstLine === undefined) return null;
 
   const line = firstLine.trim();
-  const m = line.match(SENTINEL_RE);
-  if (!m || m.index !== 0) return null; // must ANCHOR the first non-blank line, not just appear in it
-
   const wrapper = parseWrapper(text);
   if (!wrapper) return null;
 
-  return {
-    from: wrapper.from,
-    from_name: wrapper.fromName,
-    reply_to: stripRef(m[1].trim()),
-    task: m[2] || "",
-  };
+  const sentinelMatch = line.match(SENTINEL_RE);
+  if (sentinelMatch && sentinelMatch.index === 0) {
+    return {
+      from: wrapper.from,
+      from_name: wrapper.fromName,
+      reply_to: stripRef(sentinelMatch[1].trim()),
+      task: sentinelMatch[2] || "",
+      armed_by: "sentinel",
+    };
+  }
+
+  const msgMatch = line.match(MSG_TOKEN_LINE_RE);
+  if (msgMatch && msgMatch.index === 0) {
+    const path = msgMatch[1];
+    if (path.endsWith("--request.md") && existsSync(path)) {
+      const meta = parseMsgFilename(path);
+      if (meta && meta.type === "request") {
+        return {
+          from: wrapper.from,
+          from_name: wrapper.fromName,
+          reply_to: wrapper.from,
+          task: meta.slug,
+          armed_by: "msg-token",
+        };
+      }
+    }
+  }
+
+  return null;
 }
 
 /** Read every record. Malformed lines are skipped; an unreadable file reads as empty (fail open). */

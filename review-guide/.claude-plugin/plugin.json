@@ -1,0 +1,17 @@
+{
+  "name": "review-guide",
+  "displayName": "Review Guide",
+  "version": "0.1.0",
+  "description": "Note-as-you-go PR walkthroughs: a ledger, a CLI, and a skill. Nothing is enforced.",
+  "author": {
+    "name": "Jim Cline"
+  },
+  "license": "MIT",
+  "keywords": [
+    "review",
+    "pr",
+    "github",
+    "documentation"
+  ],
+  "skills": "./skills/"
+}

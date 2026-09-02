@@ -16,7 +16,7 @@
       "name": "ah",
       "source": "./agent-hierarchy",
       "description": "Multi-agent role hierarchy, each on the right model. Optional herdr transport for pane-based teams.",
-      "version": "0.57.0",
+      "version": "0.58.0",
       "author": {
         "name": "Jim Cline"
       },
@@ -71,6 +71,23 @@
         "hooks",
         "bash",
         "cost"
+      ],
+      "category": "productivity"
+    },
+    {
+      "name": "review-guide",
+      "source": "./review-guide",
+      "description": "Note-as-you-go PR walkthroughs: a ledger, a CLI, and a skill. Nothing is enforced.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Jim Cline"
+      },
+      "license": "MIT",
+      "keywords": [
+        "review",
+        "pr",
+        "github",
+        "documentation"
       ],
       "category": "productivity"
     },

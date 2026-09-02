@@ -104,7 +104,13 @@ try {
   if (input.stop_hook_active === true) allow();
 
   const sessionId = typeof input.session_id === "string" ? input.session_id : "";
-  if (sessionId && pendingFor(sessionId).length > 0) allow(); // §5.5: the obligation this session OWES takes precedence
+  // §5.5: the obligation this session OWES takes precedence — but spec 0031
+  // §4.1a: a record armed by the widened msg-token path must NOT cede this
+  // check, or a session receiving any msg-file request (including one
+  // addressed to "orchestrator") would silently stop being held to its own
+  // outstanding dispatches. A record with no `armed_by` predates the field
+  // and is treated as sentinel-armed (existing behaviour), not msg-token.
+  if (sessionId && pendingFor(sessionId).some((r) => r.armed_by !== "msg-token")) allow();
 
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
   const resolved = resolveConfig(cwd, { sessionId: sessionId || undefined });
