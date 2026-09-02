@@ -106,12 +106,12 @@ root marketplace.json to 0.29.0.
 ## [6] response gate
 - Subagent side — `hooks/subagentstop-msg-nudge.mjs` on `SubagentStop` (matcher `*`, after usage collector):
   - Only for `agent_type` ∈ hierarchy reasoning roles. Read `last_assistant_message` (present on Stop; verify on SubagentStop — if absent, read the last assistant line of `transcript_path` as `subagentstop-usage.mjs` already does).
-  - If it lacks `[hierarchy-msg <path>--response.md]` with an existing file: `decision:"block"`, reason: `write your response file (node ".../msg.mjs" new --type response --id <id> ...; fill it) and return exactly: [hierarchy-msg <path>] + the [1] status bullet`. Find `<id>` from the request token in the first user turn of `transcript_path`; if none (brief was inline / gate off) → allow silently.
+  - If it lacks `[hierarchy-msg <path>--response.md]` with an existing file: `decision:"block"`, reason: `write your response file (node ".../msg.mjs" new --type response --id <id> --req <request path> ...; fill it) and return exactly: [hierarchy-msg <path>] + the [1] status bullet`. Find `<id>` from the request token in the first user turn of `transcript_path`; if none (brief was inline / gate off) → allow silently.
   - One nudge per `agent_id` (record in `gates.jsonl` `{type:"nudge", agent_id, ts}`); second stop always allowed. Fail-open.
 - Peer side — extend `lib-peer.mjs`:
   - `parseSentinel` unchanged; `userpromptsubmit-peer-tracking.mjs` also records `msg: <request path>` on the obligation when the brief carries `[hierarchy-msg`.
   - `posttooluse-peer-resolve.mjs`: an obligation with `msg` set resolves only if the reply `message` contains `[hierarchy-msg <path>--response.md]` for that id and the file exists; otherwise leave pending. Obligations without `msg` resolve as today.
-  - `stop-peer-nudge.mjs` `owedLine`: when `msg` set, say `your reply must carry [hierarchy-msg <response path>] — write it with msg.mjs new --type response --id <id>`. `MAX_NUDGES` unchanged.
+  - `stop-peer-nudge.mjs` `owedLine`: when `msg` set, say `your reply must carry [hierarchy-msg <response path>] — write it with msg.mjs new --type response --id <id> --req <request path>`. `MAX_NUDGES` unchanged.
 
 ## [7] peer roster
 - File: `<dir>/peers.jsonl`, append-only, latest-per-key like `lib-peer.mjs`. Key = `name` when known, else `session_id`.
@@ -171,13 +171,13 @@ root marketplace.json to 0.29.0.
   tier: you are <model>(n); architect opus(3); ultra-advisor fable(4)  |  tier: model unknown — see TIER RULE
   ```
 - On `startup` only: run sweep (7 days) silently first.
-- Peer role-session branch (top-level `--agent` role): append `{status:"up"}` per [7] and add one line to the notice: `You are a peer <Role>. Briefs arrive as [hierarchy-msg <path>]; read via grep '^## \[' then Read; reply with a response file (msg.mjs new --type response --id <id>) and [hierarchy-msg <path>] first line.`
+- Peer role-session branch (top-level `--agent` role): append `{status:"up"}` per [7] and add one line to the notice: `You are a peer <Role>. Briefs arrive as [hierarchy-msg <path>]; read via grep '^## \[' then Read; reply with a response file (msg.mjs new --type response --id <id> --req <that request path>) and [hierarchy-msg <path>] first line.`
 - Subagent branch: unchanged (inject nothing).
 
 ## [11] text changes
 - `lib-config.mjs buildDirective`: add item 12 (message files: writer/reader protocol, CLI, in-band pointer rule, style rules), item 13 (roster + route: "peers.jsonl is ground truth; after compaction trust HIERARCHY STATE over memory; this session's route is <value> — honor it without re-asking; if the user changes it in chat, record it with `msg.mjs route <v>` and confirm in one line"), item 14 (tier rule per [9]). PEER BRIEF CONTRACT: add bullet "first line after the sentinel is `[hierarchy-msg <request path>]`". Item 3 (spec path): default `<dir>/specs/<slug>.md`.
 - `agents/orchestrator.md`: same three rules, compressed.
-- `agents/architect.md`, `agents/reviewer.md`, `agents/implementor.md`, `agents/ultra-advisor.md`: add "BRIEF INTAKE — your brief is a file: `[hierarchy-msg <path>]`. `grep -n '^## \[' <path>` for the index, Read only what you need. REPORT — write `msg.mjs new --type response --id <id> --to <from> --from <role>` and fill it (bullets, no prose, status first); your final message is `[hierarchy-msg <response path>]` + status bullet — nothing else." Architect/Ultra-Advisor additionally: "If the request's `reason:` is `second-opinion`, the caller is your tier or higher: give a verdict, not a tutorial."
+- `agents/architect.md`, `agents/reviewer.md`, `agents/implementor.md`, `agents/ultra-advisor.md`: add "BRIEF INTAKE — your brief is a file: `[hierarchy-msg <path>]`. `grep -n '^## \[' <path>` for the index, Read only what you need. REPORT — write `msg.mjs new --type response --id <id> --req <request path> --to <from> --from <role>` (spec 0037: `--req` is the brief's own `[hierarchy-msg]` path, so the reply lands beside the request whatever pool your cwd resolves) and fill it (bullets, no prose, status first); your final message is `[hierarchy-msg <response path>]` + status bullet — nothing else." Architect/Ultra-Advisor additionally: "If the request's `reason:` is `second-opinion`, the caller is your tier or higher: give a verdict, not a tutorial."
 - `commands/hierarchy.md`: add `/hierarchy msgs [open|closed|all]` → `msg.mjs list`; `/hierarchy peers` → `msg.mjs roster`; `/hierarchy route [peers|subagents|prefer-peers]` → `msg.mjs route` (no arg prints; with arg records session value, and offers to persist it as the config `route` key); `/hierarchy sweep [days]`; `/hierarchy msgs off|required` toggles config key.
 - README: new section "Message files, roster, tier rule" — the protocol, the token-math caveat, the one-shot gate semantics, cross-repo limitation.
 - `docs/hierarchy.html`: add the three rules to the mechanics page (brief).

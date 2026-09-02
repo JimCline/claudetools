@@ -19,7 +19,7 @@ CLI only when MCP is unavailable.
 
 | Tool | Does | Mutates |
 |---|---|---|
-| `msg_new` | Create a request or response message file | yes |
+| `msg_new` | Create a request or response message file (`req_path`: the request's absolute path — a response then lands beside it, spec 0037) | yes |
 | `msg_list` | List exchanges (open/closed/all), optionally filtered by recipient | no |
 | `msg_downstream` | List requests dispatched by a session other than the one that rooted their parent chain | no |
 | `msg_index` | List a message file's `## [N] key` section anchors | no |

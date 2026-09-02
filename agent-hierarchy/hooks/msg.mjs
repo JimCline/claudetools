@@ -5,6 +5,7 @@
  *   msg.mjs new --to <role> --from <role> --slug <s> [--to-name <n>] [--from-name <n>]
  *               [--parent <id>] [--reason context|second-opinion|parallel]
  *               [--eta small|medium|large] [--type request|response] [--id <id>] [--team <name>]
+ *               [--req <abs request path>]   (response only: write it beside that request — spec 0037)
  *   msg.mjs list [--open|--closed|--all] [--to <role>] [--team <name>] [--json] [--plain]
  *   msg.mjs downstream [--root-name <name>]
  *   msg.mjs index <path>
@@ -136,7 +137,11 @@ try {
     case "new": {
       const dir = ensureHierarchyDir(cwd);
       const type = typeof opts.type === "string" ? opts.type : "request";
+      if (opts.req === true) fail("--req needs the request file's absolute path");
+      const reqPath = typeof opts.req === "string" ? opts.req : null;
+      if (reqPath && type !== "response") fail("--req applies only to --type response");
       const res = createMessage(dir, {
+        reqPath,
         cwd,
         type,
         to: opts.to,
@@ -151,6 +156,9 @@ try {
         team: teamArg,
       });
       out(plain ? `${res.id}  ${res.path}` : { id: res.id, path: res.path }, plain);
+      if (res.divergent) {
+        process.stderr.write(`msg.mjs: note — this session's own pool is ${res.divergent.local}; the response was written beside its request under ${res.divergent.target} (spec 0037)\n`);
+      }
       break;
     }
     case "list": {

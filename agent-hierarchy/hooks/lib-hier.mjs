@@ -250,11 +250,44 @@ export function createMessage(dir, opts) {
     };
   } else {
     if (!opts.id) throw new Error("--id is required for a response");
-    const req = findByIdAndType(dir, opts.id, "request");
-    if (!req) throw new Error(`no request with id ${opts.id} under ${msgsDir(dir)}`);
-    if (findByIdAndType(dir, opts.id, "response")) throw new Error(`response ${opts.id} already exists`);
+    let req;
+    if (opts.reqPath) {
+      // Spec 0037 §2.1: the reply lands beside the request — its destination is never re-derived
+      // from the responder's cwd. Every check here is a hard error with nothing written: a
+      // relative path would resolve against the responder's drifted cwd (the bug, reintroduced
+      // through the fix), and a typo'd-but-plausible directory is silent misdelivery again.
+      const p = opts.reqPath;
+      if (!isAbsolute(p)) throw new Error(`--req must be an absolute path, got ${JSON.stringify(p)} — use the brief's [hierarchy-msg <path>] value verbatim`);
+      if (!existsSync(p)) throw new Error(`--req: no such file ${p} — either the path is typo'd, or the request was archived/moved. Nothing written.`);
+      const meta = parseMsgFilename(p);
+      if (!meta || meta.type !== "request") throw new Error(`--req: ${p} is not a request file`);
+      if (meta.id !== opts.id) throw new Error(`--req: request id ${JSON.stringify(meta.id)} does not match --id ${JSON.stringify(opts.id)}`);
+      req = { path: p, meta };
+    } else {
+      req = findByIdAndType(dir, opts.id, "request");
+      // Spec 0037 §2.2: no --req and no matching request in the resolved pool is the moment every
+      // silent-misdelivery vector becomes visible — say what to do, not just what is missing.
+      if (!req) {
+        throw new Error(
+          `no request \`${opts.id}\` found in ${msgsDir(dir)} — if you are answering a request delivered as [hierarchy-msg <path>], re-run with --req <that path>. A response created here would land in a pool the requester never reads.`
+        );
+      }
+      if (findByIdAndType(dir, opts.id, "response")) throw new Error(`response ${opts.id} already exists`);
+    }
     const parsed = readMsgFile(req.path);
     const rf = parsed && parsed.fm ? parsed.fm : {};
+    if (opts.reqPath) {
+      // §2.1.3: frontmatter cross-check makes --req self-verifying, not just a destination override.
+      if (!parsed || !parsed.fm) throw new Error(`--req: ${req.path} has no parseable frontmatter`);
+      const mismatch = (label, got, want) => {
+        if (got && want && got !== want) throw new Error(`--req: ${label} — response has ${JSON.stringify(got)}, request has ${JSON.stringify(want)}`);
+      };
+      mismatch("id mismatch", opts.id, rf.id);
+      mismatch("--to must equal the request's from", opts.to, rf.from);
+      mismatch("--from must equal the request's to", opts.from, rf.to);
+      mismatch("--to-name must equal the request's from_name", opts.toName, rf.from_name);
+      mismatch("--from-name must equal the request's to_name", opts.fromName, rf.to_name);
+    }
     fields = {
       id: opts.id,
       type,
@@ -270,9 +303,29 @@ export function createMessage(dir, opts) {
       created: localIso(now),
     };
   }
-  const path = join(msgsDir(dir), msgFilename(fields));
-  writeFileSync(path, frontmatterText(fields) + "\n" + skeletonBody(type === "request" ? REQUEST_KEYS : RESPONSE_KEYS), "utf8");
-  return { id: fields.id, path, fields };
+  const targetMsgs = opts.reqPath ? dirname(opts.reqPath) : msgsDir(dir);
+  const path = join(targetMsgs, msgFilename(fields));
+  const body = frontmatterText(fields) + "\n" + skeletonBody(type === "request" ? REQUEST_KEYS : RESPONSE_KEYS);
+  if (!opts.reqPath) {
+    writeFileSync(path, body, "utf8");
+    return { id: fields.id, path, fields };
+  }
+  // §2.1.5: same duplicate rule as the local pool, applied to the pool the file actually lands in.
+  if (existsSync(path)) throw new Error(`response ${fields.id} already exists at ${path}`);
+  try {
+    writeFileSync(path, body, "utf8");
+  } catch (err) {
+    // §2.4: never fall back to the local pool — a written-but-invisible file IS the bug. Fail with
+    // the OS error verbatim and the workaround.
+    throw new Error(
+      `could not write the response beside the request at ${path}: ${err && err.message ? err.message : String(err)} — deliver the response content via SendMessage to ${fields.to_name || fields.to} instead, naming this path. Nothing was written to the local pool.`
+    );
+  }
+  // §2.1.6: divergence telemetry — the fix working as intended, surfaced so it is never invisible.
+  const localPool = resolve(dir);
+  const targetPool = resolve(dirname(targetMsgs));
+  const divergent = localPool !== targetPool ? { local: localPool, target: targetPool } : null;
+  return { id: fields.id, path, fields, divergent };
 }
 
 /** Pair requests with responses by id: `[{id, request, response, meta}]`, newest id first. */

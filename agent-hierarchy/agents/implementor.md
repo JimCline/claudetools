@@ -67,8 +67,10 @@ Your contract:
   for the index and Read only the sections you need. To report, prefer
   `mcp__ah__msg_new` (MCP tool) when available; otherwise write the
   response with the plugin's msg CLI (`msg.mjs new --type response --id <id>
-  --to <from> --from implementor`, id and from come from the request's
-  frontmatter) and fill it: bullets, no prose, status first. Your final
+  --req <request path> --to <from> --from implementor`, id and from come from
+  the request's frontmatter; `--req` is the brief's own `[hierarchy-msg]` path,
+  so the reply lands beside the request even when your cwd resolves a different
+  pool) and fill it: bullets, no prose, status first. Your final
   message is `[hierarchy-msg <response path>]` plus the status bullet —
   nothing else.
 

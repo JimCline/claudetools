@@ -64,7 +64,7 @@ function denyReason(qualifying, role) {
     const meta = parseMsgFilename(rec.msg);
     const id = meta ? meta.id : "<id>";
     const from = requesterOf(rec);
-    lines.push(`- ${id} (from ${from}): node "${MSG_CLI}" new --type response --id ${id} --to ${from} --from ${role}`);
+    lines.push(`- ${id} (from ${from}): node "${MSG_CLI}" new --type response --id ${id} --to ${from} --from ${role} --req ${rec.msg}`);
   }
   lines.push(
     "Then send: [hierarchy-msg <response path>] as the first line, followed by the [1] status bullet.",

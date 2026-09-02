@@ -62,7 +62,7 @@ function owedLine(rec, isFinal) {
   if (rec.msg) {
     const meta = parseMsgFilename(rec.msg);
     const id = meta ? meta.id : "<id>";
-    line += ` — your reply must carry [hierarchy-msg <response path>] — write it with node "${MSG_CLI}" new --type response --id ${id}`;
+    line += ` — your reply must carry [hierarchy-msg <response path>] — write it with node "${MSG_CLI}" new --type response --id ${id} --req ${rec.msg}`;
   }
   if (isFinal) line += " THIS IS THE LAST ATTEMPT — stopping without sending your report now will be recorded as an unmet obligation.";
   return line;

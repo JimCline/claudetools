@@ -376,6 +376,9 @@ reference, not leave two.
 
 - **W-6** (0034 §4) — `resync` mislocation reporting. Overlaps §3.6; land 0036
   first, then decide whether W-6 is already covered.
+- **Cross-pool reply delivery** — T11's other half. Detection still cannot fire
+  across pools (unchanged), but a cross-pool peer can now deliver its response
+  beside the request via `msg.mjs new --req <request path>` — see 0037.
 - **0034 §7.3** cross-consistency test — still unlanded, still recommended.
 - The tmux plan-string quoting / duplicate-representation items (0035 §4.2).
 - `roster.mjs:1261`'s duplicate `splitCwd` derivation.

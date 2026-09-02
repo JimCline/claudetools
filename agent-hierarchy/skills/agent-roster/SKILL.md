@@ -187,6 +187,13 @@ target member's derived name for `edit`/`remove`), then call the CLI. Report
 the exact result the CLI returns, including which level it defaulted to when
 `--level` was omitted.
 
+`add` auto-creates a minimal roster when none exists (spec 0038) — repo level
+when inside a git repo, or the explicit `--level` — and says so with the
+file's path. `init` is for choosing a full role set interactively, not a
+prerequisite. The one exception is `--team <X>`: a named team's container is
+still created only by `init --team X` (0032 §3.4b), so `add --team X` against
+no such container keeps erroring.
+
 Layout (`roster.layout`) is team-wide, not a per-member field — there is no
 `--layout` on `add`/`edit`. Use `roster.mjs layout` (§ Command surface) to
 change it outside of `init`.

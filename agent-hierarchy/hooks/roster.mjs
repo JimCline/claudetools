@@ -159,12 +159,49 @@ function requireLevel(explicit) {
     resolveRoster's possibly-null match) — a write must target `rosters.<team>` whenever a
     team scope is active, even the first time, before any override exists anywhere (spec 0032
     §3.4: writing to `data.roster` while `--team` is active is the corruption this guards). */
-function targetLevel() {
+// Spec 0038 §1.1 leaves the bootstrapped container's route unspecified, and the plugin has no
+// roster-level default (a session's dispatch route "unset stays null"). "peer" is the superset:
+// it tries a live peer first and falls back to a subagent, so nothing is foreclosed.
+// Overridden by an explicit `add --route`.
+const AUTO_INIT_ROUTE = "peer";
+
+function targetLevel({ allowMissing = false } = {}) {
   const explicit = levelArg();
   if (explicit) return { level: requireLevel(explicit), wasDefaulted: false, teamKey: teamArg };
   const resolved = resolveRoster(cwd, teamArg);
-  if (!resolved) fail("no roster resolves at any level — run `roster.mjs init` first");
-  return { level: resolved.level, wasDefaulted: true, teamKey: teamArg };
+  if (resolved) return { level: resolved.level, wasDefaulted: true, teamKey: teamArg };
+  // Spec 0038 §1.1: with nothing resolving anywhere, `add` (only) may bootstrap at the same
+  // default `targetLevel` would otherwise have picked — repo level when cwd is inside a git
+  // repo. Team-scoped (§1.2, 0032 §3.4b) and non-repo cwds keep the existing failure.
+  if (allowMissing && !teamArg) {
+    if (findGitRoot(cwd)) return { level: "repo", wasDefaulted: true, teamKey: teamArg };
+    // Spec 0038 §1.1: no git root → no auto-create; a bare `add` outside any repo must not write
+    // the user-wide file as a side effect. The escape is explicit.
+    fail(`no roster resolves at any level and ${cwd} is not inside a git repo — re-run with --level global to create the user-wide roster (~/.claude/agent-hierarchy.json), or cd into a repo`);
+  }
+  fail("no roster resolves at any level — run `roster.mjs init` first");
+}
+
+/** Spec 0038 §1.1 "one writer": the roster block `init` creates, shared with `add`'s auto-init so
+    the shape is serialized in exactly one place (0035 §11's duplicate-representation family). */
+function freshRosterBlock(route, layout) {
+  if (!ROSTER_ROUTE_VALUES.includes(route)) fail(`--route must be "peer" or "subagent", got ${JSON.stringify(route)}`);
+  const fresh = { route, members: [] };
+  if (typeof layout === "string") {
+    if (!ROSTER_LAYOUT_VALUES.includes(layout)) fail(`--layout must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(layout)}`);
+    fresh.layout = layout;
+  }
+  return fresh;
+}
+
+/** Install a fresh block as the container for `teamKey` (`roster`, or `rosters.<team>`) — replaces wholesale. */
+function installRosterBlock(data, teamKey, fresh) {
+  data.version = data.version || CONFIG_VERSION;
+  if (!teamKey) data.roster = fresh;
+  else {
+    data.rosters ||= {};
+    data.rosters[teamKey] = fresh;
+  }
 }
 
 /** The roster container to read/write at this level for the active team scope (spec 0032 §3.4).
@@ -1043,42 +1080,35 @@ try {
       if (!ROSTER_ROUTE_VALUES.includes(route)) fail(`--route must be "peer" or "subagent", got ${JSON.stringify(route)}`);
       const path = rosterLevelPaths(cwd)[level];
       const data = readLevelFile(path);
-      data.version = data.version || CONFIG_VERSION;
       // Spec 0032 §3.4 point 3: `init --team X` creates `rosters.X`, never `roster`; `init`
       // with no `--team` keeps writing `roster`, unchanged. A fresh object, not a mutation of
       // whatever was there — `init` REPLACES the block wholesale (pre-existing behavior for the
       // default `roster`), so a stale `layout` (or any other key) from a prior init must not
       // survive a re-init.
-      const fresh = { route, members: [] };
-      if (typeof opts.layout === "string") {
-        if (!ROSTER_LAYOUT_VALUES.includes(opts.layout)) fail(`--layout must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(opts.layout)}`);
-        fresh.layout = opts.layout;
-      }
-      if (!teamArg) {
-        data.roster = fresh;
-      } else {
-        data.rosters ||= {};
-        data.rosters[teamArg] = fresh;
-      }
+      const fresh = freshRosterBlock(route, opts.layout);
+      installRosterBlock(data, teamArg, fresh);
       writeLevelFile(path, data);
       out({ level, path, container: containerLabel(teamArg), roster: fresh });
       break;
     }
 
     case "add": {
-      const { level, wasDefaulted, teamKey } = targetLevel();
+      const { level, wasDefaulted, teamKey } = targetLevel({ allowMissing: true });
       const path = rosterLevelPaths(cwd)[level];
       const data = readLevelFile(path);
-      const container = rosterContainer(data, teamKey);
-      // §3.4b: `init` is the only path that may create a container — default or team-scoped.
-      // No auto-vivification here: a typo'd --team writes a block that can never be selected
+      let container = rosterContainer(data, teamKey);
+      // 0032 §3.4b: a team-scoped container is created only by `init --team` — no
+      // auto-vivification, since a typo'd --team writes a block that can never be selected
       // (resolveRoster only matches an active team name), which is silent-wrong forever.
-      if (!container) {
-        fail(
-          teamKey
-            ? `no ${containerLabel(teamKey)} at level "${level}" (${path}) — run \`roster.mjs init --team ${teamKey}\` first`
-            : `no roster at level "${level}" (${path}) — run \`roster.mjs init\` first`
-        );
+      // Spec 0038 §1.1/§1.2: the DEFAULT container is the one exception — bare `add <role>`
+      // with no roster bootstraps a minimal one here, through init's own writer.
+      if (!container && teamKey) {
+        fail(`no ${containerLabel(teamKey)} at level "${level}" (${path}) — run \`roster.mjs init --team ${teamKey}\` first`);
+      }
+      const created = !container;
+      if (created) {
+        container = freshRosterBlock(typeof opts.route === "string" ? opts.route : AUTO_INIT_ROUTE, undefined);
+        installRosterBlock(data, teamKey, container);
       }
       if (!Array.isArray(container.members)) container.members = [];
       const role = opts.role;
@@ -1102,6 +1132,7 @@ try {
       const blockErrors = validateRosterBlock(container);
       if (blockErrors.length) fail(blockErrors.join("; "));
       writeLevelFile(path, data);
+      if (created) process.stderr.write(`roster.mjs: no roster existed — created a minimal one at level "${level}": ${path}\n`);
       if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — added at the currently-resolving level "${level}" (${path})\n`);
       out({ level, path, wasDefaulted, container: containerLabel(teamKey), member: namedMembers(container.members).at(-1) });
       break;

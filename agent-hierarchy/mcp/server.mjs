@@ -71,6 +71,7 @@ export const TOOLS = [
         eta: { type: "string", enum: ["small", "medium", "large"], description: "Expected turnaround: small=5min, medium=10min, large=20min. Only meaningful on a request." },
         type: { type: "string", description: "request|response (default request)." },
         id: { type: "string", description: "Explicit message id — set when writing a response to match its request." },
+        req_path: { type: "string", description: "Response only: the request file's ABSOLUTE path (the brief's [hierarchy-msg] value, verbatim). The response is written beside it, cross-checked against its frontmatter — never into this session's own pool (spec 0037)." },
         team: teamSchema,
       },
       required: ["cwd", "to", "from", "slug"],
@@ -460,6 +461,7 @@ export async function callTool(name, input) {
       pushArg(args, "eta", args_in.eta);
       pushArg(args, "type", args_in.type);
       pushArg(args, "id", args_in.id);
+      pushArg(args, "req", args_in.req_path);
       pushArg(args, "team", args_in.team);
       pushArg(args, "cwd", cwd);
       return execCli(MSG_CLI, args);
