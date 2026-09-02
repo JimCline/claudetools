@@ -17,11 +17,11 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_LABELS, ROUTE_VALUES, TIER, resolvedPeerTargets, roleFromName, tierOf } from "./lib-config.mjs";
-import { readTeam, resolveMemberTeam, teamMemberByName } from "./lib-roster.mjs";
+import { listTeamNames, readTeam, resolveMemberTeam, teamIsOrphaned, teamMemberByName } from "./lib-roster.mjs";
 
 export { hierarchyDir };
 
@@ -610,6 +610,19 @@ export function appendRosterRecord(dir, rec) {
   appendJsonl(peersPath(dir), { type: "peer", ...rec, ts: new Date().toISOString() });
 }
 
+/**
+ * Realpath-normalise a cwd for comparison (spec 0025 §12.3, spec 0036 §3.1). Falls back to the
+ * raw path if it does not resolve (e.g. the directory is gone).
+ */
+export function realCwd(p) {
+  if (!p) return p;
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
 function rosterKey(rec) {
   return rec.name || rec.session_id || "";
 }
@@ -825,7 +838,29 @@ export function buildStateBlock(dir, resolved, repoBasename, model, sessionId = 
     peersLine = `peers: ${anyPeer ? rosterLine(ros) : "none"}`;
   }
   const eff = route || (sessionId ? effectiveRoute(dir, resolved, sessionId) : null);
-  return [`HIERARCHY STATE (${dir}):`, openLine, peersLine, routeLine(eff), tierLine(resolved, model)].join("\n");
+  const lines = [`HIERARCHY STATE (${dir}):`, openLine, peersLine, routeLine(eff), tierLine(resolved, model)];
+  // Spec 0033 §3.4: surface orphaned team records (dead orchestrator pid), never auto-delete —
+  // best-effort, must never cost the rest of the state block.
+  try {
+    const orphanNames = [null, ...listTeamNames(dir)].filter((name) => teamIsOrphaned(readTeam(dir, name)));
+    if (orphanNames.length) {
+      const named = orphanNames.map((n) => n || "default");
+      lines.push(`ah: ${orphanNames.length} orphaned team record(s) (${named.join(", ")}) — their orchestrator process is gone. \`roster.mjs reap\` to list, \`reap --commit\` to remove.`);
+    }
+  } catch {
+    // advisory only — never let a probe failure cost the state block
+  }
+  // Spec 0036 §3.6: a misplaced-peer count, so the orchestrator sees it without asking — never
+  // silent (same argument as 0035 §2.4). Best-effort, like the orphan-team line above.
+  try {
+    // Filtered to live rows — an unclean exit otherwise leaves misplaced:true as the latest row
+    // forever, nagging about a peer that no longer exists (same fix as roster.mjs's teams case).
+    const misplacedCount = latestRoster(dir).filter((r) => r.misplaced && r.status === "up" && pidAlive(r.pid)).length;
+    if (misplacedCount) lines.push(`ah: ${misplacedCount} misplaced peer(s) — see \`roster.mjs teams\` for detail.`);
+  } catch {
+    // advisory only — never let a probe failure cost the state block
+  }
+  return lines.join("\n");
 }
 
 export { ROLES, ROLE_LABELS };

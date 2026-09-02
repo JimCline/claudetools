@@ -109,7 +109,12 @@ with someone else's live default Team.
   scope, distinguished.
 - `teams [--cwd <path>]` (`mcp__ah__roster_teams`) — read-only: every team file in this hierarchy dir (default plus every
   named team), with member count, orchestrator pid, whether that pid is alive, and whether it's
-  this session's own. Use it to see a stale or a sibling orchestrator's Team before `create`.
+  this session's own. Use it to see a stale or a sibling orchestrator's Team before `create`. Also
+  reports `misplaced_members` (peers confirmed relocated away from where the Team expects them)
+  and `misplaced_unattributed` (a count of misplaced peers this session could not safely attribute
+  to a specific member) — see § Relocation.
+- `checkin [--team <T>] [--cwd <path>]` (CLI only, no MCP tool yet) — re-registers the *current*
+  session's cwd. Spec 0036 §3.3. See § Relocation.
 
 `add`/`edit`/`remove` with no `--level` operate on whichever level currently
 resolves (repo-user > repo > global) and print which level they picked — say
@@ -618,3 +623,36 @@ source for peer dispatch (ADR 0002): a SendMessage `to` or role lookup that
 matches a Team member's derived name resolves from `team.json` first, before
 the existing config-peer and live-roster fallbacks — those two paths are
 unchanged and still cover the ad-hoc-peer case outside any Team.
+
+## Relocation (`checkin`, `misplaced`)
+
+Spec 0036. A Team records `expected_root` — the directory a peer's session
+should be running in — at creation. SessionStart compares a peer's actual cwd
+against it and, if they disagree, marks that peer's roster row
+`misplaced: true` and prints an instruction. It never refuses to register a
+misplaced peer — a peer that doesn't register is invisible to `roster teams`
+and to dismiss/respawn, which is worse than being visibly wrong.
+
+**If you are a misplaced peer:** run `EnterWorktree` with `path=<expected_root>`,
+then run `roster.mjs checkin` to re-register. **`cd` will not work** — a shell
+`cd` does not move this session's `input.cwd`; only `EnterWorktree` does. If
+`EnterWorktree` is refused or denied, report to the orchestrator for respawn.
+
+`checkin` re-runs the same comparison against the *current* cwd and appends a
+fresh roster row — it's the only thing that re-checks a session mid-run,
+since SessionStart only fires once, at launch. It exits **non-zero while still
+misplaced**, so a script (or the peer itself) can tell success from failure
+without parsing prose.
+
+**`misplaced_unattributed`** (on `roster teams`'s output): a count of
+misplaced peers this session could not safely attribute to one specific Team
+member — a role shared by more than one member of that Team, or a row with no
+recorded Team at all (a pre-0036 row). **This means "do not guess which
+member"** — the orchestrator's fallback for a misplaced peer (below) is
+destructive, so guessing wrong is worse than not attributing at all.
+
+**Fallback, when relocation is refused, denied, or impossible:**
+`roster dismiss <name>` then `roster spawn-one <name> --cwd <expected_root>`.
+**This discards the dismissed peer's context** — only use it after relocation
+has genuinely failed, never as a first resort, and never against a peer
+`misplaced_unattributed` couldn't confidently name.

@@ -268,6 +268,34 @@ export function resolveMemberTeam(dir, name) {
   return { found: false, team: null };
 }
 
+/**
+ * Spec 0036 §3.2/§3.3 (F4/F6): the ONE shared team-resolution used by both SessionStart (no
+ * `--team`, no known peer name — role only) and `roster.mjs checkin` (an explicit `--team`, or
+ * none). `explicitTeam` given -> a direct lookup, same as every other `--team` subcommand's
+ * convention. Omitted -> scan the default team plus every named team for CANDIDATE teams — any
+ * team with at least one peer member of this role (G1: candidacy, not uniqueness, decides
+ * ambiguity, so a team with TWO members of the role is correctly "ambiguous," never mistaken for
+ * "not a candidate" and silently skipped in favor of an unrelated team that happens to have
+ * exactly one). Resolve only when there is exactly one candidate team AND it has exactly one such
+ * member; more than one candidate, or a lone candidate with more than one member, resolves to
+ * nothing (never guess — an unresolved team must skip detection entirely, per §3.2 point 3).
+ * Returns `{ teamName, team }` (teamName is `null` for the default team) or `null`.
+ */
+export function resolveSessionTeam(dir, role, explicitTeam = null) {
+  if (explicitTeam) {
+    const team = readTeam(dir, explicitTeam);
+    return team ? { teamName: explicitTeam, team } : null;
+  }
+  let match = null;
+  for (const teamName of [null, ...listTeamNames(dir)]) {
+    const n = teamMembersForRole(dir, role, teamName).length;
+    if (n === 0) continue;
+    if (match || n > 1) return null;
+    match = { teamName, team: readTeam(dir, teamName) };
+  }
+  return match;
+}
+
 // ---------------------------------------------------------------- team history (spec 0015)
 
 // ponytail: 24h is a blunt fixed ceiling, not a config knob — see spec 0001 §5.3.
@@ -279,6 +307,17 @@ export function teamIsLive(t) {
   if (!t) return false;
   const pid = t.orchestrator && t.orchestrator.pid;
   return pidAlive(pid) && ageSecOf(t.created) <= TEAM_STALE_AGE_SEC;
+}
+
+/** Reapable: the owning process is provably gone. Age is NOT a factor — see 0033 §3.3.
+    NOT `!teamIsLive` — that also flags a >24h-old but still-running team, which a bulk
+    deleter (`roster reap`) must never touch. `pidAlive`'s EPERM-means-alive branch makes
+    every error mode here a false negative (a recycled pid reads as alive, so it is not
+    reaped) — never a wrong deletion of a live team. */
+export function teamIsOrphaned(t) {
+  if (!t) return false;
+  const pid = t.orchestrator && t.orchestrator.pid;
+  return !pidAlive(pid);
 }
 
 /** `team-history.json` for this hierarchy dir. */

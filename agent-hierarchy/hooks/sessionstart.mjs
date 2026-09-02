@@ -48,8 +48,8 @@ import {
   resolveConfig,
   teamPrefix,
 } from "./lib-config.mjs";
-import { appendRosterRecord, buildStateBlock, cacheSessionModel, effectiveRoute, ensureHierarchyDir, sessionModel, sweep, SWEEP_DAYS } from "./lib-hier.mjs";
-import { clearTeam, herdrOnPath, readTeam, teamIsLive } from "./lib-roster.mjs";
+import { appendRosterRecord, buildStateBlock, cacheSessionModel, effectiveRoute, ensureHierarchyDir, realCwd, sessionModel, sweep, SWEEP_DAYS } from "./lib-hier.mjs";
+import { clearTeam, herdrOnPath, readTeam, resolveSessionTeam, teamIsLive } from "./lib-roster.mjs";
 import { writeSessionRole } from "./lib-session-role.mjs";
 
 /** Feature A (spec 0010 §2.5): advisory only, never blocks. */
@@ -93,9 +93,21 @@ if (!isSubagent(input)) {
     } catch {
       // best-effort — the role notice still goes out
     }
+    let misplaced = false;
+    let expectedRoot = null;
+    let teamId = null;
     try {
       const dir = ensureHierarchyDir(cwd);
-      appendRosterRecord(dir, {
+      // Spec 0036 §3.2 (F4/F6): SessionStart has no --team and no known peer name, only role —
+      // resolveSessionTeam scans for the one team whose members contain exactly one of this role.
+      // A session that resolves to no team is a legitimate non-peer session, not a mismatch —
+      // detection skips entirely, silently, same reasoning as an absent expected_root.
+      const resolved = resolveSessionTeam(dir, role);
+      const team = resolved && resolved.team;
+      expectedRoot = (team && team.expected_root) || null;
+      teamId = team && team.team_id;
+      misplaced = Boolean(expectedRoot) && realCwd(cwd) !== expectedRoot;
+      const rec = {
         status: "up",
         role,
         session_id: input.session_id || null,
@@ -105,9 +117,31 @@ if (!isSubagent(input)) {
         pane_id: process.env.HERDR_PANE_ID || null,
         tab_id: process.env.HERDR_TAB_ID || null,
         workspace_id: process.env.HERDR_WORKSPACE_ID || null,
-      });
+      };
+      // §3.2/§3.3: the row gains `team` when a team resolved — NEVER `name` (rosterKey is
+      // name||session_id; adding name here would repartition it and, worse, merge with
+      // posttooluse-roster.mjs's differently-keyed seen/briefed rows — see the 0036-f4-f6 spec).
+      if (resolved) rec.team = resolved.teamName;
+      // Spec 0036 §3.1: absent expected_root means no expectation recorded — never write these,
+      // so a pre-0036 team is never read as a mismatch.
+      if (expectedRoot) {
+        rec.expected_root = expectedRoot;
+        rec.misplaced = misplaced;
+      }
+      appendRosterRecord(dir, rec);
     } catch {
       // roster is best-effort; the notice still goes out
+    }
+    // Spec 0036 §3.2: a nudge, not a gate — the peer is registered either way (above), and this
+    // is advisory text appended to the notice, never a refusal to work.
+    if (misplaced) {
+      context +=
+        "\n\n" +
+        `Misplaced: this session is at \`${cwd}\`; team \`${teamId}\` expects \`${expectedRoot}\`.\n` +
+        `Run \`EnterWorktree\` with \`path=${expectedRoot}\`, then run ` +
+        "`roster.mjs checkin` to re-register. **`cd` will not work** — a shell `cd` does " +
+        "not move this session's `input.cwd`; only `EnterWorktree` does.\n" +
+        "If `EnterWorktree` is refused or denied, report to the orchestrator for respawn.";
     }
   } else {
     const resolved = resolveConfig(cwd, { sessionId: input.session_id || null });

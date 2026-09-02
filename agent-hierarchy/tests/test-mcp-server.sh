@@ -116,9 +116,9 @@ const expected = [
   "roster_adopt", "roster_config", "roster_create", "roster_disband", "roster_disband_close",
   "roster_dismiss", "roster_dismiss_close",
   "roster_history", "roster_layout_splits", "roster_member", "roster_move",
-  "roster_resync", "roster_show", "roster_spawn_one", "roster_teams",
+  "roster_reap", "roster_resync", "roster_show", "roster_spawn_one", "roster_teams",
 ].sort();
-report("tools/list returns exactly the 20-tool inventory (spec 0015/0016/0017/0018/0020/0026)", JSON.stringify(names) === JSON.stringify(expected), JSON.stringify(names));
+report("tools/list returns exactly the 21-tool inventory (spec 0015/0016/0017/0018/0020/0026/0033)", JSON.stringify(names) === JSON.stringify(expected), JSON.stringify(names));
 
 const ping = await call("ping", {});
 report("ping answered", Boolean(ping && ping.result && typeof ping.result === "object" && !ping.error), JSON.stringify(ping));

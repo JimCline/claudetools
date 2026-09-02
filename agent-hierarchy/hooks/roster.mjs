@@ -38,9 +38,17 @@
  *   roster.mjs spawn-one <role> [--member <name>] [--cwd <path>] [--dry-run] [--allow-global] [--orchestrator-pid <pid>]
  *   roster.mjs alias   [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]
  *   roster.mjs teams   [--cwd <path>] [--orchestrator-pid <pid>]
+ *   roster.mjs reap    [--commit] [--cwd <path>]
+ *                       (bare: lists orphaned team records — dead/null orchestrator pid,
+ *                       age never a factor — and deletes nothing; --commit removes them.)
  *   roster.mjs history [--cwd <path>]
  *   roster.mjs create  --from <id|alias> [--team <T>] [--plan|--commit|--spawn] [--cwd <path>]
  *   roster.mjs adopt   --orchestrator-pid <pid> [--team <T>] [--cwd <path>]
+ *   roster.mjs checkin [--team <T>] [--cwd <path>] [--orchestrator-pid <pid>]
+ *                       (spec 0036 §3.3: re-registers the current session with its current cwd;
+ *                       exits non-zero when still misplaced relative to the team's expected_root.
+ *                       Resolves the session pid the same way as create --commit/teams — process.ppid
+ *                       is the transient Bash-tool shell, never the session, at this call site.)
  *
  * `--team <name>` (spec 0011 §5.1) selects a named team's `teams/<name>.json`
  * in place of the default `team.json`, on every subcommand above that touches
@@ -63,14 +71,14 @@
  * memory only (no write) — see docs/specs/0008-roster-relocate.md.
  */
 
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 
 import { CONFIG_VERSION, findGitRoot, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, teamPrefix, teamPrefixInfo, validateTeamAlias } from "./lib-config.mjs";
-import { ageSecOf, latestRoster, newId, localIso, pidAlive, ROSTER_FRESH_SEC } from "./lib-hier.mjs";
-import { clearTeam, fingerprint, herdrOnPath, historyEntryIsActive, listTeamNames, normalizeMembers, readHistory, readTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamIsLive, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
+import { ageSecOf, appendRosterRecord, latestRoster, newId, localIso, pidAlive, realCwd, ROSTER_FRESH_SEC } from "./lib-hier.mjs";
+import { clearTeam, fingerprint, herdrOnPath, historyEntryIsActive, listTeamNames, normalizeMembers, readHistory, readTeam, resolveSessionTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamIsLive, teamIsOrphaned, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
 
 const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config"]);
 const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "close", "confirm", "plan-token", "allow-global", "cwd", "team"]);
@@ -80,6 +88,8 @@ const MOVE_FLAGS = new Set(["tab", "split", "new-tab", "workspace", "new-workspa
 const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global", "team", "orchestrator-pid", "member"]);
 const ALIAS_FLAGS = new Set(["level", "set", "clear", "cwd", "team"]);
 const ADOPT_FLAGS = new Set(["orchestrator-pid", "team", "cwd"]);
+const REAP_FLAGS = new Set(["commit", "cwd"]);
+const CHECKIN_FLAGS = new Set(["cwd", "team", "orchestrator-pid"]);
 
 function parseArgs(argv) {
   const opts = { _: [] };
@@ -144,13 +154,30 @@ function requireLevel(explicit) {
   return explicit;
 }
 
-/** For add/edit/remove: explicit --level, else whichever level currently resolves. Returns {level, wasDefaulted}. */
+/** For add/edit/remove: explicit --level, else whichever level currently resolves. Returns
+    {level, wasDefaulted, teamKey}. `teamKey` is always the active `--team` scope (never
+    resolveRoster's possibly-null match) — a write must target `rosters.<team>` whenever a
+    team scope is active, even the first time, before any override exists anywhere (spec 0032
+    §3.4: writing to `data.roster` while `--team` is active is the corruption this guards). */
 function targetLevel() {
   const explicit = levelArg();
-  if (explicit) return { level: requireLevel(explicit), wasDefaulted: false };
+  if (explicit) return { level: requireLevel(explicit), wasDefaulted: false, teamKey: teamArg };
   const resolved = resolveRoster(cwd, teamArg);
   if (!resolved) fail("no roster resolves at any level — run `roster.mjs init` first");
-  return { level: resolved.level, wasDefaulted: true };
+  return { level: resolved.level, wasDefaulted: true, teamKey: teamArg };
+}
+
+/** The roster container to read/write at this level for the active team scope (spec 0032 §3.4).
+    Never creates a container — `init` is the only path that may (spec 0032 §3.4b). No site may
+    reach `data.roster` directly while a `--team` scope is active. */
+function rosterContainer(data, teamKey) {
+  if (!teamKey) return data.roster || null;
+  return data.rosters && data.rosters[teamKey] ? data.rosters[teamKey] : null;
+}
+
+/** "roster" or `rosters.<name>` — for output/warning text naming which container a write hit (spec 0032 §3.4 point 5). */
+function containerLabel(teamKey) {
+  return teamKey ? `rosters.${teamKey}` : "roster";
 }
 
 function readLevelFile(path) {
@@ -181,19 +208,23 @@ function findMemberIndex(members, name) {
     exactly one config-edit path. Resolves the level exactly as `remove` always has
     (targetLevel()). Writes nothing when the member isn't found. */
 function removeConfigMember(name) {
-  const { level, wasDefaulted } = targetLevel();
+  const { level, wasDefaulted, teamKey } = targetLevel();
   const path = rosterLevelPaths(cwd)[level];
   const data = readLevelFile(path);
-  if (!data.roster || !Array.isArray(data.roster.members)) {
-    return { level, path, wasDefaulted, removed: false, reason: `no roster at level "${level}" (${path}) — run \`roster.mjs init\` first` };
+  const container = rosterContainer(data, teamKey);
+  if (!container || !Array.isArray(container.members)) {
+    return { level, path, wasDefaulted, removed: false, reason: `no ${containerLabel(teamKey)} at level "${level}" (${path}) — run \`roster.mjs init\` first` };
   }
-  const idx = findMemberIndex(data.roster.members, name);
+  const idx = findMemberIndex(container.members, name);
   if (idx === -1) return { level, path, wasDefaulted, removed: false, reason: "no such member" };
-  const before = namedMembers(data.roster.members);
-  data.roster.members.splice(idx, 1);
-  const after = namedMembers(data.roster.members);
+  const before = namedMembers(container.members);
+  // Spec 0032 §3.4 point 4: splice only — never delete the container itself, even down to
+  // members: []. An empty rosters.<team> block and an absent one differ (the former still
+  // no-matches per §3.2's guard, but only `remove --team X --all` may erase the block).
+  container.members.splice(idx, 1);
+  const after = namedMembers(container.members);
   writeLevelFile(path, data);
-  return { level, path, wasDefaulted, removed: true, idx, before, after };
+  return { level, path, wasDefaulted, removed: true, idx, before, after, container: containerLabel(teamKey) };
 }
 
 function detectTransport() {
@@ -215,6 +246,9 @@ function spawnShape(member, transport) {
     // performs the split sequence from live `herdr pane layout` output. See spec 0004 §3.2.
     layout: [],
     launch: [`herdr agent start ${member.name} --kind claude --pane <TARGET> -- ${agentFlags.join(" ")}`],
+    // Placement comes from the layout step's own --cwd (runLayoutLoop :641), not from here —
+    // carried for output parity (spec 0035 §2.2/§2.4).
+    launch_cwd: cwd,
     target_placeholder: "<TARGET>",
     target_from: null,
     target_source: { kind: "json", path: ".result.pane.pane_id" },
@@ -225,11 +259,17 @@ function spawnShape(member, transport) {
     // whatever pane is active, which cannot survive two launches being in flight.
     layout: [`tmux new-window -P -F '#{pane_id}' -c "${cwd}"`],
     launch: [`tmux send-keys -t <TARGET> ${JSON.stringify(claudeCmd)} Enter`],
+    // Placement comes from the layout step's own -c above, not from here — carried for output
+    // parity (spec 0035 §2.2/§2.4).
+    launch_cwd: cwd,
     target_placeholder: "<TARGET>",
     target_from: 0,
     target_source: { kind: "stdout", trim: true },
   };
-  return { transport, layout: [], launch: [`${claudeCmd} --bg`], target_placeholder: null, target_from: null, target_source: null };
+  // Spec 0035 §2: the only branch with no separate layout step, so launch_cwd here is not just
+  // for output parity — launchMember must actually apply it (§2.3), or the child inherits
+  // roster.mjs's own process cwd instead of the resolved --cwd.
+  return { transport, layout: [], launch: [`${claudeCmd} --bg`], launch_cwd: cwd, target_placeholder: null, target_from: null, target_source: null };
 }
 
 /** Plan-level herdr layout instructions for the orchestrator to drive (spec 0004 §5.2). Null for non-herdr or an all-subagent roster. */
@@ -335,20 +375,6 @@ function queryHerdrTopology() {
   const agents = result && result.result && Array.isArray(result.result.agents) ? result.result.agents : null;
   if (!agents) throw new Error("herdr agent list produced unexpected shape (missing .result.agents)");
   return agents.map((a) => ({ name: a.name || null, pane_id: a.pane_id, tab_id: a.tab_id, workspace_id: a.workspace_id, cwd: a.cwd || a.foreground_cwd || null }));
-}
-
-/**
- * Realpath-normalise a cwd for comparison (spec 0025 §12.3). No existing repo helper does this —
- * a direct search found none despite the spec expecting one — so this is a new, local one; falls
- * back to the raw path if it does not resolve (e.g. the directory is gone).
- */
-function realCwd(p) {
-  if (!p) return p;
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
-  }
 }
 
 /** Spec 0008 §5.3: name first (durable across workspace moves), pane id second, else no match. */
@@ -731,9 +757,9 @@ function getMembersPlan(dir) {
   return typeof opts.from === "string" ? planMembersFromHistory(resolveHistoryEntry(dir), dir) : resolveMembersPlan(dir);
 }
 
-function runShell(commandString) {
+function runShell(commandString, opts = {}) {
   return new Promise((resolvePromise) => {
-    execFile("/bin/sh", ["-c", commandString], { encoding: "utf8", maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile("/bin/sh", ["-c", commandString], { encoding: "utf8", maxBuffer: 1024 * 1024, cwd: opts.cwd }, (err, stdout, stderr) => {
       resolvePromise({ err, stdout, stderr });
     });
   });
@@ -766,11 +792,11 @@ function labelPane(member) {
 async function launchMember(member, transport) {
   const template = member.spawn.launch[0];
   const cmd = member.spawn.target_placeholder && member.transport_id != null ? template.split(member.spawn.target_placeholder).join(member.transport_id) : template;
-  let attempt = await runShell(cmd);
+  let attempt = await runShell(cmd, { cwd: member.spawn.launch_cwd });
   let retried = false;
   if (attempt.err && transport === "herdr") {
     retried = true;
-    attempt = await runShell(cmd);
+    attempt = await runShell(cmd, { cwd: member.spawn.launch_cwd });
   }
   const errorText = () => (attempt.stderr && String(attempt.stderr).trim()) || (attempt.err && attempt.err.message) || "launch failed";
   if (transport === "herdr") {
@@ -941,9 +967,11 @@ async function createSpawn(dir) {
   const launchByName = new Map(peerMembers.map((m, i) => [m.name, launched[i]]));
 
   const outputMembers = members.map((m) => {
-    if (m.route !== "peer") return { role: m.role, name: m.name, model: m.model, route: m.route, autoMode: m.autoMode, transport_id: null, launch_status: null };
+    if (m.route !== "peer") return { role: m.role, name: m.name, model: m.model, route: m.route, autoMode: m.autoMode, transport_id: null, launch_status: null, launch_cwd: null };
     const lm = launchByName.get(m.name);
-    const entry = { role: m.role, name: m.name, model: m.model, route: m.route, autoMode: m.autoMode, transport_id: m.transport_id, launch_status: lm.launch_status, launch_result: lm.launch_result, retried: lm.retried };
+    // Spec 0035 §2.4: placement is consequential and must not be silent — report where each
+    // peer actually launched, not just that it launched.
+    const entry = { role: m.role, name: m.name, model: m.model, route: m.route, autoMode: m.autoMode, transport_id: m.transport_id, launch_status: lm.launch_status, launch_result: lm.launch_result, retried: lm.retried, launch_cwd: m.spawn ? m.spawn.launch_cwd : null };
     if (lm.error) entry.error = lm.error;
     if (lm.label) entry.label = lm.label;
     // Spec 0008 §6: populate tab_id/workspace_id from the launch result when it carries them.
@@ -957,6 +985,31 @@ async function createSpawn(dir) {
   out({ level, transport, members: outputMembers, partial: isPartial });
 }
 
+/** One team's inventory row (spec 0011 §5.4 / 0033 §3.1): `null` for the default team, or
+    `name` == readdirSync's entry basename == the value listTeamNames(dir) returns. Never
+    writes. Shared by `teams` and `reap` (spec 0033 §3.2) so the two commands cannot drift
+    apart about what a team is. */
+function describeTeamRow(dir, name, myPid) {
+  const t = readTeam(dir, name);
+  if (!t) return null;
+  const pid = t.orchestrator && t.orchestrator.pid;
+  return {
+    name,
+    team_id: t.team_id,
+    members: Array.isArray(t.members) ? t.members.length : 0,
+    orchestrator_pid: pid ?? null,
+    pid_alive: pidAlive(pid),
+    orphaned: teamIsOrphaned(t), // pid null/unresolvable/dead — spec 0033 §3.1
+    own: Number.isInteger(myPid) && pid === myPid,
+    created: t.created,
+  };
+}
+
+/** Every team in this hierarchy dir — default team first, then every named team (spec 0033 §3.2). */
+function allTeamRows(dir, myPid) {
+  return [describeTeamRow(dir, null, myPid), ...listTeamNames(dir).map((name) => describeTeamRow(dir, name, myPid))].filter(Boolean);
+}
+
 try {
   switch (cmd) {
     case "show": {
@@ -965,12 +1018,14 @@ try {
         const level = requireLevel(explicit);
         const path = rosterLevelPaths(cwd)[level];
         const data = readLevelFile(path);
+        const container = rosterContainer(data, teamArg);
         const resolved = resolveRoster(cwd, teamArg);
         const effective = teamPrefixInfo(cwd, teamArg);
         out({
           level,
           path,
-          roster: data.roster && data.roster.members ? { route: data.roster.route, layout: data.roster.layout || "auto", members: namedMembers(data.roster.members) } : null,
+          container: containerLabel(teamArg),
+          roster: container && Array.isArray(container.members) ? { route: container.route, layout: container.layout || "auto", members: namedMembers(container.members) } : null,
           shadowed: resolved && resolved.level !== level ? `shadowed by ${resolved.level}` : null,
           teamAlias: level === "global" ? undefined : typeof data.teamAlias === "string" ? data.teamAlias : null,
           effectiveTeamAlias: effective.alias,
@@ -989,21 +1044,43 @@ try {
       const path = rosterLevelPaths(cwd)[level];
       const data = readLevelFile(path);
       data.version = data.version || CONFIG_VERSION;
-      data.roster = { route, members: [] };
+      // Spec 0032 §3.4 point 3: `init --team X` creates `rosters.X`, never `roster`; `init`
+      // with no `--team` keeps writing `roster`, unchanged. A fresh object, not a mutation of
+      // whatever was there — `init` REPLACES the block wholesale (pre-existing behavior for the
+      // default `roster`), so a stale `layout` (or any other key) from a prior init must not
+      // survive a re-init.
+      const fresh = { route, members: [] };
       if (typeof opts.layout === "string") {
         if (!ROSTER_LAYOUT_VALUES.includes(opts.layout)) fail(`--layout must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(opts.layout)}`);
-        data.roster.layout = opts.layout;
+        fresh.layout = opts.layout;
+      }
+      if (!teamArg) {
+        data.roster = fresh;
+      } else {
+        data.rosters ||= {};
+        data.rosters[teamArg] = fresh;
       }
       writeLevelFile(path, data);
-      out({ level, path, roster: data.roster });
+      out({ level, path, container: containerLabel(teamArg), roster: fresh });
       break;
     }
 
     case "add": {
-      const { level, wasDefaulted } = targetLevel();
+      const { level, wasDefaulted, teamKey } = targetLevel();
       const path = rosterLevelPaths(cwd)[level];
       const data = readLevelFile(path);
-      if (!data.roster || !Array.isArray(data.roster.members)) fail(`no roster at level "${level}" (${path}) — run \`roster.mjs init\` first`);
+      const container = rosterContainer(data, teamKey);
+      // §3.4b: `init` is the only path that may create a container — default or team-scoped.
+      // No auto-vivification here: a typo'd --team writes a block that can never be selected
+      // (resolveRoster only matches an active team name), which is silent-wrong forever.
+      if (!container) {
+        fail(
+          teamKey
+            ? `no ${containerLabel(teamKey)} at level "${level}" (${path}) — run \`roster.mjs init --team ${teamKey}\` first`
+            : `no roster at level "${level}" (${path}) — run \`roster.mjs init\` first`
+        );
+      }
+      if (!Array.isArray(container.members)) container.members = [];
       const role = opts.role;
       if (role === "orchestrator") fail('role "orchestrator" is not a roster member — the Orchestrator is whatever session runs /agent-roster create');
       if (!ROLES.includes(role)) fail(`--role must be one of ${ROLES.join(", ")}, got ${JSON.stringify(role)}`);
@@ -1013,32 +1090,33 @@ try {
       if (typeof opts["auto-mode"] === "string") member.autoMode = opts["auto-mode"];
       if (opts["on-missing"] === true) fail("add: --on-missing requires a value (auto, prompt, or never)");
       if (typeof opts["on-missing"] === "string") member.onMissing = opts["on-missing"];
-      if (member.onMissing !== undefined && (member.route || data.roster.route) === "subagent") {
+      if (member.onMissing !== undefined && (member.route || container.route) === "subagent") {
         fail('on-missing applies only to peer-routed members (this member\'s route is "subagent")');
       }
       const memberErrors = validateMember(member);
       if (memberErrors.length) fail(memberErrors.join("; "));
-      if (member.autoMode === "bypassPermissions" && (member.route || data.roster.route) === "peer") {
+      if (member.autoMode === "bypassPermissions" && (member.route || container.route) === "peer") {
         process.stderr.write('roster.mjs: warning — auto-mode "bypassPermissions" can leave a headless peer stuck at a startup confirmation screen\n');
       }
-      data.roster.members.push(member);
-      const blockErrors = validateRosterBlock(data.roster);
+      container.members.push(member);
+      const blockErrors = validateRosterBlock(container);
       if (blockErrors.length) fail(blockErrors.join("; "));
       writeLevelFile(path, data);
       if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — added at the currently-resolving level "${level}" (${path})\n`);
-      out({ level, path, wasDefaulted, member: namedMembers(data.roster.members).at(-1) });
+      out({ level, path, wasDefaulted, container: containerLabel(teamKey), member: namedMembers(container.members).at(-1) });
       break;
     }
 
     case "edit": {
       const memberName = typeof opts.member === "string" ? opts.member : fail("edit needs --member <derived-name>");
-      const { level, wasDefaulted } = targetLevel();
+      const { level, wasDefaulted, teamKey } = targetLevel();
       const path = rosterLevelPaths(cwd)[level];
       const data = readLevelFile(path);
-      if (!data.roster || !Array.isArray(data.roster.members)) fail(`no roster at level "${level}" (${path}) — run \`roster.mjs init\` first`);
-      const idx = findMemberIndex(data.roster.members, memberName);
+      const container = rosterContainer(data, teamKey);
+      if (!container || !Array.isArray(container.members)) fail(`no ${containerLabel(teamKey)} at level "${level}" (${path}) — run \`roster.mjs init\` first`);
+      const idx = findMemberIndex(container.members, memberName);
       if (idx === -1) fail(`no member named ${JSON.stringify(memberName)} at level "${level}"`);
-      const updated = { ...data.roster.members[idx] };
+      const updated = { ...container.members[idx] };
       if (typeof opts.role === "string") updated.role = opts.role;
       if (typeof opts.model === "string") updated.model = opts.model;
       if (typeof opts.effort === "string") updated.effort = opts.effort;
@@ -1050,7 +1128,7 @@ try {
       // there" are indistinguishable on `updated` alone. That conflation is the trap amendment (c) fixes.
       const onMissingSupplied = typeof opts["on-missing"] === "string";
       if (onMissingSupplied) updated.onMissing = opts["on-missing"];
-      if (onMissingSupplied && (updated.route || data.roster.route) === "subagent") {
+      if (onMissingSupplied && (updated.route || container.route) === "subagent") {
         // §3.2(i): both supplied in one invocation — a contradiction, never guess which one wins.
         fail('on-missing applies only to peer-routed members (this member\'s route is "subagent")');
       }
@@ -1064,13 +1142,13 @@ try {
       if (updated.role === "orchestrator") fail('role "orchestrator" is not a roster member');
       const errors = validateMember(updated);
       if (errors.length) fail(errors.join("; "));
-      if (updated.autoMode === "bypassPermissions" && (updated.route || data.roster.route) === "peer") {
+      if (updated.autoMode === "bypassPermissions" && (updated.route || container.route) === "peer") {
         process.stderr.write('roster.mjs: warning — auto-mode "bypassPermissions" can leave a headless peer stuck at a startup confirmation screen\n');
       }
-      data.roster.members[idx] = updated;
+      container.members[idx] = updated;
       writeLevelFile(path, data);
       if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — edited at the currently-resolving level "${level}" (${path})\n`);
-      out({ level, path, wasDefaulted, member: namedMembers(data.roster.members)[idx] });
+      out({ level, path, wasDefaulted, container: containerLabel(teamKey), member: namedMembers(container.members)[idx] });
       break;
     }
 
@@ -1079,24 +1157,25 @@ try {
       const result = removeConfigMember(memberName);
       if (!result.removed) fail(result.reason === "no such member" ? `no member named ${JSON.stringify(memberName)} at level "${result.level}"` : result.reason);
       if (result.wasDefaulted) process.stderr.write(`roster.mjs: no --level given — removed from the currently-resolving level "${result.level}" (${result.path})\n`);
-      out({ level: result.level, path: result.path, wasDefaulted: result.wasDefaulted, removed: memberName, store: `roster config at "${result.level}" (${result.path})` });
+      out({ level: result.level, path: result.path, wasDefaulted: result.wasDefaulted, removed: memberName, container: result.container, store: `${result.container} config at "${result.level}" (${result.path})` });
       break;
     }
 
     case "layout": {
-      const { level, wasDefaulted } = targetLevel();
+      const { level, wasDefaulted, teamKey } = targetLevel();
       const path = rosterLevelPaths(cwd)[level];
       const data = readLevelFile(path);
-      if (!data.roster || !Array.isArray(data.roster.members)) fail(`no roster at level "${level}" — run \`roster.mjs init\` first`);
+      const container = rosterContainer(data, teamKey);
+      if (!container || !Array.isArray(container.members)) fail(`no ${containerLabel(teamKey)} at level "${level}" — run \`roster.mjs init\` first`);
       if (typeof opts.layout === "string") {
         if (!ROSTER_LAYOUT_VALUES.includes(opts.layout)) fail(`--layout must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(opts.layout)}`);
-        data.roster.layout = opts.layout;
-        const blockErrors = validateRosterBlock(data.roster);
+        container.layout = opts.layout;
+        const blockErrors = validateRosterBlock(container);
         if (blockErrors.length) fail(blockErrors.join("; "));
         writeLevelFile(path, data);
       }
       if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — using the currently-resolving level "${level}" (${path})\n`);
-      out({ level, path, wasDefaulted, layout: data.roster.layout || "auto" });
+      out({ level, path, wasDefaulted, container: containerLabel(teamKey), layout: container.layout || "auto" });
       break;
     }
 
@@ -1265,11 +1344,14 @@ try {
         let members;
         let needsResync = false;
         if (allStrings) {
-          const rosterPath = rosterLevelPaths(cwd)[rosterLevel];
-          const rosterData = rosterPath ? readLevelFile(rosterPath) : null;
-          const rosterMembersRaw = rosterData && rosterData.roster && Array.isArray(rosterData.roster.members) ? rosterData.roster.members : [];
-          const rosterRoute = rosterData && rosterData.roster ? rosterData.roster.route : undefined;
-          const rosterMembers = rosterMemberNames(rosterMembersRaw, repoBasename);
+          // Spec 0032 §3.4a/§3.4c: reuse resolveRoster's own resolution and no-match predicate
+          // directly, rather than re-deriving the container from --roster-level by hand — a
+          // hand-rolled predicate drifted from resolveRoster's (`!members.length` vs null-only),
+          // so an override with `members: []` was picked here while --plan correctly fell
+          // through to the default. resolveRoster is exactly what --plan itself calls.
+          const resolved = resolveRoster(cwd, teamArg);
+          const rosterMembers = resolved ? resolved.members : [];
+          const rosterRoute = resolved ? resolved.route : undefined;
           members = verified.map((name) => {
             const found = rosterMembers.find((m) => m.name === name);
             if (!found) {
@@ -1313,6 +1395,7 @@ try {
           orchestrator: { session_id: typeof opts.session === "string" ? opts.session : null, pid: orchestratorPid },
           members,
           partial: opts.partial === true,
+          expected_root: realCwd(cwd),
         };
         writeTeam(dir, team, teamArg);
         // A history-write failure must not fail `create` — the Team is already committed and
@@ -1861,6 +1944,7 @@ try {
           orchestrator: { session_id: null, pid: newTeamOrchestratorPid },
           members: [],
           partial: resolved.members.length > 1,
+          expected_root: realCwd(cwd),
         };
       }
       const idx = outTeam.members.findIndex(matches);
@@ -1868,7 +1952,8 @@ try {
       else outTeam.members[idx] = newRecord;
       writeTeam(dir, outTeam, teamArg);
       const outMember = launched.label ? { ...newRecord, label: launched.label } : newRecord;
-      out({ spawned: true, member: outMember, team_id: outTeam.team_id, roster_level: outTeam.roster_level });
+      // Spec 0035 §2.4: report where this peer actually launched, not just that it launched.
+      out({ spawned: true, member: outMember, team_id: outTeam.team_id, roster_level: outTeam.roster_level, launch_cwd: planEntry.spawn.launch_cwd });
       break;
     }
 
@@ -1901,21 +1986,112 @@ try {
       // stale or a sibling orchestrator's team is invisible. Never writes.
       const dir = hierarchyDir(cwd);
       const myPid = typeof opts["orchestrator-pid"] === "string" ? Number(opts["orchestrator-pid"]) : Number(process.env.CLAUDE_PID);
-      const describe = (name) => {
-        const t = readTeam(dir, name);
-        if (!t) return null;
-        const pid = t.orchestrator && t.orchestrator.pid;
-        return {
-          name,
-          team_id: t.team_id,
-          members: Array.isArray(t.members) ? t.members.length : 0,
-          orchestrator_pid: pid ?? null,
-          pid_alive: pidAlive(pid),
-          own: Number.isInteger(myPid) && pid === myPid,
-        };
+      const rows = allTeamRows(dir, myPid);
+      // Spec 0036 §3.6 (F4 fix): a misplaced row is attributed to a specific member ONLY when its
+      // own `team` matches this team's identity AND its role names exactly one peer member of
+      // THIS team — role alone is not unique across DIFFERENT teams, and §3.5's action on a wrong
+      // match is destructive (dismiss+respawn of a healthy peer). A row with no `team` (pre-0036),
+      // or a role shared by >1 member of the same team, is never attributed — counted in
+      // `misplaced_unattributed` instead: under-reporting is recoverable, mis-reporting is not.
+      // Filtered to live rows (status "up" and a live pid — same convention upRecordFor uses) —
+      // an unclean exit (crash, killed pane, no SessionEnd) otherwise leaves misplaced:true as the
+      // latest row forever, nagging about a peer that no longer exists.
+      const liveMisplaced = latestRoster(dir).filter((r) => r.misplaced && r.status === "up" && pidAlive(r.pid));
+      for (const row of rows) {
+        const t = readTeam(dir, row.name);
+        const members = t && Array.isArray(t.members) ? t.members : [];
+        const flagged = [];
+        let unattributed = 0;
+        for (const r of liveMisplaced) {
+          // A pre-0036 row (no `team` at all) falls into the default team's bucket — the only
+          // shape that existed before named teams — but is NEVER flagged, only counted: T16.
+          const hasExplicitTeam = Object.prototype.hasOwnProperty.call(r, "team");
+          const rowTeam = hasExplicitTeam ? r.team : null;
+          if (rowTeam !== row.name) continue;
+          const roleMembers = members.filter((m) => m.role === r.role && m.route === "peer");
+          if (hasExplicitTeam && roleMembers.length === 1) flagged.push({ role: r.role, name: roleMembers[0].name, observed_cwd: r.cwd });
+          else unattributed++;
+        }
+        row.misplaced_members = flagged;
+        row.misplaced_unattributed = unattributed;
+      }
+      out({ teams: rows });
+      break;
+    }
+
+    case "checkin": {
+      // Spec 0036 §3.3: the missing re-registration primitive — SessionStart fires once, at
+      // launch, so nothing else re-appends to peers.jsonl mid-session. Re-runs §3.2's comparison
+      // and appends a fresh row via the same writer sessionstart.mjs:98 uses.
+      for (const key of Object.keys(opts)) {
+        if (key === "_") continue;
+        if (!CHECKIN_FLAGS.has(key)) fail(`checkin: unrecognized flag --${key} (use --team, --cwd, or --orchestrator-pid)`);
+      }
+      const dir = hierarchyDir(cwd);
+      // roster.mjs runs as a transient Bash-tool subprocess (see :1381's identical warning at
+      // create --commit) — process.ppid here is that shell, not the session SessionStart wrote
+      // pid: process.ppid FOR (the session itself). Resolve the session pid the same way
+      // teams/create --commit already do, falling back to process.ppid only if both are unset.
+      let myPid = typeof opts["orchestrator-pid"] === "string" ? Number(opts["orchestrator-pid"]) : NaN;
+      if (!Number.isInteger(myPid)) myPid = Number(process.env.CLAUDE_PID);
+      if (!Number.isInteger(myPid)) myPid = process.ppid;
+      const existing = latestRoster(dir).find((r) => r.pid === myPid);
+      if (!existing) fail(`checkin: no existing roster record for pid ${myPid} — SessionStart must run before checkin`);
+      // Spec 0036 §3.2/§3.3 (F4/F6): the same shared resolver sessionstart.mjs uses — an explicit
+      // --team is a direct lookup (unchanged from before); omitted, it now scans for the one team
+      // whose members contain exactly one of this role, instead of silently defaulting.
+      const resolved = resolveSessionTeam(dir, existing.role, teamArg);
+      // G8: an EXPLICIT --team that resolves to nothing is a typo, not a legitimate absence —
+      // 0032 §3.4b's same precedent (add --team X refuses a nonexistent container) rather than
+      // silently reporting misplaced:false forever. An omitted --team still skips silently
+      // (§3.2 point 3), unaffected.
+      if (teamArg && !resolved) fail(`checkin: no such team "${teamArg}"`);
+      const team = resolved && resolved.team;
+      const expectedRoot = (team && team.expected_root) || null;
+      const observed = realCwd(cwd);
+      const misplaced = Boolean(expectedRoot) && observed !== expectedRoot;
+      const rec = {
+        status: "up",
+        role: existing.role,
+        session_id: existing.session_id || null,
+        pid: myPid,
+        ppid: process.ppid,
+        cwd: observed,
+        pane_id: process.env.HERDR_PANE_ID || existing.pane_id || null,
+        tab_id: process.env.HERDR_TAB_ID || existing.tab_id || null,
+        workspace_id: process.env.HERDR_WORKSPACE_ID || existing.workspace_id || null,
       };
-      const teams = [describe(null), ...listTeamNames(dir).map(describe)].filter(Boolean);
-      out({ teams });
+      // §3.2/§3.3: gains `team` when a team resolved — never `name` (see sessionstart.mjs's
+      // identical comment; rosterKey/posttooluse-roster.mjs partitioning risk).
+      if (resolved) rec.team = resolved.teamName;
+      // Spec 0036 §3.1: absent expected_root means no expectation recorded — never write
+      // misplaced/expected_root fields in that case, so an old team is never read as a mismatch.
+      if (expectedRoot) {
+        rec.expected_root = expectedRoot;
+        rec.misplaced = misplaced;
+      }
+      appendRosterRecord(dir, rec);
+      out({ checked_in: true, cwd: observed, expected_root: expectedRoot, misplaced });
+      if (misplaced) process.exitCode = 1;
+      break;
+    }
+
+    case "reap": {
+      // Spec 0033 §3.2: explicit verb, plan-by-default like `create`/`disband`. Bare form lists
+      // orphans and deletes nothing; --commit removes them. Any other flag fails loudly rather
+      // than degrading to the destructive path (mirrors disband's guard, §3.2).
+      for (const key of Object.keys(opts)) {
+        if (key === "_") continue;
+        if (!REAP_FLAGS.has(key)) fail(`reap: unrecognized flag --${key} (use --commit)`);
+      }
+      const dir = hierarchyDir(cwd);
+      const orphans = allTeamRows(dir, null).filter((t) => t.orphaned);
+      if (opts.commit === true) {
+        for (const t of orphans) clearTeam(dir, t.name);
+        out({ committed: true, reaped: orphans });
+      } else {
+        out({ committed: false, orphans });
+      }
       break;
     }
 
@@ -1940,7 +2116,7 @@ try {
     }
 
     default:
-      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one|adopt|teams|history [--commit|--keep-sessions] [--level global|repo|repo-user] [--team <name>] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
+      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one|adopt|teams|reap|history|checkin [--commit|--keep-sessions] [--level global|repo|repo-user] [--team <name>] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
   }
 } catch (err) {
   fail(err && err.message ? err.message : String(err));

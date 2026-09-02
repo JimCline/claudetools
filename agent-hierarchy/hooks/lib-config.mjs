@@ -467,37 +467,56 @@ export function teamPrefix(cwd, team) {
   return teamPrefixInfo(cwd, team).prefix;
 }
 
+/** The `rosters[team]` block at one level, or null. Invalid alias keys are skipped. */
+function pickTeamRoster(data, team) {
+  const map = data.rosters;
+  if (!map || typeof map !== "object" || Array.isArray(map)) return null;
+  return Object.prototype.hasOwnProperty.call(map, team) ? map[team] : null;
+}
+
 /**
  * Resolve the roster: repo-user → repo → global, first level whose `roster`
  * key is present with at least one member wins IN ITS ENTIRETY (no merging
  * across levels). Returns `{level, route, layout, members: [...withNames],
- * path, teamAlias, teamAliasSource}` (`layout` defaults to "auto" when absent
- * — the sole default site, spec 0004 §4.3) or null when no level has one.
+ * path, teamAlias, teamAliasSource, teamKey}` (`layout` defaults to "auto"
+ * when absent — the sole default site, spec 0004 §4.3) or null when no level
+ * has one.
+ *
+ * Two-pass (spec 0032 §3.2): when `team` is given, pass 1 walks every level
+ * looking for a `rosters[team]` block (team-specificity outranks location);
+ * pass 2, always run, is today's behaviour reading the default `roster` key.
+ * `teamKey` on the result is the team the WINNING pass matched on — the
+ * team name for a pass-1 hit, else null (including whenever `team` had no
+ * matching override anywhere and pass 2 won).
  */
 export function resolveRoster(cwd, team) {
   const candidates = rosterLevelCandidates(cwd);
   const { prefix, alias, source } = teamPrefixInfo(cwd, team);
-  for (const level of ROSTER_LEVELS) {
-    for (const path of candidates[level]) {
-      if (!existsSync(path)) continue;
-      let data;
-      try {
-        data = JSON.parse(readFileSync(path, "utf8"));
-      } catch {
-        continue;
+  const passes = team ? [team, null] : [null];
+  for (const teamKey of passes) {
+    for (const level of ROSTER_LEVELS) {
+      for (const path of candidates[level]) {
+        if (!existsSync(path)) continue;
+        let data;
+        try {
+          data = JSON.parse(readFileSync(path, "utf8"));
+        } catch {
+          continue;
+        }
+        if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+        const r = teamKey ? pickTeamRoster(data, teamKey) : data.roster;
+        if (!r || typeof r !== "object" || Array.isArray(r) || !Array.isArray(r.members) || r.members.length === 0) continue;
+        return {
+          level,
+          route: r.route,
+          layout: r.layout || "auto",
+          members: rosterMemberNames(r.members, prefix),
+          path,
+          teamAlias: alias,
+          teamAliasSource: source,
+          teamKey,
+        };
       }
-      if (!data || typeof data !== "object" || Array.isArray(data)) continue;
-      const r = data.roster;
-      if (!r || typeof r !== "object" || Array.isArray(r) || !Array.isArray(r.members) || r.members.length === 0) continue;
-      return {
-        level,
-        route: r.route,
-        layout: r.layout || "auto",
-        members: rosterMemberNames(r.members, prefix),
-        path,
-        teamAlias: alias,
-        teamAliasSource: source,
-      };
     }
   }
   return null;
@@ -565,13 +584,20 @@ export function resolveConfig(cwd, opts = {}) {
   const resolvedCwd = resolve(typeof cwd === "string" && cwd ? cwd : process.cwd());
   const team = resolveTeamScope(resolvedCwd, opts);
   const userPath = userConfigPath();
-  const projectPath = projectConfigPath(cwd);
-  const repoUserPath = rosterLevelPaths(cwd)["repo-user"];
+  // Fix 2 (spec 0032 §4): worktree-aware candidate lists, matching resolveRoster — first
+  // existing path per scope, never merged across candidates within a level (§4 rationale:
+  // `shadowed` counts scopes, and a merge would change what it means).
+  const candidates = rosterLevelCandidates(resolvedCwd);
+  // `global`/`repo`/`repo-user` here map to resolveConfig's `user`/`project`/`repo-user`
+  // scope names. Names differ for historical reasons (spec 0001); the files are the same.
+  const firstExisting = (paths) => paths.find((p) => existsSync(p)) || null;
+  const projectPath = firstExisting(candidates.repo);
+  const repoUserPath = firstExisting(candidates["repo-user"]);
   const user = loadScope(userPath, "user", warnings);
   // When the session's cwd IS the home directory the two scopes are the same
   // file; loading it twice would report every role as shadowed by itself.
-  const project = projectPath === userPath ? null : loadScope(projectPath, "project", warnings);
-  const repoUser = repoUserPath === userPath || repoUserPath === projectPath ? null : loadScope(repoUserPath, "repo-user", warnings);
+  const project = !projectPath || projectPath === userPath ? null : loadScope(projectPath, "project", warnings);
+  const repoUser = !repoUserPath || repoUserPath === userPath || repoUserPath === projectPath ? null : loadScope(repoUserPath, "repo-user", warnings);
 
   // Least specific first: repo-user is the new highest-precedence layer.
   const layers = [user, project, repoUser].filter(Boolean);

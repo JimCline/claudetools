@@ -223,6 +223,18 @@ export const TOOLS = [
     },
   },
   {
+    name: "roster_reap",
+    description: "List orphaned team records (mode: plan, default, read-only), or remove them (mode: commit). A team is orphaned when its orchestrator process is gone. Never touches a team whose orchestrator is alive.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        mode: { type: "string", enum: ["plan", "commit"], description: "Default plan." },
+      },
+      required: ["cwd"],
+    },
+  },
+  {
     name: "roster_layout_splits",
     description: "Run or drive the herdr layout-splits phase via roster.mjs layout-splits.",
     inputSchema: {
@@ -697,6 +709,16 @@ export async function callTool(name, input) {
       const args = ["adopt"];
       pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
       pushArg(args, "team", args_in.team);
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_reap": {
+      const mode = args_in.mode || "plan";
+      if (mode !== "plan" && mode !== "commit") {
+        return { content: [{ type: "text", text: `roster_reap: "mode" must be one of plan, commit, got ${JSON.stringify(mode)}` }], isError: true };
+      }
+      const args = ["reap"];
+      if (mode === "commit") args.push("--commit");
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }

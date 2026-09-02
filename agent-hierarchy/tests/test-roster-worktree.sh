@@ -137,6 +137,47 @@ EOF
 evalc "JSON.stringify(C.resolveRoster('$BARE_DIR/wt'))"
 check "T8: bare-repo-linked worktree does not bind to the roster beside the bare repo (§3.1 guard)" '[ "$OUT" = null ]'
 
+# T14 (spec 0032 §2.1/§4, "the closed gap"): worktree; per-role model config ONLY at
+# <mainRoot>/.claude/agent-hierarchy.json; resolve from the worktree -> resolveConfig
+# finds it, sources[role] !== "default". Pre-fix this failed (source: "default") — see
+# spec 0032 §7 item 1's evidence, run separately against the unmodified tree.
+mkdir -p "$MAIN/.claude"
+cat > "$MAIN/.claude/agent-hierarchy.json" <<'EOF'
+{ "version": 1, "roles": { "architect": { "model": "sonnet" } } }
+EOF
+evalc "JSON.stringify({model: C.resolveConfig('$WT').roles.architect.model, source: C.resolveConfig('$WT').sources.architect})"
+check "T14: resolveConfig finds the main checkout's role config from inside a worktree" \
+  'echo "$OUT" | grep -q "\"model\":\"sonnet\"" && echo "$OUT" | grep -q "\"source\":\"project\""'
+
+# T15: spec 0032's own §6 prose for this case ("roles come from the main root rather than
+# defaults") CONTRADICTS its own §4 fix code and §4.2 text. §4's `firstExisting` picks the
+# first EXISTING candidate per scope and does NOT merge/fall through past it (§4:
+# "Deliberately NOT merging across candidates within a level... one layer per scope, is the
+# minimal change"); §4.2 separately states "configured's presence-only gate (§2.2) stays" —
+# unfixed, on purpose. So a worktree-local file that exists (even with only teamAlias, no
+# roles) wins the `project` scope outright and the main root's `roles` are never consulted —
+# ROLE_DEFAULTS apply, exactly as §4.2 says stays true. Asserting the spec's own §4 code,
+# not its §6 prose for this row — see the implementation report for the flagged contradiction.
+mkdir -p "$WT/.claude"
+cat > "$WT/.claude/agent-hierarchy.json" <<'EOF'
+{ "version": 1, "teamAlias": "wtonly" }
+EOF
+evalc "JSON.stringify({model: C.resolveConfig('$WT').roles.architect.model, configured: C.resolveConfig('$WT').configured})"
+check "T15: worktree-local presence-only file wins its scope outright, per §4/§4.2 (contradicts §6 prose — flagged)" \
+  'echo "$OUT" | grep -q "\"model\":\"opus\"" && echo "$OUT" | grep -q "\"configured\":true"'
+rm "$WT/.claude/agent-hierarchy.json" "$MAIN/.claude/agent-hierarchy.json"
+
+# T16: normal checkout, config at <root>/.claude/..., cwd = root -> resolveConfig unchanged (Fix 2 regression guard)
+NORMAL2="$SANDBOX/normal2"
+mkdir -p "$NORMAL2/.claude"
+(cd "$NORMAL2" && git init -q)
+cat > "$NORMAL2/.claude/agent-hierarchy.json" <<'EOF'
+{ "version": 1, "roles": { "reviewer": { "model": "sonnet" } } }
+EOF
+evalc "JSON.stringify({model: C.resolveConfig('$NORMAL2').roles.reviewer.model, source: C.resolveConfig('$NORMAL2').sources.reviewer, configured: C.resolveConfig('$NORMAL2').configured})"
+check "T16: normal checkout resolveConfig output unaffected by Fix 2" \
+  'echo "$OUT" | grep -q "\"model\":\"sonnet\"" && echo "$OUT" | grep -q "\"source\":\"project\"" && echo "$OUT" | grep -q "\"configured\":true"'
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]
