@@ -1290,7 +1290,7 @@ try {
         // — a silent config/live mismatch. Refuse instead: the row stands, nothing launches.
         const resolvedNow = resolveRoster(cwd, teamArg);
         if (resolvedNow && resolvedNow.level !== level) {
-          fail(`level mismatch — the row landed at level "${level}" (${path}) but the roster that resolves for ${cwd} is level "${resolvedNow.level}" (${resolvedNow.path}); a peer spawned now would come from that other roster. The row stays; it spawns once its level is the one that resolves, or use --no-spawn`);
+          fail(`level mismatch — the row landed at level "${level}" (${path}) but the roster that resolves for ${cwd} is level "${resolvedNow.level}" (${resolvedNow.path}); a peer spawned now would come from that other roster. The row stays; retry with roster.mjs spawn-one ${role} once its level is the one that resolves`);
         }
         opts.member = added.name;
         result.spawn = await spawnOneCore(role, "add");
