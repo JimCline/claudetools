@@ -8,7 +8,8 @@
  *   roster.mjs show   [global|repo|repo-user] [--level L] [--cwd <path>]
  *   roster.mjs init    [level] [--level L] --route <peer|subagent> [--layout <mode>] [--cwd <path>]
  *   roster.mjs add     [level] [--level L] --role <R> [--model M] [--effort E]
- *                       [--route peer|subagent] [--auto-mode A] [--on-missing auto|prompt|never] [--cwd <path>]
+ *                       [--route peer|subagent] [--auto-mode A] [--on-missing auto|prompt|never]
+ *                       [--no-spawn] [--allow-global] [--orchestrator-pid P] [--cwd <path>]   (spec 0039: a peer-routed add spawns the peer)
  *   roster.mjs edit    [level] [--level L] --member <NAME> [--role R] [--model M]
  *                       [--effort E] [--route ...] [--auto-mode A] [--on-missing auto|prompt|never] [--cwd <path>]
  *   roster.mjs remove  [level] [--level L] --member <NAME> [--cwd <path>]
@@ -80,7 +81,7 @@ import { CONFIG_VERSION, findGitRoot, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, 
 import { ageSecOf, appendRosterRecord, latestRoster, newId, localIso, pidAlive, realCwd, ROSTER_FRESH_SEC } from "./lib-hier.mjs";
 import { clearTeam, fingerprint, herdrOnPath, historyEntryIsActive, listTeamNames, normalizeMembers, readHistory, readTeam, resolveSessionTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamIsLive, teamIsOrphaned, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
 
-const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config"]);
+const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config", "no-spawn"]);
 const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "close", "confirm", "plan-token", "allow-global", "cwd", "team"]);
 const DISMISS_FLAGS = new Set(["plan", "close", "commit", "confirm", "plan-token", "also-config", "level", "allow-global", "cwd", "team"]);
 const RESYNC_FLAGS = new Set(["dry-run", "cwd", "team", "bind"]);
@@ -111,7 +112,27 @@ function parseArgs(argv) {
   return opts;
 }
 
+/** Spec 0039 §1.4: set by `add` once its config write has landed and the spawn begins. Any
+    failure from then on is a recoverable partial — the roster row is kept, the exit code is 3,
+    and the error names the retry — because `fail()` is how every layer under the shared spawn
+    path (`layoutAndLaunch` included) reports, and rollback was ruled out. */
+let addSpawnCtx = null;
+
+function spawnRemedy(reason) {
+  const { role } = addSpawnCtx;
+  if (reason.startsWith("level mismatch")) return `spawn FAILED: ${reason}`;
+  // Spec 0039 §1.6: when the global-roster guard blocked the spawn, name both escapes.
+  if (reason.includes("--allow-global")) {
+    return `spawn FAILED: ${reason} — re-run add --role ${role} --allow-global, or roster.mjs spawn-one ${role} --allow-global (or roster_spawn_one with allow_global)`;
+  }
+  return `spawn FAILED: ${reason} — retry with roster.mjs spawn-one ${role} (or roster_spawn_one)`;
+}
+
 function fail(msg) {
+  if (addSpawnCtx) {
+    process.stderr.write(`roster.mjs: ${spawnRemedy(msg)}\n`);
+    process.exit(3);
+  }
   process.stderr.write(`roster.mjs: ${msg}\n`);
   process.exit(2);
 }
@@ -123,6 +144,7 @@ function out(obj) {
 /** A partial layout-splits result: real work happened, but not all of it. Bypasses the outer try/catch. */
 function partial(obj) {
   process.stdout.write(JSON.stringify(obj, null, 2) + "\n");
+  if (addSpawnCtx) process.stderr.write(`roster.mjs: ${spawnRemedy(obj.error || "partial layout")}\n`);
   process.exit(3);
 }
 
@@ -1047,6 +1069,120 @@ function allTeamRows(dir, myPid) {
   return [describeTeamRow(dir, null, myPid), ...listTeamNames(dir).map((name) => describeTeamRow(dir, name, myPid))].filter(Boolean);
 }
 
+/** Spec 0009 §6 / 0039 §1.2: stand up ONE missing or dead peer — the single spawn path shared by
+    `spawn-one` and `add`. Extracted, not forked, from `createSpawn`'s launch path. Resolves the
+    roster, picks the member (`--member`, else the sole/first-dead candidate), refuses when the
+    peer is already live, places the pane, launches, and persists team.json. Returns the JSON the
+    caller prints; every refusal goes through `fail()`. `callerLabel` prefixes the error text and
+    the layout call. */
+async function spawnOneCore(role, callerLabel) {
+  if (!PEER_ELIGIBLE_ROLES.includes(role)) fail(`${callerLabel}: role must be one of ${PEER_ELIGIBLE_ROLES.join(", ")}, got ${JSON.stringify(role)}`);
+  const resolved = resolveRoster(cwd, teamArg);
+  if (!resolved) fail(`no roster configured for ${cwd}; run the /agent-roster skill's Init flow`);
+  requireAllowGlobal(resolved.level, resolved.path);
+  const candidates = resolved.members.filter((m) => m.role === role);
+  if (candidates.length === 0) {
+    const roles = [...new Set(resolved.members.map((m) => m.role))];
+    fail(`${callerLabel}: no ${role} member in the roster — roles it defines: ${roles.join(", ") || "(none)"}`);
+  }
+  const dir = hierarchyDir(cwd);
+  // §3.2: --member is value-taking; parseArgs sets it to `true` (not a string) when given
+  // with no value or immediately followed by another flag — that must fail loudly, never
+  // silently fall through to implicit selection.
+  if (opts["member"] === true) fail(`${callerLabel}: --member requires a value (the derived member name)`);
+  let member;
+  if (typeof opts["member"] === "string") {
+    member = candidates.find((m) => m.name === opts["member"]);
+    if (!member) fail(`${callerLabel}: no member named ${opts["member"]} for role ${role} in the roster — it defines: ${candidates.map((m) => m.name).join(", ") || "(none)"}`);
+  } else if (candidates.length === 1) {
+    member = candidates[0];
+  } else {
+    member = candidates.find((m) => !memberIsLive(dir, m.name)) || candidates[candidates.length - 1];
+  }
+
+  const team = readTeam(dir, teamArg);
+  // Spec 0018 §3/§4.3: creating a new team here needs a resolvable, live owner pid — refuse
+  // before anything spawns, so a half-launched team (panes up, no persisted owner) never
+  // happens. Only relevant when no team file exists yet; an existing team already has one.
+  let newTeamOrchestratorPid = null;
+  if (!team) {
+    newTeamOrchestratorPid = typeof opts["orchestrator-pid"] === "string" ? Number(opts["orchestrator-pid"]) : Number(process.env.CLAUDE_PID);
+    if (!Number.isInteger(newTeamOrchestratorPid)) {
+      fail(`${callerLabel}: no orchestrator pid resolvable (CLAUDE_PID unset and no --orchestrator-pid given) — refusing to create a team with an unowned pid`);
+    }
+    if (!pidAlive(newTeamOrchestratorPid)) {
+      fail(`${callerLabel}: --orchestrator-pid ${newTeamOrchestratorPid} is not a live process — refusing to create a team owned by a dead pid`);
+    }
+  }
+  const byName = candidates.length > 1;
+  const matches = (m) => (byName ? m.name === member.name : m.role === role);
+  const existing = team && Array.isArray(team.members) ? team.members.find(matches) : null;
+  // §3.3(i)/§3.3.1, amendment (b): the already-live decision is a disjunction over TWO names,
+  // both asked of the registry (`memberIsLive`) — never the team-record lookup by itself.
+  // - memberIsLive(dir, member.name): the name we're about to launch is already running
+  //   (population 1 — a live member whose team.json slot got overwritten by a sibling spawn).
+  // - liveRecord: this slot's EXISTING record is live under a different (stale-drifted) name
+  //   (population 2 — alias drift, spec 0010 §7.2). A dead existing record must NOT block a
+  //   legitimate spawn, which is why liveness is asked about its name too, not just its presence.
+  // Collapsing to either disjunct alone reopens the other population — see §3.3.1.
+  const liveRecord = existing && memberIsLive(dir, existing.name) ? existing : null;
+  if (memberIsLive(dir, member.name) || liveRecord) {
+    const out_member = liveRecord || existing || { role: member.role, name: member.name };
+    if (byName && typeof opts["member"] !== "string") {
+      const candidatesLive = candidates.filter((c) => memberIsLive(dir, c.name)).map((c) => c.name);
+      return { spawned: false, reason: "already live", member: out_member, role, candidates_live: candidatesLive };
+    }
+    return { spawned: false, reason: "already live", member: out_member };
+  }
+  warnMixedPrefixSpawnOne(dir, member);
+
+  const transport = detectTransport();
+  const planEntry = { role: member.role, name: member.name, model: member.model, effort: member.effort, route: "peer", autoMode: member.autoMode, spawn: spawnShape(member, transport) };
+  const layoutInfo = layoutPlan(resolved, transport, [planEntry]);
+  const mode = layoutInfo ? layoutInfo.mode : resolved.layout;
+  if (!ROSTER_LAYOUT_VALUES.includes(mode)) fail(`${callerLabel}: layout mode must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(mode)}`);
+
+  if (opts["dry-run"] === true) {
+    return { dry_run: true, role: member.role, name: member.name, mode, launch: planEntry.spawn.launch };
+  }
+
+  const seedPanes = team && Array.isArray(team.members)
+    ? team.members
+        .filter((m) => m.route === "peer" && m.transport_id != null && m.name !== member.name)
+        .map((m) => m.transport_id)
+    : [];
+
+  const [launched] = await layoutAndLaunch([planEntry], transport, mode, cwd, callerLabel, { seedPanes });
+  if (launched.launch_status === "failed") fail(launched.error || `${callerLabel} launch failed`);
+
+  const newRecord = { role: member.role, name: member.name, route: "peer", model: member.model, effort: member.effort, autoMode: member.autoMode, transport_id: launched.transport_id };
+  const launchedPane = transport === "herdr" && launched.launch_result && launched.launch_result.result && launched.launch_result.result.pane;
+  if (launchedPane && launchedPane.tab_id != null) newRecord.tab_id = launchedPane.tab_id;
+  if (launchedPane && launchedPane.workspace_id != null) newRecord.workspace_id = launchedPane.workspace_id;
+
+  let outTeam = team;
+  if (!outTeam) {
+    outTeam = {
+      version: 1,
+      team_id: newId(),
+      created: localIso(),
+      roster_level: resolved.level,
+      transport,
+      orchestrator: { session_id: null, pid: newTeamOrchestratorPid },
+      members: [],
+      partial: resolved.members.length > 1,
+      expected_root: realCwd(cwd),
+    };
+  }
+  const idx = outTeam.members.findIndex(matches);
+  if (idx === -1) outTeam.members.push(newRecord);
+  else outTeam.members[idx] = newRecord;
+  writeTeam(dir, outTeam, teamArg);
+  const outMember = launched.label ? { ...newRecord, label: launched.label } : newRecord;
+  // Spec 0035 §2.4: report where this peer actually launched, not just that it launched.
+  return { spawned: true, member: outMember, team_id: outTeam.team_id, roster_level: outTeam.roster_level, launch_cwd: planEntry.spawn.launch_cwd };
+}
+
 try {
   switch (cmd) {
     case "show": {
@@ -1134,7 +1270,34 @@ try {
       writeLevelFile(path, data);
       if (created) process.stderr.write(`roster.mjs: no roster existed — created a minimal one at level "${level}": ${path}\n`);
       if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — added at the currently-resolving level "${level}" (${path})\n`);
-      out({ level, path, wasDefaulted, container: containerLabel(teamKey), member: namedMembers(container.members).at(-1) });
+      const added = namedMembers(container.members).at(-1);
+      const result = { level, path, wasDefaulted, container: containerLabel(teamKey), member: added };
+      // Spec 0039: a successful add ends in a usable peer — validate → write → spawn, never the
+      // reverse. Route subagent and --no-spawn write config only, and say so (§1.3, §1.5, §1.6).
+      process.stderr.write(`roster.mjs: added ${role} to ${path}\n`);
+      const effectiveRoute = member.route || container.route;
+      if (opts["no-spawn"] === true) {
+        result.spawn = { spawned: false, reason: "--no-spawn — config only, no session spawned" };
+        process.stderr.write(`roster.mjs: --no-spawn — config only, no session spawned\n`);
+      } else if (effectiveRoute !== "peer" || !PEER_ELIGIBLE_ROLES.includes(role)) {
+        const why = effectiveRoute !== "peer" ? `route ${effectiveRoute}` : `role ${role} is never a peer session`;
+        result.spawn = { spawned: false, reason: `${why} — dispatched on demand, no session spawned` };
+        process.stderr.write(`roster.mjs: ${result.spawn.reason}\n`);
+      } else {
+        addSpawnCtx = { role };
+        // The shared core resolves the roster by level precedence; a row written to a shadowed
+        // level (e.g. --level global under a repo roster) would spawn the OTHER level's member
+        // — a silent config/live mismatch. Refuse instead: the row stands, nothing launches.
+        const resolvedNow = resolveRoster(cwd, teamArg);
+        if (resolvedNow && resolvedNow.level !== level) {
+          fail(`level mismatch — the row landed at level "${level}" (${path}) but the roster that resolves for ${cwd} is level "${resolvedNow.level}" (${resolvedNow.path}); a peer spawned now would come from that other roster. The row stays; it spawns once its level is the one that resolves, or use --no-spawn`);
+        }
+        opts.member = added.name;
+        result.spawn = await spawnOneCore(role, "add");
+        addSpawnCtx = null;
+        process.stderr.write(`roster.mjs: ${result.spawn.spawned ? `spawned ${added.name}` : `${added.name} ${result.spawn.reason} — no session spawned`}\n`);
+      }
+      out(result);
       break;
     }
 
@@ -1876,115 +2039,7 @@ try {
         if (key === "_") continue;
         if (!SPAWN_ONE_FLAGS.has(key)) fail(`spawn-one: unrecognized flag --${key} (use --cwd, --dry-run, --allow-global, --team, --orchestrator-pid, or --member)`);
       }
-      const role = opts._[0];
-      if (!PEER_ELIGIBLE_ROLES.includes(role)) fail(`spawn-one: role must be one of ${PEER_ELIGIBLE_ROLES.join(", ")}, got ${JSON.stringify(role)}`);
-      const resolved = resolveRoster(cwd, teamArg);
-      if (!resolved) fail(`no roster configured for ${cwd}; run the /agent-roster skill's Init flow`);
-      requireAllowGlobal(resolved.level, resolved.path);
-      const candidates = resolved.members.filter((m) => m.role === role);
-      if (candidates.length === 0) {
-        const roles = [...new Set(resolved.members.map((m) => m.role))];
-        fail(`spawn-one: no ${role} member in the roster — roles it defines: ${roles.join(", ") || "(none)"}`);
-      }
-      const dir = hierarchyDir(cwd);
-      // §3.2: --member is value-taking; parseArgs sets it to `true` (not a string) when given
-      // with no value or immediately followed by another flag — that must fail loudly, never
-      // silently fall through to implicit selection.
-      if (opts["member"] === true) fail("spawn-one: --member requires a value (the derived member name)");
-      let member;
-      if (typeof opts["member"] === "string") {
-        member = candidates.find((m) => m.name === opts["member"]);
-        if (!member) fail(`spawn-one: no member named ${opts["member"]} for role ${role} in the roster — it defines: ${candidates.map((m) => m.name).join(", ") || "(none)"}`);
-      } else if (candidates.length === 1) {
-        member = candidates[0];
-      } else {
-        member = candidates.find((m) => !memberIsLive(dir, m.name)) || candidates[candidates.length - 1];
-      }
-
-      const team = readTeam(dir, teamArg);
-      // Spec 0018 §3/§4.3: creating a new team here needs a resolvable, live owner pid — refuse
-      // before anything spawns, so a half-launched team (panes up, no persisted owner) never
-      // happens. Only relevant when no team file exists yet; an existing team already has one.
-      let newTeamOrchestratorPid = null;
-      if (!team) {
-        newTeamOrchestratorPid = typeof opts["orchestrator-pid"] === "string" ? Number(opts["orchestrator-pid"]) : Number(process.env.CLAUDE_PID);
-        if (!Number.isInteger(newTeamOrchestratorPid)) {
-          fail("spawn-one: no orchestrator pid resolvable (CLAUDE_PID unset and no --orchestrator-pid given) — refusing to create a team with an unowned pid");
-        }
-        if (!pidAlive(newTeamOrchestratorPid)) {
-          fail(`spawn-one: --orchestrator-pid ${newTeamOrchestratorPid} is not a live process — refusing to create a team owned by a dead pid`);
-        }
-      }
-      const byName = candidates.length > 1;
-      const matches = (m) => (byName ? m.name === member.name : m.role === role);
-      const existing = team && Array.isArray(team.members) ? team.members.find(matches) : null;
-      // §3.3(i)/§3.3.1, amendment (b): the already-live decision is a disjunction over TWO names,
-      // both asked of the registry (`memberIsLive`) — never the team-record lookup by itself.
-      // - memberIsLive(dir, member.name): the name we're about to launch is already running
-      //   (population 1 — a live member whose team.json slot got overwritten by a sibling spawn).
-      // - liveRecord: this slot's EXISTING record is live under a different (stale-drifted) name
-      //   (population 2 — alias drift, spec 0010 §7.2). A dead existing record must NOT block a
-      //   legitimate spawn, which is why liveness is asked about its name too, not just its presence.
-      // Collapsing to either disjunct alone reopens the other population — see §3.3.1.
-      const liveRecord = existing && memberIsLive(dir, existing.name) ? existing : null;
-      if (memberIsLive(dir, member.name) || liveRecord) {
-        const out_member = liveRecord || existing || { role: member.role, name: member.name };
-        if (byName && typeof opts["member"] !== "string") {
-          const candidatesLive = candidates.filter((c) => memberIsLive(dir, c.name)).map((c) => c.name);
-          out({ spawned: false, reason: "already live", member: out_member, role, candidates_live: candidatesLive });
-        } else {
-          out({ spawned: false, reason: "already live", member: out_member });
-        }
-        break;
-      }
-      warnMixedPrefixSpawnOne(dir, member);
-
-      const transport = detectTransport();
-      const planEntry = { role: member.role, name: member.name, model: member.model, effort: member.effort, route: "peer", autoMode: member.autoMode, spawn: spawnShape(member, transport) };
-      const layoutInfo = layoutPlan(resolved, transport, [planEntry]);
-      const mode = layoutInfo ? layoutInfo.mode : resolved.layout;
-      if (!ROSTER_LAYOUT_VALUES.includes(mode)) fail(`spawn-one: layout mode must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(mode)}`);
-
-      if (opts["dry-run"] === true) {
-        out({ dry_run: true, role: member.role, name: member.name, mode, launch: planEntry.spawn.launch });
-        break;
-      }
-
-      const seedPanes = team && Array.isArray(team.members)
-        ? team.members
-            .filter((m) => m.route === "peer" && m.transport_id != null && m.name !== member.name)
-            .map((m) => m.transport_id)
-        : [];
-
-      const [launched] = await layoutAndLaunch([planEntry], transport, mode, cwd, "spawn-one", { seedPanes });
-      if (launched.launch_status === "failed") fail(launched.error || "spawn-one launch failed");
-
-      const newRecord = { role: member.role, name: member.name, route: "peer", model: member.model, effort: member.effort, autoMode: member.autoMode, transport_id: launched.transport_id };
-      const launchedPane = transport === "herdr" && launched.launch_result && launched.launch_result.result && launched.launch_result.result.pane;
-      if (launchedPane && launchedPane.tab_id != null) newRecord.tab_id = launchedPane.tab_id;
-      if (launchedPane && launchedPane.workspace_id != null) newRecord.workspace_id = launchedPane.workspace_id;
-
-      let outTeam = team;
-      if (!outTeam) {
-        outTeam = {
-          version: 1,
-          team_id: newId(),
-          created: localIso(),
-          roster_level: resolved.level,
-          transport,
-          orchestrator: { session_id: null, pid: newTeamOrchestratorPid },
-          members: [],
-          partial: resolved.members.length > 1,
-          expected_root: realCwd(cwd),
-        };
-      }
-      const idx = outTeam.members.findIndex(matches);
-      if (idx === -1) outTeam.members.push(newRecord);
-      else outTeam.members[idx] = newRecord;
-      writeTeam(dir, outTeam, teamArg);
-      const outMember = launched.label ? { ...newRecord, label: launched.label } : newRecord;
-      // Spec 0035 §2.4: report where this peer actually launched, not just that it launched.
-      out({ spawned: true, member: outMember, team_id: outTeam.team_id, roster_level: outTeam.roster_level, launch_cwd: planEntry.spawn.launch_cwd });
+      out(await spawnOneCore(opts._[0], "spawn-one"));
       break;
     }
 

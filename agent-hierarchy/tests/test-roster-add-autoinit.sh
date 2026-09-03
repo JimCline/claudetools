@@ -42,7 +42,7 @@ roles_in() { # <cfg path> <container: roster | rosters.X> -> comma-joined role l
 # with exit 2 "run init first". ----
 T1="$SANDBOX/t1"; new_repo "$T1"
 T1_CFG="$T1/.claude/agent-hierarchy.json"
-rcli "$T1" add --role reviewer
+rcli "$T1" add --no-spawn --role reviewer
 check "T1: bare add with no roster anywhere exits 0" '[ "$RC" -eq 0 ]'
 check "T1: roster file created at repo level" '[ -f "$T1_CFG" ]'
 check "T1: contains exactly the reviewer role" '[ "$(roles_in "$T1_CFG" roster)" = "reviewer" ]'
@@ -54,7 +54,7 @@ check "T1: nothing written at global level" '[ ! -f "$FAKEHOME/.claude/agent-hie
 # (~/.claude/agent-hierarchy.json). Flagged in the implementation report as a spec gap. ----
 T2="$SANDBOX/t2"; new_repo "$T2"
 GLOBAL_CFG="$FAKEHOME/.claude/agent-hierarchy.json"
-rcli "$T2" add --role reviewer --level global
+rcli "$T2" add --no-spawn --role reviewer --level global
 check "T2: add --level global with no roster exits 0" '[ "$RC" -eq 0 ]'
 check "T2: file created at the explicit (global) level" '[ -f "$GLOBAL_CFG" ] && [ "$(roles_in "$GLOBAL_CFG" roster)" = "reviewer" ]'
 check "T2: not created at repo level" '[ ! -f "$T2/.claude/agent-hierarchy.json" ]'
@@ -64,13 +64,13 @@ rm -f "$GLOBAL_CFG"
 # extend to named teams (0032 §3.4b). Mutation: fails against an implementation that auto-vivifies
 # `rosters.X`. ----
 T3="$SANDBOX/t3"; new_repo "$T3"
-rcli "$T3" add --role reviewer --team X
+rcli "$T3" add --no-spawn --role reviewer --team X
 check "T3: add --team X with nothing anywhere exits non-zero" '[ "$RC" -ne 0 ]'
 check "T3: error names init as the remedy" 'echo "$OUT" | grep -q "init"'
 check "T3: no roster file was created" '[ ! -f "$T3/.claude/agent-hierarchy.json" ]'
 # ...and with a default roster present but no rosters.X — still refused, nothing auto-vivified.
-rcli "$T3" add --role reviewer
-rcli "$T3" add --role architect --team X
+rcli "$T3" add --no-spawn --role reviewer
+rcli "$T3" add --no-spawn --role architect --team X
 check "T3b: add --team X with a default roster but no rosters.X exits non-zero" '[ "$RC" -ne 0 ]'
 check "T3b: rosters.X was not auto-vivified" '[ "$(roles_in "$T3/.claude/agent-hierarchy.json" rosters.X)" = "<none>" ]'
 
@@ -79,7 +79,7 @@ check "T3b: rosters.X was not auto-vivified" '[ "$(roles_in "$T3/.claude/agent-h
 T4="$SANDBOX/t4"; new_repo "$T4"
 T4_CFG="$T4/.claude/agent-hierarchy.json"
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route subagent --cwd "$T4" >/dev/null
-rcli "$T4" add --role implementor
+rcli "$T4" add --no-spawn --role implementor
 check "T4: add against an existing roster exits 0" '[ "$RC" -eq 0 ]'
 check "T4: no creation notice" '! echo "$OUT" | grep -q "created a minimal one"'
 check "T4: appended to the existing (subagent-route) block, route untouched" \
@@ -97,7 +97,7 @@ check "T5: the roster-block literal ({ route, members: [] }) is serialized in ex
   '[ "$(grep -c "{ route, members: \[\] }" "$H/roster.mjs")" -eq 1 ]'
 
 # ---- T6: second add after T1's auto-init appends; does not re-create or clobber. ----
-rcli "$T1" add --role architect
+rcli "$T1" add --no-spawn --role architect
 check "T6: second add exits 0" '[ "$RC" -eq 0 ]'
 check "T6: no second creation notice" '! echo "$OUT" | grep -q "created a minimal one"'
 check "T6: both roles present, in order" '[ "$(roles_in "$T1_CFG" roster)" = "reviewer,architect" ]'
@@ -105,7 +105,7 @@ check "T6: both roles present, in order" '[ "$(roles_in "$T1_CFG" roster)" = "re
 # ---- T7 (0038 §1.1 ruling): bare add with no git root and no roster anywhere -> refused, nothing
 # written at global, error names `--level global` as the escape. ----
 T7="$SANDBOX/t7-nogit"; mkdir -p "$T7"
-rcli "$T7" add --role reviewer
+rcli "$T7" add --no-spawn --role reviewer
 check "T7: bare add outside any repo exits non-zero" '[ "$RC" -ne 0 ]'
 check "T7: error names --level global as the remedy" 'echo "$OUT" | grep -q -- "--level global"'
 check "T7: nothing auto-created at global level" '[ ! -f "$FAKEHOME/.claude/agent-hierarchy.json" ]'

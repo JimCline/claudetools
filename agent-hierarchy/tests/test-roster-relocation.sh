@@ -42,7 +42,7 @@ setup_team() {
   mkdir -p "$dir/.claude"
   (cd "$dir" && git init -q && git config user.email t@t.com && git config user.name t)
   HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$dir" >/dev/null
-  HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --cwd "$dir" >/dev/null
+  HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --cwd "$dir" >/dev/null
   local slug; slug=$(basename "$dir")
   HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo \
     --verified "[\"${slug}-implementor\"]" --orchestrator-pid "$$" --cwd "$dir" >/dev/null
@@ -90,7 +90,7 @@ setup_named_team() { # <dir> <team-name>
   mkdir -p "$dir/.claude"
   (cd "$dir" && git init -q && git config user.email t@t.com && git config user.name t) 2>/dev/null || true
   HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --team "$team" --cwd "$dir" >/dev/null
-  HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --team "$team" --cwd "$dir" >/dev/null
+  HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --team "$team" --cwd "$dir" >/dev/null
   HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --team "$team" \
     --verified "[\"${team}-implementor\"]" --orchestrator-pid "$$" --cwd "$dir" >/dev/null
 }
@@ -226,7 +226,7 @@ T7="$SANDBOX/t7-repo"
 mkdir -p "$T7/.claude"
 (cd "$T7" && git init -q && git config user.email t@t.com && git config user.name t)
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$T7" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --cwd "$T7" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --cwd "$T7" >/dev/null
 mkdir -p "$T7/.claude/hierarchy"
 cat > "$T7/.claude/hierarchy/team.json" <<EOF
 {"version":1,"team_id":"pre0036","created":"2026-01-01T00:00:00-00:00","roster_level":"repo","transport":"terminal","orchestrator":{"session_id":null,"pid":$$},"members":[{"role":"implementor","name":"$(basename "$T7")-implementor","route":"peer","transport_id":"x"}],"partial":false}
@@ -280,7 +280,7 @@ T11_MAIN="$SANDBOX/t11-main"
 mkdir -p "$T11_MAIN/.claude"
 (cd "$T11_MAIN" && git init -q && git config user.email t@t.com && git config user.name t)
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$T11_MAIN" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --cwd "$T11_MAIN" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --cwd "$T11_MAIN" >/dev/null
 T11_WT="$SANDBOX/t11-wt"
 (cd "$T11_MAIN" && git worktree add -q -b t11-wt "$T11_WT" >/dev/null 2>&1)
 mkdir -p "$T11_WT/.claude"
@@ -316,11 +316,11 @@ T12="$SANDBOX/t12-repo"
 mkdir -p "$T12/.claude"
 (cd "$T12" && git init -q && git config user.email t@t.com && git config user.name t)
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --team teama --cwd "$T12" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --team teama --cwd "$T12" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --team teama --cwd "$T12" >/dev/null
 HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --team teama \
   --verified '["teama-implementor"]' --orchestrator-pid "$$" --cwd "$T12" >/dev/null
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --team teamb --cwd "$T12" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --team teamb --cwd "$T12" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --team teamb --cwd "$T12" >/dev/null
 HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --team teamb \
   --verified '["teamb-implementor"]' --orchestrator-pid "$$" --cwd "$T12" >/dev/null
 append_peer_row "$T12" "t12a-sess" "implementor" "teama" "$$" "true" "$SANDBOX/t12-wrong-a"
@@ -352,7 +352,7 @@ T14="$SANDBOX/t14-repo"
 mkdir -p "$T14/.claude/hierarchy"
 (cd "$T14" && git init -q && git config user.email t@t.com && git config user.name t)
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$T14" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --cwd "$T14" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --cwd "$T14" >/dev/null
 cat > "$T14/.claude/hierarchy/team.json" <<EOF
 {"version":1,"team_id":"t14team","created":"2026-01-01T00:00:00-00:00","roster_level":"repo","transport":"terminal","orchestrator":{"session_id":null,"pid":$$},"members":[{"role":"implementor","name":"impl-1","route":"peer","transport_id":"x"},{"role":"implementor","name":"impl-2","route":"peer","transport_id":"y"}],"partial":false,"expected_root":"$T14"}
 EOF
@@ -368,7 +368,7 @@ T15="$SANDBOX/t15-repo"
 mkdir -p "$T15/.claude"
 (cd "$T15" && git init -q && git config user.email t@t.com && git config user.name t)
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$T15" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --cwd "$T15" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --cwd "$T15" >/dev/null
 sessionstart_role "$T15" "t15-sess"
 check "T15: SessionStart succeeds with no team to resolve" '[ "$SS_RC" -eq 0 ]'
 check "T15: no instruction text emitted" '! echo "$SS_OUT" | grep -q "Misplaced:"'
@@ -394,12 +394,12 @@ T17="$SANDBOX/t17-repo"
 mkdir -p "$T17/.claude/hierarchy"
 (cd "$T17" && git init -q && git config user.email t@t.com && git config user.name t)
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$T17" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --cwd "$T17" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --cwd "$T17" >/dev/null
 cat > "$T17/.claude/hierarchy/team.json" <<EOF
 {"version":1,"team_id":"t17teamA","created":"2026-01-01T00:00:00-00:00","roster_level":"repo","transport":"terminal","orchestrator":{"session_id":null,"pid":$$},"members":[{"role":"implementor","name":"impl-1","route":"peer","transport_id":"x"},{"role":"implementor","name":"impl-2","route":"peer","transport_id":"y"}],"partial":false,"expected_root":"$(realpath_of "$T17")"}
 EOF
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --team teamb --cwd "$T17" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --team teamb --cwd "$T17" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --team teamb --cwd "$T17" >/dev/null
 HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --team teamb \
   --verified '["teamb-implementor"]' --orchestrator-pid "$$" --cwd "$T17" >/dev/null
 patch_expected_root_team "$T17" "teamb" "$SANDBOX/t17-teamb-elsewhere"

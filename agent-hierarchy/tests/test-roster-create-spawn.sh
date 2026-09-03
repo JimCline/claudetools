@@ -180,7 +180,7 @@ setup_roster() {
   local n=$1
   HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
   for ((i = 0; i < n; i++)); do
-    HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role "${ROLES4[$i]}" --model opus --cwd "$PROJ" >/dev/null
+    HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role "${ROLES4[$i]}" --model opus --cwd "$PROJ" >/dev/null
   done
 }
 
@@ -317,8 +317,8 @@ check "14: --plan output has the expected shape (level/transport/layout_plan/mem
 # that used the stored "columns" value would show up as "right", not "down".
 reset_state
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --layout columns --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
 init_geometry 100 60
 run_spawn "HERDR_ENV=1" --mode grid
 check "15: create --spawn --mode grid overrides a roster stored as columns (first split goes down)" \

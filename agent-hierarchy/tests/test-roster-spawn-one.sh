@@ -106,7 +106,7 @@ setup_roster() { # <n> [level]
   local n=$1 level=${2:-repo}
   HOME="$FAKEHOME" node "$H/roster.mjs" init --level "$level" --route peer --cwd "$PROJ" >/dev/null
   for ((i = 0; i < n; i++)); do
-    HOME="$FAKEHOME" node "$H/roster.mjs" add --level "$level" --role "${ROLES4[$i]}" --model opus --cwd "$PROJ" >/dev/null
+    HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level "$level" --role "${ROLES4[$i]}" --model opus --cwd "$PROJ" >/dev/null
   done
 }
 
@@ -217,7 +217,7 @@ check "8: unknown flag -> non-zero" '[ "$RC" -ne 0 ]'
 # rm the repo-level roster left by earlier cases first -- resolveRoster prefers repo over global.
 reset_state; clear_hierarchy; init_geometry 180 42; rm -f "$PROJ/.claude/agent-hierarchy.json"
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level global --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level global --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level global --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
 run_one "HERDR_ENV=1" ultra-advisor
 check "9a: global roster, no --allow-global -> non-zero, names GLOBAL level, no 'declined'" \
   '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "GLOBAL level" && echo "$OUT" | grep -q -- "--allow-global" && ! echo "$OUT" | grep -qi "declined"'
@@ -228,7 +228,7 @@ check "9c: --allow-global proceeds against a global-level roster" \
 
 reset_state; clear_hierarchy; init_geometry 180 42; rm -f "$PROJ/.claude/agent-hierarchy.json"
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level global --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level global --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level global --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
 run_spawn "HERDR_ENV=1" --mode auto
 check "9d: create --spawn against a global roster, no --allow-global -> non-zero, names GLOBAL level, no 'declined'" \
   '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "GLOBAL level" && echo "$OUT" | grep -q -- "--allow-global" && ! echo "$OUT" | grep -qi "declined"'
@@ -243,8 +243,8 @@ check "9e: create --spawn --allow-global proceeds against a global-level roster"
 #            short-circuit on it or overwrite its team.json slot). ====
 reset_state; clear_hierarchy; init_geometry 180 42
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
 write_team "$(node -e '
   console.log(JSON.stringify({
     version: 1, team_id: "T-fixture-2", created: new Date().toISOString(), roster_level: "repo",
@@ -266,8 +266,8 @@ check "11b: no slot loss (§6.9) — team.json has BOTH records, distinct names,
 #            first-not-live — not "next after the live one"). ====
 reset_state; clear_hierarchy; init_geometry 180 42
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
 write_team "$(node -e '
   console.log(JSON.stringify({
     version: 1, team_id: "T-fixture-3", created: new Date().toISOString(), roster_level: "repo",
@@ -287,8 +287,8 @@ check "12: spawns -1 (first-not-live in roster order), not -2 again" \
 #            candidates_live lists both, nothing launched. ====
 reset_state; clear_hierarchy; init_geometry 180 42
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
 write_team "$(node -e '
   console.log(JSON.stringify({
     version: 1, team_id: "T-fixture-4", created: new Date().toISOString(), roster_level: "repo",
@@ -314,8 +314,8 @@ check "13c: team.json unchanged, nothing launched" \
 # ==== 14 — spec 0019 §6.5: --member hit -> spawns the named instance, neither live. ====
 reset_state; clear_hierarchy; init_geometry 180 42
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
 run_one "HERDR_ENV=1" implementor --member myrepo-implementor-2
 check "14: --member myrepo-implementor-2 spawns -2, not the default (-1)" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"name\": \"myrepo-implementor-2\""'
@@ -330,17 +330,17 @@ check "15: --member miss -> non-zero, lists the real defined names" \
 #            setup — a single-candidate variant would pass for the wrong reason (byName false). ====
 reset_state; clear_hierarchy; init_geometry 180 42
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
 run_one "HERDR_ENV=1" implementor --member myrepo-reviewer
 check "16: --member names a reviewer while role is implementor (multi-candidate role) -> non-zero" '[ "$RC" -ne 0 ]'
 
 # ==== 17 — spec 0019 §6.8: --dry-run with two candidates, #1 live -> names -2, launches nothing. ====
 reset_state; clear_hierarchy; init_geometry 180 42
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
 write_team "$(node -e '
   console.log(JSON.stringify({
     version: 1, team_id: "T-fixture-5", created: new Date().toISOString(), roster_level: "repo",
@@ -361,8 +361,8 @@ check "17b: --dry-run launches nothing" '[ "$(call_count "c.argv[0]===\"agent\" 
 #            Must NOT silently parse as member:true plus dry-run:true (§3.2). ====
 reset_state; clear_hierarchy; init_geometry 180 42
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
 run_one "HERDR_ENV=1" implementor --member --dry-run
 check "18a: --member with no value -> non-zero" '[ "$RC" -ne 0 ]'
 check "18b: failure names --member, not a silent implicit-selection dry-run" \
@@ -378,8 +378,8 @@ check "18b: failure names --member, not a silent implicit-selection dry-run" \
 #            succeeding into a name collision. ====
 reset_state; clear_hierarchy; init_geometry 180 42
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
 write_team "$(node -e '
   console.log(JSON.stringify({
     version: 1, team_id: "T-fixture-6", created: new Date().toISOString(), roster_level: "repo",
@@ -413,9 +413,9 @@ split_directions() { # reads the fake herdr's call log, returns a JSON array of 
 reset_state; clear_hierarchy; init_geometry 180 42
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
 HOME="$FAKEHOME" node "$H/roster.mjs" layout --level repo --layout grid --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
 run_one "HERDR_ENV=1" ultra-advisor
 run_one "HERDR_ENV=1" architect
 check "A1: two distinct y-values across the 3 panes after two sequential spawn-one calls (0023 §8.1 A1)" \
@@ -430,9 +430,9 @@ for dims in "180 42" "200 50"; do
   reset_state; clear_hierarchy; init_geometry "$1" "$2"
   HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
   HOME="$FAKEHOME" node "$H/roster.mjs" layout --level repo --layout grid --cwd "$PROJ" >/dev/null
-  HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
-  HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
-  HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
+  HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
+  HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
+  HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
   run_one "HERDR_ENV=1" ultra-advisor
   run_one "HERDR_ENV=1" architect
   run_one "HERDR_ENV=1" reviewer
@@ -450,8 +450,8 @@ done
 reset_state; clear_hierarchy; init_geometry 180 42
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
 HOME="$FAKEHOME" node "$H/roster.mjs" layout --level repo --layout grid --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
 write_team "$(node -e '
   console.log(JSON.stringify({
     version: 1, team_id: "T-fixture-A4", created: new Date().toISOString(), roster_level: "repo",

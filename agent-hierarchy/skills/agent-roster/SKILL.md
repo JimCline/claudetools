@@ -65,7 +65,7 @@ with someone else's live default Team.
 
 - `show [--level global|repo|repo-user]` (`mcp__ah__roster_show`) — resolved roster, or one level's raw file.
 - `init --level <L> --route <peer|subagent> [--layout auto|columns|grid]` (`mcp__ah__roster_member`, `action: "init"`) — replaces that level's roster wholesale.
-- `add --role <R> [--level L] [--model M] [--effort E] [--route peer|subagent] [--auto-mode A]` (`mcp__ah__roster_member`, `action: "add"`)
+- `add --role <R> [--level L] [--model M] [--effort E] [--route peer|subagent] [--auto-mode A] [--no-spawn] [--allow-global]` (`mcp__ah__roster_member`, `action: "add"`) — a peer-routed add also spawns the peer (spec 0039); `--no-spawn` for config only; `--allow-global` (`allow_global`) lets the spawn proceed from a global-level roster, as on `spawn-one`.
 - `edit --member <NAME> [--level L] [--role R] [--model M] [--effort E] [--route ...] [--auto-mode A]` (`mcp__ah__roster_member`, `action: "edit"`)
 - `remove --member <NAME> [--level L]` (`mcp__ah__roster_member`, `action: "remove"`) — edits the
   roster **config**, not a live Team; see § dismiss for the live-Team equivalent.
@@ -171,8 +171,11 @@ configured at any level), say so and offer to run `init`.
    ask (AskUserQuestion, batched into calls of up to 4 questions) its model,
    effort, and auto-mode. Prefill/offer defaults from `ROLE_DEFAULTS` in
    `hooks/lib-config.mjs` — do not invent separate defaults here. For each
-   picked role, run `roster.mjs add --level <L> --role <role> [--model ...]
-   [--effort ...] [--auto-mode ...]`. A role can be added more than once —
+   picked role, run `roster.mjs add --no-spawn --level <L> --role <role>
+   [--model ...] [--effort ...] [--auto-mode ...]` — `--no-spawn` because
+   this flow's single spawn point is `create --spawn` at the end (spec 0039
+   §3); per-add spawning would stand peers up into a half-built roster. A
+   role can be added more than once —
    if the user wants multiple instances of a role, that's a follow-up ask,
    not part of the multiselect (its options must stay distinct picks).
 7. Run `show` and echo the result.
@@ -193,6 +196,15 @@ file's path. `init` is for choosing a full role set interactively, not a
 prerequisite. The one exception is `--team <X>`: a named team's container is
 still created only by `init --team X` (0032 §3.4b), so `add --team X` against
 no such container keeps erroring.
+
+A successful `add` of a peer-routed member also spawns that peer (spec
+0039) — through the same path as `spawn-one`, so a role whose peer is
+already live gets its config row plus "already live", not a second session.
+`--no-spawn` (`no_spawn: true` on `roster_member`) writes the config row only;
+a `route: subagent` member writes config only and says so. If the spawn fails
+after the row landed, the row is kept, the exit code is 3, and the error
+names the `spawn-one` retry — never a rollback. Report both halves of the
+result: what was written, and whether a session is up.
 
 Layout (`roster.layout`) is team-wide, not a per-member field — there is no
 `--layout` on `add`/`edit`. Use `roster.mjs layout` (§ Command surface) to

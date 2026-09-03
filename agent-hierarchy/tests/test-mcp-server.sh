@@ -483,7 +483,9 @@ function pair(name) {
 function eq(mcpResult, cliResult, a, b) {
   if (mcpResult.isError) return { ok: false, why: "mcp errored: " + mcpResult.content[0].text };
   if (cliResult.code !== 0) return { ok: false, why: "cli errored: " + cliResult.out };
-  const mcpText = mcpResult.content[0].text.split(a).join("<CWD>");
+  // Success text is stdout, plus a "stderr:" block when the CLI wrote notices (spec 0039: `add`
+  // always reports the write on stderr) — the equivalence contract is the stdout JSON.
+  const mcpText = mcpResult.content[0].text.split("\nstderr:\n")[0].split(a).join("<CWD>");
   const cliText = cliResult.out.split(b).join("<CWD>");
   let mcpJson, cliJson;
   try { mcpJson = JSON.parse(mcpText); } catch { return { ok: false, why: "mcp output not JSON: " + mcpText }; }
@@ -504,16 +506,16 @@ const results = {};
   const { a, b } = pair("add");
   cli("init", ["--level", "repo", "--route", "peer"], a);
   cli("init", ["--level", "repo", "--route", "peer"], b);
-  const mcpRes = await callTool("roster_member", { cwd: a, action: "add", level: "repo", role: "implementor", model: "sonnet", effort: "medium", route: "peer", auto_mode: "acceptEdits" });
-  const cliRes = cli("add", ["--level", "repo", "--role", "implementor", "--model", "sonnet", "--effort", "medium", "--route", "peer", "--auto-mode", "acceptEdits"], b);
+  const mcpRes = await callTool("roster_member", { cwd: a, action: "add", no_spawn: true, level: "repo", role: "implementor", model: "sonnet", effort: "medium", route: "peer", auto_mode: "acceptEdits" });
+  const cliRes = cli("add", ["--no-spawn", "--level", "repo", "--role", "implementor", "--model", "sonnet", "--effort", "medium", "--route", "peer", "--auto-mode", "acceptEdits"], b);
   results.add = eq(mcpRes, cliRes, a, b);
 }
 {
   const { a, b } = pair("edit");
   cli("init", ["--level", "repo", "--route", "peer"], a);
   cli("init", ["--level", "repo", "--route", "peer"], b);
-  const setupA = cli("add", ["--level", "repo", "--role", "architect"], a);
-  cli("add", ["--level", "repo", "--role", "architect"], b);
+  const setupA = cli("add", ["--no-spawn", "--level", "repo", "--role", "architect"], a);
+  cli("add", ["--no-spawn", "--level", "repo", "--role", "architect"], b);
   const member = JSON.parse(setupA.out).members?.[0]?.name || JSON.parse(setupA.out).member?.name;
   const mcpRes = await callTool("roster_member", { cwd: a, action: "edit", level: "repo", member, model: "opus" });
   const cliRes = cli("edit", ["--level", "repo", "--member", member, "--model", "opus"], b);
@@ -523,8 +525,8 @@ const results = {};
   const { a, b } = pair("remove");
   cli("init", ["--level", "repo", "--route", "peer"], a);
   cli("init", ["--level", "repo", "--route", "peer"], b);
-  const setupA = cli("add", ["--level", "repo", "--role", "architect"], a);
-  cli("add", ["--level", "repo", "--role", "architect"], b);
+  const setupA = cli("add", ["--no-spawn", "--level", "repo", "--role", "architect"], a);
+  cli("add", ["--no-spawn", "--level", "repo", "--role", "architect"], b);
   const member = JSON.parse(setupA.out).members?.[0]?.name || JSON.parse(setupA.out).member?.name;
   const mcpRes = await callTool("roster_member", { cwd: a, action: "remove", level: "repo", member });
   const cliRes = cli("remove", ["--level", "repo", "--member", member], b);
@@ -654,7 +656,7 @@ const { callTool } = await import(process.env.SERVER_PATH);
 const cwd = process.env.TEST_REPO;
 
 await callTool("roster_member", { cwd, action: "init", level: "repo", route: "peer" });
-await callTool("roster_member", { cwd, action: "add", level: "repo", role: "ultra-advisor", model: "opus" });
+await callTool("roster_member", { cwd, action: "add", no_spawn: true, level: "repo", role: "ultra-advisor", model: "opus" });
 const res = await callTool("roster_spawn_one", { cwd, role: "ultra-advisor" });
 const dir = cwd + "/.claude/hierarchy";
 const team = readTeam(dir);
@@ -678,8 +680,8 @@ const { callTool } = await import(process.env.SERVER_PATH);
 const cwd = process.env.TEST_REPO;
 
 await callTool("roster_member", { cwd, action: "init", level: "repo", route: "peer" });
-await callTool("roster_member", { cwd, action: "add", level: "repo", role: "architect", model: "opus" });
-await callTool("roster_member", { cwd, action: "add", level: "repo", role: "architect", model: "opus" });
+await callTool("roster_member", { cwd, action: "add", no_spawn: true, level: "repo", role: "architect", model: "opus" });
+await callTool("roster_member", { cwd, action: "add", no_spawn: true, level: "repo", role: "architect", model: "opus" });
 const res = await callTool("roster_spawn_one", { cwd, role: "architect", member: "bogus-member-name" });
 const text = (res.content && res.content[0] && res.content[0].text) || "";
 const ok = res.isError === true && text.includes("bogus-member-name") && text.includes("-architect-2");

@@ -66,7 +66,7 @@ check "2d: beta's roster() lists exactly beta-reviewer, zero of alpha's" '[ "$OU
 # rosterMemberNames + teamPrefix(cwd, team).
 run_roster init --level repo --route peer
 check "2e: init --level repo --route peer succeeds" '[ "$RC" -eq 0 ]'
-run_roster add --level repo --role reviewer --model sonnet
+run_roster add --no-spawn --level repo --role reviewer --model sonnet
 check "2f: add --level repo --role reviewer succeeds" '[ "$RC" -eq 0 ]'
 run_roster create --team gamma --plan
 check "2g: create --team gamma --plan succeeds" '[ "$RC" -eq 0 ]'

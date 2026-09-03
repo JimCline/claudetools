@@ -41,7 +41,7 @@ setup_repo() {
   mkdir -p "$dir/.claude"
   (cd "$dir" && git init -q && git config user.email t@t.com && git config user.name t)
   HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$dir" >/dev/null
-  HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --cwd "$dir" >/dev/null
+  HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --cwd "$dir" >/dev/null
 }
 
 # Terminal-transport spawn: run FROM $1 (the process's own cwd), with --cwd $2 (empty

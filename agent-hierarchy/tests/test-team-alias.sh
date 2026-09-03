@@ -181,7 +181,7 @@ check "24b: never touched the global config file" '[ ! -f "$GLOBAL_PATH" ]'
 # proven by that failure message also being present in the same run). ====
 reset_levels
 run_roster init --level repo --route peer --cwd "$PROJ" >/dev/null
-run_roster add --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
+run_roster add --no-spawn --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
 mkdir -p "$HIER_DIR"
 cat > "$TEAM_FILE" <<EOF
 { "version": 1, "team_id": "t1", "roster_level": "repo", "transport": "herdr",
@@ -234,7 +234,7 @@ seed_peer() { # <name> <role> <status> <pid>
 }
 run_roster init --level repo --route peer --cwd "$PROJ" >/dev/null
 run_roster alias --set old --level repo --cwd "$PROJ" >/dev/null
-run_roster add --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
+run_roster add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
 mkdir -p "$HIER_DIR"
 cat > "$TEAM_FILE" <<EOF
 { "version": 1, "team_id": "t12", "roster_level": "repo", "transport": "herdr",

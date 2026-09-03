@@ -218,7 +218,7 @@ rm -f "$SANDBOX/marker"
 INVOK() { HOME="$FAKEHOME" HERDR_ENV=1 PATH="$SANDBOX/markerbin:$NODE_DIR" FAKE_HERDR_MARKER="$SANDBOX/marker" node "$H/roster.mjs" "$@" --cwd "$PROJ" >/dev/null 2>&1; }
 INVOK show
 INVOK init --level repo --route peer
-INVOK add --level repo --role architect --model opus
+INVOK add --no-spawn --level repo --role architect --model opus
 INVOK edit --member myrepo-architect --model sonnet
 INVOK remove --member myrepo-architect
 INVOK init --level repo --route peer
@@ -235,7 +235,7 @@ check "invariant: no subcommand but layout-splits reaches herdrCall (marker neve
 # DOES reach herdrCall on a herdr roster with a peer member.
 rm -f "$SANDBOX/marker"
 INVOK init --level repo --route peer
-INVOK add --level repo --role architect --model opus
+INVOK add --no-spawn --level repo --role architect --model opus
 HOME="$FAKEHOME" HERDR_ENV=1 HERDR_PANE_ID=p0 PATH="$SANDBOX/markerbin:$NODE_DIR" FAKE_HERDR_MARKER="$SANDBOX/marker" node "$H/roster.mjs" create --spawn --mode auto --cwd "$PROJ" >/dev/null 2>&1
 check "invariant: create --spawn DOES reach herdrCall on a herdr roster (marker created)" \
   '[ -e "$SANDBOX/marker" ]'

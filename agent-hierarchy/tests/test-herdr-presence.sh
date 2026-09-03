@@ -114,7 +114,7 @@ setup_roster() { # <n roles> <level>
   local roles=(ultra-advisor architect reviewer implementor)
   HOME="$FAKEHOME" "$NODE_BIN" "$H/roster.mjs" init --level "$level" --route peer --cwd "$PROJ" >/dev/null
   for ((i = 0; i < n; i++)); do
-    HOME="$FAKEHOME" "$NODE_BIN" "$H/roster.mjs" add --level "$level" --role "${roles[$i]}" --model opus --cwd "$PROJ" >/dev/null
+    HOME="$FAKEHOME" "$NODE_BIN" "$H/roster.mjs" add --no-spawn --level "$level" --role "${roles[$i]}" --model opus --cwd "$PROJ" >/dev/null
   done
 }
 rm -rf "$PROJ/.claude/hierarchy"

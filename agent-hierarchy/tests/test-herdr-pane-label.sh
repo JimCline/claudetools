@@ -170,7 +170,7 @@ setup_roster() { # <n> [level]
   local n=$1 level=${2:-repo}
   HOME="$FAKEHOME" node "$H/roster.mjs" init --level "$level" --route peer --cwd "$PROJ" >/dev/null
   for ((i = 0; i < n; i++)); do
-    HOME="$FAKEHOME" node "$H/roster.mjs" add --level "$level" --role "${ROLES4[$i]}" --model opus --cwd "$PROJ" >/dev/null
+    HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level "$level" --role "${ROLES4[$i]}" --model opus --cwd "$PROJ" >/dev/null
   done
 }
 

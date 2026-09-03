@@ -168,6 +168,9 @@ export const TOOLS = [
         route: { type: "string", enum: ["peer", "subagent"], description: "Required with action: init." },
         auto_mode: { type: "string", description: "With action: add, edit." },
         on_missing: { type: "string", enum: ["auto", "prompt", "never"], description: "With action: add, edit. Peer-routed members only." },
+        no_spawn: { type: "boolean", description: "With action: add. Write the config row only — do not spawn the peer (spec 0039 §1.6)." },
+        allow_global: { type: "boolean", description: "With action: add. Let the spawn proceed when the roster resolves at global level (same guard as roster_spawn_one)." },
+        orchestrator_pid: { type: "integer", description: "With action: add. Owner pid for a team the spawn has to create; defaults to the calling session's pid." },
         layout: { type: "string", enum: ["auto", "columns", "grid"], description: "With action: init." },
       },
       required: ["cwd", "action"],
@@ -537,6 +540,13 @@ export async function callTool(name, input) {
         pushArg(args, "route", args_in.route);
         pushArg(args, "auto-mode", args_in.auto_mode);
         pushArg(args, "on-missing", args_in.on_missing);
+      }
+      if (action === "add") {
+        pushFlag(args, "no-spawn", args_in.no_spawn);
+        pushFlag(args, "allow-global", args_in.allow_global);
+        // Spec 0039 §1.7: a peer-routed add spawns through the spawn-one core, which needs the
+        // same owner pid roster_spawn_one plumbs (spec 0018 §4.2).
+        pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
       }
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);

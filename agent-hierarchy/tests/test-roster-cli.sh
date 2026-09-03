@@ -31,19 +31,19 @@ check "init: invalid level rejected" '[ "$RC" -ne 0 ]'
 run init --level repo --route bogus
 check "init: invalid route rejected" '[ "$RC" -ne 0 ]'
 
-run add --level repo --role reviewer --model opus
+run add --no-spawn --level repo --role reviewer --model opus
 check "add: appends a reviewer, derived name returned" 'echo "$OUT" | grep -q "\"name\": \"myrepo-reviewer\"" && [ "$RC" -eq 0 ]'
 
-run add --level repo --role reviewer --model opus
+run add --no-spawn --level repo --role reviewer --model opus
 check "add: second reviewer gets -2 suffix" 'echo "$OUT" | grep -q "\"name\": \"myrepo-reviewer-2\"" && [ "$RC" -eq 0 ]'
 
-run add --role orchestrator --model opus
+run add --no-spawn --role orchestrator --model opus
 check "add: role orchestrator rejected" '[ "$RC" -ne 0 ]'
 
-run add --level repo --role not-a-role --model opus
+run add --no-spawn --level repo --role not-a-role --model opus
 check "add: unknown role rejected" '[ "$RC" -ne 0 ]'
 
-run add --role implementor --model sonnet
+run add --no-spawn --role implementor --model sonnet
 check "add: no --level given defaults to the resolving level (repo)" 'echo "$OUT" | grep -q "\"level\": \"repo\"" && echo "$OUT" | grep -q "\"wasDefaulted\": true"'
 
 run edit --member myrepo-reviewer-2 --model sonnet
@@ -63,16 +63,16 @@ run edit --member myrepo-implementor --on-missing bogus
 check "edit --on-missing: invalid value rejected, listing the three values" \
   '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "auto" && echo "$OUT" | grep -q "prompt" && echo "$OUT" | grep -q "never"'
 
-run add --role reviewer --route subagent --on-missing auto
+run add --no-spawn --role reviewer --route subagent --on-missing auto
 check "add --on-missing with route subagent: rejected" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "on-missing applies only to peer-routed members"'
 
-run add --role reviewer --on-missing
+run add --no-spawn --role reviewer --on-missing
 check "add --on-missing with no value: rejected, names --on-missing (never parsed as true)" \
   '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q -- "--on-missing"'
 
 # spec 0021 §3.3 (amendment (c) reviewer nit): a non-peer-eligible role's onMissing is inert, and
 # show must name the reason, not a bare "(inert)".
-run add --role task-runner --on-missing auto
+run add --no-spawn --role task-runner --on-missing auto
 check "add: task-runner accepts on-missing (inert, but not rejected at write time)" '[ "$RC" -eq 0 ]'
 STATUS_OUT=$(HOME="$FAKEHOME" node --input-type=module -e '
   import { statusReport } from "'"$H"'/lib-config.mjs";
@@ -133,7 +133,7 @@ check "remove: re-removing an already-gone member fails" '[ "$RC" -ne 0 ]'
 
 # ---- create --plan: herdr spawn shape carries agent flags after `--`, including --name (0002 Defect D)
 run init --level repo --route peer
-run add --level repo --role architect --model opus
+run add --no-spawn --level repo --role architect --model opus
 OUT=$(HOME="$FAKEHOME" HERDR_ENV=1 node "$H/roster.mjs" create --plan --cwd "$PROJ" 2>&1); RC=$?
 check "create --plan: herdr transport detected" 'echo "$OUT" | grep -q "\"transport\": \"herdr\""'
 check "create --plan: herdr spawn step carries agent flags after --, includes --name (0002 Defect D)" \

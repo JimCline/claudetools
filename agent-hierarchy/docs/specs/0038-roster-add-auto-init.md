@@ -153,6 +153,11 @@ the flag exists.
    `installRosterBlock(data, teamKey, block)`; `init` and `add` both call them
    and the `{ route, members: [] }` literal appears once (T5 asserts this).
 
+*(Pointer, added post-landing:)* `add`'s ending is changed by 0039
+(`0039-roster-add-spawns-peer.md`): a successful `add` now also spawns the
+live peer when the member's route is `peer`. This spec's auto-init behaviour
+is unchanged; only what happens after the write.
+
 ## 6. Out of scope
 
 - Team auto-vivification (§1.2 — flagged, awaiting user word if wanted).

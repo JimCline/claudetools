@@ -228,8 +228,8 @@ build_two_implementor_config() {
   rm -f "$PROJ/.claude/agent-hierarchy.json" 2>/dev/null
   find "$PROJ/.claude" -maxdepth 1 -name "*.json" ! -name agent-hierarchy.json -delete 2>/dev/null
   HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-  HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model sonnet --cwd "$PROJ" >/dev/null
-  HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role implementor --model sonnet --cwd "$PROJ" >/dev/null
+  HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model sonnet --cwd "$PROJ" >/dev/null
+  HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --model sonnet --cwd "$PROJ" >/dev/null
 }
 build_two_implementor_config
 
@@ -276,7 +276,7 @@ check "15: surviving team.json record is still named myrepo-implementor-2" \
 # resolveRoster only matches a level with >=1 member, so the config needs a real (unrelated)
 # entry — an empty `members: []` roster would make targetLevel() itself fail to resolve.
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
 cat > "$TEAM_FILE" <<EOF
 { "version": 1, "team_id": "t5", "created": "2026-01-01T00:00:00Z", "roster_level": "repo",
   "transport": "herdr", "orchestrator": { "session_id": null, "pid": null },

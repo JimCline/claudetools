@@ -26,8 +26,8 @@ run() { OUT=$(HOME="$FAKEHOME" node "$H/roster.mjs" "$@" --cwd "$PROJ" 2>&1); RC
 TEAM_FILE="$PROJ/.claude/hierarchy/team.json"
 
 run init --level repo --route peer
-run add --level repo --role reviewer --model opus
-run add --level repo --role implementor --model sonnet
+run add --no-spawn --level repo --role reviewer --model opus
+run add --no-spawn --level repo --role implementor --model sonnet
 # roster now defines: myrepo-reviewer, myrepo-implementor
 
 # ---- 1: names present in the roster -> hydrated, transport_id null, needs_resync true

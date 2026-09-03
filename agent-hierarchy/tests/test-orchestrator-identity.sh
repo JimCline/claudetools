@@ -26,7 +26,7 @@ run() { OUT=$(env -u CLAUDE_PID HOME="$FAKEHOME" node "$H/roster.mjs" "$@" --cwd
 TEAM_FILE="$PROJ/.claude/hierarchy/team.json"
 
 run init --level repo --route peer
-run add --level repo --role architect --model opus
+run add --no-spawn --level repo --role architect --model opus
 
 # ---- spawn-one (Bash path): CLAUDE_PID unset, no existing team -> refuses, exit 2,
 # no team.json written (spec 0018 §3/§9, the second write site a commit-only fix misses)

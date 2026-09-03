@@ -123,7 +123,7 @@ writeCfg "$REPO_CFG" <<'EOF'
   "rosters": { "hotfix": { "route": "peer", "members": [] } } }
 EOF
 DEFAULT_BEFORE=$(cat "$REPO_CFG" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify(JSON.parse(d).roster)))")
-rcli add --team hotfix --level repo --role implementor
+rcli add --no-spawn --team hotfix --level repo --role implementor
 check "T10a: add --team hotfix succeeds" '[ "$RC" -eq 0 ]'
 DEFAULT_AFTER=$(node -e "console.log(JSON.stringify(JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')).roster))")
 check "T10b: data.roster byte-identical after add --team hotfix" "[ '$DEFAULT_BEFORE' = '$DEFAULT_AFTER' ]"
@@ -136,7 +136,7 @@ writeCfg "$REPO_CFG" <<'EOF'
   "roster": { "route": "peer", "members": [] },
   "rosters": { "hotfix": { "route": "peer", "members": [ { "role": "reviewer", "model": "opus" } ] } } }
 EOF
-rcli add --level repo --role architect
+rcli add --no-spawn --level repo --role architect
 check "T11a: add (no --team) succeeds" '[ "$RC" -eq 0 ]'
 check "T11b: data.roster.members grew, rosters.hotfix untouched" \
   "node -e \"const d=JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')); process.exit(d.roster.members.length===1 && d.rosters.hotfix.members.length===1 ? 0 : 1)\""
@@ -191,7 +191,7 @@ writeCfg "$REPO_CFG" <<'EOF'
 { "version": 1, "roster": { "route": "peer", "members": [ { "role": "reviewer", "model": "opus" }, { "role": "architect", "model": "opus" } ] } }
 EOF
 DEFAULT_BEFORE18=$(node -e "console.log(JSON.stringify(JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')).roster))")
-rcli add --team hotfix --role implementor
+rcli add --no-spawn --team hotfix --role implementor
 check "T18a: add --team hotfix with no pre-existing rosters.hotfix FAILS" '[ "$RC" -ne 0 ]'
 DEFAULT_AFTER18=$(node -e "console.log(JSON.stringify(JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')).roster))")
 check "T18b: data.roster byte-identical (A,B untouched)" "[ '$DEFAULT_BEFORE18' = '$DEFAULT_AFTER18' ]"
@@ -202,7 +202,7 @@ check "T18c: data.rosters still absent entirely (nothing written anywhere)" \
 # hotfix first, then the SAME add --team hotfix succeeds.
 rcli init --team hotfix --level repo --route peer
 check "T19a: init --team hotfix succeeds" '[ "$RC" -eq 0 ]'
-rcli add --team hotfix --role implementor
+rcli add --no-spawn --team hotfix --role implementor
 check "T19b: add --team hotfix (after init --team hotfix) succeeds" '[ "$RC" -eq 0 ]'
 check "T19c: rosters.hotfix has the new member" \
   "node -e \"const d=JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')); process.exit(d.rosters && d.rosters.hotfix && d.rosters.hotfix.members.length===1 ? 0 : 1)\""

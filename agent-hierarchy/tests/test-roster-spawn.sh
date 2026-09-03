@@ -34,12 +34,12 @@ NODE_DIR="$(dirname "$(command -v node)")"
 # every role exercised: implementor defaults to model "inherit" (ROLE_DEFAULTS),
 # plus a second implementor with an explicit model to prove real models still emit.
 run init --level repo --route peer
-run add --level repo --role ultra-advisor
-run add --level repo --role architect
-run add --level repo --role reviewer
-run add --level repo --role implementor
-run add --level repo --role task-runner
-run add --level repo --role implementor --model opus
+run add --no-spawn --level repo --role ultra-advisor
+run add --no-spawn --level repo --role architect
+run add --no-spawn --level repo --role reviewer
+run add --no-spawn --level repo --role implementor
+run add --no-spawn --level repo --role task-runner
+run add --no-spawn --level repo --role implementor --model opus
 check "setup: 6 members added" 'echo "$OUT" | grep -q "\"name\": \"myrepo-implementor-2\""'
 
 # a node helper that sweeps every emitted step across the whole plan: each --agent value
