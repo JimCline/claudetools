@@ -258,7 +258,7 @@ export const TOOLS = [
   },
   {
     name: "roster_disband",
-    description: "Plan, commit, or keep-sessions a Team teardown via roster.mjs disband. Non-destructive modes only — never closes anything.",
+    description: "Plan, commit, or keep-sessions a Team teardown via roster.mjs disband. Non-destructive modes only — never closes anything. With no team.json, plan mode falls back to the live peer records (peers.jsonl) and reports source:'peers'; with a team.json, the plan also lists extra live non-team peers, each labeled source:'peers' (spec 0040). commit/keep-sessions still require a team.json.",
     inputSchema: {
       type: "object",
       properties: {
@@ -271,7 +271,7 @@ export const TOOLS = [
   },
   {
     name: "roster_disband_close",
-    description: "Close the live sessions of a Team. Destructive; requires prior user confirmation.",
+    description: "Close the live sessions of a Team. Destructive; requires prior user confirmation. Closes exactly the plan's set — including extra non-team live peers labeled source:'peers', and, with no team.json, the live peer records the fallback plan listed (spec 0040).",
     inputSchema: {
       type: "object",
       properties: {
@@ -348,7 +348,7 @@ export const TOOLS = [
   },
   {
     name: "roster_dismiss",
-    description: "Dismiss ONE member from a live team's check-in registry by derived name (e.g. 'dismiss bps-implementor-2'). Does not close sessions.",
+    description: "Dismiss ONE member from a live team's check-in registry by derived name (e.g. 'dismiss bps-implementor-2'). Does not close sessions. A name not in team.json (or no team.json at all) falls back to the live peer records for plan mode, reporting source:'peers' (spec 0040); commit still requires the team.json row.",
     inputSchema: {
       type: "object",
       properties: {
@@ -364,7 +364,7 @@ export const TOOLS = [
   },
   {
     name: "roster_dismiss_close",
-    description: "Close ONE live team member's session. Destructive; requires prior user confirmation.",
+    description: "Close ONE live team member's session. Destructive; requires prior user confirmation. Falls back to the member's live peer record when it is not in team.json or no team.json exists (spec 0040).",
     inputSchema: {
       type: "object",
       properties: {

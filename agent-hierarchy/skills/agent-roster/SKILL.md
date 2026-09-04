@@ -472,6 +472,17 @@ Bare `disband` tears the Team all the way down by default. It is a **two-call
 contract**, mirroring `create`'s `--plan`/`--commit` split, so removal cannot
 happen before the real closes do:
 
+**No `team.json`?** (spec 0040) Plan and `--close` do not no-op: they operate on
+the live peer records in `peers.jsonl` instead — the peers `add`/`spawn-one`
+brought up, or a Team whose `team.json` was lost. The same plan → `close_token`
+→ `--close --confirm` two-step applies, and every such output carries
+`source: "peers"`. When a `team.json` exists, the plan also lists live peers
+that are not in it, each row labeled `source: "peers"`, and `--close` closes
+that whole set — the token pins the union, so a peer appearing after the plan
+forces a re-plan. `--commit`/`--keep-sessions` still require a `team.json`
+(nothing to remove otherwise). Only herdr peers are closable this way: checkin
+records the herdr pane id, so a tmux peer surfaces with `command: null`.
+
 1. Run `roster_disband` (`mode: plan`, or bare `roster.mjs disband`). Read-only — `team.json` is untouched. Its output now carries a `close_token`, bound to this exact plan — keep it, step 3 needs it. For the
    herdr transport it resyncs the member list **in memory** first (never
    persisted), so the plan targets each member's *current* pane rather than
@@ -609,6 +620,9 @@ Spec 0020. `remove --member <NAME>` edits the roster **config** (the template
 for future Teams); `dismiss <name>` edits the **live Team's `team.json`** —
 they write different stores, and each names the store it wrote in its output.
 `dismiss` mirrors `disband`'s plan/close/commit split, scoped to one member:
+(spec 0040: a name that is not in `team.json` — or no `team.json` at all — is
+looked up in the live peer records for plan/`--close`, output carrying
+`source: "peers"`; `--commit` still needs the `team.json` row.)
 
 1. `roster_dismiss` `mode: plan` (or bare `roster.mjs dismiss <name>`) —
    read-only, resyncs that one member in memory for herdr, and returns

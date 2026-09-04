@@ -706,6 +706,45 @@ export function pidAlive(pid) {
 }
 
 /**
+ * The one liveness rule for a peers.jsonl record: `up` is live iff its pid is alive;
+ * `seen`/`briefed` are live while fresher than ROSTER_FRESH_SEC; anything else (incl.
+ * `down`) is not. Every liveness read — roster(), memberIsLive, the disband/dismiss
+ * no-team fallback (spec 0040 §1.2) — goes through here; do not re-derive it elsewhere.
+ */
+export function recordLiveness(rec, now = Date.now()) {
+  const ageSec = ageSecOf(rec.ts, now);
+  let live = false;
+  let how = rec.status;
+  if (rec.status === "up") {
+    live = pidAlive(rec.pid);
+    how = "up-pid";
+  } else if (rec.status === "seen" || rec.status === "briefed") {
+    live = ageSec < ROSTER_FRESH_SEC;
+  }
+  return { live, how, ageSec };
+}
+
+/**
+ * Spec 0040 §1.2: the named, not-down peers.jsonl records attributed to `team` (null =
+ * default team), each with recordLiveness() applied — the enumeration disband/dismiss fall
+ * back to when no team.json exists, and disband's source of extra non-team peers when one
+ * does. A record's team is its team.json membership when it has one (as roster() resolves
+ * it); with no membership — the very case this exists for — its own checkin `team` tag
+ * decides, untagged meaning the default team.
+ */
+export function livePeerSlots(dir, team = null, now = Date.now()) {
+  const slots = [];
+  for (const rec of latestRoster(dir)) {
+    if (rec.status === "down" || !rec.name) continue;
+    const membership = resolveMemberTeam(dir, rec.name);
+    const tag = rec.team !== undefined ? rec.team : null;
+    if ((membership.found ? membership.team : tag) !== team) continue;
+    slots.push({ name: rec.name, role: rec.role || null, pid: rec.pid ?? null, pane_id: rec.pane_id || null, ...recordLiveness(rec, now) });
+  }
+  return slots;
+}
+
+/**
  * Per role, a list of peer instances, live-first then freshest:
  * `{name, live, how, ageSec, busy, openBriefs, unassigned}`. `down` records
  * are not candidates and are dropped. Records are attributed to
@@ -733,15 +772,7 @@ export function roster(dir, resolved, repoBasename, now = Date.now()) {
     if (rec.status === "down") continue;
     const role = rec.role || roleForPeerName(rec.name, resolved, repoBasename);
     if (!role || !out[role]) continue;
-    const ageSec = ageSecOf(rec.ts, now);
-    let live = false;
-    let how = rec.status;
-    if (rec.status === "up") {
-      live = pidAlive(rec.pid);
-      how = "up-pid";
-    } else if (rec.status === "seen" || rec.status === "briefed") {
-      live = ageSec < ROSTER_FRESH_SEC;
-    }
+    const { live, how, ageSec } = recordLiveness(rec, now);
     const base = { role, live, how, ageSec, busy: rec.busy === true, task: rec.task || null };
 
     if (!rec.name) {

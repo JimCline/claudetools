@@ -201,8 +201,9 @@ check "11: role given instead of a name: exit non-zero, says it is a role" \
 # ===========================================================================
 rm -f "$TEAM_FILE"
 run dismiss anyone
-check "12: no active team: exit 0, dismissed:false reason:no active team" \
-  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"dismissed\": false" && echo "$OUT" | grep -q "\"reason\": \"no active team\""'
+# Spec 0040 §1.1: with no team.json AND no live peer records the no-op reason is extended.
+check "12: no active team: exit 0, dismissed:false reason:no active team and no live peers" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"dismissed\": false" && echo "$OUT" | grep -q "\"reason\": \"no active team and no live peers\""'
 
 # ===========================================================================
 # 13. Last member: members:[], team_empty:true, team.json still exists.

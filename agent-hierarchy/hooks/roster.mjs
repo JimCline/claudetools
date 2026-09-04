@@ -78,7 +78,7 @@ import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 
 import { CONFIG_VERSION, findGitRoot, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, teamPrefix, teamPrefixInfo, validateTeamAlias } from "./lib-config.mjs";
-import { ageSecOf, appendRosterRecord, latestRoster, newId, localIso, pidAlive, realCwd, ROSTER_FRESH_SEC } from "./lib-hier.mjs";
+import { appendRosterRecord, latestRoster, livePeerSlots, newId, localIso, pidAlive, realCwd, recordLiveness } from "./lib-hier.mjs";
 import { clearTeam, fingerprint, herdrOnPath, historyEntryIsActive, listTeamNames, normalizeMembers, readHistory, readTeam, resolveSessionTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamIsLive, teamIsOrphaned, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
 
 const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config", "no-spawn"]);
@@ -1000,10 +1000,58 @@ function warnMixedPrefixSpawnOne(dir, member) {
     (lib-hier.mjs) applies per-record, applied here to one named team member. */
 function memberIsLive(dir, name) {
   const rec = latestRoster(dir).find((r) => r.name === name);
-  if (!rec || rec.status === "down") return false;
-  if (rec.status === "up") return pidAlive(rec.pid);
-  if (rec.status === "seen" || rec.status === "briefed") return ageSecOf(rec.ts) < ROSTER_FRESH_SEC;
-  return false;
+  return Boolean(rec) && rec.status !== "down" && recordLiveness(rec).live;
+}
+
+/** Spec 0040 §1.2: the live peer records for the current team, shaped like team.json members so
+    closableMembers/closeToken/closeMemberPane apply verbatim. Records store the herdr pane id
+    from checkin (HERDR_PANE_ID); a record without one has no transport_id and is listed but
+    never closable. `source: "peers"` marks the row as coming from the registry, not team.json. */
+function peerFallbackMembers(dir) {
+  return livePeerSlots(dir, teamArg || null)
+    .filter((s) => s.live)
+    .map((s) => ({ role: s.role, name: s.name, route: "peer", transport_id: s.pane_id, live: s.live, how: s.how, source: "peers" }));
+}
+
+/** Spec 0040 §1.4a: registry peers not named in team.json — a record matching a member's name IS
+    that member, never an extra. */
+function peerExtras(dir, team) {
+  const named = new Set(team.members.map((m) => m.name));
+  return peerFallbackMembers(dir).filter((m) => !named.has(m.name));
+}
+
+function peerFallbackPlanEntry(m) {
+  return { role: m.role, name: m.name, route: m.route, transport: "herdr", transport_id: m.transport_id, command: m.transport_id ? `herdr pane close ${m.transport_id}` : null, live: m.live, how: m.how, source: "peers" };
+}
+
+/** Close one member of a (possibly mixed, spec 0040 §1.4a) close set: team rows use the team's
+    transport; registry rows are herdr by construction and carry `source` through to the result. */
+function closeOne(m, teamTransport) {
+  const row = { name: m.name, transport_id: m.transport_id };
+  try {
+    closeMemberPane(m.source === "peers" ? "herdr" : teamTransport, m.transport_id);
+    Object.assign(row, { closed: true, error: null });
+  } catch (err) {
+    Object.assign(row, { closed: false, error: err.message });
+  }
+  if (m.source === "peers") row.source = "peers";
+  return row;
+}
+
+/** Shared token/confirm/allow-global gate for every --close variant (spec 0016 §4.5, 0040 §1.3). */
+function gateClose(verb, scope, closable) {
+  const closeList = closable.map((m) => ({ name: m.name, transport_id: m.transport_id, ...(m.source === "peers" ? { source: "peers" } : {}) }));
+  if (opts.confirm !== true) {
+    fail(`${verb} --close: --confirm is required to close ${verb === "dismiss" ? "a live session" : "live sessions"}. Close list: ${JSON.stringify(closeList)}`);
+  }
+  if (typeof opts["plan-token"] !== "string" || !opts["plan-token"]) {
+    fail(`${verb} --close needs --plan-token <tok>, from a preceding \`${verb}${verb === "dismiss" ? " <name>" : ""}\` (plan) call`);
+  }
+  if (opts["plan-token"] !== closeToken(scope, closable)) {
+    fail(`${verb} --close: --plan-token does not match the current close plan (the topology may have changed) — re-run \`${verb}\` and retry with the fresh token`);
+  }
+  const preResolved = resolveRoster(cwd, teamArg);
+  if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
 }
 
 /** `create --spawn` (spec 0005): resolve + layout + launch + retry in one script invocation. */
@@ -1643,7 +1691,16 @@ try {
       if (opts.close === true) {
         const team = readTeam(dir, teamArg);
         if (!team) {
-          out({ closed: false, reason: "no active team" });
+          // Spec 0040 §1.1/§1.3: no team.json — close the live registry peers instead, under the
+          // same three gates, with the literal "no-team" standing in for team_id in the token.
+          const closable = closableMembers(peerFallbackMembers(dir));
+          if (closable.length === 0) {
+            out({ closed: false, reason: "no active team and no live peers" });
+            break;
+          }
+          gateClose("disband", "no-team", closable);
+          const results = closable.map((m) => closeOne(m, null));
+          out({ closed: results.every((r) => r.closed), source: "peers", results });
           break;
         }
         let healedMembers = team.members;
@@ -1651,28 +1708,11 @@ try {
           const result = resyncMembers(team);
           if (result.query_ok) healedMembers = result.members;
         }
-        const closable = closableMembers(healedMembers);
-        const closeList = closable.map((m) => ({ name: m.name, transport_id: m.transport_id }));
-        if (opts.confirm !== true) {
-          fail(`disband --close: --confirm is required to close live sessions. Close list: ${JSON.stringify(closeList)}`);
-        }
-        if (typeof opts["plan-token"] !== "string" || !opts["plan-token"]) {
-          fail("disband --close needs --plan-token <tok>, from a preceding `disband` (plan) call");
-        }
-        const expectedToken = closeToken(team.team_id, closable);
-        if (opts["plan-token"] !== expectedToken) {
-          fail("disband --close: --plan-token does not match the current close plan (the topology may have changed) — re-run `disband` and retry with the fresh token");
-        }
-        const preResolved = resolveRoster(cwd, teamArg);
-        if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
-        const results = closable.map((m) => {
-          try {
-            closeMemberPane(team.transport, m.transport_id);
-            return { name: m.name, transport_id: m.transport_id, closed: true, error: null };
-          } catch (err) {
-            return { name: m.name, transport_id: m.transport_id, closed: false, error: err.message };
-          }
-        });
+        // Spec 0040 §1.4a: the close set is the union of team.json members and live registry
+        // peers outside it; the token pins exactly that union.
+        const closable = closableMembers([...healedMembers, ...peerExtras(dir, team)]);
+        gateClose("disband", team.team_id, closable);
+        const results = closable.map((m) => closeOne(m, team.transport));
         out({ closed: results.every((r) => r.closed), results });
         break;
       }
@@ -1709,7 +1749,14 @@ try {
       // never persist the heal and never fail() on a query error (degrade to the stored ids).
       const team = readTeam(dir, teamArg);
       if (!team) {
-        out({ disbanded: false, reason: "no active team" });
+        // Spec 0040 §1.1/§1.5: plan over the live registry peers; `source: "peers"` says so.
+        const fallback = peerFallbackMembers(dir);
+        const closable = closableMembers(fallback);
+        if (closable.length === 0) {
+          out({ disbanded: false, reason: "no active team and no live peers" });
+          break;
+        }
+        out({ close: fallback.map(peerFallbackPlanEntry), close_token: closeToken("no-team", closable), source: "peers" });
         break;
       }
       let healedMembers = team.members;
@@ -1735,7 +1782,11 @@ try {
         if (team.transport === "herdr") entry.resync_status = m.status;
         return entry;
       });
-      const disbandOut = { close, close_token: closeToken(team.team_id, closableMembers(healedMembers)) };
+      // Spec 0040 §1.4a: live registry peers outside team.json join the plan, labeled, and the
+      // token hashes the union — with none present, output and token are exactly the team-only ones.
+      const extras = peerExtras(dir, team);
+      for (const m of extras) close.push(peerFallbackPlanEntry(m));
+      const disbandOut = { close, close_token: closeToken(team.team_id, closableMembers([...healedMembers, ...extras])) };
       if (resyncSummary) disbandOut.resync = resyncSummary;
       out(disbandOut);
       break;
@@ -1757,16 +1808,42 @@ try {
       const name = typeof opts._[0] === "string" ? opts._[0] : fail("dismiss needs a member name: roster.mjs dismiss <name> [--plan|--close --confirm --plan-token <tok>|--commit [--also-config]]");
       const dir = hierarchyDir(cwd);
       const team = readTeam(dir, teamArg);
-      if (!team) {
+      if (!team && opts.commit === true) {
         out({ dismissed: false, reason: "no active team" });
         break;
       }
-      const target = team.members.find((m) => m.name === name);
-      if (!target) {
+      const target = team ? team.members.find((m) => m.name === name) : null;
+      // Spec 0040 §1.4b: a name absent from team.json (or no team.json at all) is looked up in
+      // the live registry for plan/--close; --commit is team.json-only and never falls back.
+      const fallback = target || opts.commit === true ? [] : peerFallbackMembers(dir);
+      const fbTarget = target ? null : fallback.find((m) => m.name === name) || null;
+      if (!team && !fbTarget) {
+        if (closableMembers(fallback).length === 0) {
+          out({ dismissed: false, reason: "no active team and no live peers" });
+          break;
+        }
+        fail(`dismiss: no member named ${JSON.stringify(name)} — no team.json; live peer records have: ${fallback.map((m) => m.name).join(", ")}`);
+      }
+      if (!target && !fbTarget) {
         if (team.members.some((m) => m.role === name)) {
           fail(`dismiss: no member named ${JSON.stringify(name)} in team ${team.team_id} — that is a role, not a member name; dismiss takes a derived name (0019 §3.2)`);
         }
-        fail(`dismiss: no member named ${JSON.stringify(name)} in team ${team.team_id} — it has: ${team.members.map((m) => m.name).join(", ") || "(none)"}`);
+        fail(`dismiss: no member named ${JSON.stringify(name)} in team ${team.team_id} — it has: ${team.members.map((m) => m.name).join(", ") || "(none)"}${opts.commit === true ? "" : "; checked live peer records too"}`);
+      }
+      if (fbTarget) {
+        // Spec 0040 §1.4b/§1.5: single-record plan/close, same shapes as the team path plus
+        // `source: "peers"`; the token scope is the team's id when one exists, else "no-team".
+        const scope = team ? team.team_id : "no-team";
+        const closable = closableMembers([fbTarget]);
+        if (opts.close === true) {
+          if (closable.length === 0) fail(`dismiss --close: ${name} has no addressable pane (live peer record without a pane_id)`);
+          gateClose("dismiss", scope, closable);
+          const results = closable.map((m) => closeOne(m, null));
+          out({ closed: results.every((r) => r.closed), source: "peers", results });
+          break;
+        }
+        out({ member: peerFallbackPlanEntry(fbTarget), live: fbTarget.live, close_token: closeToken(scope, closable), source: "peers" });
+        break;
       }
 
       // --close --confirm --plan-token <tok>: reuse disband --close's machinery verbatim.

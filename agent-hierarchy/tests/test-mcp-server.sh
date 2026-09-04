@@ -188,6 +188,8 @@ cat > "$TMP/equiv.mjs" <<'EOF'
 import { execFileSync } from "node:child_process";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const [, , serverPath, msgCli, rosterCli, repoA] = process.argv;
 
@@ -226,7 +228,14 @@ const toolNewNorm = normalize(toolNew.content[0].text);
 const cliNewNorm = normalize(cliNewRaw);
 const newMatch = JSON.stringify(toolNewNorm) === JSON.stringify(cliNewNorm);
 
-console.log(JSON.stringify({ showMatch, newMatch, toolShow: toolShow.content[0].text, cliShow: cliShow.trim() }));
+// roster_disband on a team-less repo with a live peer record: inherits spec 0040's fallback via execCli.
+mkdirSync(join(repoA, ".claude", "hierarchy"), { recursive: true });
+writeFileSync(join(repoA, ".claude", "hierarchy", "peers.jsonl"), JSON.stringify({ type: "peer", status: "up", name: "repoa-architect", role: "architect", pid: process.pid, pane_id: "pZ", ts: new Date().toISOString() }) + "\n");
+const toolDisband = await callViaServer("roster_disband", { cwd: repoA });
+const disbandObj = JSON.parse(toolDisband.content[0].text.split("\nstderr:\n")[0]);
+const disbandPeers = disbandObj.source === "peers" && Array.isArray(disbandObj.close) && disbandObj.close.length === 1 && disbandObj.close[0].command === "herdr pane close pZ" && typeof disbandObj.close_token === "string";
+
+console.log(JSON.stringify({ showMatch, newMatch, disbandPeers, toolShow: toolShow.content[0].text, cliShow: cliShow.trim() }));
 EOF
 
 node "$TMP/equiv.mjs" "$SERVER" "$MSG_CLI" "$ROSTER_CLI" "$REPO_A" > "$TMP/equiv-out.json" 2>"$TMP/equiv-err.log"
@@ -238,6 +247,8 @@ check "roster_show tool output is byte-identical to the CLI invocation" \
   'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/equiv-out.json\",\"utf8\")); process.exit(d.showMatch?0:1)"'
 check "msg_new tool output matches the CLI invocation apart from id/timestamp" \
   'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/equiv-out.json\",\"utf8\")); process.exit(d.newMatch?0:1)"'
+check "roster_disband on a team-less repo with a live peer record returns the source:peers fallback plan (spec 0040)" \
+  'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/equiv-out.json\",\"utf8\")); process.exit(d.disbandPeers?0:1)"'
 
 # ---------------------------------------------------------------------------
 # Test 6: stderr preservation mechanism.
