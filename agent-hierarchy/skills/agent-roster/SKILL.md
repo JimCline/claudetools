@@ -1,6 +1,6 @@
 ---
 name: agent-roster
-description: Define, edit, or inspect the agent-hierarchy roster (which roles exist, their model/effort/route), spawn the roster as a live Team, or disband one. Use for /agent-roster, for "set up my team", "add a reviewer peer", "spawn the team", "spawn the architect", "spawn just the reviewer", or "disband the team".
+description: Spawn a live Team from the existing agent-hierarchy roster (definitions), or disband one; also define, edit, or inspect the roster itself when its member list needs to change. Use for /agent-roster, for "set up my team", "add a reviewer peer", "spawn the team", "spawn the architect", "spawn just the reviewer", or "disband the team".
 ---
 
 # agent-roster
@@ -10,6 +10,15 @@ at one of three levels (§ Levels below). `$CLAUDE_PLUGIN_ROOT/hooks/roster.mjs`
 (preferably via `mcp__ah__roster_show` for reads) does all the file I/O and
 validation; this skill is the interactive prose surface that drives it — do
 not hand-edit the JSON, and do not duplicate its validation here.
+
+**Roster vs. Team — the roster is definitions, a Team is an instance created
+FROM it.** If a roster already exists (check `roster_show`) and you just need
+a live Team — including at a worktree, which usually inherits the repo's
+existing roster — go straight to `create` (§ Create). You do NOT need to
+add/edit/remove roster members first; that's only for changing WHO belongs on
+the roster (a template edit), not for bringing a Team up from one that
+already fits. Only reach for `add`/`edit`/`remove` when the roster itself is
+wrong or missing for this level.
 
 Full spec: `docs/specs/0001-agent-roster.md`. This document is the operational
 surface; if the two disagree, the spec is authoritative and this file has
@@ -25,10 +34,10 @@ drifted — say so rather than silently picking one.
 
 Resolution is **whole-level replace**, not a per-key merge: the winning
 level's `roster` block is used in its entirety — a member defined only at a
-losing level does not appear. Prefer `mcp__ah__roster_show` (MCP tool) when
-available; otherwise `roster.mjs show`. With no `--level`/`level` argument
-it always prints the resolved (winning) roster; with one, it prints that
-level's raw file and says if it's shadowed.
+losing level does not appear. Use `mcp__ah__roster_show`. With no
+`--level`/`level` argument it always prints the resolved (winning) roster;
+with one, it prints that level's raw file and says if it's shadowed.
+Always try `mcp__ah__*` first — it is the preferred path. Only if it is absent from your toolset or a call to it fails as not-connected, fall back to the CLI equivalents listed in `agent-hierarchy/docs/mcp-tools.md` rather than guessing the arguments, and say so ONCE: apply the notice per your role — if you are the top-level session, tell the user; if you were dispatched, add one line to your report.
 
 Member names are **derived, never stored**: the first member of a role at the
 winning level is `<team-prefix>-<role>` (e.g. `claudetools-architect`) — the
@@ -44,11 +53,12 @@ from the roster.
 
 Each `roster_*` MCP tool maps 1:1 to `node roster.mjs <verb>` with the same
 flags (snake_case tool params ↔ kebab-case CLI flags, e.g. `auto_mode` ↔
-`--auto-mode`). Prefer the tool — `mcp__ah__roster_<verb>` — whenever the `ah`
-MCP server is connected; the model should never need Bash for any roster
-operation. If the server is not connected, fall back to Bash with the CLI
-form below using the same flag mapping. That is the entire fallback story;
-this file does not document both forms per verb.
+`--auto-mode`). Use the tool — `mcp__ah__roster_<verb>` — the model should
+never need Bash for any roster operation. See the MCP-unavailable fallback
+protocol under § Levels above; it applies here too. (The per-verb bullets
+below already give the CLI form alongside its MCP tool, since this section
+is `roster.mjs`'s own reference, not a copy of the fallback mapping —
+`docs/mcp-tools.md` stays the single source of truth for that.)
 
 All CLI subcommands run via `node "$CLAUDE_PLUGIN_ROOT/hooks/roster.mjs" <cmd> ...`
 with `--cwd "$(pwd)"` (or the relevant repo path). Level may be given as

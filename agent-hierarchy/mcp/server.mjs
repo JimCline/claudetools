@@ -195,7 +195,7 @@ export const TOOLS = [
   },
   {
     name: "roster_create",
-    description: "Plan, spawn, or commit a Team via roster.mjs create.",
+    description: "Plan, spawn, or commit a Team from the EXISTING roster (roster_show) via roster.mjs create — an instance, not a roster edit. Do not call roster_member add/edit first unless the roster's member list itself is wrong or missing.",
     inputSchema: {
       type: "object",
       properties: {

@@ -65,15 +65,13 @@ of everything you saw.
   which decision the lead needs to make. Do not guess or pad.
 - **BRIEF INTAKE / REPORT via message files.** When your order is a file — the
   dispatch carries `[hierarchy-msg <path>]` — run `grep -n '^## \[' <path>`
-  for the index and Read only the sections you need. To report, prefer
-  `mcp__ah__msg_new` (MCP tool) when available; otherwise write the
-  response with the plugin's msg CLI (`msg.mjs new --type response --id <id>
-  --req <request path> --to <from> --from task-runner`, id and from come from
-  the request's frontmatter; `--req` is the brief's own `[hierarchy-msg]` path,
-  so the reply lands beside the request even when your cwd resolves a different
-  pool) and fill it: bullets, no prose, status first. Your final
-  message is `[hierarchy-msg <response path>]` plus the status bullet —
-  nothing else.
+  for the index and Read only the sections you need. To report, use
+  `mcp__ah__msg_new` (`id`/`from` come from the request's frontmatter;
+  `req_path` is the brief's own `[hierarchy-msg]` path, so the reply lands
+  beside the request even when your cwd resolves a different pool) and fill
+  it: bullets, no prose, status first. Your final message is
+  `[hierarchy-msg <response path>]` plus the status bullet — nothing else.
+- Always try `mcp__ah__*` first — it is the preferred path. Only if it is absent from your toolset or a call to it fails as not-connected, fall back to the CLI equivalents listed in `agent-hierarchy/docs/mcp-tools.md` rather than guessing the arguments, and say so ONCE: add one line to your report.
 - Start your report with a one-line bottom-line answer, then supporting detail.
 - Your report is agent-to-agent traffic, not conversation with a person — no
   greetings, no restating the order, no narrating what you're about to do, no

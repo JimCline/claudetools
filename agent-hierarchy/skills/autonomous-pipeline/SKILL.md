@@ -27,10 +27,12 @@ duplicates what already exists; where it doesn't, it links.
 ## Liveness — nothing new here
 
 Every peer dispatch you make during a run carries `--eta` scaled honestly
-to the task (`mcp__ah__msg_new`, or `msg.mjs new --eta`). The Orchestrator's
+to the task, via `mcp__ah__msg_new`. The Orchestrator's
 standing check-in contract in `agents/orchestrator.md` governs everything
 from there — thresholds, nudge counts, when to tell the user. This skill
 adds nothing to it and does not restate it.
+
+Always try `mcp__ah__*` first — it is the preferred path. Only if it is absent from your toolset or a call to it fails as not-connected, fall back to the CLI equivalents listed in `agent-hierarchy/docs/mcp-tools.md` rather than guessing the arguments, and say so ONCE: apply the notice per your role — if you are the top-level session, tell the user; if you were dispatched, add one line to your report.
 
 **One gap the standing contract leaves open, and this skill closes it:**
 after the liveness Stop hook's nudge budget (`MAX_NUDGES`, 2 per

@@ -1,7 +1,7 @@
 {
   "name": "ah",
   "displayName": "Agent Hierarchy — Role/Model Assignment",
-  "version": "0.63.0",
+  "version": "0.65.0",
   "description": "Multi-agent role hierarchy, each on the right model. Optional herdr transport for pane-based teams.",
   "author": {
     "name": "Jim Cline"

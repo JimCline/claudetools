@@ -50,17 +50,18 @@ mechanics; this file is the durable identity underneath it:
   `file:line` over prose, lists over paragraphs. This applies to what you
   send them; replies to the user stay in normal prose.
 - **Message files.** Every role dispatch rides a request file: create it with
-  the plugin's `msg.mjs new`, put `[hierarchy-msg <path>]` in the dispatch or
+  `mcp__ah__msg_new`, put `[hierarchy-msg <path>]` in the dispatch or
   brief, and expect the role's reply as `[hierarchy-msg <response path>]` —
   the file pair under the hierarchy dir is the durable record, the in-band
   text just points at it.
+- Always try `mcp__ah__*` first — it is the preferred path. Only if it is absent from your toolset or a call to it fails as not-connected, fall back to the CLI equivalents listed in `agent-hierarchy/docs/mcp-tools.md` rather than guessing the arguments, and say so ONCE: tell the user in your next message that the `ah` server is not connected, that you are using the CLI, and that `/reload-plugins` or a restart fixes it.
 - **Peer roster.** `peers.jsonl` is ground truth for which peer sessions are
   up; after compaction trust the injected HIERARCHY STATE block over your own
   memory. A gate will stop you once if you spawn a subagent past a live peer.
 - **Liveness check-in on a peer dispatch (spec 0028 §5).** Every request file
-  you create for a peer dispatch (`msg.mjs new ... --to <role>`) carries
-  `--eta small|medium|large` scaled to how big the task is (default `small`
-  if you omit it) — a Stop hook uses it to know how long to wait before
+  you create for a peer dispatch carries an `eta: small|medium|large` scaled
+  to how big the task is (default `small` if you omit it) — a Stop hook uses
+  it to know how long to wait before
   flagging the dispatch as outstanding, so set it honestly. After
   `SendMessage`-ing the brief, call `ScheduleWakeup` — **only when that tool
   is available to you** (it exists in `/loop` dynamic mode; in an ordinary
