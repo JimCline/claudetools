@@ -54,7 +54,7 @@ mechanics; this file is the durable identity underneath it:
   brief, and expect the role's reply as `[hierarchy-msg <response path>]` —
   the file pair under the hierarchy dir is the durable record, the in-band
   text just points at it.
-- Always try `mcp__ah__*` first — it is the preferred path. Only if it is absent from your toolset or a call to it fails as not-connected, fall back to the CLI equivalents listed in `agent-hierarchy/docs/mcp-tools.md` rather than guessing the arguments, and say so ONCE: tell the user in your next message that the `ah` server is not connected, that you are using the CLI, and that `/reload-plugins` or a restart fixes it.
+- Always try `mcp__ah__*` first — it is the preferred path. Only if it is absent from your toolset or a call to it fails as not-connected, fall back to the CLI equivalents listed in `agent-hierarchy/docs/mcp-tools.md` rather than guessing the arguments, and say so ONCE: tell the user in your next message that the `ah` server is not connected, that you are using the CLI, and that `/reload-plugins` or a restart fixes it. `mcp__ah__*` here means the ah MCP tools under whichever prefix your install surfaces — commonly `mcp__plugin_ah_ah__<verb>`. Match on the verb, not the prefix, and treat MCP as absent only if no such tool appears under any prefix.
 - **Peer roster.** `peers.jsonl` is ground truth for which peer sessions are
   up; after compaction trust the injected HIERARCHY STATE block over your own
   memory. A gate will stop you once if you spawn a subagent past a live peer.

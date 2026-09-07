@@ -1,6 +1,6 @@
 ---
 name: agent-roster
-description: Spawn a live Team from the existing agent-hierarchy roster (definitions), or disband one; also define, edit, or inspect the roster itself when its member list needs to change. Use for /agent-roster, for "set up my team", "add a reviewer peer", "spawn the team", "spawn the architect", "spawn just the reviewer", or "disband the team".
+description: Spawn a live Team from the existing agent-hierarchy roster (definitions), or disband one; also define, edit, or inspect the roster itself when its member list needs to change. Use for /agent-roster, for "set up my team", "set up a team", "add a reviewer peer", "add a peer", "spawn the team", "spawn my team", "spin up the team", "start the team", "spawn the architect", "spawn just the reviewer", "disband the team", or "disband my team".
 ---
 
 # agent-roster
@@ -37,7 +37,7 @@ level's `roster` block is used in its entirety — a member defined only at a
 losing level does not appear. Use `mcp__ah__roster_show`. With no
 `--level`/`level` argument it always prints the resolved (winning) roster;
 with one, it prints that level's raw file and says if it's shadowed.
-Always try `mcp__ah__*` first — it is the preferred path. Only if it is absent from your toolset or a call to it fails as not-connected, fall back to the CLI equivalents listed in `agent-hierarchy/docs/mcp-tools.md` rather than guessing the arguments, and say so ONCE: apply the notice per your role — if you are the top-level session, tell the user; if you were dispatched, add one line to your report.
+Always try `mcp__ah__*` first — it is the preferred path. Only if it is absent from your toolset or a call to it fails as not-connected, fall back to the CLI equivalents listed in `agent-hierarchy/docs/mcp-tools.md` rather than guessing the arguments, and say so ONCE: apply the notice per your role — if you are the top-level session, tell the user; if you were dispatched, add one line to your report. Tool names in this file are written with the `mcp__ah__` prefix as shorthand. The live prefix depends on install shape — a plugin-supplied server surfaces to the model as `mcp__plugin_ah_ah__<verb>`, the same server configured directly in a `.mcp.json` under the name `ah` surfaces as `mcp__ah__<verb>`. Resolve the real name from your own tool list. Code that matches on these names (a hook matcher, a gate) must enumerate BOTH prefixes rather than pick one — see spec 0042 §1.6.
 
 Member names are **derived, never stored**: the first member of a role at the
 winning level is `<team-prefix>-<role>` (e.g. `claudetools-architect`) — the

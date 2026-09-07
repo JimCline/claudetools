@@ -32,7 +32,7 @@ standing check-in contract in `agents/orchestrator.md` governs everything
 from there — thresholds, nudge counts, when to tell the user. This skill
 adds nothing to it and does not restate it.
 
-Always try `mcp__ah__*` first — it is the preferred path. Only if it is absent from your toolset or a call to it fails as not-connected, fall back to the CLI equivalents listed in `agent-hierarchy/docs/mcp-tools.md` rather than guessing the arguments, and say so ONCE: apply the notice per your role — if you are the top-level session, tell the user; if you were dispatched, add one line to your report.
+Always try `mcp__ah__*` first — it is the preferred path. Only if it is absent from your toolset or a call to it fails as not-connected, fall back to the CLI equivalents listed in `agent-hierarchy/docs/mcp-tools.md` rather than guessing the arguments, and say so ONCE: apply the notice per your role — if you are the top-level session, tell the user; if you were dispatched, add one line to your report. `mcp__ah__*` here means the ah MCP tools under whichever prefix your install surfaces — commonly `mcp__plugin_ah_ah__<verb>`. Match on the verb, not the prefix, and treat MCP as absent only if no such tool appears under any prefix.
 
 **One gap the standing contract leaves open, and this skill closes it:**
 after the liveness Stop hook's nudge budget (`MAX_NUDGES`, 2 per

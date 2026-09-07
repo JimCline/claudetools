@@ -88,7 +88,7 @@ Your contract:
   beside the request even when your cwd resolves a different pool) and fill
   it: bullets, no prose, status first. Your final message is
   `[hierarchy-msg <response path>]` plus the status bullet — nothing else.
-- Always try `mcp__ah__*` first — it is the preferred path. Only if it is absent from your toolset or a call to it fails as not-connected, fall back to the CLI equivalents listed in `agent-hierarchy/docs/mcp-tools.md` rather than guessing the arguments, and say so ONCE: add one line to your report.
+- Always try `mcp__ah__*` first — it is the preferred path. Only if it is absent from your toolset or a call to it fails as not-connected, fall back to the CLI equivalents listed in `agent-hierarchy/docs/mcp-tools.md` rather than guessing the arguments, and say so ONCE: add one line to your report. `mcp__ah__*` here means the ah MCP tools under whichever prefix your install surfaces — commonly `mcp__plugin_ah_ah__<verb>`. Match on the verb, not the prefix, and treat MCP as absent only if no such tool appears under any prefix.
 
 Report back: a one-line verdict (PASS / PASS WITH NITS / CHANGES REQUIRED),
 then each finding as `severity | impl-defect|spec-defect | file:line | what's

@@ -129,6 +129,7 @@ function askReason(ros, sessionId) {
     '  "Subagents only" — ignore peers entirely this session.',
     `Record it: node "$CLAUDE_PLUGIN_ROOT/hooks/msg.mjs" route <peers|prefer-peers|subagents> --session ${sessionId}`,
     "Then re-issue this exact dispatch. Say in one line what you recorded.",
+    'Need live peers that do not exist yet? That is the `ah:agent-roster` skill\'s job, not a raw roster MCP call.',
   ].join("\n");
 }
 

@@ -34,14 +34,24 @@
  * No-ops for subagents (same `agent_id` discriminator as the rest of the
  * plugin) — a subagent is not a peer, and its own SessionStart injection is
  * already suppressed for the same reason.
+ *
+ * Team-intent nudge (spec 0042 §1.5): a prompt matching one of the
+ * team-lifecycle phrases from `skills/agent-roster/SKILL.md`'s frontmatter
+ * `description` gets exactly one injected line naming the `ah:agent-roster`
+ * skill — read from that file at hook time so the phrase list has one
+ * source of truth (the test asserts the two match). No new prompt, no
+ * instruction, no restating the protocol; a prompt with no match injects
+ * nothing.
  */
 
 import { isSubagent, readHookInput } from "./lib-config.mjs";
 import { extractMsgToken } from "./lib-hier.mjs";
+import { matchedTeamIntentPhrase } from "./lib-team-intent.mjs";
 import { appendPeerRecord, appendTurnMarker, extractPendingRecord, parseWrapper, pendingFor } from "./lib-peer.mjs";
 
 try {
   const input = await readHookInput();
+  let nudge = null;
   if (!isSubagent(input)) {
     const sessionId = typeof input.session_id === "string" ? input.session_id : "";
     const prompt = typeof input.prompt === "string" ? input.prompt : "";
@@ -68,6 +78,20 @@ try {
         appendTurnMarker(sessionId, "armed");
       }
     }
+
+    if (prompt && matchedTeamIntentPhrase(prompt)) {
+      nudge = 'ah: standing up, reshaping, or tearing down a live Team goes through the `ah:agent-roster` skill.';
+    }
+  }
+  if (nudge) {
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          additionalContext: nudge,
+        },
+      })
+    );
   }
 } catch {
   // fail open: a tracking failure must never affect the prompt it observed

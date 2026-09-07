@@ -89,6 +89,41 @@ MATCHER_CHECK=$(node -e '
 check "hooks.json PreToolUse matcher for pretooluse-disband-close-gate.mjs names mcp__ah__roster_dismiss_close" \
   '[ "$MATCHER_CHECK" = "PASS" ]'
 
+# ---------------------------------------------------------------------------
+# spec 0042 §1.6/§4 item 10: dual-prefix coverage. The gate was inert in production
+# because it only matched the short `mcp__ah__` prefix while the live tool name (a
+# plugin-supplied MCP server) is `mcp__plugin_ah_ah__*` — same root cause §1.3 fixes
+# for the new gate. Both close verbs, both prefixes, plus the single-member path
+# selection for roster_dismiss_close under either prefix.
+# ---------------------------------------------------------------------------
+
+for prefix in mcp__plugin_ah_ah__ mcp__ah__; do
+  hook "${prefix}roster_disband_close" '{"cwd":"'"$PROJ"'","confirm":true,"plan_token":"t"}'
+  check "0042: ${prefix}roster_disband_close asks" '[ "$RC" -eq 0 ] && is_ask'
+
+  hook "${prefix}roster_dismiss_close" '{"cwd":"'"$PROJ"'","name":"proj-architect","confirm":true,"plan_token":"t"}'
+  check "0042: ${prefix}roster_dismiss_close asks and names the single member" \
+    '[ "$RC" -eq 0 ] && is_ask && echo "$OUT" | grep -q "proj-architect"'
+done
+
+DUAL_MATCHER_CHECK=$(node -e '
+  const fs = require("fs");
+  const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  const rule = (cfg.hooks.PreToolUse || []).find((r) =>
+    Array.isArray(r.hooks) && r.hooks.some((h) => typeof h.command === "string" && h.command.includes("pretooluse-disband-close-gate.mjs"))
+  );
+  const names = new Set(rule ? String(rule.matcher).split("|") : []);
+  const want = ["mcp__plugin_ah_ah__roster_disband_close", "mcp__ah__roster_disband_close", "mcp__plugin_ah_ah__roster_dismiss_close", "mcp__ah__roster_dismiss_close"];
+  const missing = want.filter((n) => !names.has(n));
+  console.log(missing.length ? "FAIL " + JSON.stringify(missing) : "PASS");
+' "$HOOKS_JSON")
+check "hooks.json matcher enumerates both prefixes for both close verbs" '[ "$DUAL_MATCHER_CHECK" = "PASS" ]'
+
+# generic name-agreement check (spec 0042 §4 item 4) also covers this gate
+NAME_AGREEMENT=$(node "$PLUGIN/tests/check-gate-name-agreement.mjs" 2>&1); NA_RC=$?
+echo "$NAME_AGREEMENT"
+check "gate name-agreement (body vs hooks.json matcher, both prefixes)" '[ "$NA_RC" -eq 0 ]'
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

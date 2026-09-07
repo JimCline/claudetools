@@ -35,11 +35,20 @@
         ]
       },
       {
-        "matcher": "mcp__ah__roster_disband_close|mcp__ah__roster_dismiss_close",
+        "matcher": "mcp__plugin_ah_ah__roster_disband_close|mcp__ah__roster_disband_close|mcp__plugin_ah_ah__roster_dismiss_close|mcp__ah__roster_dismiss_close",
         "hooks": [
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-disband-close-gate.mjs\""
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__plugin_ah_ah__roster_create|mcp__ah__roster_create|mcp__plugin_ah_ah__roster_spawn_one|mcp__ah__roster_spawn_one|mcp__plugin_ah_ah__roster_adopt|mcp__ah__roster_adopt|mcp__plugin_ah_ah__roster_move|mcp__ah__roster_move|mcp__plugin_ah_ah__roster_dismiss|mcp__ah__roster_dismiss|mcp__plugin_ah_ah__roster_disband|mcp__ah__roster_disband",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-roster-skill-gate.mjs\""
           }
         ]
       },

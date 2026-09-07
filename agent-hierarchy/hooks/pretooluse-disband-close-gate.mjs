@@ -24,7 +24,16 @@ import { readHookInput } from "./lib-config.mjs";
 import { hierarchyDir } from "./lib-hier.mjs";
 import { readTeam } from "./lib-roster.mjs";
 
-const GATED_TOOLS = new Set(["mcp__ah__roster_disband_close", "mcp__ah__roster_dismiss_close"]);
+// spec 0042 §1.6: both MCP name prefixes are gated — the live shape depends on how
+// the server is installed (plugin-supplied vs a `.mcp.json`-registered `ah` server),
+// not on this code. `mcp__plugin_ah_ah__` is the confirmed live shape for this repo.
+const GATED_TOOLS = new Set([
+  "mcp__plugin_ah_ah__roster_disband_close",
+  "mcp__ah__roster_disband_close",
+  "mcp__plugin_ah_ah__roster_dismiss_close",
+  "mcp__ah__roster_dismiss_close",
+]);
+const DISMISS_CLOSE_TOOLS = new Set(["mcp__plugin_ah_ah__roster_dismiss_close", "mcp__ah__roster_dismiss_close"]);
 
 function ask(reason) {
   process.stdout.write(
@@ -44,7 +53,7 @@ try {
   if (!GATED_TOOLS.has(input.tool_name)) process.exit(0);
 
   const toolInput = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
-  const singleMemberName = input.tool_name === "mcp__ah__roster_dismiss_close" && typeof toolInput.name === "string" ? toolInput.name : null;
+  const singleMemberName = DISMISS_CLOSE_TOOLS.has(input.tool_name) && typeof toolInput.name === "string" ? toolInput.name : null;
   let names = singleMemberName;
   if (!names) {
     try {
