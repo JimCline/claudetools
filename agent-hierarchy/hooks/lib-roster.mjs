@@ -377,14 +377,18 @@ export function resolveMemberTeam(dir, name) {
  * whether a name collision should suggest a free candidate or tell the user to disband).
  */
 export function defaultTeamScope(dir, prefix) {
-  if (readTeam(dir, null)) return { team: null, defaulted: true };
+  // The flag rides along with the legacy branch too. Returning early without it let a legacy
+  // `team.json` mask an unnamable prefix, so the caller skipped [9.1]'s refusal and then derived
+  // a team name from a prefix `validateTeamAlias` rejects.
+  const bad = isValidTeamAlias(prefix) ? null : { unnamable: prefix, suggested: suggestTeamAlias(prefix) };
+  if (readTeam(dir, null)) return { team: null, defaulted: true, ...bad };
   // The prefix becomes a path segment, so it has to clear the same validator an explicit `--team`
   // clears — a repo basename is arbitrary text and `teams/<it>.json` must not be able to escape
   // the directory. Spec 0044 [9.1]: a prefix that cannot name a file must not fall back to the
   // unscoped path, which would silently reinstate the shared default across a whole class of
   // repos. `unnamable` says so; the CLI refuses on it at the point a team would be CREATED, not
   // here — refusing during scope resolution would also take out `alias --set`, the remedy.
-  if (!isValidTeamAlias(prefix)) return { team: null, defaulted: true, unnamable: prefix, suggested: suggestTeamAlias(prefix) };
+  if (bad) return { team: null, defaulted: true, ...bad };
   return { team: prefix, defaulted: true };
 }
 

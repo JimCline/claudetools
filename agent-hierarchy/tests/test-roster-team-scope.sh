@@ -337,6 +337,35 @@ r "" reap --commit
 check "5k: §1.7/B1 — reap is what removes it, not the scope resolution" \
   '[ "$RC" -eq 0 ] && [ ! -f "$LEGACY_TEAM" ]'
 
+# ---- 5l-5n (R1): the SAME property on `create --commit`, which writes a new team without ever
+# going through refuseOrClearExistingTeam. It is worse than the spawn path if unguarded — it
+# OVERWRITES the stale record instead of clearing it, so the file reap needs is destroyed.
+reset_state; clear_all; init_geometry; setup_roster architect
+mkdir -p "$HIER"
+cat > "$LEGACY_TEAM" <<EOF
+{"version":1,"team_id":"stale-2","created":"2020-01-01T00:00:00+00:00","roster_level":"repo","transport":"herdr","orchestrator":{"session_id":null,"pid":$DEAD_PID},"members":[{"role":"architect","name":"myrepo-architect","route":"peer","transport_id":"p9"}],"partial":false,"expected_root":"$PROJ"}
+EOF
+STALE2_BEFORE="$(cat "$LEGACY_TEAM")"
+r "CLAUDE_PID=$LIVE_PID" create --commit --transport terminal --roster-level repo --verified "'[\"myrepo-architect\"]'" --orchestrator-pid "$LIVE_PID"
+check "5l: R1 — create --commit lands at the scoped path, not the stale default" \
+  '[ "$RC" -eq 0 ] && [ -f "$SCOPED_TEAM" ] && [ "$(cat "$SCOPED_TEAM" | jq_node "j.team_id")" != "stale-2" ]'
+check "5m: R1 — and it did not overwrite the stale record reap still needs" \
+  '[ "$(cat "$LEGACY_TEAM")" = "$STALE2_BEFORE" ]'
+r "" reap
+check "5n: R1 — reap still sees the stale team afterwards" '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "stale-2"'
+
+# ---- 5o (R3): JOINING a legacy team that is past the staleness window but whose orchestrator is
+# still running must not move the new member to a second file. `teamIsOrphaned` (dead owner) is
+# the predicate; `!teamIsLive` would also catch this team and split it across two files.
+reset_state; clear_all; init_geometry; setup_roster architect reviewer
+mkdir -p "$HIER"
+cat > "$LEGACY_TEAM" <<EOF
+{"version":1,"team_id":"old-live-1","created":"2020-01-01T00:00:00+00:00","roster_level":"repo","transport":"herdr","orchestrator":{"session_id":null,"pid":$LIVE_PID},"members":[{"role":"architect","name":"myrepo-architect","route":"peer","transport_id":"p9"}],"partial":false,"expected_root":"$PROJ"}
+EOF
+r "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-one reviewer
+check "5o: R3 — spawning into an old-but-owner-alive legacy team keeps it in one file" \
+  '[ "$RC" -eq 0 ] && [ ! -f "$SCOPED_TEAM" ] && [ "$(cat "$LEGACY_TEAM" | jq_node "j.members.length")" = "2" ]'
+
 # ================================================================= 6 — r3 [9.1]: an unnamable prefix
 # A repo whose basename cannot clear validateTeamAlias must NOT fall back to creating the shared
 # team.json — that reinstates §1.1's ownership problem across a whole class of repos, silently.
@@ -360,6 +389,11 @@ rb "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-one architect
 check "6a: [9.1] — a bare launch refuses rather than creating the shared team.json" '[ "$RC" -ne 0 ]'
 rb "CLAUDE_PID=$LIVE_PID" create --plan
 check "6a1: [9.1] — bare create refuses on the same rule" '[ "$RC" -ne 0 ]'
+# R1: --commit is the mode that actually WRITES, so it is the one that must not be the mode that
+# skips the refusal. Same command, two modes, one answer.
+rb "CLAUDE_PID=$LIVE_PID" create --commit --transport terminal --roster-level repo --verified "'[\"_badrepo-architect\"]'" --orchestrator-pid "$LIVE_PID"
+check "6a1b: [9.1]/R1 — create --commit refuses identically, and writes no team.json" \
+  '[ "$RC" -ne 0 ] && [ ! -f "$BADHIER/team.json" ]'
 check "6a2: [9.1] — and wrote nothing under the hierarchy dir" \
   '[ ! -f "$BADHIER/team.json" ] && [ "$(ls -A "$BADHIER" 2>/dev/null | wc -l | tr -d " ")" = "$r_before_count" ]'
 check "6a3: [9.1] — the message names a VALID suggested name" \
@@ -388,6 +422,19 @@ check "6c: §1.7 — an existing legacy team.json still resolves in an unnamable
   '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "legacy-architect"'
 check "6c2: §1.7 — reading it neither refused nor rewrote it" \
   '[ "$(cat "$BADHIER/team.json")" = "$BAD_LEGACY_BEFORE" ]'
+
+# ---- 6d (R2): a legacy file must not MASK the unnamable check. Once that team is orphaned there
+# is no name left to fall back to, so the create paths refuse rather than deriving one from a
+# prefix validateTeamAlias rejects.
+cat > "$BADHIER/team.json" <<EOF
+{"version":1,"team_id":"legacy-bad-dead","created":"2020-01-01T00:00:00+00:00","roster_level":"repo","transport":"herdr","orchestrator":{"session_id":null,"pid":$DEAD_PID},"members":[{"role":"architect","name":"legacy-architect","route":"peer","transport_id":"p9"}],"partial":false,"expected_root":"$BADPROJ"}
+EOF
+rb "CLAUDE_PID=$LIVE_PID" create --plan
+check "6d: R2 — a legacy team.json does not mask the unnamable prefix" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q -- "alias --level repo --set"'
+rb "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-ad-hoc architect --model opus
+check "6d2: R2 — and spawn-ad-hoc does not derive a member name from the rejected prefix" \
+  '[ "$RC" -ne 0 ] && ! echo "$OUT" | grep -q "_badrepo-architect"'
 
 # ================================================================= 7 — r3 [9.2]: ownership is session-wide
 # A session owning teams/foo.json running a roster-mutating command with NO --team is refused: the

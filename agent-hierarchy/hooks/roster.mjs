@@ -997,7 +997,7 @@ function refuseLiveDefaultTeam(dir, existing) {
 
 /** Shared by `resolveMembersPlan` and `planMembersFromHistory` (spec 0015 §7.2): refuse a live Team, clear a stale one. */
 function refuseOrClearExistingTeam(dir) {
-  resolveWritableTeamScope(dir);
+  resolveWritableTeamScope(dir, { replacing: true });
   const existing = readTeam(dir, teamFile);
   if (!existing) return;
   if (teamIsLive(existing)) {
@@ -1025,11 +1025,19 @@ function refuseOrClearExistingTeam(dir) {
  * exists for. Re-point at the named path and leave the stale file for `reap`. A LIVE legacy team
  * is still written into — that team is the one §1.7 is carrying across the upgrade.
  */
-function resolveWritableTeamScope(dir) {
+function resolveWritableTeamScope(dir, { replacing = false } = {}) {
   if (teamFile !== null || !teamFileDefaulted) return;
-  if (teamFileUnnamable) failUnnamablePrefix(teamFileUnnamable, teamFileSuggestion);
   const legacy = readTeam(dir, null);
-  if (!legacy || teamIsLive(legacy)) return;
+  // Which legacy team may still be written into depends on what the caller is about to do, and
+  // the two predicates are deliberately different:
+  // - JOINING one (`spawn-one`, `spawn-ad-hoc`): `teamIsOrphaned`, never `!teamIsLive`. The
+  //   latter also flags a team past the staleness window whose orchestrator is still running,
+  //   and moving new members of that team to a second file splits it — what §1.7 forbids.
+  // - REPLACING it (`create`): `teamIsLive`, matching `refuseOrClearExistingTeam`'s own rule one
+  //   step later, so the file it is about to clear is never also the file it writes the
+  //   replacement into. A live one is kept only to be refused there with "disband it first".
+  if (legacy && (replacing ? teamIsLive(legacy) : !teamIsOrphaned(legacy))) return;
+  if (teamFileUnnamable) failUnnamablePrefix(teamFileUnnamable, teamFileSuggestion);
   teamFile = teamPrefix(cwd, null);
 }
 
@@ -2086,6 +2094,10 @@ try {
         // scope from it — a null alias (a pre-0044 default team) still resolves through §1.1.
         resolveTeamFileScope();
       }
+      // Spec 0044 §1.1: all three modes settle the scope here, together. `--commit` writes a new
+      // team just as much as `--spawn` does, and guarding only the paths that route through
+      // `refuseOrClearExistingTeam` left it creating the shared default outright.
+      resolveWritableTeamScope(dir, { replacing: true });
       guardTeamPrefixCollision(dir, teamFile);
       if (opts.spawn === true) {
         await createSpawn(dir);
