@@ -27,8 +27,16 @@ _Avoid_: handoff mode (that's a separate, existing `/hierarchy` setting — conf
 The single coordinating role, always exactly one per team. It has no roster entry — it's whatever session invokes `/agent-roster create`, running as that session's own model/effort/permission mode.
 
 **Team**:
-A running instantiation of a Roster — the actual spawned sessions (peer panes and/or subagents) for one work session, created by `/agent-roster create`.
+A running instantiation of a Roster — the actual spawned sessions (peer panes and/or subagents) for one work session, created by `create`. Every Team has its own file: `teams/<name>.json`, named for the team, which is also its members' name prefix. Nothing writes the shared `team.json` any more; one that already exists is read and operated on until its team disbands, never migrated (spec 0044 §1.1/§1.7).
 _Avoid_: session group
+
+**Read-only roster (spec 0044)**:
+The Roster is a TEMPLATE and is read-only for the whole team lifecycle — this is enforced, not advised. Creating, populating, operating or tearing down a Team never writes a roster level file, and *divergence from the roster must never reach a roster write*: spawning a member whose model, effort, kind, route or args differ from the roster's, or whose role the roster does not define, writes only the team file. There is no divergence severity at which a roster write becomes correct.
+
+Three things make that hold rather than merely state it:
+- `init`/`add`/`edit`/`remove`/`layout`/`alias` are the only roster writers, and a session that owns a live Team is **refused** them (§1.3). The refusal names `spawn-ad-hoc`. Its `--allow-roster-edit` override is the user's — no agent may add it to get a call through.
+- `spawn-ad-hoc` (§1.4) spawns a divergent or ad hoc member into the team file, through the same launch path as `spawn-one`. It exists because an agent asked for a member the roster does not describe previously had no non-roster-writing option.
+- `add` writes the config row and **spawns nothing** (§1.10, superseding spec 0039). While one command both edited the template and produced a live member, the boundary was one rationalization away from being crossed.
 
 **Check-in registry**:
 A per-team, disk-persisted file recording each live member's name/address once the Orchestrator has verified the whole Team is up. Scoped to one Team's lifetime; removed on disband. Distinct from `peers.jsonl`, the longer-lived cross-session liveness log.

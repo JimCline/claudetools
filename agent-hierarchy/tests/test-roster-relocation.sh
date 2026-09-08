@@ -60,7 +60,7 @@ patch_expected_root() { # <hierarchy-dir-root> <new-root-dir, need not be a regi
     const t = JSON.parse(fs.readFileSync(p, 'utf8'));
     t.expected_root = process.argv[2];
     fs.writeFileSync(p, JSON.stringify(t));
-  " "$dir/.claude/hierarchy/team.json" "$real"
+  " "$dir/.claude/hierarchy/teams/$(basename "$dir").json" "$real"
 }
 
 # SessionStart's role branch, invoked directly (no pipe/subshell) so its `process.ppid` is this
@@ -159,8 +159,8 @@ peers_jsonl_misplaced() { # <dir> <session_id> -> "true"/"false"/"absent"/"" (no
 T1="$SANDBOX/t1-repo"
 setup_team "$T1"
 T1_ROOT=$(realpath_of "$T1")
-check "T1: team.json's expected_root equals the resolved (realpath) --cwd" \
-  '[ "$(cat "$T1/.claude/hierarchy/team.json" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>process.stdout.write(JSON.parse(s).expected_root))")" = "$T1_ROOT" ]'
+check "T1: the team file's expected_root equals the resolved (realpath) --cwd" \
+  '[ "$(cat "$T1/.claude/hierarchy/teams/$(basename "$T1").json" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>process.stdout.write(JSON.parse(s).expected_root))")" = "$T1_ROOT" ]'
 
 # ---- T2: peer's cwd = expected_root -> row has misplaced falsy, no instruction text. ----
 T2="$SANDBOX/t2-repo"
@@ -286,8 +286,8 @@ T11_WT="$SANDBOX/t11-wt"
 mkdir -p "$T11_WT/.claude"
 HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo \
   --verified "[\"$(basename "$T11_WT")-implementor\"]" --orchestrator-pid "$$" --cwd "$T11_WT" >/dev/null
-check "T11 precondition: team.json exists under the worktree's own hierarchy dir" '[ -f "$T11_WT/.claude/hierarchy/team.json" ]'
-check "T11 precondition: no team.json under the main checkout's hierarchy dir (0027's worktree-local split)" '[ ! -f "$T11_MAIN/.claude/hierarchy/team.json" ]'
+check "T11 precondition: the team file exists under the worktree's own hierarchy dir" '[ -f "$T11_WT/.claude/hierarchy/teams/$(basename "$T11_WT").json" ]'
+check "T11 precondition: no team file under the main checkout's hierarchy dir (0027's worktree-local split)" '[ ! -f "$T11_MAIN/.claude/hierarchy/teams/$(basename "$T11_WT").json" ]'
 sessionstart_role "$T11_MAIN" "t11-sess"
 check "T11: SessionStart still succeeds (never refuses/crashes)" '[ "$SS_RC" -eq 0 ]'
 if echo "$SS_OUT" | grep -q "Misplaced:"; then
@@ -295,7 +295,7 @@ if echo "$SS_OUT" | grep -q "Misplaced:"; then
 else
   MIRR="$(peers_jsonl_misplaced "$T11_MAIN" "t11-sess")"
   check "T11: detection explicitly could NOT fire — recorded reason: peer's SessionStart resolves the main checkout's own hierarchy dir (0027 §2, worktree-local), which never received the worktree-written team.json/expected_root, so §3.2's comparison has no expected_root to compare against (absent, not a false negative it silently swallowed)" \
-    '[ "$MIRR" = "absent" ] && [ ! -f "$T11_MAIN/.claude/hierarchy/team.json" ]'
+    '[ "$MIRR" = "absent" ] && [ ! -f "$T11_MAIN/.claude/hierarchy/teams/$(basename "$T11_WT").json" ]'
 fi
 
 # ---- T11b (Reviewer F1/F2 regression guard): checkin invoked through a REAL subshell — the
@@ -376,8 +376,17 @@ check "T15: misplaced field itself absent (skipped, not a silent false)" '[ "$(p
 
 # ---- T16: a peer record with `team` absent entirely (pre-0036 row) -> never attributed by role
 # alone, even when role is otherwise unambiguous within the team; counted as unattributed. ----
+# Spec 0044 §1.1/§1.7: a row with `team` absent entirely can only bucket into a team whose own
+# name is null — the legacy unscoped file 0044 keeps reading but no longer writes. setup_team now
+# produces a scoped, NAMED team, where such a row can never land, so the team is hand-written.
 T16="$SANDBOX/t16-repo"
-setup_team "$T16"
+mkdir -p "$T16/.claude/hierarchy"
+(cd "$T16" && git init -q && git config user.email t@t.com && git config user.name t)
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$T16" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --cwd "$T16" >/dev/null
+cat > "$T16/.claude/hierarchy/team.json" <<EOF
+{"version":1,"team_id":"t16team","created":"2026-01-01T00:00:00-00:00","roster_level":"repo","transport":"terminal","orchestrator":{"session_id":null,"pid":$$},"members":[{"role":"implementor","name":"impl-1","route":"peer","transport_id":"x"}],"partial":false,"expected_root":"$T16"}
+EOF
 append_peer_row "$T16" "t16-sess" "implementor" "" "$$" "true" "$SANDBOX/t16-wrong"
 OUT=$(HOME="$FAKEHOME" node "$H/roster.mjs" teams --cwd "$T16" 2>&1); RC=$?
 check "T16: roster teams succeeds" '[ "$RC" -eq 0 ]'
@@ -416,11 +425,13 @@ T18="$SANDBOX/t18-repo"
 setup_team "$T18"
 ( : ) & T18_DEAD_PID=$!
 wait "$T18_DEAD_PID" 2>/dev/null
-append_peer_row "$T18" "t18-sess" "implementor" "__null__" "$T18_DEAD_PID" "true" "$SANDBOX/t18-wrong"
+# The row carries the scoped team's own name so the liveness filter stays the only reason it is
+# excluded — a `null` team would exclude it for the wrong reason and the test would pass vacuously.
+append_peer_row "$T18" "t18-sess" "implementor" "$(basename "$T18")" "$T18_DEAD_PID" "true" "$SANDBOX/t18-wrong"
 OUT=$(HOME="$FAKEHOME" node "$H/roster.mjs" teams --cwd "$T18" 2>&1); RC=$?
 check "T18 (G7): roster teams succeeds" '[ "$RC" -eq 0 ]'
-check "T18 (G7): a dead-pid misplaced row is not flagged" '[ "$(team_row_field "$OUT" "null" "misplaced_members")" = "[]" ]'
-check "T18 (G7): a dead-pid misplaced row is not counted unattributed either" '[ "$(team_row_field "$OUT" "null" "misplaced_unattributed")" = "0" ]'
+check "T18 (G7): a dead-pid misplaced row is not flagged" '[ "$(team_row_field "$OUT" "$(basename "$T18")" "misplaced_members")" = "[]" ]'
+check "T18 (G7): a dead-pid misplaced row is not counted unattributed either" '[ "$(team_row_field "$OUT" "$(basename "$T18")" "misplaced_unattributed")" = "0" ]'
 
 # ---- T19 (Reviewer G8): checkin --team <typo> fails explicitly, matching 0032 §3.4b's precedent
 # for an explicit-but-nonexistent --team, rather than silently reporting misplaced:false forever. ----

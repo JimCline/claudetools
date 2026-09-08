@@ -116,9 +116,9 @@ const expected = [
   "roster_adopt", "roster_config", "roster_create", "roster_disband", "roster_disband_close",
   "roster_dismiss", "roster_dismiss_close",
   "roster_history", "roster_layout_splits", "roster_member", "roster_move",
-  "roster_reap", "roster_resync", "roster_show", "roster_spawn_one", "roster_teams",
+  "roster_reap", "roster_resync", "roster_show", "roster_spawn_ad_hoc", "roster_spawn_one", "roster_teams",
 ].sort();
-report("tools/list returns exactly the 21-tool inventory (spec 0015/0016/0017/0018/0020/0026/0033)", JSON.stringify(names) === JSON.stringify(expected), JSON.stringify(names));
+report("tools/list returns exactly the 22-tool inventory (spec 0015/0016/0017/0018/0020/0026/0033/0044)", JSON.stringify(names) === JSON.stringify(expected), JSON.stringify(names));
 
 const ping = await call("ping", {});
 report("ping answered", Boolean(ping && ping.result && typeof ping.result === "object" && !ping.error), JSON.stringify(ping));
@@ -428,7 +428,7 @@ const weirdName = 'weird "quoted" and \'apostrophe\' name';
 const verified = JSON.stringify([{ role: "architect", name: weirdName, model: "opus", route: "peer", autoMode: null }]);
 const res = await callTool("roster_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo" });
 const ok1 = !res.isError;
-const team = JSON.parse(readFileSync(cwd + "/.claude/hierarchy/team.json", "utf8"));
+const team = JSON.parse(readFileSync(cwd + "/.claude/hierarchy/teams/" + cwd.split("/").pop() + ".json", "utf8"));
 const ok2 = team.members[0].name === weirdName;
 console.log(ok1 && ok2 ? "PASS" : "FAIL " + JSON.stringify({ ok1, ok2, got: team.members && team.members[0] && team.members[0].name }));
 JSEOF
@@ -605,13 +605,13 @@ const verified = JSON.stringify([{ role: "architect", name: "repoc-architect", m
 
 const res = await callTool("roster_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo" });
 const dir = cwd + "/.claude/hierarchy";
-const team = readTeam(dir);
+const team = readTeam(dir, cwd.split("/").pop());
 const sessionPidOwned = !res.isError && team && team.orchestrator.pid != null && team.orchestrator.pid !== 1;
 const survivesSweep = team && teamIsLive(team);
 
 const OVERRIDE_PID = process.pid; // this node process — alive, distinct from the server's own ppid
 const res2 = await callTool("roster_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo", orchestrator_pid: OVERRIDE_PID });
-const team2 = readTeam(dir);
+const team2 = readTeam(dir, cwd.split("/").pop());
 const overrideWon = !res2.isError && team2 && team2.orchestrator.pid === OVERRIDE_PID;
 
 console.log(sessionPidOwned && survivesSweep && overrideWon ? "PASS" : "FAIL " + JSON.stringify({ sessionPidOwned, survivesSweep, overrideWon, pid: team && team.orchestrator.pid }));
@@ -670,7 +670,7 @@ await callTool("roster_member", { cwd, action: "init", level: "repo", route: "pe
 await callTool("roster_member", { cwd, action: "add", no_spawn: true, level: "repo", role: "ultra-advisor", model: "opus" });
 const res = await callTool("roster_spawn_one", { cwd, role: "ultra-advisor" });
 const dir = cwd + "/.claude/hierarchy";
-const team = readTeam(dir);
+const team = readTeam(dir, cwd.split("/").pop());
 const ok = !res.isError && team && team.orchestrator.pid != null && team.orchestrator.pid !== 1 && teamIsLive(team);
 console.log(ok ? "PASS" : "FAIL " + JSON.stringify({ res, team }));
 JSEOF

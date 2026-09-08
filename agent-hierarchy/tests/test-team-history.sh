@@ -21,7 +21,10 @@ check() {
 
 run() { OUT=$(HOME="$FAKEHOME" node "$H/roster.mjs" "$@" --cwd "$PROJ" 2>&1); RC=$?; }
 
-TEAM_FILE="$PROJ/.claude/hierarchy/team.json"
+# Spec 0044 §1.1: a team with no `--team` now lives at `teams/<effective-prefix>.json`,
+# not the shared `team.json`. The prefix is the repo basename here, so the path is derived
+# rather than spelled out — a renamed sandbox repo must not silently stop being checked.
+TEAM_FILE="$PROJ/.claude/hierarchy/teams/$(basename "$PROJ").json"
 HISTORY_FILE="$PROJ/.claude/hierarchy/team-history.json"
 DEAD_PID=999999
 LIVE_PID=$$

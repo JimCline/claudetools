@@ -153,10 +153,12 @@ the flag exists.
    `installRosterBlock(data, teamKey, block)`; `init` and `add` both call them
    and the `{ route, members: [] }` literal appears once (T5 asserts this).
 
-*(Pointer, added post-landing:)* `add`'s ending is changed by 0039
-(`0039-roster-add-spawns-peer.md`): a successful `add` now also spawns the
-live peer when the member's route is `peer`. This spec's auto-init behaviour
-is unchanged; only what happens after the write.
+*(Pointer, added post-landing:)* `add`'s ending was changed by 0039
+(`0039-roster-add-spawns-peer.md`), which made a successful `add` also spawn
+the live peer for a `peer`-routed member — and then changed back by 0044
+(`0044-roster-team-scope-split.md` §1.10), which removed that auto-spawn
+outright. `add` once again writes the config row and stops. This spec's
+auto-init behaviour was unaffected by both.
 
 ## 6. Out of scope
 

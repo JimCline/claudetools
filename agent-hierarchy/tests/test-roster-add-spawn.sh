@@ -1,8 +1,14 @@
 #!/bin/bash
-# agent-hierarchy — spec 0039: `roster.mjs add <role>` that succeeds ends in a live peer when the
-# member's route is peer — validate → write → spawn through the same extracted core `spawn-one`
-# uses. Fake herdr stub copied verbatim from test-roster-spawn-one.sh (itself from
-# test-roster-create-spawn.sh, spec 0005 §11.1) — the spawn path is shared, so is its fake.
+# agent-hierarchy — spec 0044 §1.10: `roster.mjs add <role>` writes the roster config row and
+# SPAWNS NOTHING. This suite was spec 0039's — the spec that gave `add` an auto-spawn — and 0044
+# §1.10 R2 keeps it rather than deleting it: its coverage of add's validation, level handling and
+# route/kind variation is worth having, and only the spawn assertions invert. Every case that used
+# to assert "and the peer launched" now asserts the stub was never called and no team file appeared,
+# so a reintroduced auto-spawn fails here rather than passing silently.
+#
+# Fake herdr stub copied verbatim from test-roster-spawn-one.sh (itself from
+# test-roster-create-spawn.sh, spec 0005 §11.1) — kept even though nothing here should reach it,
+# because "the stub recorded zero calls" is the assertion, and a stub that is absent cannot make it.
 # Usage: bash tests/test-roster-add-spawn.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
@@ -16,7 +22,12 @@ mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude" "$SANDBOX/bin"
 (cd "$PROJ" && git init -q)
 NODE_DIR="$(dirname "$(command -v node)")"
 CFG="$PROJ/.claude/agent-hierarchy.json"
-TEAM_FILE="$PROJ/.claude/hierarchy/team.json"
+# Spec 0044 §1.1 moved a bare team to `teams/<prefix>.json`. `add` must write NEITHER, so both
+# paths are named and every "no team file" assertion checks both — checking only the old location
+# would pass vacuously now.
+TEAM_FILE="$PROJ/.claude/hierarchy/teams/$(basename "$PROJ").json"
+LEGACY_TEAM_FILE="$PROJ/.claude/hierarchy/team.json"
+no_team_file() { [ ! -f "$TEAM_FILE" ] && [ ! -f "$LEGACY_TEAM_FILE" ]; }
 PEERS_FILE="$PROJ/.claude/hierarchy/peers.jsonl"
 PASS=0; FAIL=0
 
@@ -122,81 +133,98 @@ seed_peer() { # <name> <role> <status> <pid>
     "$PEERS_FILE" "$1" "$2" "$3" "$4"
 }
 
-# ==== T1 — add reviewer (route peer) in a spawnable env: row written AND peer launched, read back
-#          from the roster file, team.json and the stub's call log. Falsifying core: pre-fix `add`
-#          exits 0 with the row and never spawns. ====
+# ==== T1 — add reviewer (route peer) in a fully spawnable env: the row is written and NOTHING is
+#          launched. Falsifying core: 0039's `add` exits 0 here having started an agent, so a
+#          revert of §1.10 turns "zero stub calls" red. Route peer is 0039's own spawning case and
+#          is the one a regression reaches first. ====
 fresh
 run_add "" --role reviewer
 check "T1: add exits 0" '[ "$RC" -eq 0 ]'
 check "T1: roster row present" '[ "$(roles_in_cfg)" = "reviewer" ]'
-check "T1: team.json records the spawned reviewer with a pane id" 'echo "$(team_names)" | grep -q "^myrepo-reviewer:p[0-9]"'
-check "T1: exactly one agent start went to the stub" '[ "$(starts)" -eq 1 ]'
-check "T1: output states written AND spawned, separately" 'echo "$OUT" | grep -q "added reviewer to $CFG" && echo "$OUT" | grep -q "spawned myrepo-reviewer" && echo "$OUT" | grep -q "\"spawned\": true"'
+check "T1: §1.10 — nothing was launched (zero stub calls at all)" '[ "$(starts)" -eq 0 ] && [ ! -d "$FAKE_STATE_DIR/calls" ]'
+check "T1: §1.10 — no team file at either location" 'no_team_file'
+check "T1: §1.10 — no spawn field in the output" '! echo "$OUT" | grep -q "\"spawn\":"'
+check "T1: §1.10 — the write is reported and the spawn step is named, not left to be discovered" \
+  'echo "$OUT" | grep -q "added reviewer to $CFG" && echo "$OUT" | grep -q "spawn-one reviewer"'
+check "T1: §1.10 — the removal is surgical: the row is exactly what add always wrote" \
+  'grep -q "\"role\": \"reviewer\"" "$CFG" && grep -q "\"model\": \"opus\"" "$CFG"'
 
-# ==== T2 — --no-spawn: config only, zero stub calls, no team.json ====
+# ==== T2 — --no-spawn (§1.10 R1): still accepted, now a silent no-op — byte-identical to T1. ====
+T1_CFG="$(cat "$CFG")"
 fresh
 run_add "" --role reviewer --no-spawn
-check "T2: --no-spawn exits 0 with the row written" '[ "$RC" -eq 0 ] && [ "$(roles_in_cfg)" = "reviewer" ]'
-check "T2: no spawn attempt (zero stub calls)" '[ "$(starts)" -eq 0 ] && [ ! -d "$FAKE_STATE_DIR/calls" ]'
-check "T2: no team.json" '[ ! -f "$TEAM_FILE" ]'
-check "T2: output says no session spawned" 'echo "$OUT" | grep -q "no session spawned"'
+check "T2: R1 — --no-spawn exits 0 with the row written" '[ "$RC" -eq 0 ] && [ "$(roles_in_cfg)" = "reviewer" ]'
+check "T2: R1 — produces the byte-identical roster the flagless form did" '[ "$(cat "$CFG")" = "$T1_CFG" ]'
+check "T2: R1 — no spawn attempt, no team file" '[ "$(starts)" -eq 0 ] && no_team_file'
+check "T2: R1 — the flag is not echoed back as a reason for anything" '! echo "$OUT" | grep -q -- "--no-spawn"'
 
-# ==== T3 — --route subagent: config only, notice, zero spawn attempts ====
+# ==== T3 — --route subagent: config only, and the notice names why there is nothing to launch. ====
 fresh
 run_add "" --role reviewer --route subagent
 check "T3: subagent-route add exits 0 with the row written" '[ "$RC" -eq 0 ] && [ "$(roles_in_cfg)" = "reviewer" ]'
-check "T3: notice names the route and says no session spawned" 'echo "$OUT" | grep -q "route subagent — dispatched on demand, no session spawned"'
-check "T3: no spawn attempt" '[ "$(starts)" -eq 0 ] && [ ! -f "$TEAM_FILE" ]'
+check "T3: notice names the route and says nothing was launched" 'echo "$OUT" | grep -q "route subagent" && echo "$OUT" | grep -q "config only"'
+check "T3: no spawn attempt, no team file" '[ "$(starts)" -eq 0 ] && no_team_file'
 
-# ==== T4 — spawn failure after a successful write: entry kept, exit 3, both facts + remedy ====
+# ==== T4 — the stub rigged to FAIL on this exact name. Under 0039 that produced exit 3 and a
+#          "spawn FAILED" remedy; under §1.10 add never asks the stub anything, so the rigging is
+#          unreachable and the add is a plain success. ====
 fresh
 run_add "FAKE_HERDR_FAIL_ALWAYS_NAME=myrepo-reviewer" --role reviewer
-check "T4: exit code 3" '[ "$RC" -eq 3 ]'
-check "T4: roster entry persists" '[ "$(roles_in_cfg)" = "reviewer" ]'
-check "T4: output names the write" 'echo "$OUT" | grep -q "added reviewer to $CFG"'
-check "T4: output names the failure and the spawn-one retry" 'echo "$OUT" | grep -q "spawn FAILED:" && echo "$OUT" | grep -q "retry with roster.mjs spawn-one reviewer (or roster_spawn_one)"'
-check "T4: the stub was actually asked to start (failure is post-write, not pre-spawn)" '[ "$(starts)" -ge 1 ]'
+check "T4: §1.10 — exit 0, not 3: there is no spawn left to fail" '[ "$RC" -eq 0 ]'
+check "T4: roster entry written" '[ "$(roles_in_cfg)" = "reviewer" ]'
+check "T4: §1.10 — no spawn-failure remedy text survives" '! echo "$OUT" | grep -q "spawn FAILED"'
+check "T4: §1.10 — the stub was never asked to start anything" '[ "$(starts)" -eq 0 ]'
 
-# ==== T5 — add --team X with no rosters.X: 0032 §3.4b error, zero spawn side effects ====
+# ==== T5 — add --team X with no rosters.X: 0032 §3.4b error, unchanged by §1.10. ====
 fresh
 run_add "" --role reviewer --team X
-check "T5: exits non-zero (validation, code 2 not 3)" '[ "$RC" -eq 2 ]'
+check "T5: exits non-zero (validation, code 2)" '[ "$RC" -eq 2 ]'
 check "T5: names init as the remedy (0032 §3.4b)" 'echo "$OUT" | grep -q "init"'
-check "T5: nothing written, nothing spawned" '[ "$(roles_in_cfg)" = "" ] && [ "$(starts)" -eq 0 ] && [ ! -f "$TEAM_FILE" ]'
+check "T5: nothing written, nothing spawned" '[ "$(roles_in_cfg)" = "" ] && [ "$(starts)" -eq 0 ] && no_team_file'
 
-# ==== T6 (structural) — one spawn implementation: add and spawn-one both call spawnOneCore;
-#          add never calls layoutAndLaunch directly. ====
+# ==== T6 (structural) — §1.10 asks for REMOVAL, not for an unreachable call. `add` must not
+#          mention the spawn core at all; the two commands that legitimately spawn still route
+#          through it, so the one-launch-path property (§1.4 point 3) is asserted at the same time. ====
 ADD_CASE=$(sed -n '/case "add": {/,/case "edit": {/p' "$H/roster.mjs")
-SPAWN_ONE_CASE=$(sed -n '/case "spawn-one": {/,/case "adopt": {/p' "$H/roster.mjs")
-check "T6: add's spawn path calls spawnOneCore" 'echo "$ADD_CASE" | grep -q "spawnOneCore("'
+SPAWN_ONE_CASE=$(sed -n '/case "spawn-one": {/,/case "spawn-ad-hoc": {/p' "$H/roster.mjs")
+AD_HOC_CASE=$(sed -n '/case "spawn-ad-hoc": {/,/case "adopt": {/p' "$H/roster.mjs")
+check "T6: §1.10 — add does not call spawnOneCore (removed, not merely unreachable)" '! echo "$ADD_CASE" | grep -q "spawnOneCore("'
+check "T6: §1.10 — add does not call layoutAndLaunch either" '! echo "$ADD_CASE" | grep -q "layoutAndLaunch("'
 check "T6: spawn-one handler calls spawnOneCore" 'echo "$SPAWN_ONE_CASE" | grep -q "spawnOneCore("'
-check "T6: add never calls layoutAndLaunch directly" '! echo "$ADD_CASE" | grep -q "layoutAndLaunch("'
-check "T6: layoutAndLaunch is called from spawnOneCore, not the spawn-one case" '! echo "$SPAWN_ONE_CASE" | grep -q "layoutAndLaunch(" && sed -n "/^async function spawnOneCore/,/^}/p" "$H/roster.mjs" | grep -q "layoutAndLaunch("'
+check "T6: §1.4 point 3 — spawn-ad-hoc goes through the SAME core, not a second builder" \
+  'echo "$AD_HOC_CASE" | grep -q "spawnOneCore(" && ! echo "$AD_HOC_CASE" | grep -q "layoutAndLaunch(" && ! echo "$AD_HOC_CASE" | grep -q "spawnShape("'
+check "T6: layoutAndLaunch is called from spawnOneCore, not from either command case" \
+  '! echo "$SPAWN_ONE_CASE" | grep -q "layoutAndLaunch(" && sed -n "/^async function spawnOneCore/,/^}/p" "$H/roster.mjs" | grep -q "layoutAndLaunch("'
+check "T6: §1.10 — the add-spawn error-context plumbing is gone with it" '! grep -q "addSpawnCtx" "$H/roster.mjs"'
 
-# ==== T7 — 0038 empty-roster scenario: no roster file anywhere; add reviewer auto-creates the
-#          file (route peer default) AND spawns through the shared path with no team.json yet. ====
+# ==== T7 — 0038's empty-roster scenario: no roster file anywhere; add auto-creates it and writes
+#          the row, and still launches nothing. 0038's auto-init is untouched by §1.10. ====
 fresh; rm -f "$CFG"
 run_add "" --role reviewer
 check "T7: exits 0" '[ "$RC" -eq 0 ]'
 check "T7: roster file auto-created with the reviewer row" '[ -f "$CFG" ] && [ "$(roles_in_cfg)" = "reviewer" ] && echo "$OUT" | grep -q "created a minimal one"'
-check "T7: peer spawned and recorded in a fresh team.json" '[ "$(starts)" -eq 1 ] && echo "$(team_names)" | grep -q "^myrepo-reviewer:p[0-9]"'
+check "T7: §1.10 — nothing spawned, no team file" '[ "$(starts)" -eq 0 ] && no_team_file'
 
-# ==== T8 — a live peer of that role already exists (team.json slot record live in the registry):
-#          config append + "already live", no second spawn. ====
+# ==== T8 — a live peer of that role already exists. Under 0039 this reported "already live";
+#          now add has no opinion about liveness at all — it appends the row and stops, and the
+#          existing team record is left exactly as it was. ====
 fresh
 mkdir -p "$(dirname "$TEAM_FILE")"
-printf '%s' "{\"version\":1,\"team_id\":\"t-live\",\"created\":\"x\",\"roster_level\":\"repo\",\"transport\":\"herdr\",\"orchestrator\":{\"session_id\":null,\"pid\":$$},\"members\":[{\"role\":\"reviewer\",\"name\":\"myrepo-reviewer\",\"route\":\"peer\",\"transport_id\":\"p9\"}],\"partial\":false}" > "$TEAM_FILE"
+printf '%s' "{\"version\":1,\"team_id\":\"t-live\",\"created\":\"x\",\"roster_level\":\"repo\",\"transport\":\"herdr\",\"orchestrator\":{\"session_id\":null,\"pid\":1},\"members\":[{\"role\":\"reviewer\",\"name\":\"myrepo-reviewer\",\"route\":\"peer\",\"transport_id\":\"p9\"}],\"partial\":false}" > "$TEAM_FILE"
 seed_peer myrepo-reviewer reviewer up $$
 run_add "" --role reviewer
 check "T8: exits 0 with the row appended" '[ "$RC" -eq 0 ] && [ "$(roles_in_cfg)" = "reviewer" ]'
-check "T8: reports already live, no session spawned" 'echo "$OUT" | grep -q "already live" && echo "$OUT" | grep -q "no session spawned"'
-check "T8: no second spawn; team.json untouched" '[ "$(starts)" -eq 0 ] && [ "$(team_names)" = "myrepo-reviewer:p9" ]'
+check "T8: §1.10 — no second spawn, and the team record is byte-untouched" '[ "$(starts)" -eq 0 ] && [ "$(team_names)" = "myrepo-reviewer:p9" ]'
 
-# ==== T9 — MCP roster_member add (spec 0039 §1.7): server.mjs runs with the herdr/pane env a live
-#          session's MCP server carries but WITHOUT CLAUDE_PID (measured: the server env has
-#          HERDR_ENV/HERDR_PANE_ID/PATH, no CLAUDE_PID) — the server must plumb --orchestrator-pid
-#          itself (SESSION_PID = its parent, this script, live). Pre-plumbing, the CLI fails
-#          "no orchestrator pid resolvable" and the MCP result is exit 3 — seen live before the fix. ====
+# ==== T8b — kind coverage (spec 0043): a non-claude, pane-routed add is a config row too. ====
+fresh
+run_add "" --role reviewer --kind codex --route pane
+check "T8b: add --kind codex --route pane exits 0 with the row written" '[ "$RC" -eq 0 ] && [ "$(roles_in_cfg)" = "reviewer" ]'
+check "T8b: §1.10 — a pane-routed non-claude add launches nothing either" '[ "$(starts)" -eq 0 ] && no_team_file'
+check "T8b: the kind is recorded in the roster" 'grep -q "\"kind\": \"codex\"" "$CFG"'
+
+# ==== T9 — MCP roster_member add: same contract through the tool surface. §1.10 R3 keeps
+#          no_spawn accepted and ignored, and it is gone from the tool schema. ====
 mcp_add() { # <extra args JSON fragment>
   OUT=$(eval "env -u HERDR_ENV HOME=\"$FAKEHOME\" HERDR_ENV=1 HERDR_PANE_ID=p0 PATH=\"$SANDBOX/bin:$NODE_DIR\" FAKE_STATE_DIR=\"$FAKE_STATE_DIR\" node --input-type=module -e '
     import { spawn } from \"node:child_process\";
@@ -212,43 +240,45 @@ mcp_add() { # <extra args JSON fragment>
 fresh
 mcp_add '{}'
 check "T9: MCP add returns a result, not an error" '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"result\"" && ! echo "$OUT" | grep -q "\"isError\":true"'
-check "T9: row written and peer spawned via MCP (server-plumbed orchestrator pid)" '[ "$(roles_in_cfg)" = "reviewer" ] && [ "$(starts)" -eq 1 ] && echo "$(team_names)" | grep -q "^myrepo-reviewer:p[0-9]"'
+check "T9: §1.10 — row written via MCP, nothing spawned, no team file" '[ "$(roles_in_cfg)" = "reviewer" ] && [ "$(starts)" -eq 0 ] && no_team_file'
+MCP_CFG="$(cat "$CFG")"
 fresh
 mcp_add '{"no_spawn":true}'
-check "T9b: MCP no_spawn writes config only" '[ "$RC" -eq 0 ] && [ "$(roles_in_cfg)" = "reviewer" ] && [ "$(starts)" -eq 0 ] && [ ! -f "$TEAM_FILE" ]'
+check "T9b: R3 — no_spawn is still accepted (no error) and ignored" '[ "$RC" -eq 0 ] && ! echo "$OUT" | grep -q "\"isError\":true"'
+check "T9b: R3 — it produces the byte-identical roster the flagless call did" '[ "$(cat "$CFG")" = "$MCP_CFG" ]'
+fresh
+mcp_add '{"allow_global":true,"orchestrator_pid":1}'
+check "T9c: R3 — allow_global and orchestrator_pid are still accepted and inert on add" \
+  '[ "$RC" -eq 0 ] && ! echo "$OUT" | grep -q "\"isError\":true" && [ "$(roles_in_cfg)" = "reviewer" ] && [ "$(starts)" -eq 0 ]'
+check "T9d: R3 — no_spawn is gone from the roster_member tool schema" \
+  '! grep -q "no_spawn:" "$PLUGIN/mcp/server.mjs"'
 
-# ==== T10 — global-level roster, route peer (spec 0039 §1.6 ruling): flagless add lands the row but
-#           the spawn is guard-blocked → exit 3 naming BOTH escapes; with --allow-global it spawns.
-#           Same requireAllowGlobal as spawn-one, reached through the shared core. ====
+# ==== T10 — global-level roster. 0039's §1.6 --allow-global guard was reached only through the
+#           spawn, so with no spawn there is nothing to guard: the row lands, exit 0, either way. ====
 GCFG="$FAKEHOME/.claude/agent-hierarchy.json"
 rm -rf "$PROJ/.claude/hierarchy" "$CFG" "$GCFG"; reset_state; init_geometry 200 60
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level global --route peer --cwd "$PROJ" >/dev/null
 run_add "" --role reviewer --level global
-check "T10a: flagless add at global level exits 3 with the row written" '[ "$RC" -eq 3 ] && grep -q "\"role\": \"reviewer\"" "$GCFG"'
-check "T10a: remedy names both escapes (add --allow-global, spawn-one --allow-global)" 'echo "$OUT" | grep -q "spawn FAILED:" && echo "$OUT" | grep -q -- "add --role reviewer --allow-global" && echo "$OUT" | grep -q -- "spawn-one reviewer --allow-global"'
-check "T10a: nothing launched" '[ "$(starts)" -eq 0 ] && [ ! -f "$TEAM_FILE" ]'
+check "T10a: §1.10 — a flagless global add exits 0 with the row written" '[ "$RC" -eq 0 ] && grep -q "\"role\": \"reviewer\"" "$GCFG"'
+check "T10a: §1.10 — no spawn-failure remedy, nothing launched" '! echo "$OUT" | grep -q "spawn FAILED" && [ "$(starts)" -eq 0 ] && no_team_file'
 rm -f "$GCFG"; reset_state; init_geometry 200 60
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level global --route peer --cwd "$PROJ" >/dev/null
 run_add "" --role reviewer --level global --allow-global
-check "T10b: add --allow-global at global level spawns" '[ "$RC" -eq 0 ] && [ "$(starts)" -eq 1 ] && echo "$(team_names)" | grep -q "^myrepo-reviewer:p[0-9]"'
-rm -f "$GCFG"; reset_state; init_geometry 200 60
-HOME="$FAKEHOME" node "$H/roster.mjs" init --level global --route peer --cwd "$PROJ" >/dev/null
-mcp_add '{"level":"global","allow_global":true}'
-check "T10c: MCP allow_global passes through to the spawn" '[ "$RC" -eq 0 ] && ! echo "$OUT" | grep -q "\"isError\":true" && [ "$(starts)" -eq 1 ]'
+check "T10b: --allow-global is accepted and inert on add" '[ "$RC" -eq 0 ] && [ "$(starts)" -eq 0 ]'
 rm -f "$GCFG"
 
-# ==== T11 — review F1: --level naming a level SHADOWED by the resolving one (repo roster present,
-#           add --level global --allow-global). The row lands at global, but the shared core resolves
-#           the repo roster — spawning would launch the repo's member. Must refuse: exit 3, global
-#           row written, nothing launched, no team.json, output names both levels. ====
+# ==== T11 — a --level naming a level SHADOWED by the resolving one. 0039 had to refuse this,
+#           because spawning would have launched the OTHER level's member. With no spawn the
+#           hazard is gone: the row lands where it was told to, and both rosters stand. ====
 rm -rf "$PROJ/.claude/hierarchy" "$CFG" "$GCFG"; reset_state; init_geometry 200 60
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level global --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role reviewer --cwd "$PROJ" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --level repo --role reviewer --cwd "$PROJ" >/dev/null
 run_add "" --role reviewer --level global --allow-global
-check "T11: exits 3 with the global row written and the repo roster untouched" '[ "$RC" -eq 3 ] && grep -q "\"role\": \"reviewer\"" "$GCFG" && [ "$(roles_in_cfg)" = "reviewer" ]'
-check "T11: nothing launched, no team.json" '[ "$(starts)" -eq 0 ] && [ ! -f "$TEAM_FILE" ]'
-check "T11: output names the level mismatch and both levels" 'echo "$OUT" | grep -q "spawn FAILED: level mismatch" && echo "$OUT" | grep -q "level \"global\"" && echo "$OUT" | grep -q "level \"repo\""'
+check "T11: §1.10 — the shadowed-level row lands, exit 0, with the repo roster intact" \
+  '[ "$RC" -eq 0 ] && grep -q "\"role\": \"reviewer\"" "$GCFG" && [ "$(roles_in_cfg)" = "reviewer" ]'
+check "T11: §1.10 — nothing launched, no team file, no level-mismatch refusal" \
+  '[ "$(starts)" -eq 0 ] && no_team_file && ! echo "$OUT" | grep -q "level mismatch"'
 rm -f "$GCFG"
 
 echo

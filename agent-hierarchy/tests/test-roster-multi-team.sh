@@ -235,7 +235,9 @@ S14HOME="$S14/home"; S14HD="$S14/hier"; S14PROJ="$S14/myrepo"
 mkdir -p "$S14HOME/.claude" "$S14PROJ/.claude" "$S14HD"
 OUT=$(HOME="$S14HOME" AGENT_HIERARCHY_DIR="$S14HD" "$NODE_BIN" "$H/roster.mjs" create --commit --verified '[{"name":"myrepo-reviewer","role":"reviewer","route":"peer"}]' --transport terminal --roster-level repo --orchestrator-pid "$$" --cwd "$S14PROJ" </dev/null 2>&1); RC=$?
 check "14a: bare create --commit in a fresh repo succeeds unprompted, no TTY/stdin answer" '[ "$RC" -eq 0 ]'
-check "14b: base team.json was written" '[ -f "$S14HD/team.json" ]'
+# Spec 0044 §1.1: a bare `create` now writes `teams/<effective-prefix>.json`, not the shared
+# `team.json`. The prefix is the repo basename, so the path is derived rather than spelled out.
+check "14b: the scoped team file was written" '[ -f "$S14HD/teams/$(basename "$S14PROJ").json" ]'
 rm -rf "$S14"
 
 # ==== 15 (amendment (d), spec 0011 §4.5 — was called "test 12" in the

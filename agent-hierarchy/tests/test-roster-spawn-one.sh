@@ -16,7 +16,10 @@ PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude" "$SANDBOX/bin"
 (cd "$PROJ" && git init -q)
 NODE_DIR="$(dirname "$(command -v node)")"
-TEAM_FILE="$PROJ/.claude/hierarchy/team.json"
+# Spec 0044 §1.1: a team with no `--team` now lives at `teams/<effective-prefix>.json`,
+# not the shared `team.json`. The prefix is the repo basename here, so the path is derived
+# rather than spelled out — a renamed sandbox repo must not silently stop being checked.
+TEAM_FILE="$PROJ/.claude/hierarchy/teams/$(basename "$PROJ").json"
 PEERS_FILE="$PROJ/.claude/hierarchy/peers.jsonl"
 PASS=0; FAIL=0
 

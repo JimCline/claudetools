@@ -170,9 +170,6 @@ export const TOOLS = [
         kind: { type: "string", description: "With action: add, edit. Which agent CLI Herdr starts for this member (claude, codex, pi, …). Omitted means claude. Any non-claude kind requires route \"pane\", the herdr transport, and no model/effort/auto_mode (spec 0043)." },
         args: { type: "array", items: { type: "string" }, description: "With action: add, edit. Native CLI arguments passed verbatim after herdr's `--`. Non-claude kinds only — rejected for kind claude, where model/effort/auto_mode are the validated channel (spec 0043 §1.9)." },
         on_missing: { type: "string", enum: ["auto", "prompt", "never"], description: "With action: add, edit. Peer-routed members only." },
-        no_spawn: { type: "boolean", description: "With action: add. Write the config row only — do not spawn the peer (spec 0039 §1.6)." },
-        allow_global: { type: "boolean", description: "With action: add. Let the spawn proceed when the roster resolves at global level (same guard as roster_spawn_one)." },
-        orchestrator_pid: { type: "integer", description: "With action: add. Owner pid for a team the spawn has to create; defaults to the calling session's pid." },
         layout: { type: "string", enum: ["auto", "columns", "grid"], description: "With action: init." },
       },
       required: ["cwd", "action"],
@@ -341,6 +338,30 @@ export const TOOLS = [
         team: teamSchema,
         role: { type: "string" },
         member: { type: "string", description: "Derived member name, to disambiguate two same-role roster members." },
+        dry_run: { type: "boolean" },
+        allow_global: { type: "boolean" },
+        orchestrator_pid: { type: "integer", description: "Owner pid when this call creates a new team. Defaults to the calling session's pid, derived automatically — supply only to override." },
+      },
+      required: ["cwd", "role"],
+    },
+  },
+  {
+    name: "roster_spawn_ad_hoc",
+    description:
+      "Spawn a team member the roster does NOT define, or one whose parameters diverge from it (different model, effort, kind, args, or route) — e.g. 'spawn a codex reviewer just for this task'. Writes only the team file; the roster template is never touched, whatever the divergence. Use this instead of editing the roster when a running team needs a member the roster does not describe.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        team: teamSchema,
+        role: { type: "string", description: "The member's role. Need not appear in the roster." },
+        model: { type: "string", description: "kind claude only — rejected for any other kind (spec 0043 §1.3)." },
+        effort: { type: "string", description: "kind claude only." },
+        route: { type: "string", enum: ["peer", "pane"], description: "Defaults to peer. A subagent-routed member has no session to spawn." },
+        auto_mode: { type: "string", description: "kind claude only." },
+        kind: { type: "string", description: "Which agent CLI Herdr starts (claude, codex, pi, …). Omitted means claude. Any non-claude kind requires route \"pane\" and no model/effort/auto_mode." },
+        args: { type: "array", items: { type: "string" }, description: "Native CLI arguments passed verbatim after herdr's `--`. Non-claude kinds only." },
+        on_missing: { type: "string", enum: ["auto", "prompt", "never"], description: "Peer-routed members only." },
         dry_run: { type: "boolean" },
         allow_global: { type: "boolean" },
         orchestrator_pid: { type: "integer", description: "Owner pid when this call creates a new team. Defaults to the calling session's pid, derived automatically — supply only to override." },
@@ -547,13 +568,13 @@ export async function callTool(name, input) {
         // do not hand-encode it.
         if (args_in.args !== undefined && args_in.args !== null) pushArg(args, "args", JSON.stringify(args_in.args));
       }
-      if (action === "add") {
-        pushFlag(args, "no-spawn", args_in.no_spawn);
-        pushFlag(args, "allow-global", args_in.allow_global);
-        // Spec 0039 §1.7: a peer-routed add spawns through the spawn-one core, which needs the
-        // same owner pid roster_spawn_one plumbs (spec 0018 §4.2).
-        pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
-      }
+      // Spec 0044 §1.10 R1/R3: `no_spawn`, `allow_global` and `orchestrator_pid` are still ACCEPTED
+      // here and ignored — `add` no longer spawns, so there is nothing for them to gate — but they
+      // are gone from the schema above, because a documented `no_spawn` asserts that spawning is
+      // what happens without it, which is exactly the confusion this spec removes.
+      // §1.3 needs an identity to compare the live team's owner pid against, and this server
+      // process is not the session, so the pid is plumbed on every action rather than just `add`.
+      pushArg(args, "orchestrator-pid", SESSION_PID);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
@@ -571,6 +592,9 @@ export async function callTool(name, input) {
         pushFlag(args, "clear", args_in.clear);
         pushArg(args, "team", args_in.team);
       }
+      // Spec 0044 §1.3: `layout` and `alias` write roster level files, so the refusal applies —
+      // and it needs the calling session's pid, which this server process does not otherwise pass.
+      pushArg(args, "orchestrator-pid", SESSION_PID);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
@@ -681,6 +705,27 @@ export async function callTool(name, input) {
       pushFlag(args, "allow-global", args_in.allow_global);
       pushArg(args, "team", args_in.team);
       // Spec 0018 §4.2: explicit param wins, else the pid captured at server startup.
+      pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_spawn_ad_hoc": {
+      if (!args_in.role) {
+        return { content: [{ type: "text", text: 'roster_spawn_ad_hoc: "role" is required.' }], isError: true };
+      }
+      const args = ["spawn-ad-hoc"];
+      pushArg(args, "role", args_in.role);
+      pushArg(args, "model", args_in.model);
+      pushArg(args, "effort", args_in.effort);
+      pushArg(args, "route", args_in.route);
+      pushArg(args, "auto-mode", args_in.auto_mode);
+      pushArg(args, "on-missing", args_in.on_missing);
+      pushArg(args, "kind", args_in.kind);
+      // Same encoding roster_member uses: a real array on the wire, a JSON string on the CLI.
+      if (args_in.args !== undefined && args_in.args !== null) pushArg(args, "args", JSON.stringify(args_in.args));
+      pushArg(args, "team", args_in.team);
+      pushFlag(args, "dry-run", args_in.dry_run);
+      pushFlag(args, "allow-global", args_in.allow_global);
       pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);

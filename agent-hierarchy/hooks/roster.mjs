@@ -8,8 +8,10 @@
  *   roster.mjs show   [global|repo|repo-user] [--level L] [--cwd <path>]
  *   roster.mjs init    [level] [--level L] --route <peer|subagent> [--layout <mode>] [--cwd <path>]
  *   roster.mjs add     [level] [--level L] --role <R> [--model M] [--effort E]
- *                       [--route peer|subagent] [--auto-mode A] [--on-missing auto|prompt|never]
- *                       [--no-spawn] [--allow-global] [--orchestrator-pid P] [--cwd <path>]   (spec 0039: a peer-routed add spawns the peer)
+ *                       [--route peer|subagent|pane] [--kind K] [--args '<json>'] [--auto-mode A]
+ *                       [--on-missing auto|prompt|never] [--cwd <path>]
+ *                       (spec 0044 §1.10: writes the roster template and spawns NOTHING —
+ *                        supersedes spec 0039's auto-spawn. Use spawn-one, or spawn-ad-hoc.)
  *   roster.mjs edit    [level] [--level L] --member <NAME> [--role R] [--model M]
  *                       [--effort E] [--route ...] [--auto-mode A] [--on-missing auto|prompt|never] [--cwd <path>]
  *   roster.mjs remove  [level] [--level L] --member <NAME> [--cwd <path>]
@@ -37,6 +39,11 @@
  *                       <name> --new-workspace
  *                       [--dry-run] [--cwd <path>]
  *   roster.mjs spawn-one <role> [--member <name>] [--cwd <path>] [--dry-run] [--allow-global] [--orchestrator-pid <pid>]
+ *   roster.mjs spawn-ad-hoc <role> [--model M] [--effort E] [--route peer|pane] [--kind K]
+ *                       [--args '<json>'] [--auto-mode A] [--on-missing ...] [--team T]
+ *                       [--dry-run] [--allow-global] [--orchestrator-pid <pid>] [--cwd <path>]
+ *                       (spec 0044 §1.4: spawn a member the roster does not define, or one whose
+ *                        parameters diverge from it. Writes ONLY the team file — never the roster.)
  *   roster.mjs alias   [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]
  *   roster.mjs teams   [--cwd <path>] [--orchestrator-pid <pid>]
  *   roster.mjs reap    [--commit] [--cwd <path>]
@@ -50,6 +57,13 @@
  *                       exits non-zero when still misplaced relative to the team's expected_root.
  *                       Resolves the session pid the same way as create --commit/teams — process.ppid
  *                       is the transient Bash-tool shell, never the session, at this call site.)
+ *
+ * Spec 0044: the roster is a read-only TEMPLATE for the whole team lifecycle. `init`/`add`/`edit`/
+ * `remove`/`layout`/`alias` write roster level files and spawn nothing; every other command writes
+ * only a team file. A session that owns a live team is refused a roster edit (§1.3) unless the USER
+ * passes `--allow-roster-edit` — no code path may supply that flag on the user's behalf. A team with
+ * no `--team` lives at `teams/<effective-prefix>.json`, not the shared `team.json`; an existing
+ * `team.json` keeps being used, unmigrated, until its own team disbands (§1.7).
  *
  * `--team <name>` (spec 0011 §5.1) selects a named team's `teams/<name>.json`
  * in place of the default `team.json`, on every subcommand above that touches
@@ -79,15 +93,23 @@ import { dirname } from "node:path";
 
 import { CONFIG_VERSION, findGitRoot, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
 import { appendRosterRecord, latestRoster, livePeerSlots, newId, localIso, pidAlive, realCwd, recordLiveness } from "./lib-hier.mjs";
-import { clearTeam, fingerprint, herdrOnPath, historyEntryIsActive, KIND_DEFAULT, kindFieldErrors, listTeamNames, memberArgs, normalizeMembers, readHistory, readTeam, resolveKind, resolveSessionTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamIsLive, teamIsOrphaned, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
+import { attributeSessionTeam, clearTeam, defaultTeamScope, fingerprint, herdrOnPath, historyEntryIsActive, KIND_DEFAULT, kindFieldErrors, listTeamNames, memberArgs, normalizeMembers, readHistory, readTeam, resolveKind, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
 
-const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config", "no-spawn"]);
+const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config", "no-spawn", "allow-roster-edit"]);
 const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "close", "confirm", "plan-token", "allow-global", "cwd", "team"]);
 const DISMISS_FLAGS = new Set(["plan", "close", "commit", "confirm", "plan-token", "also-config", "level", "allow-global", "cwd", "team"]);
 const RESYNC_FLAGS = new Set(["dry-run", "cwd", "team", "bind"]);
 const MOVE_FLAGS = new Set(["tab", "split", "new-tab", "workspace", "new-workspace", "dry-run", "allow-global", "cwd", "team"]);
 const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global", "team", "orchestrator-pid", "member"]);
-const ALIAS_FLAGS = new Set(["level", "set", "clear", "cwd", "team"]);
+/** Spec 0044 §1.4: the member-spec flags `add` takes, plus the spawn-side ones `spawn-one` takes.
+    No `--level` and no `--member`: an ad hoc member has no roster level to land in, and its name
+    is derived (point 5), never supplied. */
+const AD_HOC_FLAGS = new Set(["role", "model", "effort", "route", "kind", "args", "auto-mode", "on-missing", "cwd", "dry-run", "allow-global", "team", "orchestrator-pid"]);
+/** Spec 0044 §1.2/§1.3: the commands whose PURPOSE is writing a roster level file. The same list
+    §1.5 classifies as legitimate roster writers and §8.1 puts on the `/agent-roster` surface —
+    one list, so the gate and the surface split cannot drift apart. */
+const ROSTER_MUTATING_CMDS = new Set(["init", "add", "edit", "remove", "layout", "alias"]);
+const ALIAS_FLAGS = new Set(["level", "set", "clear", "cwd", "team", "allow-roster-edit", "orchestrator-pid"]);
 const ADOPT_FLAGS = new Set(["orchestrator-pid", "team", "cwd"]);
 const REAP_FLAGS = new Set(["commit", "cwd"]);
 const CHECKIN_FLAGS = new Set(["cwd", "team", "orchestrator-pid"]);
@@ -112,27 +134,7 @@ function parseArgs(argv) {
   return opts;
 }
 
-/** Spec 0039 §1.4: set by `add` once its config write has landed and the spawn begins. Any
-    failure from then on is a recoverable partial — the roster row is kept, the exit code is 3,
-    and the error names the retry — because `fail()` is how every layer under the shared spawn
-    path (`layoutAndLaunch` included) reports, and rollback was ruled out. */
-let addSpawnCtx = null;
-
-function spawnRemedy(reason) {
-  const { role } = addSpawnCtx;
-  if (reason.startsWith("level mismatch")) return `spawn FAILED: ${reason}`;
-  // Spec 0039 §1.6: when the global-roster guard blocked the spawn, name both escapes.
-  if (reason.includes("--allow-global")) {
-    return `spawn FAILED: ${reason} — re-run add --role ${role} --allow-global, or roster.mjs spawn-one ${role} --allow-global (or roster_spawn_one with allow_global)`;
-  }
-  return `spawn FAILED: ${reason} — retry with roster.mjs spawn-one ${role} (or roster_spawn_one)`;
-}
-
 function fail(msg) {
-  if (addSpawnCtx) {
-    process.stderr.write(`roster.mjs: ${spawnRemedy(msg)}\n`);
-    process.exit(3);
-  }
   process.stderr.write(`roster.mjs: ${msg}\n`);
   process.exit(2);
 }
@@ -144,7 +146,6 @@ function out(obj) {
 /** A partial layout-splits result: real work happened, but not all of it. Bypasses the outer try/catch. */
 function partial(obj) {
   process.stdout.write(JSON.stringify(obj, null, 2) + "\n");
-  if (addSpawnCtx) process.stderr.write(`roster.mjs: ${spawnRemedy(obj.error || "partial layout")}\n`);
   process.exit(3);
 }
 
@@ -164,6 +165,31 @@ function resolveTeamArg() {
 // alias (spec 0015 §7.2) — the `create` case reassigns both before anything else reads them.
 let teamArg = resolveTeamArg();
 let repoBasename = teamPrefix(cwd, teamArg);
+
+/**
+ * Spec 0044 §1.1: which team FILE this invocation reads and writes. Deliberately NOT `teamArg`,
+ * which also selects the roster CONFIG container (`rosters.<team>`) — defaulting that would make a
+ * bare `add` start writing `rosters.<repo>` instead of `roster`. Two axes, two variables.
+ *
+ * `repoBasename` is unaffected either way: `teamPrefixInfo(cwd, "<X>")` returns prefix `<X>`, so
+ * the derived default scope has the same prefix the unscoped path already computed. That identity
+ * is what makes §1.1's migration claim true — only the file location moves, never the names.
+ */
+let teamFile = teamArg;
+/** No `--team` was given, so the scope was derived — which is what decides whether a collision
+    suggests a free candidate (§1.1) or tells the user to disband the team they named. */
+let teamFileDefaulted = false;
+function resolveTeamFileScope() {
+  if (teamArg) {
+    teamFile = teamArg;
+    teamFileDefaulted = false;
+    return;
+  }
+  const scope = defaultTeamScope(hierarchyDir(cwd), teamPrefix(cwd, null));
+  teamFile = scope.team;
+  teamFileDefaulted = scope.defaulted;
+}
+resolveTeamFileScope();
 
 function levelArg() {
   if (typeof opts.level === "string") return opts.level;
@@ -302,6 +328,39 @@ function requireHerdrName(member, cmd) {
   // the claude path "with or without Herdr", so this warns rather than refusing. See the spec-gap
   // note in the implementation report — this is the Architect's call to settle, not mine.
   process.stderr.write(`roster.mjs: warning — ${check.why}. This member spawns fine on the tmux/terminal transport, but \`herdr agent start\` will reject the name.\n`);
+}
+
+/**
+ * Spec 0044 §1.4 point 1: the member-shaped fields `--role/--model/--effort/--route/--kind/--args/
+ * --auto-mode/--on-missing` decode to, shared by `add` (which writes the result to the roster) and
+ * `spawn-ad-hoc` (which writes it to the team file). One decoder, so "the same fields `add`
+ * accepts" stays true by construction rather than by two lists agreeing today.
+ *
+ * Validation is NOT done here — the caller validates against its own effective route, which is the
+ * roster block's for `add` and the member's own for an ad hoc spawn.
+ */
+function memberFromFlags(role, cmdLabel) {
+  if (opts.kind === true) fail(`${cmdLabel}: --kind requires a value (e.g. claude, codex, pi)`);
+  const kind = typeof opts.kind === "string" ? opts.kind : KIND_DEFAULT;
+  // Spec 0043 §1.3 (the role-default trap): ROLE_DEFAULTS fills `model` whenever --model is
+  // absent. Applied to a non-claude member that model would then be rejected by §1.3's own
+  // rule, making non-claude members impossible to create. The default is claude-only.
+  const defaultedModel = kind === KIND_DEFAULT ? (ROLE_DEFAULTS[role] || {}).model : undefined;
+  const member = { role, model: typeof opts.model === "string" ? opts.model : defaultedModel };
+  if (member.model === undefined) delete member.model;
+  if (kind !== KIND_DEFAULT) member.kind = kind;
+  if (typeof opts.effort === "string") member.effort = opts.effort;
+  if (typeof opts.route === "string") member.route = opts.route;
+  if (typeof opts["auto-mode"] === "string") member.autoMode = opts["auto-mode"];
+  // §1.9 makes absent and `[]` equivalent, so an empty --args omits the key rather than
+  // writing `"args": null`.
+  if (opts.args !== undefined) {
+    const parsed = parseArgsFlag(opts.args, cmdLabel);
+    if (parsed !== null) member.args = parsed;
+  }
+  if (opts["on-missing"] === true) fail(`${cmdLabel}: --on-missing requires a value (auto, prompt, or never)`);
+  if (typeof opts["on-missing"] === "string") member.onMissing = opts["on-missing"];
+  return member;
 }
 
 function findMemberIndex(members, name) {
@@ -912,20 +971,24 @@ function refuseLiveDefaultTeam(dir, existing) {
   const basePrefix = teamPrefix(cwd, null);
   const candidate = deriveTeamCandidate(dir, basePrefix);
   fail(
-    `a live team "${existing.team_id}" (orchestrator pid ${existing.orchestrator && existing.orchestrator.pid}) already owns the default roster here. ` +
+    `a live team "${existing.team_id}" (orchestrator pid ${existing.orchestrator && existing.orchestrator.pid}) already holds the name "${basePrefix}" here, ` +
+      `and its members are dispatched under that prefix. ` +
       `Re-run with --team ${candidate} to accept the auto-derived name, or --team <your-name> to choose your own.`
   );
 }
 
 /** Shared by `resolveMembersPlan` and `planMembersFromHistory` (spec 0015 §7.2): refuse a live Team, clear a stale one. */
 function refuseOrClearExistingTeam(dir) {
-  const existing = readTeam(dir, teamArg);
+  const existing = readTeam(dir, teamFile);
   if (!existing) return;
   if (teamIsLive(existing)) {
-    if (!teamArg) refuseLiveDefaultTeam(dir, existing);
+    // Spec 0044 §1.1 (fork F3): a scope the caller did not name is one this command derived, so a
+    // collision there is answered with a free candidate to accept — never silently applied. An
+    // explicit `--team` the user chose gets the plain "disband it first" instead.
+    if (teamFileDefaulted) refuseLiveDefaultTeam(dir, existing);
     fail(`a live Team ${existing.team_id} already exists — disband it first`);
   }
-  clearTeam(dir, teamArg);
+  clearTeam(dir, teamFile);
 }
 
 /** Shared by `create --plan` and `create --spawn` (spec 0005 §9 item 1): resolve the roster, refuse/clear a stale Team, compute members[] + spawn shapes. */
@@ -1238,7 +1301,7 @@ function warnLiveTeamAlias(dir, newPrefix) {
 /** Spec 0010 §7.2/§7.4: `spawn-one` after an alias change can add a member under a different
     prefix than the Team's existing members — no auto-rename, no auto-disband, just a warning. */
 function warnMixedPrefixSpawnOne(dir, member) {
-  const team = readTeam(dir, teamArg);
+  const team = readTeam(dir, teamFile);
   if (!team || !Array.isArray(team.members) || team.members.length === 0) return;
   const newPrefix = prefixOfMemberName(member.name, member.role);
   const mismatched = team.members.find((m) => m.name && m.role && prefixOfMemberName(m.name, m.role) !== newPrefix);
@@ -1282,6 +1345,11 @@ function memberLiveness(dir, member) {
     from checkin (HERDR_PANE_ID); a record without one has no transport_id and is listed but
     never closable. `source: "peers"` marks the row as coming from the registry, not team.json. */
 function peerFallbackMembers(dir) {
+  // Spec 0044: `teamArg`, NOT `teamFile`. This filters `peers.jsonl`'s `team` TAG, which is a
+  // different axis from which team file a command writes — the whole point of this fallback is
+  // peers that no team record accounts for, and those are exactly the rows carrying no tag. An
+  // explicit `--team` is the only narrowing that was ever meant here; a derived scope would
+  // filter every untagged peer out and turn the fallback into a no-op.
   return livePeerSlots(dir, teamArg || null)
     .filter((s) => s.live)
     .map((s) => ({ role: s.role, name: s.name, route: "peer", transport_id: s.pane_id, live: s.live, how: s.how, source: "peers" }));
@@ -1410,12 +1478,15 @@ function allTeamRows(dir, myPid) {
     peer is already live, places the pane, launches, and persists team.json. Returns the JSON the
     caller prints; every refusal goes through `fail()`. `callerLabel` prefixes the error text and
     the layout call. */
-async function spawnOneCore(role, callerLabel) {
+async function spawnOneCore(role, callerLabel, adHocMember = null) {
   if (!PEER_ELIGIBLE_ROLES.includes(role)) fail(`${callerLabel}: role must be one of ${PEER_ELIGIBLE_ROLES.join(", ")}, got ${JSON.stringify(role)}`);
   const resolved = resolveRoster(cwd, teamArg);
-  if (!resolved) fail(`no roster configured for ${cwd}; run the /agent-roster skill's Init flow`);
-  requireAllowGlobal(resolved.level, resolved.path);
-  const candidates = resolved.members.filter((m) => m.role === role);
+  // Spec 0044 §1.4 point 2: an ad hoc member need not exist in the roster, and need not have a
+  // roster to exist in. The roster is still read when there IS one — for the level gate and the
+  // layout mode — but its absence is only fatal on the roster-sourced paths.
+  if (!resolved && !adHocMember) fail(`no roster configured for ${cwd}; run the /agent-roster skill's Init flow`);
+  if (resolved) requireAllowGlobal(resolved.level, resolved.path);
+  const candidates = adHocMember ? [adHocMember] : resolved.members.filter((m) => m.role === role);
   if (candidates.length === 0) {
     const roles = [...new Set(resolved.members.map((m) => m.role))];
     fail(`${callerLabel}: no ${role} member in the roster — roles it defines: ${roles.join(", ") || "(none)"}`);
@@ -1426,7 +1497,9 @@ async function spawnOneCore(role, callerLabel) {
   // silently fall through to implicit selection.
   if (opts["member"] === true) fail(`${callerLabel}: --member requires a value (the derived member name)`);
   let member;
-  if (typeof opts["member"] === "string") {
+  if (adHocMember) {
+    member = adHocMember;
+  } else if (typeof opts["member"] === "string") {
     member = candidates.find((m) => m.name === opts["member"]);
     if (!member) fail(`${callerLabel}: no member named ${opts["member"]} for role ${role} in the roster — it defines: ${candidates.map((m) => m.name).join(", ") || "(none)"}`);
   } else if (candidates.length === 1) {
@@ -1435,7 +1508,7 @@ async function spawnOneCore(role, callerLabel) {
     member = candidates.find((m) => !memberLiveness(dir, m).live) || candidates[candidates.length - 1];
   }
 
-  const team = readTeam(dir, teamArg);
+  const team = readTeam(dir, teamFile);
   // Spec 0018 §3/§4.3: creating a new team here needs a resolvable, live owner pid — refuse
   // before anything spawns, so a half-launched team (panes up, no persisted owner) never
   // happens. Only relevant when no team file exists yet; an existing team already has one.
@@ -1449,7 +1522,11 @@ async function spawnOneCore(role, callerLabel) {
       fail(`${callerLabel}: --orchestrator-pid ${newTeamOrchestratorPid} is not a live process — refusing to create a team owned by a dead pid`);
     }
   }
-  const byName = candidates.length > 1;
+  // Spec 0044 §1.4 point 5: an ad hoc member is ALWAYS matched by name. Matching by role would
+  // make `matches` find a different, same-role member already in the team and overwrite its
+  // record — which is the one outcome that point forbids, and which the name-collision refusal
+  // above does not catch because the two names differ.
+  const byName = Boolean(adHocMember) || candidates.length > 1;
   const matches = (m) => (byName ? m.name === member.name : m.role === role);
   const existing = team && Array.isArray(team.members) ? team.members.find(matches) : null;
   // §3.3(i)/§3.3.1, amendment (b): the already-live decision is a disjunction over TWO names,
@@ -1496,10 +1573,15 @@ async function spawnOneCore(role, callerLabel) {
   // Spec 0043 §1.5: the member's own route, not a hardcoded "peer" — a `pane` member must be
   // recorded as `pane` or disband/dismiss/move would never find it, and `spawnShape` needs the
   // effective route to apply §1.3's non-claude rule.
-  const memberRoute = routeHasPane(member.route || resolved.route) ? member.route || resolved.route : "peer";
+  const blockRoute = resolved ? resolved.route : null;
+  const memberRoute = routeHasPane(member.route || blockRoute) ? member.route || blockRoute : "peer";
   const planEntry = { role: member.role, name: member.name, kind: resolveKind(member), model: member.model, effort: member.effort, route: memberRoute, autoMode: member.autoMode, args: memberArgs(member), spawn: spawnShape({ ...member, route: memberRoute }, transport) };
-  const layoutInfo = layoutPlan(resolved, transport, [planEntry]);
-  const mode = layoutInfo ? layoutInfo.mode : resolved.layout;
+  // §1.4 point 3 (one launch path): an ad hoc member with no roster behind it still goes through
+  // layoutPlan, given the same block shape a roster would have supplied. A second, simpler layout
+  // branch here is exactly the fork the spec forbids.
+  const layoutSource = resolved || { route: memberRoute, layout: "auto", members: [] };
+  const layoutInfo = layoutPlan(layoutSource, transport, [planEntry]);
+  const mode = layoutInfo ? layoutInfo.mode : layoutSource.layout;
   if (!ROSTER_LAYOUT_VALUES.includes(mode)) fail(`${callerLabel}: layout mode must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(mode)}`);
 
   if (opts["dry-run"] === true) {
@@ -1537,18 +1619,18 @@ async function spawnOneCore(role, callerLabel) {
       version: 1,
       team_id: newId(),
       created: localIso(),
-      roster_level: resolved.level,
+      roster_level: resolved ? resolved.level : null,
       transport,
       orchestrator: { session_id: null, pid: newTeamOrchestratorPid },
       members: [],
-      partial: resolved.members.length > 1,
+      partial: resolved ? resolved.members.length > 1 : true,
       expected_root: realCwd(cwd),
     };
   }
   const idx = outTeam.members.findIndex(matches);
   if (idx === -1) outTeam.members.push(newRecord);
   else outTeam.members[idx] = newRecord;
-  writeTeam(dir, outTeam, teamArg);
+  writeTeam(dir, outTeam, teamFile);
   const outMember = launched.label ? { ...newRecord, label: launched.label } : newRecord;
   // Spec 0035 §2.4: report where this peer actually launched, not just that it launched.
   const spawnOut = { spawned: true, member: outMember, team_id: outTeam.team_id, roster_level: outTeam.roster_level, launch_cwd: planEntry.spawn.launch_cwd };
@@ -1562,7 +1644,39 @@ async function spawnOneCore(role, callerLabel) {
   return spawnOut;
 }
 
+/**
+ * Spec 0044 §1.3: mechanical enforcement of §1.2's boundary. Prose in CONTEXT.md is what already
+ * existed and is what failed, so this refuses instead — the roster is a template for FUTURE teams,
+ * and a session that currently owns a live one has no business editing it mid-flight.
+ *
+ * Every team file in this hierarchy dir is checked, not just the one at the resolving scope: an
+ * orchestrator holding `--team foo` is just as much an owner while it runs a bare `add`.
+ *
+ * The message leads with §1.4's command and mentions the override second, deliberately. An agent
+ * that reads a prohibition looks for a way around it; an agent that reads an instruction follows
+ * it. The override is the USER's — no code path may supply it, and an agent adding it to get past
+ * this refusal is precisely the failure this exists to prevent.
+ */
+function refuseRosterEditWhileOwningTeam(command) {
+  if (!ROSTER_MUTATING_CMDS.has(command)) return;
+  if (opts["allow-roster-edit"] === true) return;
+  const dir = hierarchyDir(cwd);
+  let myPid = typeof opts["orchestrator-pid"] === "string" ? Number(opts["orchestrator-pid"]) : Number(process.env.CLAUDE_PID);
+  if (!Number.isInteger(myPid)) return; // no identity to compare against — nothing to enforce
+  // Spec 0044 §1.3 scopes this to "the team file at the resolving scope" — the one THIS command
+  // would sit alongside. Scanning every team file instead would refuse `--team B` work merely
+  // because the session happens to own a live team A.
+  const existing = readTeam(dir, teamFile);
+  if (!existing || Number(existing.orchestrator && existing.orchestrator.pid) !== myPid || !teamIsLive(existing)) return;
+  fail(
+    `${command} edits the roster TEMPLATE, and this session owns live team ${existing.team_id} (${teamFile ? `team "${teamFile}"` : "the default team"}). ` +
+      `To add or change a member of the RUNNING team — including one that diverges from the roster, or a role the roster does not define — run \`roster.mjs spawn-ad-hoc <role> [--model M] [--kind K] [--args '[...]']\`, which writes only the team file. ` +
+      `If you genuinely mean to edit the template for future teams while this one runs, the user can re-run with --allow-roster-edit.`
+  );
+}
+
 try {
+  refuseRosterEditWhileOwningTeam(cmd);
   switch (cmd) {
     case "show": {
       const explicit = levelArg();
@@ -1629,26 +1743,7 @@ try {
       const role = opts.role;
       if (role === "orchestrator") fail('role "orchestrator" is not a roster member — the Orchestrator is whatever session runs /agent-roster create');
       if (!ROLES.includes(role)) fail(`--role must be one of ${ROLES.join(", ")}, got ${JSON.stringify(role)}`);
-      if (opts.kind === true) fail("add: --kind requires a value (e.g. claude, codex, pi)");
-      const addKind = typeof opts.kind === "string" ? opts.kind : KIND_DEFAULT;
-      // Spec 0043 §1.3 (the role-default trap): ROLE_DEFAULTS fills `model` whenever --model is
-      // absent. Applied to a non-claude member that model would then be rejected by §1.3's own
-      // rule, making non-claude members impossible to create. The default is claude-only.
-      const defaultedModel = addKind === KIND_DEFAULT ? (ROLE_DEFAULTS[role] || {}).model : undefined;
-      const member = { role, model: typeof opts.model === "string" ? opts.model : defaultedModel };
-      if (member.model === undefined) delete member.model;
-      if (addKind !== KIND_DEFAULT) member.kind = addKind;
-      if (typeof opts.effort === "string") member.effort = opts.effort;
-      if (typeof opts.route === "string") member.route = opts.route;
-      if (typeof opts["auto-mode"] === "string") member.autoMode = opts["auto-mode"];
-      // §1.9 makes absent and `[]` equivalent, so an empty --args omits the key rather than
-      // writing `"args": null` into the roster file.
-      if (opts.args !== undefined) {
-        const addArgs = parseArgsFlag(opts.args, "add");
-        if (addArgs !== null) member.args = addArgs;
-      }
-      if (opts["on-missing"] === true) fail("add: --on-missing requires a value (auto, prompt, or never)");
-      if (typeof opts["on-missing"] === "string") member.onMissing = opts["on-missing"];
+      const member = memberFromFlags(role, "add");
       if (member.onMissing !== undefined && (member.route || container.route) === "subagent") {
         fail('on-missing applies only to peer-routed members (this member\'s route is "subagent")');
       }
@@ -1671,34 +1766,19 @@ try {
       if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — added at the currently-resolving level "${level}" (${path})\n`);
       const added = namedMembers(container.members).at(-1);
       const result = { level, path, wasDefaulted, container: containerLabel(teamKey), member: added };
-      // Spec 0039: a successful add ends in a usable peer — validate → write → spawn, never the
-      // reverse. Route subagent and --no-spawn write config only, and say so (§1.3, §1.5, §1.6).
       process.stderr.write(`roster.mjs: added ${role} to ${path}\n`);
+      // Spec 0044 §1.10 supersedes spec 0039: `add` writes the template and stops. Editing the
+      // roster and standing up a live member are two acts, and while one command did both, that
+      // command was the only way an agent had to get a divergent member running — so it reached
+      // for it and wrote the roster on the way, which is the whole defect this spec closes.
+      // Saying nothing here would silently strand anyone who relied on the old behaviour, so the
+      // next step is named rather than left to be discovered.
       const effectiveRoute = member.route || container.route;
-      if (opts["no-spawn"] === true) {
-        result.spawn = { spawned: false, reason: "--no-spawn — config only, no session spawned" };
-        process.stderr.write(`roster.mjs: --no-spawn — config only, no session spawned\n`);
-      } else if (!routeHasPane(effectiveRoute) || !PEER_ELIGIBLE_ROLES.includes(role)) {
-        // Spec 0043 §1.5: `pane` takes the same spawn path as `peer`. Nothing can conjure a Herdr
-        // agent at dispatch time the way the Agent tool conjures a subagent, so deferring a pane
-        // member to "dispatched on demand" would leave it permanently unreachable.
-        const why = !routeHasPane(effectiveRoute) ? `route ${effectiveRoute}` : `role ${role} is never a peer session`;
-        result.spawn = { spawned: false, reason: `${why} — dispatched on demand, no session spawned` };
-        process.stderr.write(`roster.mjs: ${result.spawn.reason}\n`);
-      } else {
-        addSpawnCtx = { role };
-        // The shared core resolves the roster by level precedence; a row written to a shadowed
-        // level (e.g. --level global under a repo roster) would spawn the OTHER level's member
-        // — a silent config/live mismatch. Refuse instead: the row stands, nothing launches.
-        const resolvedNow = resolveRoster(cwd, teamArg);
-        if (resolvedNow && resolvedNow.level !== level) {
-          fail(`level mismatch — the row landed at level "${level}" (${path}) but the roster that resolves for ${cwd} is level "${resolvedNow.level}" (${resolvedNow.path}); a peer spawned now would come from that other roster. The row stays; retry with roster.mjs spawn-one ${role} once its level is the one that resolves`);
-        }
-        opts.member = added.name;
-        result.spawn = await spawnOneCore(role, "add");
-        addSpawnCtx = null;
-        process.stderr.write(`roster.mjs: ${result.spawn.spawned ? `spawned ${added.name}` : `${added.name} ${result.spawn.reason} — no session spawned`}\n`);
-      }
+      result.spawned = false;
+      result.next_step = routeHasPane(effectiveRoute) && PEER_ELIGIBLE_ROLES.includes(role)
+        ? `config only — nothing was launched. To start this member: roster.mjs spawn-one ${role} --member ${added.name}`
+        : `config only — nothing was launched. ${!routeHasPane(effectiveRoute) ? `route ${effectiveRoute}` : `role ${role} is never a peer session`}: dispatched on demand.`;
+      process.stderr.write(`roster.mjs: ${result.next_step}\n`);
       out(result);
       break;
     }
@@ -1955,8 +2035,11 @@ try {
         const entry = resolveHistoryEntry(dir);
         teamArg = entry.alias || null;
         repoBasename = teamPrefix(cwd, teamArg);
+        // The stored alias names the team FILE the entry was committed under, so re-derive the
+        // scope from it — a null alias (a pre-0044 default team) still resolves through §1.1.
+        resolveTeamFileScope();
       }
-      guardTeamPrefixCollision(dir, teamArg);
+      guardTeamPrefixCollision(dir, teamFile);
       if (opts.spawn === true) {
         await createSpawn(dir);
         break;
@@ -2032,7 +2115,7 @@ try {
           partial: opts.partial === true,
           expected_root: realCwd(cwd),
         };
-        writeTeam(dir, team, teamArg);
+        writeTeam(dir, team, teamFile);
         // A history-write failure must not fail `create` — the Team is already committed and
         // running; a missing history row is cosmetic (spec 0015 §4).
         const outObj = { committed: true, team };
@@ -2043,7 +2126,9 @@ try {
           const normalized = normalizeMembers(team.members);
           const historyResult = upsertHistory(dir, {
             fingerprint: fingerprint({ roster_level: team.roster_level, transport: team.transport, members: normalized }),
-            alias: teamArg || null,
+            // The team FILE scope, so `create --from` and historyEntryIsActive resolve back to the
+            // file this commit actually wrote (§1.1 moved that off the shared default).
+            alias: teamFile || null,
             roster_level: team.roster_level,
             transport: team.transport,
             members: normalized,
@@ -2082,7 +2167,7 @@ try {
       // argv built directly (never runShell's /bin/sh). Does not remove team.json — --commit
       // remains a separate call, per §3.
       if (opts.close === true) {
-        const team = readTeam(dir, teamArg);
+        const team = readTeam(dir, teamFile);
         if (!team) {
           // Spec 0040 §1.1/§1.3: no team.json — close the live registry peers instead, under the
           // same three gates, with the literal "no-team" standing in for team_id in the token.
@@ -2113,25 +2198,25 @@ try {
       // --commit: removes team.json only, never re-reads the member list (spec 0002 §8.1/§8.3,
       // spec 0006 §5.2 — no longer gated on --kill).
       if (opts.commit === true) {
-        const team = readTeam(dir, teamArg);
+        const team = readTeam(dir, teamFile);
         if (!team) {
           out({ removed: false, reason: "no active team" });
           break;
         }
-        clearTeam(dir, teamArg);
-        out({ removed: teamPath(dir, teamArg) });
+        clearTeam(dir, teamFile);
+        out({ removed: teamPath(dir, teamFile) });
         break;
       }
 
       // --keep-sessions: the old safe default (spec 0006 §5.3) — single call, removes team.json,
       // emits nothing, closes nothing.
       if (opts["keep-sessions"] === true) {
-        const team = readTeam(dir, teamArg);
+        const team = readTeam(dir, teamFile);
         if (!team) {
           out({ disbanded: false, reason: "no active team" });
           break;
         }
-        clearTeam(dir, teamArg);
+        clearTeam(dir, teamFile);
         out({ disbanded: true, team_id: team.team_id, members: team.members.map((m) => ({ role: m.role, name: m.name, transport_id: m.transport_id })) });
         break;
       }
@@ -2140,7 +2225,7 @@ try {
       // emits the close plan, writes nothing. Spec 0008 §5.6 (AMENDMENT): for herdr, resync the
       // member list in memory first — the plan then targets each member's *current* pane — but
       // never persist the heal and never fail() on a query error (degrade to the stored ids).
-      const team = readTeam(dir, teamArg);
+      const team = readTeam(dir, teamFile);
       if (!team) {
         // Spec 0040 §1.1/§1.5: plan over the live registry peers; `source: "peers"` says so.
         const fallback = peerFallbackMembers(dir);
@@ -2200,7 +2285,7 @@ try {
       }
       const name = typeof opts._[0] === "string" ? opts._[0] : fail("dismiss needs a member name: roster.mjs dismiss <name> [--plan|--close --confirm --plan-token <tok>|--commit [--also-config]]");
       const dir = hierarchyDir(cwd);
-      const team = readTeam(dir, teamArg);
+      const team = readTeam(dir, teamFile);
       if (!team && opts.commit === true) {
         out({ dismissed: false, reason: "no active team" });
         break;
@@ -2284,7 +2369,7 @@ try {
       // --commit [--also-config]: merge-write team.json minus this member. Closes nothing.
       if (opts.commit === true) {
         const outTeam = { ...team, members: team.members.filter((m) => m.name !== name) };
-        writeTeam(dir, outTeam, teamArg);
+        writeTeam(dir, outTeam, teamFile);
         // §3.4: a commit on a still-live member is allowed, but must never be silent about it.
         // Spec 0043 §1.6: kind-aware, and an indeterminate answer warns too — the whole point of
         // the third value is that "Herdr did not answer" must not be spent as "it is dead".
@@ -2389,7 +2474,7 @@ try {
         if (!RESYNC_FLAGS.has(key)) fail(`resync: unrecognized flag --${key} (use --dry-run, --team, --bind, or --cwd)`);
       }
       const dir = hierarchyDir(cwd);
-      const team = readTeam(dir, teamArg);
+      const team = readTeam(dir, teamFile);
       if (!team) {
         out({ resynced: false, reason: "no active team" });
         break;
@@ -2424,7 +2509,7 @@ try {
       });
       if (!dryRun) {
         team.members = result.members.map(stripResyncMeta);
-        writeTeam(dir, team, teamArg);
+        writeTeam(dir, team, teamFile);
       }
       const resyncOut = { resynced: true, dry_run: dryRun, transport: "herdr", members: membersOut, counts: result.counts };
       if (result.warning) resyncOut.warning = result.warning;
@@ -2446,7 +2531,7 @@ try {
       const preResolved = resolveRoster(cwd, teamArg);
       if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
       const dir = hierarchyDir(cwd);
-      const team = readTeam(dir, teamArg);
+      const team = readTeam(dir, teamFile);
       const teamMembers = team && Array.isArray(team.members) ? team.members : [];
       const member = teamMembers.find((m) => m.name === name);
       if (!member) fail(`move: no member named ${JSON.stringify(name)} — known members: ${teamMembers.map((m) => m.name).filter(Boolean).join(", ") || "(none)"}`);
@@ -2494,7 +2579,7 @@ try {
         break;
       }
       team.members = result.members.map(stripResyncMeta);
-      writeTeam(dir, team, teamArg);
+      writeTeam(dir, team, teamFile);
       const healed = result.members.find((m) => m.name === name);
       const resyncOut = { ok: true, status: healed.status };
       if (healed.status === "updated") {
@@ -2524,6 +2609,49 @@ try {
       break;
     }
 
+    case "spawn-ad-hoc": {
+      // Spec 0044 §1.4: the command that was missing. `spawn-one` can only stand up a member the
+      // roster already defines, and `add` used to be the only other way to get a member running —
+      // which is why an agent asked for a DIVERGENT member reached for the one command that writes
+      // the roster. This spawns any member spec, roster-defined or not, matching or diverging, and
+      // touches no roster level file under any input (§1.2's anti-requirement).
+      for (const key of Object.keys(opts)) {
+        if (key === "_") continue;
+        if (!AD_HOC_FLAGS.has(key)) fail(`spawn-ad-hoc: unrecognized flag --${key} (use --role, --model, --effort, --route, --kind, --args, --auto-mode, --on-missing, --team, --cwd, --dry-run, --allow-global, --orchestrator-pid)`);
+      }
+      const role = typeof opts.role === "string" ? opts.role : opts._[0];
+      if (!role) fail("spawn-ad-hoc needs a role: spawn-ad-hoc <role> [--model M] [--kind K] ...");
+      if (role === "orchestrator") fail('role "orchestrator" is not a team member — the Orchestrator is whatever session runs create');
+      if (!ROLES.includes(role)) fail(`spawn-ad-hoc: --role must be one of ${ROLES.join(", ")}, got ${JSON.stringify(role)}`);
+      const adHoc = memberFromFlags(role, "spawn-ad-hoc");
+      // §1.4 point 1: the same validation rules, unrelaxed. An ad hoc member has no roster block
+      // to inherit from, so its own route IS the effective route — defaulted to "peer", the same
+      // superset `add`'s auto-init uses, when the caller does not say.
+      adHoc.route = adHoc.route || AUTO_INIT_ROUTE;
+      if (adHoc.onMissing !== undefined && adHoc.route === "subagent") {
+        fail('on-missing applies only to peer-routed members (this member\'s route is "subagent")');
+      }
+      const adHocErrors = validateMember(adHoc);
+      if (adHocErrors.length) fail(adHocErrors.join("; "));
+      if (!routeHasPane(adHoc.route)) {
+        fail(`spawn-ad-hoc: route ${JSON.stringify(adHoc.route)} has no session to spawn — a subagent-routed member is dispatched on demand by the Agent tool, so there is nothing to launch`);
+      }
+      const dir = hierarchyDir(cwd);
+      // §1.4 point 5: the name is derived with the TEAM's prefix, against the members that team
+      // already holds, so a second member of the same role gets the next ordinal instead of the
+      // first one's name. Derived, then checked — a collision refuses rather than overwriting a
+      // row that may name a live agent.
+      const existingTeam = readTeam(dir, teamFile);
+      const sameRole = existingTeam && Array.isArray(existingTeam.members) ? existingTeam.members.filter((m) => m && m.role === role) : [];
+      adHoc.name = namedMembers([...sameRole.map((m) => ({ role: m.role })), adHoc]).at(-1).name;
+      if (teamMemberNameSet(dir, teamFile).has(adHoc.name)) {
+        fail(`spawn-ad-hoc: team ${teamPath(dir, teamFile)} already has a member named ${adHoc.name} — refusing to overwrite its record. Dismiss it first, or spawn into a different --team`);
+      }
+      requireHerdrName(adHoc, "spawn-ad-hoc");
+      out(await spawnOneCore(role, "spawn-ad-hoc", adHoc));
+      break;
+    }
+
     case "adopt": {
       // Spec 0018 §5: recovery for a team whose owner pid is null or dead (e.g. hit by the
       // pre-fix null-pid bug) — re-stamps orchestrator.pid without touching members/team_id.
@@ -2536,14 +2664,14 @@ try {
       if (!Number.isInteger(suppliedPid)) fail("adopt needs --orchestrator-pid <pid>");
       if (!pidAlive(suppliedPid)) fail(`adopt: --orchestrator-pid ${suppliedPid} is not a live process`);
       const dir = hierarchyDir(cwd);
-      const team = readTeam(dir, teamArg);
+      const team = readTeam(dir, teamFile);
       if (!team) fail("adopt: no team file at this scope to adopt");
       const currentPid = team.orchestrator && team.orchestrator.pid;
       if (currentPid != null && pidAlive(currentPid) && currentPid !== suppliedPid) {
         fail(`adopt: team is owned by live pid ${currentPid} — refusing to hijack a live team (no --force)`);
       }
       team.orchestrator = { ...(team.orchestrator || {}), pid: suppliedPid };
-      writeTeam(dir, team, teamArg);
+      writeTeam(dir, team, teamFile);
       out({ adopted: true, team_id: team.team_id, orchestrator: team.orchestrator });
       break;
     }
@@ -2607,7 +2735,13 @@ try {
       // Spec 0036 §3.2/§3.3 (F4/F6): the same shared resolver sessionstart.mjs uses — an explicit
       // --team is a direct lookup (unchanged from before); omitted, it now scans for the one team
       // whose members contain exactly one of this role, instead of silently defaulting.
-      const resolved = resolveSessionTeam(dir, existing.role, teamArg);
+      // Spec 0044 §1.6: the pane this session sits in is authoritative — the orchestrator wrote it
+      // into the member row — so ask that before falling back to the role scan, which under §1.1's
+      // concurrent teams is ambiguous far more often than it used to be.
+      const resolved = attributeSessionTeam(dir, existing.role, {
+        explicitTeam: teamArg,
+        paneId: process.env.HERDR_PANE_ID || existing.pane_id || process.env.TMUX_PANE || null,
+      });
       // G8: an EXPLICIT --team that resolves to nothing is a typo, not a legitimate absence —
       // 0032 §3.4b's same precedent (add --team X refuses a nonexistent container) rather than
       // silently reporting misplaced:false forever. An omitted --team still skips silently
@@ -2683,7 +2817,7 @@ try {
     }
 
     default:
-      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one|adopt|teams|reap|history|checkin [--commit|--keep-sessions] [--level global|repo|repo-user] [--team <name>] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
+      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one|spawn-ad-hoc|adopt|teams|reap|history|checkin [--commit|--keep-sessions] [--level global|repo|repo-user] [--team <name>] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
   }
 } catch (err) {
   fail(err && err.message ? err.message : String(err));

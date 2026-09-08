@@ -47,7 +47,10 @@ closes() { grep -c '"pane","close"' "$INVOKED_LOG" 2>/dev/null || true; }
 jq_() { echo "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const o=JSON.parse(s);const v=(new Function("o","return ("+process.argv[1]+")"))(o);console.log(typeof v==="string"?v:JSON.stringify(v))})' "$1"; }
 
 HIER="$PROJ/.claude/hierarchy"
-TEAM_FILE="$HIER/team.json"
+# Spec 0044 §1.1: a team with no `--team` now lives at `teams/<effective-prefix>.json`,
+# not the shared `team.json`. The prefix is the repo basename here, so the path is derived
+# rather than spelled out — a renamed sandbox repo must not silently stop being checked.
+TEAM_FILE="$HIER/teams/$(basename "$PROJ").json"
 PEERS_FILE="$HIER/peers.jsonl"
 mkdir -p "$HIER"
 cat > "$PROJ/.claude/agent-hierarchy.json" <<'EOF'
@@ -63,6 +66,7 @@ seed_peer() { # <name> <role> <status> <pid> [pane_id]
 fresh() { rm -f "$TEAM_FILE" "$PEERS_FILE"; : > "$INVOKED_LOG"; }
 
 write_team() {
+  mkdir -p "$(dirname "$TEAM_FILE")"
   cat > "$TEAM_FILE" <<EOF
 {
   "version": 1, "team_id": "t1", "created": "2026-01-01T00:00:00Z",

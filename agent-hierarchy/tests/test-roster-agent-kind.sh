@@ -422,20 +422,24 @@ check "4.3d2: ...the claude member is not failed" \
 check "4.3d3: ...the codex member is failed and names the transport" \
   '[ "$(jo "o.members.find(m=>m.name===\"myrepo-implementor\").launch_status")" = "failed" ] && echo "$OUT" | grep -q "requires the herdr transport"'
 
-# add of a pane member SPAWNS (does not defer to "dispatched on demand")
+# Spec 0044 §1.10 reverses spec 0039: `add` is a roster-template edit and launches nothing.
+# The kind/route launch coverage this block used to get from `add` now comes from `spawn-one`,
+# which is the one launch path.
 reset_state; clear_hierarchy; init_geometry; init_roster
 r "HERDR_ENV=1" add --role implementor --kind codex --route pane
-check "4.3e: add --kind codex --route pane under herdr SPAWNS the member" \
-  '[ "$RC" -eq 0 ] && [ "$(jo "o.spawn.spawned")" = "true" ]'
-check "4.3e2: ...and did NOT report \"dispatched on demand\"" \
-  '! echo "$OUT" | grep -q "dispatched on demand"'
-check "4.3e3: ...and team.json records route pane and kind codex" \
-  'node -e "const t=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));const m=t.members[0];process.exit(m.route===\"pane\"&&m.kind===\"codex\"?0:1)" "$PROJ/.claude/hierarchy/team.json"'
+check "4.3e: add --kind codex --route pane writes config and launches nothing" \
+  '[ "$RC" -eq 0 ] && [ "$(jo "o.spawned")" = "false" ] && [ ! -f "$FAKE_STATE_DIR/last-start.json" ]'
+check "4.3e2: ...and points at spawn-one instead of claiming a launch" \
+  'echo "$OUT" | grep -q "nothing was launched" && echo "$OUT" | grep -q "spawn-one"'
+r "HERDR_ENV=1" spawn-one implementor
+check "4.3e3: ...and spawn-one then records route pane and kind codex in the team file" \
+  '[ "$RC" -eq 0 ] && node -e "const t=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));const m=t.members[0];process.exit(m.route===\"pane\"&&m.kind===\"codex\"?0:1)" "$PROJ/.claude/hierarchy/teams/$(basename "$PROJ").json"'
 
+# §1.10 R1: `--no-spawn` survives as a silent no-op, so an old call site is byte-identical.
 reset_state; clear_hierarchy; init_geometry; init_roster
 r "HERDR_ENV=1" add --no-spawn --role implementor --kind codex --route pane
 check "4.3f: add --no-spawn writes config and spawns nothing" \
-  '[ "$RC" -eq 0 ] && [ "$(jo "o.spawn.spawned")" = "false" ] && [ ! -f "$FAKE_STATE_DIR/last-start.json" ]'
+  '[ "$RC" -eq 0 ] && [ "$(jo "o.spawned")" = "false" ] && [ ! -f "$FAKE_STATE_DIR/last-start.json" ]'
 
 # herdr's own error text passes through verbatim
 reset_state; clear_hierarchy; init_geometry; init_roster
@@ -590,10 +594,13 @@ check "4.6f: ...and NOTHING sent keystrokes to the blocked agent (§6 refusal)" 
 check "4.6f2: ...and roster.mjs contains no herdr send-keys EXECUTION at all (only remedy text)" \
   '[ "$(grep -c "herdrCall(\\[\"agent\", \"send-keys\"" "$H/roster.mjs")" -eq 0 ]' 
 
+# Spec 0044 §1.10: `add` cannot hit a startup at all any more, so the blocked-startup case moves
+# to `spawn-one` — the launch path that can actually reach it.
 reset_state; clear_hierarchy; init_geometry; init_roster
-r "HERDR_ENV=1 FAKE_HERDR_START_MODE=not-ready" add --role implementor --kind codex --route pane
-check "4.6g: add hitting a blocked startup reports success-with-action-outstanding, not a failed add" \
-  '[ "$RC" -eq 0 ] && [ "$(jo "o.spawn.spawned")" = "true" ] && [ "$(jo "o.spawn.launch_status")" = "blocked-at-startup" ]'
+r "" add --no-spawn --role implementor --kind codex --route pane
+r "HERDR_ENV=1 FAKE_HERDR_START_MODE=not-ready" spawn-one implementor
+check "4.6g: spawn-one hitting a blocked startup reports success-with-action-outstanding, not a failure" \
+  '[ "$RC" -eq 0 ] && [ "$(jo "o.spawned")" = "true" ] && [ "$(jo "o.launch_status")" = "blocked-at-startup" ]'
 
 ########################################################################
 # §4.5 — PASSTHROUGH QUOTING  (the third must-pass case)

@@ -17,7 +17,7 @@ import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync
 import { createHash, randomBytes } from "node:crypto";
 import { delimiter, dirname, join } from "node:path";
 
-import { KIND_DEFAULT, KIND_RE, resolveKind, ROLES, routeHasPane, VALID_MODELS_BY_ROLE } from "./lib-config.mjs";
+import { isValidTeamAlias, KIND_DEFAULT, KIND_RE, resolveKind, ROLES, routeHasPane, VALID_MODELS_BY_ROLE } from "./lib-config.mjs";
 
 // Spec 0043 §1.1/§1.5: `kind`/`route`-shape helpers are DEFINED in lib-config.mjs (the leaf) and
 // re-exported here so the member schema still reads as one module. Defining them here instead
@@ -355,6 +355,58 @@ export function resolveMemberTeam(dir, name) {
 }
 
 /**
+ * Spec 0044 §1.1/§1.7: which team FILE a command with no `--team` operates on. Every team an
+ * orchestrator creates from now on lives at `teams/<name>.json`, named for the effective unscoped
+ * prefix, because `teamPrefixInfo(cwd, "<X>")` returns prefix `<X>` — so `teams/<prefix>.json`
+ * derives byte-identical member names to what bare `create` wrote into `team.json` before.
+ *
+ * The one exception is §1.7's: a `team.json` that ALREADY exists keeps being the scope, so a team
+ * live across the upgrade stays readable, disbandable, resyncable and reapable in place. It is
+ * never moved or migrated; it ages out when its own team disbands, after which the next bare
+ * command resolves to the named path. Nothing here ever CREATES `team.json`.
+ *
+ * `prefix` is passed in rather than derived: prefix resolution lives in lib-config.mjs and this
+ * module is below it in the import order. Returns `{team, defaulted}` — `team: null` means the
+ * legacy default file, and `defaulted` says the caller supplied no `--team` (which is what decides
+ * whether a name collision should suggest a free candidate or tell the user to disband).
+ */
+export function defaultTeamScope(dir, prefix) {
+  if (readTeam(dir, null)) return { team: null, defaulted: true };
+  // The prefix becomes a path segment, so it has to clear the same validator an explicit `--team`
+  // clears — a repo basename is arbitrary text and `teams/<it>.json` must not be able to escape
+  // the directory. A prefix that cannot: keep the legacy default file rather than refusing, since
+  // failing every bare `create` in such a repo would break what works today. Spec 0044 does not
+  // cover this case — reported as a gap.
+  if (!isValidTeamAlias(prefix)) return { team: null, defaulted: true, unnamable: prefix };
+  return { team: prefix, defaulted: true };
+}
+
+/**
+ * Spec 0044 §1.6: AUTHORITATIVE team attribution for a session that can see its own pane.
+ * The orchestrator wrote this session's pane id into a team member row at spawn time, and a
+ * member name is already team-prefixed and unique across concurrent teams — so matching on the
+ * pane id identifies the team without inferring anything from role. This is what demotes
+ * `resolveSessionTeam`'s role scan to a fallback: under §1.1 two concurrent orchestrators each
+ * holding an architect make that scan ambiguous, and ambiguous means it resolves to nothing.
+ *
+ * Safe-refuse, deliberately (§1.6, §3): two teams claiming one pane id is corrupt state, not a
+ * tie to break, and it resolves to null. A wrong match here would let `teams` dismiss and respawn
+ * a healthy session, so under-attribution is the only acceptable error direction.
+ */
+export function resolveTeamByPane(dir, paneId) {
+  if (!paneId) return null;
+  let match = null;
+  for (const teamName of [null, ...listTeamNames(dir)]) {
+    const t = readTeam(dir, teamName);
+    const rows = t && Array.isArray(t.members) ? t.members.filter((m) => m && m.transport_id === paneId) : [];
+    if (!rows.length) continue;
+    if (match || rows.length > 1) return null;
+    match = { teamName, team: t, member: rows[0] };
+  }
+  return match;
+}
+
+/**
  * Spec 0036 §3.2/§3.3 (F4/F6): the ONE shared team-resolution used by both SessionStart (no
  * `--team`, no known peer name — role only) and `roster.mjs checkin` (an explicit `--team`, or
  * none). `explicitTeam` given -> a direct lookup, same as every other `--team` subcommand's
@@ -366,7 +418,17 @@ export function resolveMemberTeam(dir, name) {
  * member; more than one candidate, or a lone candidate with more than one member, resolves to
  * nothing (never guess — an unresolved team must skip detection entirely, per §3.2 point 3).
  * Returns `{ teamName, team }` (teamName is `null` for the default team) or `null`.
+ *
+ * Spec 0044 §1.6 demotes this to a FALLBACK. Inferring a team from role alone was only workable
+ * while one default team was the common case; under §1.1 concurrent teams each holding one member
+ * of a role make it ambiguous, and ambiguous resolves to nothing. Reach it through
+ * `attributeSessionTeam`, which asks `resolveTeamByPane` first, rather than calling it directly.
  */
+export function attributeSessionTeam(dir, role, { explicitTeam = null, paneId = null } = {}) {
+  if (explicitTeam) return resolveSessionTeam(dir, role, explicitTeam);
+  return resolveTeamByPane(dir, paneId) || resolveSessionTeam(dir, role);
+}
+
 export function resolveSessionTeam(dir, role, explicitTeam = null) {
   if (explicitTeam) {
     const team = readTeam(dir, explicitTeam);

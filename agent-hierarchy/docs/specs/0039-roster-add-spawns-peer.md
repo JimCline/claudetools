@@ -1,5 +1,18 @@
 # 0039 — `add` spawns the live peer, not just the config row
 
+> **SUPERSEDED (auto-spawn only) by `0044-roster-team-scope-split.md` §1.10.**
+> `add` no longer spawns anything: it writes the roster config row and stops.
+> The user's instruction, verbatim: *"Drop it, roster editing and team creation
+> are two distinct things we should never had blurred."* The reason is 0044's
+> anti-requirement — while one command both edited the template and produced a
+> live member, that command was the only thing an agent had to reach for when
+> asked for a member the roster did not describe, so it wrote the roster on the
+> way. `spawn-one <role>` covers a roster-conforming member; 0044 §1.4's
+> `spawn-ad-hoc` covers a divergent or ad hoc one. `--no-spawn` / `no_spawn`
+> remain accepted and are silent no-ops (0044 §1.10 R1). The rest of this
+> spec — `add`'s validation order, its level handling, the `--allow-global`
+> gate as it applies to the commands that still spawn — stands.
+
 Status: proposed
 Author: Architect (claudetools-architect)
 Date: 2026-09-02

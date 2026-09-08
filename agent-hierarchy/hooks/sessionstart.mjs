@@ -49,7 +49,7 @@ import {
   teamPrefix,
 } from "./lib-config.mjs";
 import { appendRosterRecord, buildStateBlock, cacheSessionModel, effectiveRoute, ensureHierarchyDir, realCwd, sessionModel, sweep, SWEEP_DAYS } from "./lib-hier.mjs";
-import { clearTeam, herdrOnPath, readTeam, resolveSessionTeam, teamIsLive } from "./lib-roster.mjs";
+import { attributeSessionTeam, clearTeam, herdrOnPath, readTeam, teamIsLive } from "./lib-roster.mjs";
 import { writeSessionRole } from "./lib-session-role.mjs";
 
 /** Feature A (spec 0010 §2.5): advisory only, never blocks. */
@@ -98,11 +98,16 @@ if (!isSubagent(input)) {
     let teamId = null;
     try {
       const dir = ensureHierarchyDir(cwd);
-      // Spec 0036 §3.2 (F4/F6): SessionStart has no --team and no known peer name, only role —
-      // resolveSessionTeam scans for the one team whose members contain exactly one of this role.
+      // Spec 0036 §3.2 (F4/F6): SessionStart has no --team and no known peer name, only role.
+      // Spec 0044 §1.6: the pane id this session can read about ITSELF is authoritative — the
+      // orchestrator wrote it into the member row at spawn time — so ask that first and keep the
+      // role scan only as the fallback for an adopted or pre-0044 session. Under §1.1 two
+      // concurrent orchestrators each holding one member of a role make the role scan ambiguous,
+      // and ambiguous resolves to nothing, so without this the `team` field silently disappears.
       // A session that resolves to no team is a legitimate non-peer session, not a mismatch —
       // detection skips entirely, silently, same reasoning as an absent expected_root.
-      const resolved = resolveSessionTeam(dir, role);
+      const paneId = process.env.HERDR_PANE_ID || process.env.TMUX_PANE || null;
+      const resolved = attributeSessionTeam(dir, role, { paneId });
       const team = resolved && resolved.team;
       expectedRoot = (team && team.expected_root) || null;
       teamId = team && team.team_id;
