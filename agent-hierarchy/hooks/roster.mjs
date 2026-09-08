@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * agent-hierarchy — /agent-roster CLI: deterministic roster + team file I/O.
+ * agent-hierarchy — the CLI behind both /agent-roster (roster template) and
+ * /agent-team (live team): deterministic roster + team file I/O.
  * Modelled on msg.mjs. Interactive prompting (AskUserQuestion, ListAgents
  * polling, actually spawning sessions) is the SKILL.md's job; this CLI does
  * validation and reads/writes only, so validation lives in one place.
@@ -1741,7 +1742,7 @@ try {
       }
       if (!Array.isArray(container.members)) container.members = [];
       const role = opts.role;
-      if (role === "orchestrator") fail('role "orchestrator" is not a roster member — the Orchestrator is whatever session runs /agent-roster create');
+      if (role === "orchestrator") fail('role "orchestrator" is not a roster member — the Orchestrator is whatever session runs /agent-team create');
       if (!ROLES.includes(role)) fail(`--role must be one of ${ROLES.join(", ")}, got ${JSON.stringify(role)}`);
       const member = memberFromFlags(role, "add");
       if (member.onMissing !== undefined && (member.route || container.route) === "subagent") {

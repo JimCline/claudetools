@@ -44,7 +44,7 @@
         ]
       },
       {
-        "matcher": "mcp__plugin_ah_ah__roster_create|mcp__ah__roster_create|mcp__plugin_ah_ah__roster_spawn_one|mcp__ah__roster_spawn_one|mcp__plugin_ah_ah__roster_adopt|mcp__ah__roster_adopt|mcp__plugin_ah_ah__roster_move|mcp__ah__roster_move|mcp__plugin_ah_ah__roster_dismiss|mcp__ah__roster_dismiss|mcp__plugin_ah_ah__roster_disband|mcp__ah__roster_disband",
+        "matcher": "mcp__plugin_ah_ah__roster_create|mcp__ah__roster_create|mcp__plugin_ah_ah__roster_spawn_one|mcp__ah__roster_spawn_one|mcp__plugin_ah_ah__roster_spawn_ad_hoc|mcp__ah__roster_spawn_ad_hoc|mcp__plugin_ah_ah__roster_adopt|mcp__ah__roster_adopt|mcp__plugin_ah_ah__roster_move|mcp__ah__roster_move|mcp__plugin_ah_ah__roster_dismiss|mcp__ah__roster_dismiss|mcp__plugin_ah_ah__roster_disband|mcp__ah__roster_disband",
         "hooks": [
           {
             "type": "command",

@@ -249,7 +249,7 @@ export function validateRosterBlock(roster) {
   } else {
     roster.members.forEach((m, i) => {
       if (m && m.role === "orchestrator") {
-        errors.push(`member ${i}: role "orchestrator" is not a roster member — the Orchestrator is whatever session runs /agent-roster create`);
+        errors.push(`member ${i}: role "orchestrator" is not a roster member — the Orchestrator is whatever session runs /agent-team create`);
         return;
       }
       // A member with no route of its own inherits the block's, so every per-member rule that

@@ -30,7 +30,7 @@ hook() {
 
 is_deny() { case "$OUT" in *'"permissionDecision":"deny"'*) return 0;; *) return 1;; esac; }
 
-VERBS="roster_create roster_spawn_one roster_adopt roster_move roster_dismiss roster_disband"
+VERBS="roster_create roster_spawn_one roster_spawn_ad_hoc roster_adopt roster_move roster_dismiss roster_disband"
 PREFIXES="mcp__plugin_ah_ah__ mcp__ah__"
 
 # ---- 1/2: each gated tool, both prefixes: clean session denies + names the skill;
@@ -41,7 +41,7 @@ for verb in $VERBS; do
     n=$((n+1))
     sess="clean-$n"
     hook "${prefix}${verb}" "$sess"
-    check "deny+skill-name: ${prefix}${verb}" '[ "$RC" -eq 0 ] && is_deny && echo "$OUT" | grep -q "ah:agent-roster"'
+    check "deny+skill-name: ${prefix}${verb}" '[ "$RC" -eq 0 ] && is_deny && echo "$OUT" | grep -q "ah:agent-team"'
     hook "${prefix}${verb}" "$sess"
     check "self-clears on retry: ${prefix}${verb}" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
   done
@@ -87,7 +87,7 @@ prompt_hook() {
 
 prompt_hook "let's spawn the team for this repo"
 check "§1.5: team-intent phrase injects a line naming the skill" \
-  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "ah:agent-roster" && [ "$(echo "$OUT" | grep -c "ah:agent-roster")" -eq 1 ]'
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "ah:agent-team" && [ "$(echo "$OUT" | grep -c "ah:agent-team")" -eq 1 ]'
 
 prompt_hook "please fix the bug in the login form"
 check "§1.5: unrelated prompt injects nothing" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
@@ -111,7 +111,7 @@ PHRASE_CHECK=$(node -e '
     console.log(a === b ? "PASS" : `FAIL skill=${a} hook=${b}`);
     process.exit(a === b ? 0 : 1);
   }).catch((e) => { console.log("FAIL: " + e.message); process.exit(1); });
-' "$PLUGIN/skills/agent-roster/SKILL.md" "$PLUGIN/hooks/lib-team-intent.mjs")
+' "$PLUGIN/skills/agent-team/SKILL.md" "$PLUGIN/hooks/lib-team-intent.mjs")
 check "§1.5: hook phrase list matches SKILL.md description" '[ "$PHRASE_CHECK" = "PASS" ]'
 
 # spec 0042 review G3: every extracted phrase must be 3+ whitespace-separated words —

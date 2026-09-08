@@ -36,8 +36,8 @@
  * already suppressed for the same reason.
  *
  * Team-intent nudge (spec 0042 §1.5): a prompt matching one of the
- * team-lifecycle phrases from `skills/agent-roster/SKILL.md`'s frontmatter
- * `description` gets exactly one injected line naming the `ah:agent-roster`
+ * team-lifecycle phrases from `skills/agent-team/SKILL.md`'s frontmatter
+ * `description` gets exactly one injected line naming the `ah:agent-team`
  * skill — read from that file at hook time so the phrase list has one
  * source of truth (the test asserts the two match). No new prompt, no
  * instruction, no restating the protocol; a prompt with no match injects
@@ -80,7 +80,7 @@ try {
     }
 
     if (prompt && matchedTeamIntentPhrase(prompt)) {
-      nudge = 'ah: standing up, reshaping, or tearing down a live Team goes through the `ah:agent-roster` skill.';
+      nudge = 'ah: standing up, reshaping, or tearing down a live Team goes through the `ah:agent-team` skill.';
     }
   }
   if (nudge) {

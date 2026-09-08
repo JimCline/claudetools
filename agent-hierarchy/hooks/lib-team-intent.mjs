@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // agent-hierarchy — team-intent phrase list for the §1.5 nudge (spec 0042). Read from
-// `skills/agent-roster/SKILL.md`'s frontmatter `description` at call time so the phrase
+// `skills/agent-team/SKILL.md`'s frontmatter `description` at call time so the phrase
 // list has exactly one source of truth; the test imports this module directly to assert
 // it matches. No side effects on import — safe to import from a test process.
 
@@ -8,7 +8,9 @@ import { readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
-const SKILL_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "skills", "agent-roster", "SKILL.md");
+// Spec 0044 §8.1 moved the team-lifecycle phrases onto the agent-team surface; the nudge
+// follows the phrases, not the old file name.
+const SKILL_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "skills", "agent-team", "SKILL.md");
 
 export function teamIntentPhrases() {
   try {

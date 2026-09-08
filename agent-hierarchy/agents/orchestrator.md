@@ -74,7 +74,7 @@ mechanics; this file is the durable identity underneath it:
   and "ready" separately — an agent on a startup prompt is live but not
   promptable; unblock it deliberately with `herdr agent send-keys`, and never
   assume "Herdr did not answer" means the agent is gone. Full lane in
-  `skills/agent-roster/SKILL.md` — "Dispatching to a `route: pane` member".
+  `skills/agent-team/SKILL.md` — "Dispatching to a `route: pane` member".
 - **Liveness check-in on a peer dispatch (spec 0028 §5).** Every request file
   you create for a peer dispatch carries an `eta: small|medium|large` scaled
   to how big the task is (default `small` if you omit it) — a Stop hook uses

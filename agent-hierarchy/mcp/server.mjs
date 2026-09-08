@@ -129,7 +129,7 @@ export const TOOLS = [
   },
   {
     name: "roster_show",
-    description: "Show the resolved roster, or one level's raw file, via roster.mjs show.",
+    description: "[/agent-roster — roster TEMPLATE] Show the resolved roster, or one level's raw file, via roster.mjs show. Read-only.",
     inputSchema: {
       type: "object",
       properties: {
@@ -142,7 +142,7 @@ export const TOOLS = [
   },
   {
     name: "roster_teams",
-    description: "List every team in the hierarchy dir via roster.mjs teams.",
+    description: "[/agent-team — live Team] List every team in the hierarchy dir via roster.mjs teams. Read-only.",
     inputSchema: {
       type: "object",
       properties: {
@@ -154,7 +154,7 @@ export const TOOLS = [
   },
   {
     name: "roster_member",
-    description: "Init a roster level, or add, edit, or remove a roster member, via roster.mjs.",
+    description: "[/agent-roster — roster TEMPLATE] Init a roster level, or add, edit, or remove a roster member, via roster.mjs. Edits the TEMPLATE for FUTURE teams and does NOT affect a running team — it launches nothing and terminates nothing. Refused while this session owns a live team (spec 0044 §1.3): to add a member to the RUNNING team, use roster_spawn_ad_hoc.",
     inputSchema: {
       type: "object",
       properties: {
@@ -177,7 +177,7 @@ export const TOOLS = [
   },
   {
     name: "roster_config",
-    description: "Show or set a roster level's pane layout, or the repo's team-name alias, via roster.mjs.",
+    description: "[/agent-roster — roster TEMPLATE] Show or set a roster level's pane layout, or the repo's team-name alias, via roster.mjs. Edits the TEMPLATE for FUTURE teams and does NOT affect a running team. Refused while this session owns a live team (spec 0044 §1.3).",
     inputSchema: {
       type: "object",
       properties: {
@@ -194,7 +194,7 @@ export const TOOLS = [
   },
   {
     name: "roster_create",
-    description: "Plan, spawn, or commit a Team from the EXISTING roster (roster_show) via roster.mjs create — an instance, not a roster edit. Do not call roster_member add/edit first unless the roster's member list itself is wrong or missing.",
+    description: "[/agent-team — live Team] Plan, spawn, or commit a Team from the EXISTING roster (roster_show) via roster.mjs create — an instance, not a roster edit. Do not call roster_member add/edit first unless the roster's member list itself is wrong or missing.",
     inputSchema: {
       type: "object",
       properties: {
@@ -214,7 +214,7 @@ export const TOOLS = [
   },
   {
     name: "roster_adopt",
-    description: "Re-stamp orchestrator.pid on an existing, orphaned team.json via roster.mjs adopt. Recovery only — refuses to hijack a live team.",
+    description: "[/agent-team — live Team] Re-stamp orchestrator.pid on an existing, orphaned team file via roster.mjs adopt. Recovery only — refuses to hijack a live team.",
     inputSchema: {
       type: "object",
       properties: {
@@ -227,7 +227,7 @@ export const TOOLS = [
   },
   {
     name: "roster_reap",
-    description: "List orphaned team records (mode: plan, default, read-only), or remove them (mode: commit). A team is orphaned when its orchestrator process is gone. Never touches a team whose orchestrator is alive.",
+    description: "[/agent-team — live Team] List orphaned team records (mode: plan, default, read-only), or remove them (mode: commit). A team is orphaned when its orchestrator process is gone. Never touches a team whose orchestrator is alive.",
     inputSchema: {
       type: "object",
       properties: {
@@ -239,7 +239,7 @@ export const TOOLS = [
   },
   {
     name: "roster_layout_splits",
-    description: "Run or drive the herdr layout-splits phase via roster.mjs layout-splits.",
+    description: "[/agent-team — live Team] Run or drive the herdr layout-splits phase via roster.mjs layout-splits.",
     inputSchema: {
       type: "object",
       properties: {
@@ -257,7 +257,7 @@ export const TOOLS = [
   },
   {
     name: "roster_disband",
-    description: "Plan, commit, or keep-sessions a Team teardown via roster.mjs disband. Non-destructive modes only — never closes anything. With no team.json, plan mode falls back to the live peer records (peers.jsonl) and reports source:'peers'; with a team.json, the plan also lists extra live non-team peers, each labeled source:'peers' (spec 0040). commit/keep-sessions still require a team.json.",
+    description: "[/agent-team — live Team] Plan, commit, or keep-sessions a Team teardown via roster.mjs disband. Non-destructive modes only — never closes anything. With no team.json, plan mode falls back to the live peer records (peers.jsonl) and reports source:'peers'; with a team.json, the plan also lists extra live non-team peers, each labeled source:'peers' (spec 0040). commit/keep-sessions still require a team.json.",
     inputSchema: {
       type: "object",
       properties: {
@@ -270,7 +270,7 @@ export const TOOLS = [
   },
   {
     name: "roster_disband_close",
-    description: "Close the live sessions of a Team. Destructive; requires prior user confirmation. Closes exactly the plan's set — including extra non-team live peers labeled source:'peers', and, with no team.json, the live peer records the fallback plan listed (spec 0040).",
+    description: "[/agent-team — live Team] Close the live sessions of a Team. Destructive; requires prior user confirmation. Closes exactly the plan's set — including extra non-team live peers labeled source:'peers', and, with no team.json, the live peer records the fallback plan listed (spec 0040).",
     inputSchema: {
       type: "object",
       properties: {
@@ -285,7 +285,7 @@ export const TOOLS = [
   },
   {
     name: "roster_resync",
-    description: "Re-derive every peer member's herdr location from live topology via roster.mjs resync.",
+    description: "[/agent-team — live Team] Re-derive every peer member's herdr location from live topology via roster.mjs resync.",
     inputSchema: {
       type: "object",
       properties: {
@@ -299,7 +299,7 @@ export const TOOLS = [
   },
   {
     name: "roster_move",
-    description: "Relocate a member's pane via roster.mjs move.",
+    description: "[/agent-team — live Team] Relocate a member's pane via roster.mjs move.",
     inputSchema: {
       type: "object",
       properties: {
@@ -319,7 +319,7 @@ export const TOOLS = [
   },
   {
     name: "roster_history",
-    description: "List recent team-history entries (for reuse via 'create --from') via roster.mjs history.",
+    description: "[/agent-team — live Team] List recent team-history entries (for reuse via 'create --from') via roster.mjs history. Read-only.",
     inputSchema: {
       type: "object",
       properties: {
@@ -330,7 +330,7 @@ export const TOOLS = [
   },
   {
     name: "roster_spawn_one",
-    description: "Spawn or restart one missing/dead peer role (e.g. 'spawn the architect') without touching the rest of the team.",
+    description: "[/agent-team — live Team] Spawn or restart one missing/dead peer role (e.g. 'spawn the architect') without touching the rest of the team.",
     inputSchema: {
       type: "object",
       properties: {
@@ -348,7 +348,7 @@ export const TOOLS = [
   {
     name: "roster_spawn_ad_hoc",
     description:
-      "Spawn a team member the roster does NOT define, or one whose parameters diverge from it (different model, effort, kind, args, or route) — e.g. 'spawn a codex reviewer just for this task'. Writes only the team file; the roster template is never touched, whatever the divergence. Use this instead of editing the roster when a running team needs a member the roster does not describe.",
+      "[/agent-team — live Team] Spawn a team member the roster does NOT define, or one whose parameters diverge from it (different model, effort, kind, args, or route) — e.g. 'spawn a codex reviewer just for this task'. Writes only the team file; the roster template is never touched, whatever the divergence. Use this instead of editing the roster when a running team needs a member the roster does not describe.",
     inputSchema: {
       type: "object",
       properties: {
@@ -371,7 +371,7 @@ export const TOOLS = [
   },
   {
     name: "roster_dismiss",
-    description: "Dismiss ONE member from a live team's check-in registry by derived name (e.g. 'dismiss bps-implementor-2'). Does not close sessions. A name not in team.json (or no team.json at all) falls back to the live peer records for plan mode, reporting source:'peers' (spec 0040); commit still requires the team.json row.",
+    description: "[/agent-team — live Team] Dismiss ONE member from a live team's check-in registry by derived name (e.g. 'dismiss bps-implementor-2'). Does not close sessions. A name not in team.json (or no team.json at all) falls back to the live peer records for plan mode, reporting source:'peers' (spec 0040); commit still requires the team.json row.",
     inputSchema: {
       type: "object",
       properties: {
@@ -387,7 +387,7 @@ export const TOOLS = [
   },
   {
     name: "roster_dismiss_close",
-    description: "Close ONE live team member's session. Destructive; requires prior user confirmation. Falls back to the member's live peer record when it is not in team.json or no team.json exists (spec 0040).",
+    description: "[/agent-team — live Team] Close ONE live team member's session. Destructive; requires prior user confirmation. Falls back to the member's live peer record when it is not in team.json or no team.json exists (spec 0040).",
     inputSchema: {
       type: "object",
       properties: {

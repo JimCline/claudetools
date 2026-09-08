@@ -58,7 +58,7 @@ function herdrWarning() {
     if (process.env.HERDR_ENV === "1" && !herdrOnPath()) {
       return (
         "ah: HERDR_ENV=1 but no `herdr` binary was found on PATH. Roster spawning " +
-        "(/agent-roster create, roster.mjs spawn-one) will fail when it tries to place " +
+        "(/agent-team create, roster.mjs spawn-one) will fail when it tries to place " +
         "panes. Install herdr, or unset HERDR_ENV to fall back to tmux/terminal."
       );
     }
