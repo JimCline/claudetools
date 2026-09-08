@@ -959,15 +959,18 @@ function runLayoutLoop({ mode, paneCount, self, splitCwd, seedPanes = [] }) {
   return { panes, splits };
 }
 
-/** Spec 0011 §7.2: `--team <T>` cannot equal the effective unscoped prefix while a live default team
-    exists — two teams would derive the same peer names, and tagging cannot fix ListAgents' namespace. */
+/** Spec 0011 §7.2: `--team <T>` cannot equal the effective unscoped prefix while a default team with
+    a RUNNING ORCHESTRATOR exists — two teams would derive the same peer names, and tagging cannot fix
+    ListAgents' namespace. Owner-alive is the whole test here: neither `teamIsLive` (which also expires
+    on age) nor `teamIsOrphaned` — a name stays taken for as long as someone is dispatching under it,
+    however old the team file is. */
 function guardTeamPrefixCollision(dir, team) {
   if (!team) return;
   const unscoped = teamPrefix(cwd, null);
   if (team !== unscoped) return;
   const existing = readTeam(dir, null);
   if (existing && pidAlive(existing.orchestrator && existing.orchestrator.pid)) {
-    fail(`--team ${JSON.stringify(team)} equals the effective default prefix "${unscoped}", and a live default team (${existing.team_id}) already exists — pick a different --team name`);
+    fail(`--team ${JSON.stringify(team)} equals the effective default prefix "${unscoped}", and a default team whose orchestrator is still running (${existing.team_id}) already exists — pick a different --team name`);
   }
 }
 
@@ -975,6 +978,10 @@ function guardTeamPrefixCollision(dir, team) {
     and is itself `validateTeamAlias`-clean. The bare prefix is never offered here — the caller only
     reaches this path because a live default team already holds it (§7.2 would refuse it anyway). */
 function deriveTeamCandidate(dir, basePrefix) {
+  // Every candidate is `<basePrefix>-<n>`, so a basePrefix that cannot clear the validator makes
+  // all 1000 of them fail — and the caller then reports an exhausted search instead of the one
+  // thing the user can act on. Spec 0044 [9.1]'s refusal is the correct answer here.
+  if (!validateTeamAlias(basePrefix).ok) failUnnamablePrefix(basePrefix, suggestTeamAlias(basePrefix));
   for (let n = 2; n <= 1000; n++) {
     const candidate = `${basePrefix}-${n}`;
     if (validateTeamAlias(candidate).ok && !readTeam(dir, candidate)) return candidate;
@@ -1035,8 +1042,15 @@ function resolveWritableTeamScope(dir, { replacing = false } = {}) {
   //   and moving new members of that team to a second file splits it — what §1.7 forbids.
   // - REPLACING it (`create`): `teamIsLive`, matching `refuseOrClearExistingTeam`'s own rule one
   //   step later, so the file it is about to clear is never also the file it writes the
-  //   replacement into. A live one is kept only to be refused there with "disband it first".
-  if (legacy && (replacing ? teamIsLive(legacy) : !teamIsOrphaned(legacy))) return;
+  //   replacement into. A live one is refused outright just below.
+  if (legacy && (replacing ? teamIsLive(legacy) : !teamIsOrphaned(legacy))) {
+    // Declining to retarget cannot be the whole answer on the replacing path: the caller would
+    // then write straight over the running team's members in the shared default, which is the one
+    // thing §1.1 forbids outright. Refuse here so `--commit` and `--spawn` get the answer `--plan`
+    // already gave.
+    if (replacing) refuseLiveDefaultTeam(dir, legacy);
+    return;
+  }
   if (teamFileUnnamable) failUnnamablePrefix(teamFileUnnamable, teamFileSuggestion);
   teamFile = teamPrefix(cwd, null);
 }
@@ -2094,9 +2108,10 @@ try {
         // scope from it — a null alias (a pre-0044 default team) still resolves through §1.1.
         resolveTeamFileScope();
       }
-      // Spec 0044 §1.1: all three modes settle the scope here, together. `--commit` writes a new
-      // team just as much as `--spawn` does, and guarding only the paths that route through
-      // `refuseOrClearExistingTeam` left it creating the shared default outright.
+      // Spec 0044 §1.1: all three modes settle the scope here, together. `--commit` creates a team
+      // exactly as `--plan`/`--spawn` do, and reaching `writeTeam` without this let it recreate the
+      // shared default — and, when that default held a live team, overwrite that running team in
+      // place. Scope first, then the `--team` collision rule.
       resolveWritableTeamScope(dir, { replacing: true });
       guardTeamPrefixCollision(dir, teamFile);
       if (opts.spawn === true) {

@@ -366,6 +366,23 @@ r "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-one reviewer
 check "5o: R3 — spawning into an old-but-owner-alive legacy team keeps it in one file" \
   '[ "$RC" -eq 0 ] && [ ! -f "$SCOPED_TEAM" ] && [ "$(cat "$LEGACY_TEAM" | jq_node "j.members.length")" = "2" ]'
 
+# ---- 5p-5r: the LIVE half of the same rule. Declining to retarget a live legacy team (§1.7) is
+# only half an answer — the create paths must then REFUSE, not fall through and overwrite the
+# running team's members in place. --plan and --commit have to give the same answer.
+reset_state; clear_all; init_geometry; setup_roster architect
+mkdir -p "$HIER"
+cat > "$LEGACY_TEAM" <<EOF
+{"version":1,"team_id":"live-legacy-1","created":"$(date +%Y-%m-%dT%H:%M:%S%z | sed 's/\(..\)$/:\1/')","roster_level":"repo","transport":"herdr","orchestrator":{"session_id":null,"pid":$LIVE_PID},"members":[{"role":"architect","name":"myrepo-architect","route":"peer","transport_id":"p9"}],"partial":false,"expected_root":"$PROJ"}
+EOF
+LIVE_LEGACY_BEFORE="$(cat "$LEGACY_TEAM")"
+r "CLAUDE_PID=$LIVE_PID" create --plan
+check "5p: --plan refuses against a live legacy team" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "live-legacy-1"'
+r "CLAUDE_PID=$LIVE_PID" create --commit --transport terminal --roster-level repo --verified "'[\"myrepo-architect\"]'" --orchestrator-pid "$LIVE_PID"
+check "5q: --commit gives the SAME answer, and does not overwrite the running team" \
+  '[ "$RC" -ne 0 ] && [ "$(cat "$LEGACY_TEAM")" = "$LIVE_LEGACY_BEFORE" ]'
+check "5q2: ...and did not create a second file behind the refusal either" '[ ! -f "$SCOPED_TEAM" ]'
+
+
 # ================================================================= 6 — r3 [9.1]: an unnamable prefix
 # A repo whose basename cannot clear validateTeamAlias must NOT fall back to creating the shared
 # team.json — that reinstates §1.1's ownership problem across a whole class of repos, silently.
@@ -435,6 +452,20 @@ check "6d: R2 — a legacy team.json does not mask the unnamable prefix" \
 rb "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-ad-hoc architect --model opus
 check "6d2: R2 — and spawn-ad-hoc does not derive a member name from the rejected prefix" \
   '[ "$RC" -ne 0 ] && ! echo "$OUT" | grep -q "_badrepo-architect"'
+BAD_DEAD_BEFORE="$(cat "$BADHIER/team.json")"
+rb "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-one architect
+check "6d3: R2 — spawn-one is guarded on the same shape, and leaves the orphan for reap" \
+  '[ "$RC" -ne 0 ] && [ "$(cat "$BADHIER/team.json")" = "$BAD_DEAD_BEFORE" ]'
+
+# ---- 6e: unnamable repo + a LIVE legacy team. The candidate-deriving path cannot produce a name
+# here (every `<prefix>-N` fails the same validator), so it must report the thing the user can act
+# on rather than an exhausted search.
+cat > "$BADHIER/team.json" <<EOF
+{"version":1,"team_id":"legacy-bad-live","created":"$(date +%Y-%m-%dT%H:%M:%S%z | sed 's/\(..\)$/:\1/')","roster_level":"repo","transport":"herdr","orchestrator":{"session_id":null,"pid":$LIVE_PID},"members":[{"role":"architect","name":"legacy-architect","route":"peer","transport_id":"p9"}],"partial":false,"expected_root":"$BADPROJ"}
+EOF
+rb "CLAUDE_PID=$LIVE_PID" create --plan
+check "6e: an unnamable prefix reports [9.1], not an exhausted candidate search" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q -- "alias --level repo --set" && ! echo "$OUT" | grep -q "1000 attempts"'
 
 # ================================================================= 7 — r3 [9.2]: ownership is session-wide
 # A session owning teams/foo.json running a roster-mutating command with NO --team is refused: the
