@@ -141,11 +141,22 @@ function peersDenyReason(role, live) {
   return `ah: route is peers this session — live instance(s) for ${ROLE_LABELS[role]}: ${live.map(describeInstance).join("; ")}. SendMessage it (set to_name) instead of spawning, or change route with msg.mjs route.`;
 }
 
+/**
+ * Spec 0043 §1.5: a `route: pane` member is NOT SendMessage-addressable — it is driven through
+ * Herdr agent-control. Every answer this gate gives is some form of "SendMessage the peer
+ * instead", so a pane member must never be the member it points at; the caller degrades to the
+ * generic no-peer wording, which is correct for it.
+ */
+function sendMessageablePeer(resolved, role) {
+  if (!resolved.roster || !Array.isArray(resolved.roster.members)) return null;
+  return resolved.roster.members.find((m) => m.role === role && (m.route || resolved.roster.route) !== "pane") || null;
+}
+
 function peerFallbackAskReason(role, resolved, dir, sessionId, cwd) {
   // §5.2: offer the spawn-one option only when a roster entry for `role` exists at a
   // level this session may use (repo/repo-user, or global with a recorded scope-A allow).
   const rosterUsable = !!resolved.roster && (resolved.rosterLevel !== "global" || globalScopeAnswer(dir, sessionId, "roster") === "allow");
-  const member = rosterUsable ? resolved.roster.members.find((m) => m.role === role) : null;
+  const member = rosterUsable ? sendMessageablePeer(resolved, role) : null;
   if (member) {
     return [
       `ah: route is peers this session, but no live instance of ${ROLE_LABELS[role]} exists to route to.`,
@@ -164,7 +175,7 @@ function peerFallbackAskReason(role, resolved, dir, sessionId, cwd) {
 function onMissingFor(resolved, role) {
   // §4: a role-level question ("is a peer of this kind available"), not a per-instance one —
   // 0019's per-instance selection belongs to spawn-one, not here. First member in roster order.
-  const member = resolved.roster && Array.isArray(resolved.roster.members) ? resolved.roster.members.find((m) => m.role === role) : null;
+  const member = sendMessageablePeer(resolved, role);
   return (member && member.onMissing) || ON_MISSING_DEFAULT;
 }
 
@@ -356,7 +367,7 @@ try {
             // §4.3: identical availability guard to peerFallbackAskReason's roster-usable check —
             // recommending a spawn-one command that will fail is worse than not recommending one.
             const rosterUsable = !!resolved.roster && (resolved.rosterLevel !== "global" || globalScopeAnswer(dir, sessionId, "roster") === "allow");
-            const member = rosterUsable ? resolved.roster.members.find((m) => m.role === role) : null;
+            const member = rosterUsable ? sendMessageablePeer(resolved, role) : null;
             if (member) {
               const askedAuto = hasGate(dir, (r) => r.type === "on-missing-auto" && r.session_id === sessionId && r.role === role);
               if (!isSubordinateSession && !askedAuto) {

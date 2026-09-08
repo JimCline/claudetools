@@ -77,9 +77,9 @@ import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 
-import { CONFIG_VERSION, findGitRoot, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, teamPrefix, teamPrefixInfo, validateTeamAlias } from "./lib-config.mjs";
+import { CONFIG_VERSION, findGitRoot, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
 import { appendRosterRecord, latestRoster, livePeerSlots, newId, localIso, pidAlive, realCwd, recordLiveness } from "./lib-hier.mjs";
-import { clearTeam, fingerprint, herdrOnPath, historyEntryIsActive, listTeamNames, normalizeMembers, readHistory, readTeam, resolveSessionTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, teamIsLive, teamIsOrphaned, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
+import { clearTeam, fingerprint, herdrOnPath, historyEntryIsActive, KIND_DEFAULT, kindFieldErrors, listTeamNames, memberArgs, normalizeMembers, readHistory, readTeam, resolveKind, resolveSessionTeam, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamIsLive, teamIsOrphaned, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
 
 const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config", "no-spawn"]);
 const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "close", "confirm", "plan-token", "allow-global", "cwd", "team"]);
@@ -258,6 +258,52 @@ function namedMembers(members) {
   return rosterMemberNames(members, repoBasename);
 }
 
+/**
+ * Spec 0043 §1.9: `--args` carries a JSON array of native CLI arguments for a non-claude kind.
+ * Only the JSON shape is decoded here — whether the decoded value is a legal `args` (array of
+ * non-empty strings, absent for kind claude) is `kindFieldErrors`' single answer, so the CLI and
+ * a hand-edited config file are judged by exactly the same rule.
+ *
+ * An empty array clears the field (§1.9 makes absent and `[]` equivalent).
+ */
+function parseArgsFlag(value, cmd) {
+  if (value === true) fail(`${cmd}: --args requires a value — a JSON array of strings, e.g. --args '["--profile","fast"]'`);
+  const raw = String(value).trim();
+  if (!raw) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    fail(`${cmd}: --args must be a JSON array of strings, e.g. --args '["--profile","fast"]' (could not parse ${JSON.stringify(raw)})`);
+  }
+  if (Array.isArray(parsed) && parsed.length === 0) return null;
+  return parsed;
+}
+
+/**
+ * Spec 0043 §1.7: any member launched through Herdr — every non-claude member by §1.4, and a
+ * claude member on the herdr transport — must have a name Herdr will accept. Checked against the
+ * DERIVED name at add/edit, which is the only place it can be reported usefully; `validateMember`
+ * cannot host it because it rejects a member carrying a stored `name` at all.
+ *
+ * Pre-existing latent defect for long repo basenames; in scope here because a non-claude member
+ * has no non-Herdr transport to fall back to, so for it the failure is unconditional.
+ */
+function requireHerdrName(member, cmd) {
+  if (!routeHasPane(member.route)) return;
+  const check = validateHerdrName(member.name);
+  if (check.ok) return;
+  // A non-claude kind has no non-Herdr transport to fall back to (§1.4), so an unusable name is
+  // an unconditional failure and must be refused now.
+  if (resolveKind(member) !== KIND_DEFAULT) fail(`${cmd}: ${check.why}`);
+  // A claude member still launches fine on tmux/terminal with a name Herdr would reject — a repo
+  // directory containing a space is the common case, and tests/test-roster-spawn-cwd.sh asserts
+  // it works. Spec 0043 §1.7 asks for this to be rejected for both kinds, but §3 forbids changing
+  // the claude path "with or without Herdr", so this warns rather than refusing. See the spec-gap
+  // note in the implementation report — this is the Architect's call to settle, not mine.
+  process.stderr.write(`roster.mjs: warning — ${check.why}. This member spawns fine on the tmux/terminal transport, but \`herdr agent start\` will reject the name.\n`);
+}
+
 function findMemberIndex(members, name) {
   return namedMembers(members).findIndex((m) => m.name === name);
 }
@@ -296,15 +342,59 @@ function detectTransport() {
   }
 }
 
+/**
+ * Single-quote one string for `/bin/sh -c` (spec 0043 §1.9). `args` is the first member field
+ * whose value is authored as free text and interpolated into `runShell`'s command string, so an
+ * element containing `;`, a backtick, `$(…)` or a redirect would otherwise execute as shell
+ * syntax instead of arriving as one argument. Same class of reason as the tmux branch's
+ * `JSON.stringify` below.
+ */
+function shQuote(s) {
+  return `'${String(s).split("'").join(`'\\''`)}'`;
+}
+
+/**
+ * The single launch-shape seam (spec 0009 §6.3) — `spawn-one`, `create --spawn` and history
+ * replay all build their command here. Spec 0043 §1.4 branches it on `kind`: a claude member's
+ * string is unchanged byte-for-byte (§3/§4.1), and every other kind gets Herdr's own `--kind`
+ * with its native arguments after `--`. No `--timeout` on either path — r6 dropped it once
+ * Herdr's own default was confirmed to be the same value it was passing.
+ */
 function spawnShape(member, transport) {
-  const agentFlags = [`--agent ah:${member.role}`, `--name ${member.name}`, member.model && member.model !== "inherit" ? `--model ${member.model}` : null, member.effort ? `--effort ${member.effort}` : null, member.autoMode ? `--permission-mode ${member.autoMode}` : null].filter(Boolean);
+  const kind = resolveKind(member);
+  const isClaude = kind === KIND_DEFAULT;
+  // §1.9: `add`/`edit` already refuse these combinations, but a hand-edited config reaches this
+  // function without passing through either — and for `args` on a claude member the consequence
+  // is an unvalidated second channel for --model/--permission-mode, so re-check here.
+  const configErrors = kindFieldErrors(member);
+  if (configErrors.length) {
+    return { transport, kind, layout: [], launch: [], launch_cwd: cwd, target_placeholder: null, target_from: null, target_source: null, refuse: `member ${member.name} (kind ${kind}) has an invalid configuration: ${configErrors.join("; ")}` };
+  }
+  // §1.4: forced by F2 — the tmux branch sends the literal string `claude <flags>` into a pane
+  // and the terminal branch execs `claude`; neither can start another kind, and teaching them
+  // each kind's binary would duplicate knowledge Herdr owns. Refuse rather than launch a claude.
+  if (!isClaude && transport !== "herdr") {
+    return { transport, kind, layout: [], launch: [], launch_cwd: cwd, target_placeholder: null, target_from: null, target_source: null, refuse: `member ${member.name} has kind ${JSON.stringify(kind)}, which requires the herdr transport, but the detected transport is ${JSON.stringify(transport)} — start a Herdr session (HERDR_ENV=1) to spawn non-claude kinds` };
+  }
+  // §1.4: emitted only for kind claude — `--agent ah:<role>` is a Claude Code plugin-agent
+  // reference and --model/--effort/--permission-mode are Claude CLI flags (§F3, §1.8).
+  const agentFlags = isClaude
+    ? [`--agent ah:${member.role}`, `--name ${member.name}`, member.model && member.model !== "inherit" ? `--model ${member.model}` : null, member.effort ? `--effort ${member.effort}` : null, member.autoMode ? `--permission-mode ${member.autoMode}` : null].filter(Boolean)
+    : [];
+  const nativeArgs = isClaude ? null : memberArgs(member);
   const claudeCmd = `claude ${agentFlags.join(" ")}`;
   if (transport === "herdr") return {
     transport,
+    kind,
+    args: nativeArgs ? [...nativeArgs] : null,
     // Layout is team-level and geometry-dependent: `roster.mjs layout-splits` computes and
     // performs the split sequence from live `herdr pane layout` output. See spec 0004 §3.2.
     layout: [],
-    launch: [`herdr agent start ${member.name} --kind claude --pane <TARGET> -- ${agentFlags.join(" ")}`],
+    launch: [
+      isClaude
+        ? `herdr agent start ${member.name} --kind claude --pane <TARGET> -- ${agentFlags.join(" ")}`
+        : `herdr agent start ${member.name} --kind ${kind} --pane <TARGET>${nativeArgs ? ` -- ${nativeArgs.map(shQuote).join(" ")}` : ""}`,
+    ],
     // Placement comes from the layout step's own --cwd (runLayoutLoop :641), not from here —
     // carried for output parity (spec 0035 §2.2/§2.4).
     launch_cwd: cwd,
@@ -314,6 +404,8 @@ function spawnShape(member, transport) {
   };
   if (transport === "tmux") return {
     transport,
+    kind,
+    args: null,
     // -P -F prints the new window's pane id: an untargeted `send-keys` writes to
     // whatever pane is active, which cannot survive two launches being in flight.
     layout: [`tmux new-window -P -F '#{pane_id}' -c "${cwd}"`],
@@ -328,13 +420,13 @@ function spawnShape(member, transport) {
   // Spec 0035 §2: the only branch with no separate layout step, so launch_cwd here is not just
   // for output parity — launchMember must actually apply it (§2.3), or the child inherits
   // roster.mjs's own process cwd instead of the resolved --cwd.
-  return { transport, layout: [], launch: [`${claudeCmd} --bg`], launch_cwd: cwd, target_placeholder: null, target_from: null, target_source: null };
+  return { transport, kind, args: null, layout: [], launch: [`${claudeCmd} --bg`], launch_cwd: cwd, target_placeholder: null, target_from: null, target_source: null };
 }
 
 /** Plan-level herdr layout instructions for the orchestrator to drive (spec 0004 §5.2). Null for non-herdr or an all-subagent roster. */
 function layoutPlan(resolved, transport, plan) {
   if (transport !== "herdr") return null;
-  const paneCount = plan.filter((m) => m.route === "peer").length;
+  const paneCount = plan.filter((m) => routeHasPane(m.route)).length;
   if (paneCount === 0) return null;
   return {
     mode: resolved.layout,
@@ -405,20 +497,107 @@ function nextSplit({ mode, paneCount, self, created, geometry }) {
 
 // Sole exec site for herdr (spec 0002 §11.3's grep assertion; spec 0005 extends the permitted
 // callers to `create --spawn` alongside `layout-splits` — see tests/test-roster-layout-splits.sh).
-function herdrCall(args) {
+function herdrCall(args, opts = {}) {
   const timeout = Number(process.env.AH_HERDR_TIMEOUT_MS || 10000);
   let stdout;
   try {
     stdout = execFileSync("herdr", args, { encoding: "utf8", timeout, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   } catch (err) {
+    // Spec 0043 §1.6: `herdr agent get` on a missing name exits 1 and writes its error as JSON
+    // on STDOUT, not stderr — so the failure path has to be inspectable, not just thrown. Kept
+    // inside this function rather than adding a second exec site: spec 0002 §11.3's grep
+    // assertion requires `herdr` to be spawned from exactly one place.
+    if (opts.allowFailure && !err.signal) {
+      return { ok: false, stdout: err.stdout ? String(err.stdout) : "", stderr: err.stderr ? String(err.stderr) : "", status: typeof err.status === "number" ? err.status : null };
+    }
     if (err.signal) throw new Error(`herdr ${args.join(" ")} timed out after ${timeout}ms`);
     throw new Error(`herdr ${args.join(" ")} failed: ${(err.stderr && String(err.stderr).trim()) || err.message}`);
   }
+  if (opts.allowFailure) return { ok: true, stdout, stderr: "", status: 0 };
   try {
     return JSON.parse(stdout);
   } catch {
     throw new Error(`herdr ${args.join(" ")} produced unparseable output`);
   }
+}
+
+/**
+ * Spec 0043 §1.6: liveness AND readiness for a non-claude member, from `herdr agent get <name>`.
+ * These are two different predicates for a Herdr-driven agent (they collapse into one only for a
+ * Claude peer): a `blocked` agent sitting on a startup prompt is unambiguously LIVE — spawning a
+ * second under the same name would be wrong — and unambiguously NOT READY.
+ *
+ * Three-way by design. "Herdr could not answer" is NOT "the agent is dead": the first thing a
+ * caller does with "dead" is spawn a replacement, so a transient daemon outage would become
+ * duplicate agents under names Herdr requires to be unique. Indeterminate must refuse the
+ * operation instead.
+ *
+ * Returns `{live, indeterminate, why, agent_status, ready}`.
+ */
+const HERDR_LIVE_STATES = ["idle", "working", "blocked", "done", "unknown"];
+
+function herdrAgentState(name) {
+  if (!herdrOnPath()) {
+    return { live: false, indeterminate: true, why: "no `herdr` binary on PATH — cannot ask whether this agent is live", agent_status: null, ready: false };
+  }
+  let res;
+  try {
+    res = herdrCall(["agent", "get", name], { allowFailure: true });
+  } catch (err) {
+    return { live: false, indeterminate: true, why: `herdr agent get ${name} failed: ${err.message}`, agent_status: null, ready: false };
+  }
+  let parsed = null;
+  for (const stream of [res.stdout, res.stderr]) {
+    if (typeof stream !== "string" || !stream.trim()) continue;
+    try {
+      parsed = JSON.parse(stream);
+      break;
+    } catch {
+      // try the other stream
+    }
+  }
+  if (!parsed) {
+    return { live: false, indeterminate: true, why: `herdr agent get ${name} produced unparseable output`, agent_status: null, ready: false };
+  }
+  const code = parsed.error && parsed.error.code;
+  // The ONLY signal that means "no such agent". Any other error code is Herdr failing to answer.
+  if (code === "agent_not_found") {
+    return { live: false, indeterminate: false, why: "agent_not_found", agent_status: null, ready: false };
+  }
+  if (code) {
+    return { live: false, indeterminate: true, why: `herdr agent get ${name} returned error code ${JSON.stringify(code)}`, agent_status: null, ready: false };
+  }
+  const agent = parsed.result && parsed.result.agent;
+  if (!agent || typeof agent !== "object") {
+    return { live: false, indeterminate: true, why: `herdr agent get ${name} returned no .result.agent`, agent_status: null, ready: false };
+  }
+  const status = typeof agent.agent_status === "string" ? agent.agent_status : null;
+  // A non-claude record carries no `agent_session` key and a claude one does — deliberately NOT
+  // branched on, so both kinds take one code path through `agent_status`.
+  //
+  // §1.6's "anything else" row: only a status Herdr has told us is terminal can mean not-live.
+  // A missing status, or one this build does not recognize (a newer Herdr, a state added later),
+  // is Herdr declining to answer — indeterminate. Reading it as a definite not-live is the
+  // duplicate-spawn bug: the caller starts a second agent under a name Herdr requires unique.
+  if (status === null) {
+    return { live: false, indeterminate: true, why: `herdr agent get ${name} returned no agent_status`, agent_status: null, ready: false };
+  }
+  // §1.6's table has exactly ONE not-live row — exit 1 with `agent_not_found`, handled above.
+  // A status outside the live set is therefore not a fifth terminal state this build happens not
+  // to know; it is Herdr saying something this build cannot interpret, which is the "anything
+  // else" row.
+  if (!HERDR_LIVE_STATES.includes(status)) {
+    return { live: false, indeterminate: true, why: `herdr agent get ${name} returned unrecognized agent_status ${JSON.stringify(status)}`, agent_status: status, ready: false };
+  }
+  const live = true;
+  // Readiness: Herdr's own cross-kind normalized answer. ABSENT IS NOT FALSE — the field was not
+  // present on the claude payload, and reading absent-as-false would mark every ready Claude
+  // member unpromptable. Absent falls back to the lifecycle set.
+  const ready =
+    agent.interactive_ready === undefined || agent.interactive_ready === null
+      ? status !== null && ["idle", "done"].includes(status)
+      : agent.interactive_ready === true;
+  return { live, indeterminate: false, why: `agent_status ${status}`, agent_status: status, ready };
 }
 
 /**
@@ -486,7 +665,7 @@ function resyncMembers(team, { dir = null, teamCwd = null, selfPaneId = null, bi
       counts.malformed++;
       return m;
     }
-    if (m.route !== "peer") {
+    if (!routeHasPane(m.route)) {
       counts.skipped++;
       return { ...m, status: "skipped" };
     }
@@ -526,7 +705,7 @@ function resyncMembers(team, { dir = null, teamCwd = null, selfPaneId = null, bi
       if (idx === -1) {
         return { members: null, counts: null, query_ok: true, query_error: null, bind_error: `--bind: unknown member "${name}" (known: ${knownNames.join(", ") || "none"})` };
       }
-      if (members[idx].route !== "peer") {
+      if (!routeHasPane(members[idx].route)) {
         return { members: null, counts: null, query_ok: true, query_error: null, bind_error: `--bind: member "${name}" has route "${members[idx].route}", not "peer"` };
       }
       if (!topologyIds.has(paneId)) {
@@ -757,7 +936,7 @@ function resolveMembersPlan(dir) {
   const transport = detectTransport();
   const plan = resolved.members.map((m) => {
     const route = m.route || resolved.route;
-    return { role: m.role, name: m.name, model: m.model, effort: m.effort, route, autoMode: m.autoMode, spawn: route === "peer" ? spawnShape(m, transport) : null };
+    return { role: m.role, name: m.name, kind: resolveKind(m), model: m.model, effort: m.effort, route, autoMode: m.autoMode, args: memberArgs(m), spawn: routeHasPane(route) ? spawnShape({ ...m, route }, transport) : null };
   });
   return { level: resolved.level, path: resolved.path, transport, layout_plan: layoutPlan(resolved, transport, plan), members: plan };
 }
@@ -806,7 +985,7 @@ function planMembersFromHistory(entry, dir) {
   const named = namedMembers(renamed);
   const plan = named.map((m) => {
     const route = m.route || rosterBlock.route;
-    return { role: m.role, name: m.name, model: m.model, effort: m.effort, route, autoMode: m.autoMode, spawn: route === "peer" ? spawnShape(m, transport) : null };
+    return { role: m.role, name: m.name, kind: resolveKind(m), model: m.model, effort: m.effort, route, autoMode: m.autoMode, args: memberArgs(m), spawn: routeHasPane(route) ? spawnShape({ ...m, route }, transport) : null };
   });
   return { level: entry.roster_level || null, path: null, transport, layout_plan: layoutPlan(rosterBlock, transport, plan), members: plan };
 }
@@ -835,11 +1014,33 @@ function runShell(commandString, opts = {}) {
  */
 function labelPane(member) {
   try {
-    herdrCall(["pane", "rename", member.transport_id, "claude", "-", member.name]);
+    // Spec 0043 §1.4: the kind, not the literal "claude" — a codex member's pane must read as
+    // codex. `member.kind` is always explicit here (defaulted at the read seam, §1.1).
+    herdrCall(["pane", "rename", member.transport_id, resolveKind(member), "-", member.name]);
     return null;
   } catch {
     return "failed";
   }
+}
+
+/**
+ * Spec 0043 §1.4: Herdr reports launch problems as JSON with an `error.code`, and — verified
+ * live (r4) — writes that JSON to STDOUT on the error path, not stderr. A reader that inspects
+ * only stderr finds an empty string and silently misreads the outcome, so both are parsed.
+ * Returns the error code, or null when nothing parseable carries one.
+ */
+function herdrErrorCode(attempt) {
+  for (const stream of [attempt.stdout, attempt.stderr]) {
+    if (typeof stream !== "string" || !stream.trim()) continue;
+    try {
+      const parsed = JSON.parse(stream);
+      const code = parsed && parsed.error && parsed.error.code;
+      if (typeof code === "string" && code) return code;
+    } catch {
+      // not JSON — try the other stream
+    }
+  }
+  return null;
 }
 
 /**
@@ -849,16 +1050,60 @@ function labelPane(member) {
  * fallback: retry once on any herdr failure, herdr-only.
  */
 async function launchMember(member, transport) {
+  // Spec 0043 §1.4: a member whose kind cannot be started on this transport (or whose config is
+  // invalid) is REFUSED — nothing is shelled for it at all, and it fails alone so the rest of a
+  // mixed `create --spawn` still launches.
+  if (member.spawn.refuse) {
+    return { ...member, launch_status: "failed", launch_result: { reason: "refused", detail: member.spawn.refuse }, retried: false, error: member.spawn.refuse };
+  }
   const template = member.spawn.launch[0];
   const cmd = member.spawn.target_placeholder && member.transport_id != null ? template.split(member.spawn.target_placeholder).join(member.transport_id) : template;
   let attempt = await runShell(cmd, { cwd: member.spawn.launch_cwd });
   let retried = false;
-  if (attempt.err && transport === "herdr") {
+  // §1.4: `agent_not_ready` means an agent IS running and is sitting on its own startup prompt.
+  // Re-running `agent start` against that pane is wrong, so this one code suppresses the retry.
+  const firstCode = attempt.err && transport === "herdr" ? herdrErrorCode(attempt) : null;
+  if (attempt.err && transport === "herdr" && firstCode !== "agent_not_ready") {
     retried = true;
     attempt = await runShell(cmd, { cwd: member.spawn.launch_cwd });
   }
-  const errorText = () => (attempt.stderr && String(attempt.stderr).trim()) || (attempt.err && attempt.err.message) || "launch failed";
+  const errorText = () => (attempt.stderr && String(attempt.stderr).trim()) || (attempt.stdout && String(attempt.stdout).trim()) || (attempt.err && attempt.err.message) || "launch failed";
   if (transport === "herdr") {
+    if (attempt.err) {
+      const code = herdrErrorCode(attempt);
+      // §1.4: blocked-at-startup is a first-class outcome, NOT a failure. The agent is live and
+      // queryable by name, nothing is orphaned, and spawn must never answer the prompt itself
+      // (§6) — it reports the remedy and leaves the decision with a human.
+      if (code === "agent_not_ready") {
+        return {
+          ...member,
+          launch_status: "blocked-at-startup",
+          launch_result: {
+            code,
+            detail: errorText(),
+            remedy: `${member.name} is live but awaiting a startup prompt — \`herdr agent read ${member.name} --source recent-unwrapped --lines 40\` shows it, \`herdr agent send-keys ${member.name} <key>\` answers it`,
+          },
+          retried,
+        };
+      }
+      // §1.4/§1.9: on a startup timeout the agent name never registers, so only the pane
+      // survives. Report it with the close command rather than closing it — that pane holds the
+      // target CLI's own output, which is usually the only explanation of what went wrong.
+      if (code === "timeout") {
+        const args = member.spawn.args;
+        const result = {
+          code,
+          detail: errorText(),
+          orphaned_transport_id: member.transport_id || null,
+          remedy: member.transport_id ? `the pane is orphaned (the agent name never registered) — close it with \`herdr pane close ${member.transport_id}\`` : "the agent name never registered",
+        };
+        if (args && args.length) {
+          result.likely_cause = `args ${JSON.stringify(args)} most likely made ${resolveKind(member)} run and exit instead of staying interactive — these are passed through unvalidated, so this is a diagnostic, not a verdict`;
+        }
+        return { ...member, launch_status: "failed", launch_result: result, retried, error: errorText() };
+      }
+      return { ...member, launch_status: "failed", launch_result: null, retried, error: errorText() };
+    }
     if (!attempt.err) {
       let parsed = null;
       try {
@@ -873,7 +1118,6 @@ async function launchMember(member, transport) {
       }
       return result;
     }
-    return { ...member, launch_status: "failed", launch_result: null, retried, error: errorText() };
   }
   // tmux and terminal: no readiness handshake, and no retry (spec 0005 §4 step 6 [correction]).
   if (!attempt.err) return { ...member, launch_status: "dispatched", launch_result: null, retried: false };
@@ -886,7 +1130,15 @@ async function launchMember(member, transport) {
  * Mutates `peerMembers` in place (`transport_id`); returns launch results aligned to `peerMembers`.
  * Shared by `createSpawn` (spec 0005) and `spawn-one` (spec 0009 §6) — one implementation.
  */
-async function layoutAndLaunch(peerMembers, transport, mode, splitCwd, callerLabel, layoutOpts = {}) {
+async function layoutAndLaunch(allMembers, transport, mode, splitCwd, callerLabel, layoutOpts = {}) {
+  // Spec 0043 §1.4/§4.3: a refused member has nothing shelled for it — and a pane IS something
+  // shelled for it, so the refusal must land BEFORE the layout step, not inside launchMember.
+  // Partitioned here rather than at each call site because this is the one seam `create --spawn`,
+  // `spawn-one`, and history replay all pass through.
+  const refused = allMembers.filter((m) => m.spawn && m.spawn.refuse);
+  const peerMembers = allMembers.filter((m) => !(m.spawn && m.spawn.refuse));
+  for (const m of refused) m.transport_id = null;
+
   let panes = [];
   if (transport === "herdr" && peerMembers.length > 0) {
     if (!herdrOnPath()) {
@@ -919,7 +1171,9 @@ async function layoutAndLaunch(peerMembers, transport, mode, splitCwd, callerLab
   });
 
   const settled = await Promise.allSettled(peerMembers.map((m) => launchMember(m, transport)));
-  return settled.map((r, i) => (r.status === "fulfilled" ? r.value : { ...peerMembers[i], launch_status: "failed", launch_result: null, retried: false, error: String(r.reason) }));
+  const launched = settled.map((r, i) => (r.status === "fulfilled" ? r.value : { ...peerMembers[i], launch_status: "failed", launch_result: null, retried: false, error: String(r.reason) }));
+  // Results stay aligned to the caller's original array so an index-keyed caller still lines up.
+  return allMembers.map((m) => (m.spawn && m.spawn.refuse ? { ...m, transport_id: null, launch_status: "failed", launch_result: { reason: "refused", detail: m.spawn.refuse }, retried: false, error: m.spawn.refuse } : launched[peerMembers.indexOf(m)]));
 }
 
 /** Spec 0009 §6.4: shared CLI-side guard for `spawn-one`, `create --spawn`, `move` (spec 0016
@@ -943,7 +1197,7 @@ function closeToken(teamId, closable) {
 
 /** Members with something addressable to close — spec 0016 §4.5's "close set". */
 function closableMembers(members) {
-  return members.filter((m) => m.route === "peer" && m.transport_id != null);
+  return members.filter((m) => routeHasPane(m.route) && m.transport_id != null);
 }
 
 /** Build argv directly and close one member's pane — never `/bin/sh` (spec 0016 §4.5): a
@@ -1001,6 +1255,26 @@ function warnMixedPrefixSpawnOne(dir, member) {
 function memberIsLive(dir, name) {
   const rec = latestRoster(dir).find((r) => r.name === name);
   return Boolean(rec) && rec.status !== "down" && recordLiveness(rec).live;
+}
+
+/**
+ * Spec 0043 §1.6: liveness for one member, kind-aware, three-valued.
+ *
+ * `kind: claude` is unchanged — `peers.jsonl`, written by the spawned session's own SessionStart
+ * hook. A non-claude process runs no Claude hooks and can never satisfy that, so left alone it
+ * would read as permanently not-live and `spawn-one`'s already-live refusal would never fire —
+ * a second `spawn-one` would then start a second agent under a name Herdr requires to be unique.
+ * That is the concrete failure this exists to prevent.
+ *
+ * Returns `{live, indeterminate, why, agent_status, ready}`; callers must treat `indeterminate`
+ * as "refuse", never as "dead".
+ */
+function memberLiveness(dir, member) {
+  if (resolveKind(member) === KIND_DEFAULT) {
+    const live = memberIsLive(dir, member.name);
+    return { live, indeterminate: false, why: live ? "peers.jsonl up" : "no live peers.jsonl record", agent_status: null, ready: live };
+  }
+  return herdrAgentState(member.name);
 }
 
 /** Spec 0040 §1.2: the live peer records for the current team, shaped like team.json members so
@@ -1068,17 +1342,30 @@ async function createSpawn(dir) {
     if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
   }
   const { level, transport, layout_plan, members } = getMembersPlan(dir);
-  const peerMembers = members.filter((m) => m.route === "peer");
+  const peerMembers = members.filter((m) => routeHasPane(m.route));
 
   const launched = await layoutAndLaunch(peerMembers, transport, mode, cwd, "create --spawn");
   const launchByName = new Map(peerMembers.map((m, i) => [m.name, launched[i]]));
 
+  // Spec 0043 §1.1: `kind` is written only when it is not the default, so claude rows stay
+  // byte-identical to pre-0043. `create --spawn` does not write team.json itself — the
+  // Orchestrator builds it from these rows (SKILL.md), so a row that omits `kind` becomes a
+  // team.json entry that resolves to claude and asks `peers.jsonl` about a process that never
+  // writes it: the member reads dead forever, and `dismiss` drops a live agent's record without
+  // the warning that is supposed to stop exactly that. (`spawn-one` is unaffected — it sources
+  // its member from the roster config and takes only the name from the team record.)
+  const kindFields = (m) => {
+    const f = {};
+    if (resolveKind(m) !== KIND_DEFAULT) f.kind = resolveKind(m);
+    if (memberArgs(m)) f.args = [...memberArgs(m)];
+    return f;
+  };
   const outputMembers = members.map((m) => {
-    if (m.route !== "peer") return { role: m.role, name: m.name, model: m.model, route: m.route, autoMode: m.autoMode, transport_id: null, launch_status: null, launch_cwd: null };
+    if (!routeHasPane(m.route)) return { role: m.role, name: m.name, ...kindFields(m), model: m.model, route: m.route, autoMode: m.autoMode, transport_id: null, launch_status: null, launch_cwd: null };
     const lm = launchByName.get(m.name);
     // Spec 0035 §2.4: placement is consequential and must not be silent — report where each
     // peer actually launched, not just that it launched.
-    const entry = { role: m.role, name: m.name, model: m.model, route: m.route, autoMode: m.autoMode, transport_id: m.transport_id, launch_status: lm.launch_status, launch_result: lm.launch_result, retried: lm.retried, launch_cwd: m.spawn ? m.spawn.launch_cwd : null };
+    const entry = { role: m.role, name: m.name, ...kindFields(m), model: m.model, route: m.route, autoMode: m.autoMode, transport_id: m.transport_id, launch_status: lm.launch_status, launch_result: lm.launch_result, retried: lm.retried, launch_cwd: m.spawn ? m.spawn.launch_cwd : null };
     if (lm.error) entry.error = lm.error;
     if (lm.label) entry.label = lm.label;
     // Spec 0008 §6: populate tab_id/workspace_id from the launch result when it carries them.
@@ -1088,7 +1375,7 @@ async function createSpawn(dir) {
     if (launchedPane && launchedPane.workspace_id != null) entry.workspace_id = launchedPane.workspace_id;
     return entry;
   });
-  const isPartial = outputMembers.some((m) => m.route === "peer" && m.launch_status === "failed");
+  const isPartial = outputMembers.some((m) => routeHasPane(m.route) && m.launch_status === "failed");
   out({ level, transport, members: outputMembers, partial: isPartial });
 }
 
@@ -1145,7 +1432,7 @@ async function spawnOneCore(role, callerLabel) {
   } else if (candidates.length === 1) {
     member = candidates[0];
   } else {
-    member = candidates.find((m) => !memberIsLive(dir, m.name)) || candidates[candidates.length - 1];
+    member = candidates.find((m) => !memberLiveness(dir, m).live) || candidates[candidates.length - 1];
   }
 
   const team = readTeam(dir, teamArg);
@@ -1173,19 +1460,44 @@ async function spawnOneCore(role, callerLabel) {
   //   (population 2 — alias drift, spec 0010 §7.2). A dead existing record must NOT block a
   //   legitimate spawn, which is why liveness is asked about its name too, not just its presence.
   // Collapsing to either disjunct alone reopens the other population — see §3.3.1.
-  const liveRecord = existing && memberIsLive(dir, existing.name) ? existing : null;
-  if (memberIsLive(dir, member.name) || liveRecord) {
+  // Spec 0043 §1.6: liveness is kind-aware and THREE-valued. An indeterminate answer (Herdr
+  // unreachable) must refuse rather than proceed — proceeding means launching a replacement for
+  // an agent that may well be alive, under a name Herdr requires to be unique.
+  const selfState = memberLiveness(dir, member);
+  if (selfState.indeterminate) {
+    fail(`${callerLabel}: cannot determine whether ${member.name} (kind ${resolveKind(member)}) is already live — ${selfState.why}. Refusing to spawn: a duplicate agent under a name Herdr requires to be unique is worse than not spawning. Fix Herdr and retry.`);
+  }
+  const existingState = existing ? memberLiveness(dir, { ...member, name: existing.name }) : null;
+  if (existingState && existingState.indeterminate) {
+    fail(`${callerLabel}: cannot determine whether the existing record ${existing.name} (kind ${resolveKind(member)}) is still live — ${existingState.why}. Refusing to spawn; fix Herdr and retry.`);
+  }
+  const liveRecord = existingState && existingState.live ? existing : null;
+  if (selfState.live || liveRecord) {
     const out_member = liveRecord || existing || { role: member.role, name: member.name };
+    const state = selfState.live ? selfState : existingState;
+    // §1.6: live and ready are different questions for a Herdr-driven agent — a member blocked
+    // on its own startup prompt is live (do not spawn a second) but not promptable.
+    const liveInfo = { agent_status: state.agent_status, ready: state.ready };
     if (byName && typeof opts["member"] !== "string") {
-      const candidatesLive = candidates.filter((c) => memberIsLive(dir, c.name)).map((c) => c.name);
-      return { spawned: false, reason: "already live", member: out_member, role, candidates_live: candidatesLive };
+      // Reporting only (the load-bearing refusal already fired above). An indeterminate candidate
+      // is listed with a marker rather than dropped — vanishing from the list would read as
+      // "confirmed not live", which is exactly what indeterminate does not mean.
+      const candidatesLive = candidates
+        .map((c) => ({ name: c.name, st: memberLiveness(dir, c) }))
+        .filter(({ st }) => st.live || st.indeterminate)
+        .map(({ name, st }) => (st.indeterminate ? `${name} (liveness unknown)` : name));
+      return { spawned: false, reason: "already live", member: out_member, role, candidates_live: candidatesLive, ...liveInfo };
     }
-    return { spawned: false, reason: "already live", member: out_member };
+    return { spawned: false, reason: "already live", member: out_member, ...liveInfo };
   }
   warnMixedPrefixSpawnOne(dir, member);
 
   const transport = detectTransport();
-  const planEntry = { role: member.role, name: member.name, model: member.model, effort: member.effort, route: "peer", autoMode: member.autoMode, spawn: spawnShape(member, transport) };
+  // Spec 0043 §1.5: the member's own route, not a hardcoded "peer" — a `pane` member must be
+  // recorded as `pane` or disband/dismiss/move would never find it, and `spawnShape` needs the
+  // effective route to apply §1.3's non-claude rule.
+  const memberRoute = routeHasPane(member.route || resolved.route) ? member.route || resolved.route : "peer";
+  const planEntry = { role: member.role, name: member.name, kind: resolveKind(member), model: member.model, effort: member.effort, route: memberRoute, autoMode: member.autoMode, args: memberArgs(member), spawn: spawnShape({ ...member, route: memberRoute }, transport) };
   const layoutInfo = layoutPlan(resolved, transport, [planEntry]);
   const mode = layoutInfo ? layoutInfo.mode : resolved.layout;
   if (!ROSTER_LAYOUT_VALUES.includes(mode)) fail(`${callerLabel}: layout mode must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(mode)}`);
@@ -1196,14 +1508,25 @@ async function spawnOneCore(role, callerLabel) {
 
   const seedPanes = team && Array.isArray(team.members)
     ? team.members
-        .filter((m) => m.route === "peer" && m.transport_id != null && m.name !== member.name)
+        .filter((m) => routeHasPane(m.route) && m.transport_id != null && m.name !== member.name)
         .map((m) => m.transport_id)
     : [];
 
   const [launched] = await layoutAndLaunch([planEntry], transport, mode, cwd, callerLabel, { seedPanes });
-  if (launched.launch_status === "failed") fail(launched.error || `${callerLabel} launch failed`);
+  if (launched.launch_status === "failed") {
+    // Spec 0043 §1.4/§1.9: the orphaned-pane id, its close command and the args-blame diagnostic
+    // live in `launch_result`. `fail()` prints one line, so they have to be folded into it —
+    // dropping them leaves the user with a bare timeout and no way to find either the evidence
+    // or the pane it is sitting in.
+    const lr = launched.launch_result;
+    const extra = lr ? [lr.likely_cause, lr.remedy].filter(Boolean) : [];
+    fail([launched.error || `${callerLabel} launch failed`, ...extra].join(" — "));
+  }
 
-  const newRecord = { role: member.role, name: member.name, route: "peer", model: member.model, effort: member.effort, autoMode: member.autoMode, transport_id: launched.transport_id };
+  const newRecord = { role: member.role, name: member.name, route: memberRoute, model: member.model, effort: member.effort, autoMode: member.autoMode, transport_id: launched.transport_id };
+  // §1.1: written only when it is not the default, so claude-kind team.json rows are unchanged.
+  if (resolveKind(member) !== KIND_DEFAULT) newRecord.kind = resolveKind(member);
+  if (memberArgs(member)) newRecord.args = [...memberArgs(member)];
   const launchedPane = transport === "herdr" && launched.launch_result && launched.launch_result.result && launched.launch_result.result.pane;
   if (launchedPane && launchedPane.tab_id != null) newRecord.tab_id = launchedPane.tab_id;
   if (launchedPane && launchedPane.workspace_id != null) newRecord.workspace_id = launchedPane.workspace_id;
@@ -1228,7 +1551,15 @@ async function spawnOneCore(role, callerLabel) {
   writeTeam(dir, outTeam, teamArg);
   const outMember = launched.label ? { ...newRecord, label: launched.label } : newRecord;
   // Spec 0035 §2.4: report where this peer actually launched, not just that it launched.
-  return { spawned: true, member: outMember, team_id: outTeam.team_id, roster_level: outTeam.roster_level, launch_cwd: planEntry.spawn.launch_cwd };
+  const spawnOut = { spawned: true, member: outMember, team_id: outTeam.team_id, roster_level: outTeam.roster_level, launch_cwd: planEntry.spawn.launch_cwd };
+  // Spec 0043 §1.4: blocked-at-startup is success WITH AN ACTION OUTSTANDING, not a failure —
+  // the agent is live and queryable, so the team row stands and the caller is told what to do.
+  if (launched.launch_status === "blocked-at-startup") {
+    spawnOut.launch_status = launched.launch_status;
+    spawnOut.launch_result = launched.launch_result;
+    spawnOut.ready = false;
+  }
+  return spawnOut;
 }
 
 try {
@@ -1298,16 +1629,34 @@ try {
       const role = opts.role;
       if (role === "orchestrator") fail('role "orchestrator" is not a roster member — the Orchestrator is whatever session runs /agent-roster create');
       if (!ROLES.includes(role)) fail(`--role must be one of ${ROLES.join(", ")}, got ${JSON.stringify(role)}`);
-      const member = { role, model: typeof opts.model === "string" ? opts.model : (ROLE_DEFAULTS[role] || {}).model };
+      if (opts.kind === true) fail("add: --kind requires a value (e.g. claude, codex, pi)");
+      const addKind = typeof opts.kind === "string" ? opts.kind : KIND_DEFAULT;
+      // Spec 0043 §1.3 (the role-default trap): ROLE_DEFAULTS fills `model` whenever --model is
+      // absent. Applied to a non-claude member that model would then be rejected by §1.3's own
+      // rule, making non-claude members impossible to create. The default is claude-only.
+      const defaultedModel = addKind === KIND_DEFAULT ? (ROLE_DEFAULTS[role] || {}).model : undefined;
+      const member = { role, model: typeof opts.model === "string" ? opts.model : defaultedModel };
+      if (member.model === undefined) delete member.model;
+      if (addKind !== KIND_DEFAULT) member.kind = addKind;
       if (typeof opts.effort === "string") member.effort = opts.effort;
       if (typeof opts.route === "string") member.route = opts.route;
       if (typeof opts["auto-mode"] === "string") member.autoMode = opts["auto-mode"];
+      // §1.9 makes absent and `[]` equivalent, so an empty --args omits the key rather than
+      // writing `"args": null` into the roster file.
+      if (opts.args !== undefined) {
+        const addArgs = parseArgsFlag(opts.args, "add");
+        if (addArgs !== null) member.args = addArgs;
+      }
       if (opts["on-missing"] === true) fail("add: --on-missing requires a value (auto, prompt, or never)");
       if (typeof opts["on-missing"] === "string") member.onMissing = opts["on-missing"];
       if (member.onMissing !== undefined && (member.route || container.route) === "subagent") {
         fail('on-missing applies only to peer-routed members (this member\'s route is "subagent")');
       }
-      const memberErrors = validateMember(member);
+      // Spec 0043 §1.3's route rule is about the member's EFFECTIVE route, and a member with no
+      // route of its own inherits the block's — the same `member.route || container.route` the
+      // on-missing check above already uses. Validating the bare member instead would reject
+      // `add --kind codex` under a `route: pane` roster block, which is the one place it belongs.
+      const memberErrors = validateMember({ ...member, route: member.route || container.route });
       if (memberErrors.length) fail(memberErrors.join("; "));
       if (member.autoMode === "bypassPermissions" && (member.route || container.route) === "peer") {
         process.stderr.write('roster.mjs: warning — auto-mode "bypassPermissions" can leave a headless peer stuck at a startup confirmation screen\n');
@@ -1315,6 +1664,8 @@ try {
       container.members.push(member);
       const blockErrors = validateRosterBlock(container);
       if (blockErrors.length) fail(blockErrors.join("; "));
+      const addedNamed = namedMembers(container.members).at(-1);
+      requireHerdrName({ ...addedNamed, route: addedNamed.route || container.route }, "add");
       writeLevelFile(path, data);
       if (created) process.stderr.write(`roster.mjs: no roster existed — created a minimal one at level "${level}": ${path}\n`);
       if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — added at the currently-resolving level "${level}" (${path})\n`);
@@ -1327,8 +1678,11 @@ try {
       if (opts["no-spawn"] === true) {
         result.spawn = { spawned: false, reason: "--no-spawn — config only, no session spawned" };
         process.stderr.write(`roster.mjs: --no-spawn — config only, no session spawned\n`);
-      } else if (effectiveRoute !== "peer" || !PEER_ELIGIBLE_ROLES.includes(role)) {
-        const why = effectiveRoute !== "peer" ? `route ${effectiveRoute}` : `role ${role} is never a peer session`;
+      } else if (!routeHasPane(effectiveRoute) || !PEER_ELIGIBLE_ROLES.includes(role)) {
+        // Spec 0043 §1.5: `pane` takes the same spawn path as `peer`. Nothing can conjure a Herdr
+        // agent at dispatch time the way the Agent tool conjures a subagent, so deferring a pane
+        // member to "dispatched on demand" would leave it permanently unreachable.
+        const why = !routeHasPane(effectiveRoute) ? `route ${effectiveRoute}` : `role ${role} is never a peer session`;
         result.spawn = { spawned: false, reason: `${why} — dispatched on demand, no session spawned` };
         process.stderr.write(`roster.mjs: ${result.spawn.reason}\n`);
       } else {
@@ -1364,6 +1718,43 @@ try {
       if (typeof opts.effort === "string") updated.effort = opts.effort;
       if (typeof opts.route === "string") updated.route = opts.route;
       if (typeof opts["auto-mode"] === "string") updated.autoMode = opts["auto-mode"];
+      if (opts.kind === true) fail("edit: --kind requires a value (e.g. claude, codex, pi)");
+      if (typeof opts.kind === "string") {
+        // §1.1: the default is total, so an explicit `claude` is stored as "no key" — a roster
+        // file never gains `kind: "claude"` through an edit.
+        if (opts.kind === KIND_DEFAULT) delete updated.kind;
+        else updated.kind = opts.kind;
+        if (opts.kind !== KIND_DEFAULT) {
+          // §1.3: model/effort/auto-mode are Claude CLI flags and are rejected for another kind.
+          // A member added as claude always carries a `model` from ROLE_DEFAULTS, so without this
+          // every `edit --kind codex` on an existing member would be unreachable. Cleared with a
+          // notice rather than a new flag, following the on-missing route-switch precedent below:
+          // clear what the switch stranded, and say so.
+          const stranded = ["model", "effort", "autoMode"].filter((k) => updated[k] !== undefined && updated[k] !== null);
+          // Supplied together in one invocation is a contradiction, not a stranding — never guess
+          // which the user meant (§3.2(i)'s precedent).
+          const suppliedNow = [
+            typeof opts.model === "string" ? "--model" : null,
+            typeof opts.effort === "string" ? "--effort" : null,
+            typeof opts["auto-mode"] === "string" ? "--auto-mode" : null,
+          ].filter(Boolean);
+          if (suppliedNow.length) {
+            fail(`edit: ${suppliedNow.join(", ")} cannot be combined with --kind ${opts.kind} — model, effort, and auto-mode are Claude CLI flags and apply only to kind claude. Pass native arguments with --args instead.`);
+          }
+          for (const k of stranded) delete updated[k];
+          if (stranded.length) {
+            process.stderr.write(
+              `roster.mjs: ah: cleared ${stranded.join(", ")} — ${stranded.length > 1 ? "they are" : "it is"} a Claude CLI setting and this member is now kind "${opts.kind}". Pass native arguments with --args.
+`
+            );
+          }
+        }
+      }
+      if (opts.args !== undefined) {
+        const parsedArgs = parseArgsFlag(opts.args, "edit");
+        if (parsedArgs === null) delete updated.args;
+        else updated.args = parsedArgs;
+      }
       if (opts["on-missing"] === true) fail("edit: --on-missing requires a value (auto, prompt, or never)");
       // §3.2.1: supplied-ness must be read from `opts`, never from `updated` — `updated` already
       // carries a value merged in via {...existing}, so once merged, "supplied now" and "was already
@@ -1382,12 +1773,14 @@ try {
         process.stderr.write(`roster.mjs: ah: dropped on-missing "${dropped}" — it applies only to peer-routed members, and this member is now route "subagent"\n`);
       }
       if (updated.role === "orchestrator") fail('role "orchestrator" is not a roster member');
-      const errors = validateMember(updated);
+      const errors = validateMember({ ...updated, route: updated.route || container.route });
       if (errors.length) fail(errors.join("; "));
       if (updated.autoMode === "bypassPermissions" && (updated.route || container.route) === "peer") {
         process.stderr.write('roster.mjs: warning — auto-mode "bypassPermissions" can leave a headless peer stuck at a startup confirmation screen\n');
       }
       container.members[idx] = updated;
+      const editedNamed = namedMembers(container.members)[idx];
+      requireHerdrName({ ...editedNamed, route: editedNamed.route || container.route }, "edit");
       writeLevelFile(path, data);
       if (wasDefaulted) process.stderr.write(`roster.mjs: no --level given — edited at the currently-resolving level "${level}" (${path})\n`);
       out({ level, path, wasDefaulted, container: containerLabel(teamKey), member: namedMembers(container.members)[idx] });
@@ -1774,7 +2167,7 @@ try {
       }
       const close = healedMembers.map((m) => {
         let command = null;
-        if (m.route === "peer" && m.transport_id) {
+        if (routeHasPane(m.route) && m.transport_id) {
           if (team.transport === "herdr") command = `herdr pane close ${m.transport_id}`;
           else if (team.transport === "tmux") command = `tmux kill-pane -t ${m.transport_id}`;
         }
@@ -1893,14 +2286,17 @@ try {
         const outTeam = { ...team, members: team.members.filter((m) => m.name !== name) };
         writeTeam(dir, outTeam, teamArg);
         // §3.4: a commit on a still-live member is allowed, but must never be silent about it.
-        if (memberIsLive(dir, target.name)) {
+        // Spec 0043 §1.6: kind-aware, and an indeterminate answer warns too — the whole point of
+        // the third value is that "Herdr did not answer" must not be spent as "it is dead".
+        const commitState = memberLiveness(dir, target);
+        if (commitState.live || commitState.indeterminate) {
           let command = null;
-          if (target.route === "peer" && target.transport_id) {
+          if (routeHasPane(target.route) && target.transport_id) {
             if (team.transport === "herdr") command = `herdr pane close ${target.transport_id}`;
             else if (team.transport === "tmux") command = `tmux kill-pane -t ${target.transport_id}`;
           }
           process.stderr.write(
-            `roster.mjs: ah: ${target.name} is still live (${team.transport} ${target.transport_id}). Its record is gone from team ${team.team_id}.` +
+            `roster.mjs: ah: ${target.name} ${commitState.indeterminate ? `may still be live — could not determine (${commitState.why})` : `is still live`} (${team.transport} ${target.transport_id}). Its record is gone from team ${team.team_id}.` +
               (command ? ` Close it with \`${command}\` if you did not mean to leave it running.\n` : "\n")
           );
         }
@@ -1936,7 +2332,11 @@ try {
               const newName = result.after[i].name;
               if (oldName === newName) continue;
               const teamHasRecord = outTeam.members.some((m) => m.name === oldName);
-              if (teamHasRecord && memberIsLive(dir, oldName)) reordinaled.push({ from: oldName, to: newName });
+              // Spec 0043 §1.6: ask the recorded member (kind-aware), not a bare name. An
+              // indeterminate answer warns — a Herdr blip must not silently drop the shift notice.
+              const oldMember = outTeam.members.find((m) => m.name === oldName);
+              const oldState = oldMember ? memberLiveness(dir, oldMember) : null;
+              if (teamHasRecord && oldState && (oldState.live || oldState.indeterminate)) reordinaled.push({ from: oldName, to: newName });
             }
             dismissOut.config = { removed: true, level: result.level, path: result.path, reordinaled };
             if (reordinaled.length > 0) {
@@ -1961,7 +2361,7 @@ try {
       }
       const healedTarget = healedMembers.find((m) => m.name === name) || target;
       let command = null;
-      if (healedTarget.route === "peer" && healedTarget.transport_id) {
+      if (routeHasPane(healedTarget.route) && healedTarget.transport_id) {
         if (team.transport === "herdr") command = `herdr pane close ${healedTarget.transport_id}`;
         else if (team.transport === "tmux") command = `tmux kill-pane -t ${healedTarget.transport_id}`;
       }
@@ -1971,7 +2371,11 @@ try {
       if (team.transport === "herdr") memberOut.resync_status = healedTarget.status || "unqueried";
       out({
         member: memberOut,
-        live: memberIsLive(dir, target.name),
+        // Spec 0043 §1.6 three-valued: `null` is "could not determine", distinct from `false`.
+        ...(() => {
+          const st = memberLiveness(dir, healedTarget);
+          return st.indeterminate ? { live: null, live_unknown: st.why } : { live: st.live };
+        })(),
         close_token: closeToken(team.team_id, closableMembers([healedTarget])),
         team_id: team.team_id,
         remaining: team.members.filter((m) => m.name !== name).map((m) => m.name),
@@ -2046,7 +2450,7 @@ try {
       const teamMembers = team && Array.isArray(team.members) ? team.members : [];
       const member = teamMembers.find((m) => m.name === name);
       if (!member) fail(`move: no member named ${JSON.stringify(name)} — known members: ${teamMembers.map((m) => m.name).filter(Boolean).join(", ") || "(none)"}`);
-      if (member.route !== "peer" || member.transport_id == null) fail(`move: member ${name} has no pane to move`);
+      if (!routeHasPane(member.route) || member.transport_id == null) fail(`move: member ${name} has no pane to move`);
       if (team.transport !== "herdr") {
         out({ moved: false, reason: transportNoop(team.transport) });
         break;
@@ -2171,7 +2575,7 @@ try {
           const hasExplicitTeam = Object.prototype.hasOwnProperty.call(r, "team");
           const rowTeam = hasExplicitTeam ? r.team : null;
           if (rowTeam !== row.name) continue;
-          const roleMembers = members.filter((m) => m.role === r.role && m.route === "peer");
+          const roleMembers = members.filter((m) => m.role === r.role && routeHasPane(m.route));
           if (hasExplicitTeam && roleMembers.length === 1) flagged.push({ role: r.role, name: roleMembers[0].name, observed_cwd: r.cwd });
           else unattributed++;
         }

@@ -95,7 +95,7 @@ tools implement are documented in
 |---|---|---|---|
 | `roster_show` | Show the resolved roster, or one level's raw file | no | `node hooks/roster.mjs show [--level global\|repo\|repo-user] [--team <name>] --cwd <path>` |
 | `roster_teams` | List every team in the hierarchy dir | no | `node hooks/roster.mjs teams [--orchestrator-pid <pid>] --cwd <path>` |
-| `roster_member` | Init a roster level, or add/edit/remove a member | yes | `node hooks/roster.mjs <init\|add\|edit\|remove> [--level <L>] [--role <role>] [--member <name>] [--model <m>] [--effort <e>] [--route peer\|subagent] [--auto-mode <a>] [--on-missing auto\|prompt\|never] [--layout auto\|columns\|grid] [--no-spawn] [--allow-global] [--orchestrator-pid <pid>] --cwd <path>` (`action` selects the subcommand; `auto_mode`→`--auto-mode`, `on_missing`→`--on-missing`, `no_spawn`→`--no-spawn`, `allow_global`→`--allow-global`, `orchestrator_pid`→`--orchestrator-pid`) |
+| `roster_member` | Init a roster level, or add/edit/remove a member | yes | `node hooks/roster.mjs <init\|add\|edit\|remove> [--level <L>] [--role <role>] [--member <name>] [--model <m>] [--effort <e>] [--route peer\|subagent\|pane] [--auto-mode <a>] [--kind <k>] [--args <json-array>] [--on-missing auto\|prompt\|never] [--layout auto\|columns\|grid] [--no-spawn] [--allow-global] [--orchestrator-pid <pid>] --cwd <path>` (`action` selects the subcommand; `auto_mode`→`--auto-mode`, `on_missing`→`--on-missing`, `no_spawn`→`--no-spawn`, `allow_global`→`--allow-global`, `orchestrator_pid`→`--orchestrator-pid`) |
 | `roster_config` | Show or set a roster level's pane layout, or the repo's team-name alias | yes (when setting) | `node hooks/roster.mjs <layout\|alias> [--level <L>] [--layout auto\|columns\|grid] [--set <alias>] [--clear] [--team <name>] --cwd <path>` (`target` selects the subcommand) |
 | `roster_create` | Plan, spawn, or commit a Team | yes | `node hooks/roster.mjs create --plan\|--spawn\|--commit [--team <name>] [--roster-level <L>] [--mode <layout_mode>] [--transport <t>] [--verified <json>] [--orchestrator-pid <pid>] [--session <orchestrator_session_id>] [--partial] --cwd <path>` (`mode`→`--<mode>`; `layout_mode`→`--mode`; `orchestrator_session_id`→`--session`; `roster_level`→`--roster-level`) |
 | `roster_layout_splits` | Run or drive the herdr layout-splits phase | yes, unless `next`/dry-run | `node hooks/roster.mjs layout-splits [--mode <m>] [--pane-count <n>] [--next] [--created <json>] [--apply] [--target <id>] [--direction right\|down] --cwd <path>` (`pane_count`→`--pane-count`) |
@@ -111,7 +111,7 @@ tools implement are documented in
 | `roster_reap` | List orphaned team records (plan, read-only), or remove them (commit) | yes, when `commit` | `node hooks/roster.mjs reap [--commit] --cwd <path>` (`mode`→`--commit` flag) |
 
 Roster levels (`repo-user` > `repo` > `global`), resolution order, and the
-per-member keys (`model`, `effort`, `route`, `auto_mode`) are documented in
+per-member keys (`kind`, `model`, `effort`, `route`, `auto_mode`, `args`) are documented in
 [skills/agent-roster/SKILL.md](../skills/agent-roster/SKILL.md) — not
 restated here.
 

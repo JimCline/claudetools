@@ -32,14 +32,33 @@ no roster exists yet.
 ## 4. Defining a roster
 
 `/agent-roster init` sets the roster's route (peer or subagent) and layout,
-then `/agent-roster add` adds a member per role. Each member has four keys:
+then `/agent-roster add` adds a member per role. Each member has these keys:
 
-- `model` — which model that role runs on.
-- `effort` — reasoning effort, where the model supports it.
-- `route` — `peer` (a separate live session) or `subagent` (spawned in-process).
-- `auto_mode` — the spawned session's permission mode. If set to
-  `bypassPermissions`, that session can get stuck at a startup confirmation
-  screen instead of coming up ready — worth knowing before you spawn.
+- `kind` — which agent CLI Herdr starts for this member. Omitted means
+  `claude`, and that stays true for every roster written before this key
+  existed. Any other value (`codex`, `pi`, … — Herdr owns the list; run
+  `herdr agent` to see what your install has) makes the member a *non-Claude*
+  agent, which changes the four keys below.
+- `model` — which model that role runs on. **`kind: claude` only.**
+- `effort` — reasoning effort, where the model supports it. **`kind: claude` only.**
+- `route` — `peer` (a separate live session, reached with SendMessage),
+  `subagent` (spawned in-process by the Agent tool), or `pane` (driven through
+  its Herdr pane). A non-claude kind **must** be `pane`.
+- `auto_mode` — the spawned session's permission mode. **`kind: claude` only.**
+  If set to `bypassPermissions`, that session can get stuck at a startup
+  confirmation screen instead of coming up ready — worth knowing before you spawn.
+- `args` — native CLI arguments passed verbatim to the agent. **Non-claude
+  kinds only** — for a Claude member, `model`/`effort`/`auto_mode` are the
+  validated way to set flags, and `args` would bypass that validation.
+
+`model`, `effort` and `auto_mode` are literally Claude Code CLI flags
+(`--model`, `--effort`, `--permission-mode`), which is why they are *rejected*
+rather than ignored for another kind: a setting that silently affects nothing
+is worse than one that refuses.
+
+A non-claude member requires a Herdr session (`HERDR_ENV=1`) to spawn — tmux
+and terminal transports can only start `claude`. Adding one from a non-Herdr
+session still works (rosters are portable); only spawning it needs Herdr.
 
 Value spaces and validation rules are in
 [SKILL.md — Levels](../skills/agent-roster/SKILL.md#levels) and

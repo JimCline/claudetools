@@ -17,7 +17,12 @@ import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync
 import { createHash, randomBytes } from "node:crypto";
 import { delimiter, dirname, join } from "node:path";
 
-import { ROLES, VALID_MODELS_BY_ROLE } from "./lib-config.mjs";
+import { KIND_DEFAULT, KIND_RE, resolveKind, ROLES, routeHasPane, VALID_MODELS_BY_ROLE } from "./lib-config.mjs";
+
+// Spec 0043 §1.1/§1.5: `kind`/`route`-shape helpers are DEFINED in lib-config.mjs (the leaf) and
+// re-exported here so the member schema still reads as one module. Defining them here instead
+// would need lib-config.mjs to import from this file, closing the cycle described at :22-26.
+export { KIND_DEFAULT, KIND_RE, resolveKind, routeHasPane };
 
 // ponytail: pidAlive/ageSecOf/newId/localIso duplicated from lib-hier.mjs rather than imported —
 // lib-hier.mjs imports readTeam/resolveMemberTeam/teamMemberByName from here, and a back-import
@@ -55,8 +60,15 @@ function localIso(now = new Date()) {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
 
-/** A roster member's route: "peer" (SendMessage to a live session) or "subagent" (spawned in-process). */
-export const ROSTER_ROUTE_VALUES = ["peer", "subagent"];
+/**
+ * A roster member's route — how the Orchestrator REACHES this member:
+ * "peer" (SendMessage to a live Claude session), "subagent" (spawned
+ * in-process by the Agent tool), or "pane" (spec 0043 §1.5 — driven through
+ * Herdr's agent-control surface, not SendMessage-addressable at all).
+ *
+ * `transport` remains a separate axis — how the process was PLACED.
+ */
+export const ROSTER_ROUTE_VALUES = ["peer", "subagent", "pane"];
 
 /** Team-wide herdr pane layout: "auto" (default), "columns", or "grid". See spec 0004 §4. */
 export const ROSTER_LAYOUT_VALUES = ["auto", "columns", "grid"];
@@ -98,6 +110,68 @@ export function herdrOnPath() {
 
 // ---------------------------------------------------------------- roster member/block validation
 
+/**
+ * Spec 0043 §1.9: a member's `args` as an actual list, with absent and `[]`
+ * treated as the same thing (the spec makes them equivalent, so nothing
+ * downstream has to distinguish them).
+ */
+export function memberArgs(m) {
+  const a = m && m.args;
+  return Array.isArray(a) && a.length ? a : null;
+}
+
+/**
+ * Spec 0043 §1.2/§1.3/§1.5/§1.9: everything the `kind` field changes about a
+ * member. Shared by `validateMember`, `validateTeamMember` and `spawnShape`'s
+ * defensive re-check, so a hand-edited config cannot reach the launch line
+ * with a combination `add` would have refused.
+ *
+ * `model`/`effort`/`auto-mode` are rejected rather than ignored for a
+ * non-claude kind: they render as literal `--model`/`--effort`/
+ * `--permission-mode` Claude CLI flags (§F3), so silently dropping them would
+ * make `show` display a model that affects nothing.
+ */
+export function kindFieldErrors(m) {
+  const errors = [];
+  if (!m || typeof m !== "object") return errors;
+
+  if (m.kind !== undefined && m.kind !== null && (typeof m.kind !== "string" || !KIND_RE.test(m.kind))) {
+    errors.push(`kind must be a non-empty lowercase string matching ${KIND_RE.source}, got ${JSON.stringify(m.kind)}`);
+    return errors; // an unusable kind makes every rule below meaningless
+  }
+  const kind = resolveKind(m);
+  const nonClaude = kind !== KIND_DEFAULT;
+
+  if (nonClaude) {
+    for (const [key, label] of [["model", "model"], ["effort", "effort"], ["autoMode", "auto-mode"]]) {
+      if (m[key] !== undefined && m[key] !== null) {
+        errors.push(`${label} is a Claude Code CLI flag and has no meaning for kind ${JSON.stringify(kind)} — remove it (got ${JSON.stringify(m[key])})`);
+      }
+    }
+    if (m.route !== "pane") {
+      errors.push(`route must be "pane" for kind ${JSON.stringify(kind)} (a non-claude agent is reached through its Herdr pane, not SendMessage or the Agent tool), got ${JSON.stringify(m.route)}`);
+    }
+  }
+
+  if (m.args !== undefined && m.args !== null) {
+    if (!Array.isArray(m.args)) {
+      errors.push(`args must be an array of strings, got ${JSON.stringify(m.args)}`);
+    } else {
+      m.args.forEach((a, i) => {
+        if (typeof a !== "string" || !a) errors.push(`args[${i}] must be a non-empty string, got ${JSON.stringify(a)}`);
+      });
+    }
+  }
+  // §1.9: not merely unnecessary for a claude member — the `--` slot already carries the
+  // VALIDATED agentFlags, so args would be a second, unvalidated channel for Claude CLI flags
+  // (`args: ["--model","haiku"]` on an ultra-advisor defeats TOP_TIER_MODELS). Every model /
+  // effort / permission rule is only as strong as this rejection.
+  if (!nonClaude && memberArgs(m)) {
+    errors.push(`args is not allowed for kind "claude" — Claude CLI flags are set with --model/--effort/--auto-mode, which are validated; args would bypass that (got ${JSON.stringify(m.args)})`);
+  }
+  return errors;
+}
+
 /** Validation errors for one roster member object; empty array = valid. */
 export function validateMember(m) {
   const errors = [];
@@ -120,6 +194,7 @@ export function validateMember(m) {
     errors.push(`on-missing must be one of ${ON_MISSING_VALUES.join(", ")}, got ${JSON.stringify(m.onMissing)}`);
   }
   if (m.name !== undefined) errors.push('member must not carry a stored "name" — it is derived at resolve time (spec §3.4)');
+  for (const e of kindFieldErrors(m)) errors.push(e);
   return errors;
 }
 
@@ -135,14 +210,18 @@ export function validateTeamMember(m) {
   if (!ROLES.includes(m.role)) errors.push(`role must be one of ${ROLES.join(", ")}, got ${JSON.stringify(m.role)}`);
   // Spec 0025 §3 amendment: name addresses a pane, so it's load-bearing only for route "peer" —
   // a subagent-routed member legitimately has no pane and no name (SKILL.md's hand-built recipe).
+  // Spec 0043 §1.5: a `pane`-routed member addresses a pane exactly as a `peer` one does — its
+  // name is the Herdr agent name — so the name requirement follows the pane, not the literal
+  // route "peer".
   if (m.name === "") {
     errors.push(`name must not be an empty string`);
-  } else if (m.route === "peer" && (typeof m.name !== "string" || !m.name)) {
-    errors.push(`name is required and must be a non-empty string when route is "peer", got ${JSON.stringify(m.name)}`);
-  } else if (m.route !== "peer" && m.name !== undefined && m.name !== null && typeof m.name !== "string") {
+  } else if (routeHasPane(m.route) && (typeof m.name !== "string" || !m.name)) {
+    errors.push(`name is required and must be a non-empty string when route is ${JSON.stringify(m.route)}, got ${JSON.stringify(m.name)}`);
+  } else if (!routeHasPane(m.route) && m.name !== undefined && m.name !== null && typeof m.name !== "string") {
     errors.push(`name must be a non-empty string or null, got ${JSON.stringify(m.name)}`);
   }
   if (!ROSTER_ROUTE_VALUES.includes(m.route)) errors.push(`route must be one of ${ROSTER_ROUTE_VALUES.join(", ")}, got ${JSON.stringify(m.route)}`);
+  for (const e of kindFieldErrors(m)) errors.push(e);
   if (m.transport_id !== undefined && m.transport_id !== null && typeof m.transport_id !== "string") {
     errors.push(`transport_id must be a string or null, got ${JSON.stringify(m.transport_id)}`);
   }
@@ -160,7 +239,7 @@ export function validateRosterBlock(roster) {
   if (!roster || typeof roster !== "object" || Array.isArray(roster)) return ["roster must be an object"];
   const errors = [];
   if (!ROSTER_ROUTE_VALUES.includes(roster.route)) {
-    errors.push(`roster.route is required and must be "peer" or "subagent", got ${JSON.stringify(roster.route)}`);
+    errors.push(`roster.route is required and must be one of ${ROSTER_ROUTE_VALUES.join(", ")}, got ${JSON.stringify(roster.route)}`);
   }
   if (roster.layout !== undefined && roster.layout !== null && !ROSTER_LAYOUT_VALUES.includes(roster.layout)) {
     errors.push(`roster.layout must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(roster.layout)}`);
@@ -173,7 +252,11 @@ export function validateRosterBlock(roster) {
         errors.push(`member ${i}: role "orchestrator" is not a roster member — the Orchestrator is whatever session runs /agent-roster create`);
         return;
       }
-      for (const e of validateMember(m)) errors.push(`member ${i}: ${e}`);
+      // A member with no route of its own inherits the block's, so every per-member rule that
+      // reads `route` — spec 0043 §1.3's "kind requires route pane" above all — must see the
+      // EFFECTIVE route. Validating the bare member instead rejects a legal `kind: codex` member
+      // in a `route: pane` block, and does so for every reader: add, edit, create, show.
+      for (const e of validateMember({ ...m, route: (m && m.route) || roster.route })) errors.push(`member ${i}: ${e}`);
     });
   }
   return errors;
@@ -224,11 +307,14 @@ export function teamMemberByName(dir, name, team = null) {
   return t.members.find((m) => m.name === name) || null;
 }
 
-/** Peer-routed Team members for a role (subagent-routed members are recorded but are never dispatch targets by name). */
+/** Named-slot Team members for a role — peer and pane both occupy one (subagent-routed members
+    are recorded but are never dispatch targets by name). Its consumer `resolveSessionTeam` counts
+    slots to decide which team a session belongs to, and a pane member fills a slot exactly as a
+    peer one does: excluding it would make a team of one codex member count zero. */
 export function teamMembersForRole(dir, role, team = null) {
   const t = readTeam(dir, team);
   if (!t || !Array.isArray(t.members)) return [];
-  return t.members.filter((m) => m.role === role && m.route === "peer");
+  return t.members.filter((m) => m.role === role && routeHasPane(m.route));
 }
 
 /** Basenames (sans `.json`) of every named team under `dir/teams/` — does NOT include the default team. */
@@ -366,6 +452,11 @@ export function normalizeMembers(members) {
         const value = m ? m[key] : undefined;
         if (value !== undefined && value !== null) out[key] = value;
       }
+      // Spec 0043 §1.1: persist `kind` only when it is not the default, so replaying a
+      // pre-0043 team through `create --from` reproduces byte-identical member rows.
+      if (m && resolveKind(m) !== KIND_DEFAULT) out.kind = resolveKind(m);
+      const args = memberArgs(m);
+      if (args) out.args = [...args];
       // Committed members carry camelCase `autoMode` (spec 0015 §3.1's evidence amendment — the
       // spec's own on-disk example uses snake_case `auto_mode`, so store under that key regardless
       // of which case the source member used).

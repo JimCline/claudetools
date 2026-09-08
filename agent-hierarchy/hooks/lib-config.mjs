@@ -112,6 +112,65 @@ export const VALID_MODELS_BY_ROLE = {
   "task-runner": [...REASONING_MODELS, "haiku"],
 };
 
+/**
+ * A roster member's agent kind (spec 0043 §1.1/§1.2) — which CLI Herdr starts
+ * for it. Absent or null means `claude`; the default is total, so no consumer
+ * may treat absent-kind as its own case.
+ *
+ * Shape-only validation, deliberately: Herdr owns the installed-kind list, it
+ * is install- and version-specific, and an allowlist compiled in here would be
+ * wrong the day a new kind ships. An unrecognized kind fails at spawn time,
+ * where Herdr produces the authoritative error (§1.2).
+ *
+ * Lives here rather than in lib-roster.mjs (where the rest of the member
+ * schema lives) because lib-config.mjs is the leaf: lib-roster.mjs imports
+ * from it, so the reverse import would close the cycle documented at
+ * lib-roster.mjs:22-26. lib-roster.mjs re-exports these for callers that read
+ * the member schema from there.
+ */
+export const KIND_DEFAULT = "claude";
+export const KIND_RE = /^[a-z][a-z0-9-]*$/;
+
+/** A member's effective kind: absent/null resolves to `claude` (§1.1). Applied once, at the read seam. */
+export function resolveKind(m) {
+  const k = m && m.kind;
+  if (k === undefined || k === null) return KIND_DEFAULT;
+  return k;
+}
+
+/**
+ * True when a member's route means "this member occupies a pane": `peer` (a
+ * Claude session in a pane) and `pane` (spec 0043 §1.5 — driven through Herdr
+ * agent-control rather than SendMessage). `subagent` members have no pane.
+ *
+ * Every pane-bearing decision — layout counts, launch, close, move, resync —
+ * asks this, so adding a third pane-bearing route did not have to be spelled
+ * out at each of those sites.
+ */
+export function routeHasPane(route) {
+  return route === "peer" || route === "pane";
+}
+
+/**
+ * Herdr's agent-name rule (spec 0043 §1.7, F6): `[a-z][a-z0-9_-]{0,31}`,
+ * i.e. at most 32 characters. Returns `{ok: true}` or `{ok: false, why}`.
+ *
+ * Checked against the DERIVED name, at add/edit — not inside
+ * `rosterMemberNames`, which runs on every roster read (SessionStart, the
+ * route gate, `show`) where throwing would break reads that have nothing to
+ * do with spawning.
+ */
+export function validateHerdrName(name) {
+  if (typeof name !== "string" || !name) return { ok: false, why: "name must be a non-empty string" };
+  if (!/^[a-z][a-z0-9_-]{0,31}$/.test(name)) {
+    return {
+      ok: false,
+      why: `derived name ${JSON.stringify(name)} (${name.length} chars) does not match Herdr's agent-name rule [a-z][a-z0-9_-]{0,31} (max 32 characters) — shorten the team alias or repo basename with \`roster.mjs alias --set <short>\``,
+    };
+  }
+  return { ok: true };
+}
+
 export const CONFIG_BASENAME = "agent-hierarchy.json";
 
 /** Roles a roster member may carry — the same ROLES list, orchestrator is never a member (§3.2). */
@@ -375,6 +434,12 @@ export function rosterLevelCandidates(cwd) {
  * Derive each member's dispatch name (§3.4): first member of a role gets
  * `peerName(repoBasename, role)`, later same-role members get `-2`, `-3`, ...
  * in array order. `peerName` stays the ordinal-1 case of this function.
+ *
+ * Also the single read seam where a member's `kind` default is applied (spec
+ * 0043 §1.1): every consumer downstream of a roster read — `spawnShape`,
+ * `memberIsLive`, `show`, `history`, the `team.json` writers — sees an
+ * explicit `kind` and none of them re-applies the default. The value is
+ * resolved, never written back to the config file.
  */
 export function rosterMemberNames(members, repoBasename) {
   const seen = {};
@@ -382,7 +447,7 @@ export function rosterMemberNames(members, repoBasename) {
     const role = m.role;
     const ordinal = (seen[role] = (seen[role] || 0) + 1);
     const base = peerName(repoBasename, role);
-    return { ...m, name: ordinal === 1 ? base : `${base}-${ordinal}` };
+    return { ...m, kind: resolveKind(m), name: ordinal === 1 ? base : `${base}-${ordinal}` };
   });
 }
 
@@ -983,15 +1048,21 @@ export function statusReport(cwd) {
       const onMissingEffective = onMissingDefaulted ? "prompt" : m.onMissing;
       // §3.3: name the reason, not a bare "(inert)" — non-peer-eligible role and subagent route are
       // two different causes with two different fixes.
+      // Spec 0043 §1.3: `pane` keeps on-missing's spawn-selection meaning but has no
+      // peer-fallback meaning (nothing to fall back TO), so it gets its own wording rather
+      // than reusing the subagent one, which would read as "this setting does nothing".
+      const effRoute = m.route || r.route;
       const onMissingTag = !PEER_ELIGIBLE_ROLES.includes(m.role)
         ? " (inert: role is not peer-eligible)"
-        : (m.route || r.route) === "subagent"
+        : effRoute === "subagent"
           ? " (inert: route is subagent)"
-          : onMissingDefaulted
-            ? " (default)"
-            : "";
+          : effRoute === "pane"
+            ? " (selects which member to spawn; no peer fallback on route pane)"
+            : onMissingDefaulted
+              ? " (default)"
+              : "";
       out.push(
-        `  ${m.name.padEnd(24)} ${ROLE_LABELS[m.role] || m.role} model=${m.model || "?"} effort=${m.effort || "-"} route=${m.route || r.route} auto-mode=${m.autoMode || "-"} on-missing=${onMissingEffective}${onMissingTag}`
+        `  ${m.name.padEnd(24)} ${ROLE_LABELS[m.role] || m.role} kind=${resolveKind(m)} model=${m.model || "?"} effort=${m.effort || "-"} route=${effRoute} auto-mode=${m.autoMode || "-"} on-missing=${onMissingEffective}${onMissingTag}`
       );
     }
   } else {

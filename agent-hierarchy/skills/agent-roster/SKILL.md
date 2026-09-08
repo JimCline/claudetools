@@ -210,6 +210,9 @@ no such container keeps erroring.
 A successful `add` of a peer-routed member also spawns that peer (spec
 0039) — through the same path as `spawn-one`, so a role whose peer is
 already live gets its config row plus "already live", not a second session.
+A `route: pane` member spawns the same way and for the same reason: nothing
+can conjure a Herdr agent at dispatch time the way the Agent tool conjures a
+subagent, so deferring it would leave it permanently unreachable.
 `--no-spawn` (`no_spawn: true` on `roster_member`) writes the config row only;
 a `route: subagent` member writes config only and says so. If the spawn fails
 after the row landed, the row is kept, the exit code is 3, and the error
@@ -228,6 +231,80 @@ asking — **spawn without asking**, still one orchestrator turn, never a
 zero-turn spawn. It never bypasses the global-scope confirm gate (§4.4 of the
 spec) — a global-level roster still asks before it is used at all, regardless
 of any member's `onMissing`.
+
+### `--kind`: non-Claude members (spec 0043)
+
+`--kind <k>` (`kind` on `roster_member`) picks which agent CLI Herdr starts
+for this member. **Omitted means `claude`**, including for every roster file
+written before this key existed, and an explicit `--kind claude` is not
+written to the file at all — the default is total.
+
+Herdr owns the list of installed kinds and it differs per machine and per
+Herdr version, so this codebase validates only the *shape*
+(`[a-z][a-z0-9-]*`) and never a membership list. An unknown kind is accepted
+at `add` and fails at spawn with Herdr's own error, unmodified. Run
+`herdr agent` to see what an install actually has.
+
+Choosing a non-claude kind changes four things, all enforced at `add`/`edit`:
+
+| field | requirement |
+|---|---|
+| `route` | must be `pane` — `peer` and `subagent` are hard errors |
+| `model` / `effort` / `auto-mode` | must be absent — they are literally the `--model`/`--effort`/`--permission-mode` Claude CLI flags and mean nothing to another CLI |
+| `args` | optional; native CLI arguments, passed verbatim after Herdr's `--` |
+| transport | spawning needs a Herdr session (`HERDR_ENV=1`); `add`/`edit` still work anywhere |
+
+`--args '<json-array>'` (`args` on `roster_member`, a real array there) is the
+*only* way a non-claude member gets flags, since the three Claude flags are
+rejected for it. Each element is one argument and is shell-quoted before it
+reaches the launch line. `args` is a **hard error for `kind: claude`** — for a
+Claude member the validated `--model`/`--effort`/`--auto-mode` already fill
+that slot, and a second unvalidated channel would let
+`args: ["--model","haiku"]` defeat the ultra-advisor top-tier rule. It is
+rejected at `add`/`edit` and again at spawn, so a hand-edited config file
+cannot slip past.
+
+There is no pre-screen for whether an `args` value keeps the agent
+interactive, and none is possible across 21 CLIs. A flag that makes the target
+run and exit produces a Herdr startup timeout; the failure names the args as
+the likely cause and reports the orphaned pane id with `herdr pane close` as
+the remedy. The pane is **not** closed automatically — it holds the agent's
+own output, which is usually the only explanation of what went wrong.
+
+A member's `role` still picks its derived name and its roster slot, but the
+role's `agents/*.md` contract is **not** loaded into a non-Claude agent. Put
+whatever the role would have told it into the prompt instead.
+
+### Dispatching to a `route: pane` member
+
+A non-Claude agent runs no Claude hooks, registers no name with the Claude
+CLI, and appears in no `ListAgents` listing — so **SendMessage cannot reach
+it**, and `peers.jsonl` will never show it. Drive it through Herdr instead,
+addressed by the same derived name the roster already uses:
+
+| need | command |
+|---|---|
+| send work | `herdr agent prompt <name> "<brief>" --wait --timeout <ms>` |
+| wait for a state | `herdr agent wait <name> [--until blocked] --timeout <ms>` |
+| read output | `herdr agent read <name> --source recent-unwrapped --lines <n>` |
+| answer a dialog | `herdr agent send-keys <name> <key>` |
+| is it there? | `herdr agent get <name>` |
+| tear down | `herdr pane close <id>` (there is no `herdr agent stop`) |
+
+Three rules that are easy to get wrong:
+
+1. **The prompt must be self-contained.** A bare `[hierarchy-msg <path>]`
+   token means nothing to a codex or pi agent — it has no idea what this
+   repo's conventions are. Either inline the brief, or spell out: read this
+   absolute path, write your report to *this* absolute path, in this shape.
+2. **Report back by file, not by screen-scrape.** Create the response file
+   yourself up front with `msg.mjs new --type response` and hand the agent its
+   absolute path. `herdr agent read` is the diagnostic channel, not the
+   primary one — a terminal scrape is lossy, wrap-dependent, and truncates.
+3. **Live is not ready.** `herdr agent get` reports both. An agent sitting on
+   a startup prompt is live (never start a second under the same name) but not
+   promptable. If Herdr cannot answer at all, that is *indeterminate*, not
+   dead — `spawn-one` refuses rather than starting a duplicate.
 
 ## Create
 
@@ -327,10 +404,15 @@ fire on the CLI/skill path.
    launches every peer-routed member's `agent start`/`send-keys` concurrently
    (herdr retries a single `pane_not_available`-class failure once, in-process;
    tmux and terminal never retry). It returns one JSON result: `level`,
-   `transport`, and `members[]` — each entry carries `role`, `name`, `model`,
-   `route`, `autoMode`, `transport_id`, and `launch_status`
-   (`ready`|`dispatched`|`failed`; `null` for subagent-routed members), plus
-   `error` when `failed`. `partial: true` iff any peer-routed member's
+   `transport`, and `members[]` — each entry carries `role`, `name`, `kind`,
+   `args`, `model`, `route`, `autoMode`, `transport_id`, and `launch_status`
+   (`ready`|`dispatched`|`blocked-at-startup`|`failed`; `null` for
+   subagent-routed members), plus `error` when `failed`. `blocked-at-startup`
+   is a **success**, not a failure: the agent is live and queryable but is
+   sitting on its own first-run prompt (a non-Claude kind's "do you trust this
+   directory?" gate). Resolve it deliberately with `herdr agent read <name>`
+   then `herdr agent send-keys <name> <key>` — nothing answers it for you, by
+   design. `partial: true` iff any peer-routed member's
    `launch_status` is `failed` — a `dispatched` member (tmux only) is not
    partial, see step 4. Skip straight to step 4 with this `members[]` — do not
    recompute placements or drive `layout-splits`/`layout` commands yourself in
@@ -424,11 +506,20 @@ fire on the CLI/skill path.
    is *expected* to still be checking in here; it is not a partial and needs
    no special handling — poll it exactly like a `ready` member.
 5. **Commit.** Build the `verified` member array (one object per roster
-   member: `role`, `name`, `ref` from ListAgents, `route`, `model`, `effort`,
-   `auto_mode`, `transport_id`, `checked_in`; subagent-routed members get
-   `name`/`ref`/`transport_id` null and `checked_in` set now). In `auto` mode,
-   build this directly from `--spawn`'s `members[]` (`role`, `name`, `route`,
-   `model`, `autoMode`, `transport_id` are already there) plus each member's
+   member: `role`, `name`, `ref` from ListAgents, `route`, `kind`, `args`, `model`,
+   `effort`, `auto_mode`, `transport_id`, `checked_in`; subagent-routed members
+   get `name`/`ref`/`transport_id` null and `checked_in` set now).
+   **`route: pane` members never appear in `ListAgents`** — they are not
+   Claude sessions and have no `ref`; check them in with `herdr agent get
+   <name>` instead and leave `ref` null. **Carry `kind` and `args` through
+   verbatim** (both are absent for a `claude` member, and absent is correct —
+   do not write `kind: "claude"`). A committed member missing its `kind` reads
+   as `claude`, so every later liveness question about it goes to
+   `peers.jsonl`, which a non-Claude agent never writes: it reports dead
+   forever, and `dismiss` stops warning that a running agent is about to be
+   dropped. In `auto` mode, build this directly
+   from `--spawn`'s `members[]` (`role`, `name`, `route`, `kind`, `args`, `model`,
+   `autoMode`, `transport_id` are already there) plus each member's
    `ref` from `ListAgents` — do not recompute the rest by hand. Run
    `roster.mjs create --commit --transport <t> --roster-level <L> --verified
    '<json>'` (add `--partial` if any peer-routed member never checked in). The

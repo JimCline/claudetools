@@ -163,10 +163,12 @@ export const TOOLS = [
         level: levelSchema,
         member: { type: "string", description: "The member's derived name. Required with action: edit, remove." },
         role: { type: "string", description: "Required with action: add." },
-        model: { type: "string", description: "With action: add, edit." },
-        effort: { type: "string", description: "With action: add, edit." },
-        route: { type: "string", enum: ["peer", "subagent"], description: "Required with action: init." },
-        auto_mode: { type: "string", description: "With action: add, edit." },
+        model: { type: "string", description: "With action: add, edit. kind claude only — rejected for any other kind (spec 0043 §1.3)." },
+        effort: { type: "string", description: "With action: add, edit. kind claude only." },
+        route: { type: "string", enum: ["peer", "subagent", "pane"], description: "Required with action: init. \"pane\" means the member is driven through its Herdr pane rather than SendMessage, and is required for any non-claude kind (spec 0043 §1.5)." },
+        auto_mode: { type: "string", description: "With action: add, edit. kind claude only." },
+        kind: { type: "string", description: "With action: add, edit. Which agent CLI Herdr starts for this member (claude, codex, pi, …). Omitted means claude. Any non-claude kind requires route \"pane\", the herdr transport, and no model/effort/auto_mode (spec 0043)." },
+        args: { type: "array", items: { type: "string" }, description: "With action: add, edit. Native CLI arguments passed verbatim after herdr's `--`. Non-claude kinds only — rejected for kind claude, where model/effort/auto_mode are the validated channel (spec 0043 §1.9)." },
         on_missing: { type: "string", enum: ["auto", "prompt", "never"], description: "With action: add, edit. Peer-routed members only." },
         no_spawn: { type: "boolean", description: "With action: add. Write the config row only — do not spawn the peer (spec 0039 §1.6)." },
         allow_global: { type: "boolean", description: "With action: add. Let the spawn proceed when the roster resolves at global level (same guard as roster_spawn_one)." },
@@ -540,6 +542,10 @@ export async function callTool(name, input) {
         pushArg(args, "route", args_in.route);
         pushArg(args, "auto-mode", args_in.auto_mode);
         pushArg(args, "on-missing", args_in.on_missing);
+        pushArg(args, "kind", args_in.kind);
+        // roster.mjs takes --args as a JSON array string; the tool takes a real array so callers
+        // do not hand-encode it.
+        if (args_in.args !== undefined && args_in.args !== null) pushArg(args, "args", JSON.stringify(args_in.args));
       }
       if (action === "add") {
         pushFlag(args, "no-spawn", args_in.no_spawn);

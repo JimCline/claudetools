@@ -20,7 +20,7 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
-import { hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_LABELS, ROUTE_VALUES, TIER, resolvedPeerTargets, roleFromName, tierOf } from "./lib-config.mjs";
+import { hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_LABELS, ROUTE_VALUES, TIER, resolvedPeerTargets, roleFromName, routeHasPane, tierOf } from "./lib-config.mjs";
 import { listTeamNames, readTeam, resolveMemberTeam, teamIsOrphaned, teamMemberByName } from "./lib-roster.mjs";
 
 export { hierarchyDir };
@@ -911,7 +911,7 @@ export function buildStateBlock(dir, resolved, repoBasename, model, sessionId = 
   if (team && Array.isArray(team.members) && team.members.length) {
     const ros = roster(dir, resolved, repoBasename, now);
     const rows = team.members.map((m) => {
-      if (m.route !== "peer" || !m.name) return `${m.role}=(subagent)`;
+      if (!routeHasPane(m.route) || !m.name) return `${m.role}=(subagent)`;
       const live = (ros[m.role] || []).find((i) => i.name === m.name);
       return `${m.role}=${m.name} ${live ? (live.busy ? "busy" : "idle") : "not-seen"}`;
     });
