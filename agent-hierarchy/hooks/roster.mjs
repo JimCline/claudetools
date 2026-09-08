@@ -1002,6 +1002,38 @@ function refuseLiveDefaultTeam(dir, existing) {
   );
 }
 
+/** The pid this session claims as its own, resolved exactly as the commit path resolves it
+    (spec 0018 §3): `--orchestrator-pid` wins, else `CLAUDE_PID`. NaN when neither is usable. */
+function ownOrchestratorPid() {
+  return typeof opts["orchestrator-pid"] === "string" ? Number(opts["orchestrator-pid"]) : Number(process.env.CLAUDE_PID);
+}
+
+/**
+ * Spec 0044 §1.11: the team already at the RESOLVED scope is consulted before `create` writes.
+ * Ownership, not liveness, is the line — refusing every live team would break 0015's supported
+ * commit-twice, and allowing every re-commit destroys a team another session is running.
+ *
+ * Only the commit path is answered here. `--plan` and `--spawn` reach `refuseOrClearExistingTeam`
+ * through `getMembersPlan`, which already refuses ANY live team at the scope — both live rows of
+ * §1.11's table — and `createSpawn` writes no team file of its own. Re-refusing them here would
+ * only replace their message with a worse one.
+ */
+function guardLiveTeamAtScope(dir, { committing }) {
+  const existing = readTeam(dir, teamFile);
+  if (!existing || !teamIsLive(existing)) return;
+  if (!committing) return;
+  const ownerPid = existing.orchestrator && existing.orchestrator.pid;
+  const myPid = ownOrchestratorPid();
+  if (Number.isInteger(myPid) && ownerPid === myPid) return;
+  // Constraint 2: no `--team <candidate>` here. The members in `--verified` already carry names
+  // derived from the original prefix, so committing them under a different team name is the
+  // two-identity-axes disagreement §1.1 exists to end. Point at disband instead.
+  fail(
+    `create --commit: team ${existing.team_id} at this scope is owned by another live orchestrator (pid ${ownerPid}) — ` +
+      `disband it first, or have that session commit its own team`
+  );
+}
+
 /** Shared by `resolveMembersPlan` and `planMembersFromHistory` (spec 0015 §7.2): refuse a live Team, clear a stale one. */
 function refuseOrClearExistingTeam(dir) {
   resolveWritableTeamScope(dir, { replacing: true });
@@ -1032,7 +1064,7 @@ function refuseOrClearExistingTeam(dir) {
  * exists for. Re-point at the named path and leave the stale file for `reap`. A LIVE legacy team
  * is still written into — that team is the one §1.7 is carrying across the upgrade.
  */
-function resolveWritableTeamScope(dir, { replacing = false } = {}) {
+function resolveWritableTeamScope(dir, { replacing = false, committing = false } = {}) {
   if (teamFile !== null || !teamFileDefaulted) return;
   const legacy = readTeam(dir, null);
   // Which legacy team may still be written into depends on what the caller is about to do, and
@@ -1048,7 +1080,12 @@ function resolveWritableTeamScope(dir, { replacing = false } = {}) {
     // then write straight over the running team's members in the shared default, which is the one
     // thing §1.1 forbids outright. Refuse here so `--commit` and `--spawn` get the answer `--plan`
     // already gave.
-    if (replacing) refuseLiveDefaultTeam(dir, legacy);
+    // §1.11 constraint 1: this refusal runs BEFORE the ownership gate, so leaving it
+    // unconditional would make the new rule unreachable for every pre-0044 team — an
+    // orchestrator re-committing its OWN live legacy team would still be refused here. The
+    // commit path falls through to `guardLiveTeamAtScope`, which knows about ownership;
+    // `--plan`/`--spawn` keep this message, where offering a candidate name is still right.
+    if (replacing && !committing) refuseLiveDefaultTeam(dir, legacy);
     return;
   }
   if (teamFileUnnamable) failUnnamablePrefix(teamFileUnnamable, teamFileSuggestion);
@@ -2111,9 +2148,11 @@ try {
       // Spec 0044 §1.1: all three modes settle the scope here, together. `--commit` creates a team
       // exactly as `--plan`/`--spawn` do, and reaching `writeTeam` without this let it recreate the
       // shared default — and, when that default held a live team, overwrite that running team in
-      // place. Scope first, then the `--team` collision rule.
-      resolveWritableTeamScope(dir, { replacing: true });
+      // place. Scope first, then the `--team` collision rule, then §1.11's ownership gate against
+      // whatever team is already at the settled scope.
+      resolveWritableTeamScope(dir, { replacing: true, committing: opts.commit === true });
       guardTeamPrefixCollision(dir, teamFile);
+      guardLiveTeamAtScope(dir, { committing: opts.commit === true });
       if (opts.spawn === true) {
         await createSpawn(dir);
         break;

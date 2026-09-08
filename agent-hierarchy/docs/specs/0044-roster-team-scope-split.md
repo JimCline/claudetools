@@ -1,16 +1,19 @@
 # 0044 — Roster/team scope split: the roster is read-only reference, the team file is private
 
-Status: r3 — implementation in progress. All three forks resolved by the user; two
-post-review spec-defects ruled on in r3 (§9 lists them).
+Status: r4 — r1–r3 shipped (commit 99d9bdf, v0.69.2, reviewed PASS). r4 adds one
+post-ship ruling (§1.11, changelog in §10) and is not yet implemented.
 Briefs: `20260908-095332-12i8` (+ amendment `20260908-095610-16vk`, fork answers
 `20260908-114010-nzp3`, CLI split `20260908-114146-gi03` / `20260908-114221-1trx`,
-r3 rulings `20260908-124657-1u06`).
+r3 rulings `20260908-124657-1u06`, r4 ruling `20260908-141059-1jgl`).
 
-Two things a reader should not have to hunt for:
+Three things a reader should not have to hunt for:
 
 - **Supersedes spec 0039's auto-spawn.** `add` no longer spawns — §1.10.
 - **The CLI surface splits.** `/agent-roster` edits the template, `/agent-team`
   operates the instance — §8. In scope here, not deferred.
+- **`create` may no longer overwrite another session's live team** — §1.11, added
+  in r4 after r1–r3 had already shipped. This one is a behaviour change to `create`
+  on top of a released version, not a refinement of the unreleased design.
 
 ## Requirement
 
@@ -496,6 +499,111 @@ verbs** — `roster_create`, `roster_spawn_one`, `roster_adopt`, `roster_move`,
 independent confirmation of §8.1's boundary, and it means the gate's verb list
 needs extending only with §1.4's new tool, not restructuring.
 
+### 1.11 A live team is never overwritten by another session (r4)
+
+**Problem.** `create --commit` writes a team file with no check on what is already
+there. Reviewer's case L: clean repo, `create --commit`, then a second
+`create --commit` — exit 0, `teams/<name>.json` overwritten, fresh `team_id`, a live
+team silently replaced, no `--team` involved.
+
+**The hole is path-shaped, not scope-shaped**, and the framing this ruling arrived
+with should be corrected on that point. The general guard,
+`refuseOrClearExistingTeam` (`roster.mjs:1006`), is reached only from
+`resolveMembersPlan` (`:1060`) and `planMembersFromHistory` (`:1108`) — the `--plan`
+path. `--commit` never calls it. What the commit path does call,
+`resolveWritableTeamScope(dir, { replacing: true })` (`:2115`), is a
+*scope-resolution* helper: it returns immediately when `teamFile !== null` (`:1036`),
+and its only live-team refusal reads `readTeam(dir, null)`, the legacy unscoped file
+alone (`:1046-1051`). So the refusal that shipped in r1–r3's fix round covers exactly
+one corner — a bare `create` in a repo that still holds a legacy `team.json` with a
+live team in it. Every other case early-returns past it and writes.
+
+Two consequences that were not previously named:
+
+- **An explicit `--team` is unguarded too**, not only the derived scope. Same missing
+  call, same silent overwrite.
+- **`create --spawn` (`:2117`) is on the same footing as `--commit`** unless it
+  happens to route through the plan path. This spec does not assume either way; the
+  requirement below is stated at the write site precisely so all three modes are
+  covered without anyone having to trace it first.
+
+**Requirement.** Wherever `create` settles on a team file to write — `--plan`,
+`--commit`, and `--spawn` alike — the existing team at the *resolved* scope must be
+consulted before the write, with this outcome:
+
+| existing team at resolved scope | mode | outcome |
+|---|---|---|
+| none | any | write |
+| present, not `teamIsLive` | any | clear and write (today's behaviour) |
+| live, `orchestrator.pid` ≠ this session's | any | **refuse**, exit non-zero, no write |
+| live, `orchestrator.pid` = this session's | `--plan` / `--spawn` | refuse (unchanged) |
+| live, `orchestrator.pid` = this session's | `--commit` | **allow** |
+
+"This session's pid" resolves exactly as the commit path already resolves it
+(`--orchestrator-pid`, else `CLAUDE_PID`). The commit path additionally refuses an
+unresolvable or dead *own* pid under spec 0018 §3; that refusal is untouched and must
+keep firing.
+
+Ownership rather than liveness, in one line: refusing every live team would break
+0015's supported commit-twice, and allowing every re-commit destroys a team another
+session is running. Ownership is the line that separates the two.
+
+**Five constraints.**
+
+1. **The legacy-retarget refusal must become ownership-aware on the commit path, or
+   it silently overrides this rule.** `resolveWritableTeamScope` refuses a live legacy
+   default via `refuseLiveDefaultTeam` (`:1051`) *before* any gate added later can
+   run. Under this section an orchestrator re-committing its **own** live legacy team
+   must be allowed, and today it is refused. This is the trap in this change: the new
+   rule is unreachable for pre-0044 teams unless `:1046-1051` also distinguishes the
+   owner from a stranger.
+2. **The commit-path refusal must not offer an auto-derived alternate name.**
+   `refuseLiveDefaultTeam`'s message points at `--team <candidate>`, which is right
+   for `--plan` — nothing has spawned yet — and wrong at commit time: the members in
+   `--verified` already carry names derived from the *original* prefix, so writing
+   them under a different team name is exactly the two-identity-axes disagreement §1.1
+   exists to end. The commit-path refusal names the owning pid and the team, and
+   points at disband.
+3. **An allowed same-owner re-commit keeps minting a fresh `team_id`.** Do not "fix"
+   this to preserve the id. Minting is what makes 0015 §12's "commit twice with
+   different rosters → 2 entries, distinct" come out right: `historyEntryIsActive`
+   compares `last_team_id`, so the superseded entry correctly reads inactive.
+4. **`disband --commit` and `reap --commit` are unrelated flags, out of scope.** Both
+   are the plan-vs-commit idiom, not team creation; `reap --commit` only clears teams
+   already classified orphaned. Whether `disband --commit` should refuse to tear down
+   a *foreign* live team is the same harm shape and a fair question — deliberately not
+   answered here (§10.3).
+5. **Read-then-write is not atomic and this section does not make it so.** Two
+   orchestrators can both pass the gate and race. That is 0008 §3's single-writer
+   story, and 0015 §8 already accepts the analogous lost update on the history file.
+   No lock. Recorded so the next reader knows it was considered rather than missed.
+
+**Why `--plan` and `--commit` may differ on the same-owner case.** `--plan` begins a
+team lifecycle; a live team at that scope means a second one is about to be spawned
+into the same file, and there is no `--verified` set with which to re-record the
+members already running. `--commit` ends a lifecycle the session is already inside —
+it records what the orchestrator has. Same command, opposite position in the cycle.
+
+**What 0015 does and does not say.** This was raised as two specs disagreeing. It is
+thinner than that, and the ruling does not need to overrule 0015:
+
+- 0015 §12 (`:421-423`) verifies *history-entry counts* for commit-twice. Every one of
+  those assertions is satisfied by an orchestrator re-committing its own team.
+- 0015 §8's carve-out — "two orchestrators in the same project can both run
+  `create --commit`. Decision: accept the lost update" — is scoped to the **history
+  file's** lost update. It says nothing about the team file, which is governed by
+  0008 §3's single-writer invariant.
+- 0015 nowhere states a rationale for destroying a live foreign team.
+
+Ownership-gating therefore narrows no behaviour 0015 affirmatively specified.
+
+**Do not reuse `refuseRosterEditWhileOwningTeam` (`roster.mjs:1728`).** It was named
+as "the primitive [that] already scans by pid equality," and the *technique* does
+transfer, but the function is the wrong shape twice over: it scans
+`[null, ...listTeamNames(dir)]` — every scope, not the resolved one — and it refuses
+when the pid **matches**. Calling it here would refuse precisely the case this
+section allows. It implements §1.3, which is a different rule pointing the other way.
+
 ## 2. Files to change
 
 - `agent-hierarchy/hooks/lib-roster.mjs` — `teamPath` and the default-name
@@ -846,3 +954,74 @@ inputs, different direction, no shared state. They can land in either order.
 
 **Scope of r3.** Nothing else in this spec changes. §§1.2, 1.4–1.10 and §8 stand as
 written in r2.
+
+## 10. Revision r4 — live-team protection on the `create` write path
+
+Brief `20260908-141059-1jgl`. One ruling, written as §1.11. Nothing else changes.
+
+**[10.1] What was asked, what was decided.** Review found `create --commit` silently
+overwriting a live team at the derived scope (case L) and recommended — explicitly as
+a recommendation, not a ruling — gating on ownership rather than liveness.
+**Confirmed**, with three corrections now in §1.11: the hole is the commit path having
+no guard at all rather than the derived scope lacking protection; an explicit `--team`
+and (probably) `--spawn` are equally exposed; and the primitive proposed for reuse
+implements the opposite rule.
+
+**[10.2] Scope: r4 of this spec, not a new spec number.** The invariant being extended
+is §1.1's, and the requirement reads as a constraint on `create`, which this spec owns
+end to end. A separate spec for one truth table would split the reader on a boundary
+that is not one. Recording honestly that "0044 created the derived scope, so this is
+0044-shaped" is a weaker argument than it appears — the commit path never had a guard
+at *any* scope, before or after — but the conclusion is the same either way.
+
+**Verification added by r4** (§4's list gains these):
+
+- Clean repo, `create --commit`, then a second `create --commit` **from the same
+  pid**: succeeds, the team file carries a new `team_id`, history holds the entries
+  0015 §12 expects. This is commit-twice and it must keep passing.
+- The same, with the second commit under a **different live pid**: refused, exit
+  non-zero, the team file byte-unchanged — same `team_id`, same members. This is case
+  L; it fails against the shipped code.
+- The same, but the first owner's pid is **dead** when the second commit runs:
+  allowed, cleared and rewritten. Confirms the gate keys on liveness *and* ownership,
+  not ownership alone.
+- The foreign-live refusal reached via an explicit `--team <name>`: refused. Guards
+  against a fix that only covers the derived scope.
+- A repo holding a **legacy `team.json`** whose live owner is this session,
+  `create --commit`: allowed. This is §1.11 constraint 1, and it fails against the
+  shipped code in the opposite direction from case L.
+- The commit-path refusal message offers no `--team <candidate>` (constraint 2).
+
+**Fixture repoints — two, matching the corrected count.**
+
+- `test-team-history.sh:141-144` re-commits under a second pid over a live team purely
+  to flip a history entry to `active:false`. Its *intent* — an entry reads inactive
+  once its team's orchestrator dies — must survive; the foreign re-commit is only the
+  means. The cheapest expression of the same intent is to commit once and end the
+  owner's process, which exercises `teamIsLive`'s actual predicate rather than a side
+  effect of a second write. Method is the Implementor's call; the assertion must not
+  weaken.
+- `test-roster-cli.sh:152` asserts `--orchestrator-pid` overrides `CLAUDE_PID`. That
+  needs no pre-existing team; clearing the team file between the two commits preserves
+  the assertion exactly.
+
+**Observation, not a requirement.** While in `test-roster-cli.sh`, its
+`[ ! -e "$PROJ/.claude/hierarchy/team.json" ]` assertions (`:159` and nearby) may now
+be vacuous: after §1.1, a bare `create` in a repo with no legacy file writes
+`teams/<basename>.json`, so "no `team.json` was written" holds whether or not the
+refusal fired. Worth repointing at the path actually written while the file is open.
+Flagged rather than specified — a pre-existing test weakness, not part of this ruling.
+
+**[10.3] Left open, deliberately.** `disband --commit` tears down the team at the
+resolved scope with no ownership check (`roster.mjs:2274-2282`). That is the same harm
+as case L — destroying a team another session is running — reached by a different
+verb. It is not ruled on here because `disband` is an explicitly destructive command
+the user typed, and there is a plausible "clean up a team I am supervising" case that
+deserves its own decision. Someone should make that call; folding it into this ruling
+silently would be scope creep.
+
+**[10.4] Confidence.** High on the truth table, and on 0015 not blocking it. Medium on
+call-graph completeness: `createSpawn` (`roster.mjs:2117`) was not traced to its write
+site, which is exactly why §1.11's requirement is stated at the write site rather than
+per branch — the gap is closed by construction rather than by anyone's tracing. Not
+recommending Ultra-Advisor.

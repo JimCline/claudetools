@@ -609,6 +609,12 @@ const team = readTeam(dir, cwd.split("/").pop());
 const sessionPidOwned = !res.isError && team && team.orchestrator.pid != null && team.orchestrator.pid !== 1;
 const survivesSweep = team && teamIsLive(team);
 
+// Spec 0044 §1.11: the override half needs no pre-existing team, and committing from a
+// different pid over the still-live SESSION_PID-owned team is now refused. Clearing it keeps
+// this checking what it says it checks — the §4.2 resolution order — and nothing else.
+const { rmSync } = await import("node:fs");
+rmSync(dir + "/teams/" + cwd.split("/").pop() + ".json", { force: true });
+
 const OVERRIDE_PID = process.pid; // this node process — alive, distinct from the server's own ppid
 const res2 = await callTool("roster_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo", orchestrator_pid: OVERRIDE_PID });
 const team2 = readTeam(dir, cwd.split("/").pop());

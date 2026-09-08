@@ -377,10 +377,15 @@ EOF
 LIVE_LEGACY_BEFORE="$(cat "$LEGACY_TEAM")"
 r "CLAUDE_PID=$LIVE_PID" create --plan
 check "5p: --plan refuses against a live legacy team" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "live-legacy-1"'
-r "CLAUDE_PID=$LIVE_PID" create --commit --transport terminal --roster-level repo --verified "'[\"myrepo-architect\"]'" --orchestrator-pid "$LIVE_PID"
+# The committing session must be a DIFFERENT one: §1.11 allows an orchestrator to re-commit its
+# OWN live legacy team (block 8e), so reusing $LIVE_PID here would assert the case that ruling
+# deliberately reverses rather than the overwrite this case is about.
+( sleep 60 ) & FOREIGN_PID=$!
+r "CLAUDE_PID=$FOREIGN_PID" create --commit --transport terminal --roster-level repo --verified "'[\"myrepo-architect\"]'" --orchestrator-pid "$FOREIGN_PID"
 check "5q: --commit gives the SAME answer, and does not overwrite the running team" \
   '[ "$RC" -ne 0 ] && [ "$(cat "$LEGACY_TEAM")" = "$LIVE_LEGACY_BEFORE" ]'
 check "5q2: ...and did not create a second file behind the refusal either" '[ ! -f "$SCOPED_TEAM" ]'
+kill "$FOREIGN_PID" 2>/dev/null; wait "$FOREIGN_PID" 2>/dev/null
 
 
 # ================================================================= 6 — r3 [9.1]: an unnamable prefix
@@ -483,6 +488,72 @@ check "7a2: [9.2] — it names the owned team, and the roster is untouched" \
 r "" add --level repo --role reviewer --model opus
 check "7b: [9.2]/§1.3 — with no resolvable pid the same command is allowed, not refused" \
   '[ "$RC" -eq 0 ] && [ "$(cat "$REPO_ROSTER" | jq_node "j.roster.members.length")" = "2" ]'
+
+# ================================================================= 8 — §1.11: ownership-gating on the commit path
+# A live team is never overwritten by ANOTHER session, but the session that owns it may re-commit
+# (0015's supported commit-twice). Ownership, not liveness, is the line between those two.
+CARGS='--commit --transport terminal --roster-level repo'
+V_MYREPO="'[\"myrepo-architect\"]'"
+
+reset_state; clear_all; init_geometry; setup_roster architect
+( sleep 60 ) & OWNER_A=$!
+r "CLAUDE_PID=$OWNER_A" create $CARGS --verified "$V_MYREPO"
+check "8a: first commit into a clean repo succeeds" '[ "$RC" -eq 0 ] && [ -f "$SCOPED_TEAM" ]'
+TEAM_ID_1="$(cat "$SCOPED_TEAM" | jq_node "j.team_id")"
+r "CLAUDE_PID=$OWNER_A" create $CARGS --verified "$V_MYREPO"
+check "8a2: the SAME session re-committing its own live team is allowed (0015 commit-twice)" '[ "$RC" -eq 0 ]'
+check "8a3: ...and still mints a fresh team_id — 0015 §12 needs the superseded entry to read inactive" \
+  '[ "$(cat "$SCOPED_TEAM" | jq_node "j.team_id")" != "$TEAM_ID_1" ]'
+
+# Case L: the same second commit from a different live session.
+TEAM_BEFORE="$(cat "$SCOPED_TEAM")"
+( sleep 60 ) & OWNER_B=$!
+r "CLAUDE_PID=$OWNER_B" create $CARGS --verified "$V_MYREPO"
+check "8b: a DIFFERENT live session is refused (case L)" '[ "$RC" -ne 0 ]'
+check "8b2: ...and the team file is byte-unchanged" '[ "$(cat "$SCOPED_TEAM")" = "$TEAM_BEFORE" ]'
+check "8b3: ...and the refusal offers no --team candidate (constraint 2: --verified names are already derived)" \
+  '! echo "$OUT" | grep -q "Re-run with --team"'
+
+# Liveness AND ownership: once the owner is gone the same foreign commit goes through.
+kill "$OWNER_A" 2>/dev/null; wait "$OWNER_A" 2>/dev/null
+r "CLAUDE_PID=$OWNER_B" create $CARGS --verified "$V_MYREPO"
+check "8c: once the owner's pid is dead the same foreign commit is allowed" \
+  '[ "$RC" -eq 0 ] && [ "$(cat "$SCOPED_TEAM")" != "$TEAM_BEFORE" ]'
+kill "$OWNER_B" 2>/dev/null; wait "$OWNER_B" 2>/dev/null
+
+# The gate keys on the RESOLVED scope, so an explicit --team is covered too.
+reset_state; clear_all; init_geometry; setup_roster architect
+( sleep 60 ) & OWNER_C=$!
+r "CLAUDE_PID=$OWNER_C" create $CARGS --team foo --verified "'[\"foo-architect\"]'"
+check "8d: explicit --team first commit succeeds" '[ "$RC" -eq 0 ] && [ -f "$HIER/teams/foo.json" ]'
+FOO_BEFORE="$(cat "$HIER/teams/foo.json")"
+( sleep 60 ) & OWNER_D=$!
+r "CLAUDE_PID=$OWNER_D" create $CARGS --team foo --verified "'[\"foo-architect\"]'"
+check "8d2: the gate covers an EXPLICIT --team scope, not only the derived one" \
+  '[ "$RC" -ne 0 ] && [ "$(cat "$HIER/teams/foo.json")" = "$FOO_BEFORE" ]'
+kill "$OWNER_C" "$OWNER_D" 2>/dev/null; wait "$OWNER_C" "$OWNER_D" 2>/dev/null
+
+# §1.11 constraint 1 — the trap. `resolveWritableTeamScope` refuses a live legacy default before
+# the ownership gate can run, so leaving that refusal unconditional makes the whole rule
+# unreachable for pre-0044 repos. This case fails against shipped code in the OPPOSITE direction
+# from 8b: not "overwrote a team it should not have", but "refused a commit it should allow".
+reset_state; clear_all; init_geometry; setup_roster architect
+mkdir -p "$HIER"
+( sleep 60 ) & OWNER_E=$!
+cat > "$LEGACY_TEAM" <<EOF
+{"version":1,"team_id":"legacy-owned-1","created":"$(date +%Y-%m-%dT%H:%M:%S%z | sed 's/\(..\)$/:\1/')","roster_level":"repo","transport":"herdr","orchestrator":{"session_id":null,"pid":$OWNER_E},"members":[{"role":"architect","name":"myrepo-architect","route":"peer","transport_id":"p9"}],"partial":false,"expected_root":"$PROJ"}
+EOF
+r "CLAUDE_PID=$OWNER_E" create $CARGS --verified "$V_MYREPO"
+check "8e: constraint 1 — re-committing your OWN live legacy team.json is allowed" '[ "$RC" -eq 0 ]'
+check "8e2: ...in place, without leaving a second scoped file behind" '[ ! -f "$SCOPED_TEAM" ]'
+
+LEGACY_BEFORE="$(cat "$LEGACY_TEAM")"
+( sleep 60 ) & OWNER_F=$!
+r "CLAUDE_PID=$OWNER_F" create $CARGS --verified "$V_MYREPO"
+check "8f: a foreign session still cannot take over a live legacy team" \
+  '[ "$RC" -ne 0 ] && [ "$(cat "$LEGACY_TEAM")" = "$LEGACY_BEFORE" ]'
+check "8f2: ...and that refusal offers no --team candidate either" '! echo "$OUT" | grep -q "Re-run with --team"'
+kill "$OWNER_E" "$OWNER_F" 2>/dev/null; wait "$OWNER_E" "$OWNER_F" 2>/dev/null
 
 echo "---- $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

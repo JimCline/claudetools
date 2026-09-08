@@ -135,10 +135,14 @@ for e in low medium high xhigh max; do rm -f "$PROJ/.claude/hierarchy/teams/live
 
 # ---- history on a project with a live team -> active:true; kill the pid -> active:false
 rm -f "$HISTORY_FILE" "$TEAM_FILE"
-commit "$LIVE_PID" "$CONFIG_A"
+# Commit ONCE and then end the owner's process. A second commit under a different pid would be
+# refused by spec 0044 §1.11, and it only ever tested this by side effect anyway — killing the
+# owner exercises `teamIsLive`'s actual predicate, which is what "active" is derived from.
+( sleep 30 ) & OWNER_PID=$!
+commit "$OWNER_PID" "$CONFIG_A"
 run history
 check "live team: active:true" '[ "$(json_field "o.teams[0].active")" = "true" ]'
-commit "$DEAD_PID" "$CONFIG_A"
+kill "$OWNER_PID" 2>/dev/null; wait "$OWNER_PID" 2>/dev/null
 run history
 check "orchestrator pid dead: active:false" '[ "$(json_field "o.teams[0].active")" = "false" ]'
 
