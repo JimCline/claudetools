@@ -555,5 +555,36 @@ check "8f: a foreign session still cannot take over a live legacy team" \
 check "8f2: ...and that refusal offers no --team candidate either" '! echo "$OUT" | grep -q "Re-run with --team"'
 kill "$OWNER_E" "$OWNER_F" 2>/dev/null; wait "$OWNER_E" "$OWNER_F" 2>/dev/null
 
+# A session with no pid of its own cannot prove ownership either way, so it is refused like a
+# foreign one — but the team may well be its own, and a refusal that ASSERTS otherwise sends the
+# user to disband a team nobody else holds. The remedy is supplying the identity, not destroying.
+reset_state; clear_all; init_geometry; setup_roster architect
+( sleep 60 ) & OWNER_G=$!
+r "CLAUDE_PID=$OWNER_G" create $CARGS --verified "$V_MYREPO"
+G_BEFORE="$(cat "$SCOPED_TEAM")"
+r "" create $CARGS --verified "$V_MYREPO"
+check "8g: an unresolvable own pid is refused against a live team" \
+  '[ "$RC" -ne 0 ] && [ "$(cat "$SCOPED_TEAM")" = "$G_BEFORE" ]'
+check "8g2: ...without claiming the team belongs to another orchestrator" \
+  '! echo "$OUT" | grep -q "owned by another live orchestrator"'
+check "8g3: ...and it names supplying the pid as the remedy, not only disband" \
+  'echo "$OUT" | grep -q -- "--orchestrator-pid"'
+kill "$OWNER_G" 2>/dev/null; wait "$OWNER_G" 2>/dev/null
+
+# §1.11 rows 4/5 delegate --plan and --spawn to refuseOrClearExistingTeam's own live-team refusal.
+# On an EXPLICIT --team that refusal is the plain "disband it first" branch — the one §1.1 fork F3
+# deliberately keeps candidate-free — and nothing else in the tree exercises it directly.
+reset_state; clear_all; init_geometry; setup_roster architect
+( sleep 60 ) & OWNER_H=$!
+r "CLAUDE_PID=$OWNER_H" create $CARGS --team foo --verified "'[\"foo-architect\"]'"
+FOO_H_BEFORE="$(cat "$HIER/teams/foo.json")"
+r "CLAUDE_PID=$OWNER_H" create --plan --team foo
+check "8h: --plan refuses a live team at an explicit --team scope, even to its own owner" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "disband it first"'
+check "8h2: ...leaving that team file byte-unchanged" '[ "$(cat "$HIER/teams/foo.json")" = "$FOO_H_BEFORE" ]'
+check "8h3: ...and offering no auto-derived candidate, since the user named this scope" \
+  '! echo "$OUT" | grep -q "Re-run with --team"'
+kill "$OWNER_H" 2>/dev/null; wait "$OWNER_H" 2>/dev/null
+
 echo "---- $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

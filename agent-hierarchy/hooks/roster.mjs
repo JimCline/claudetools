@@ -1025,9 +1025,18 @@ function guardLiveTeamAtScope(dir, { committing }) {
   const ownerPid = existing.orchestrator && existing.orchestrator.pid;
   const myPid = ownOrchestratorPid();
   if (Number.isInteger(myPid) && ownerPid === myPid) return;
-  // Constraint 2: no `--team <candidate>` here. The members in `--verified` already carry names
-  // derived from the original prefix, so committing them under a different team name is the
-  // two-identity-axes disagreement §1.1 exists to end. Point at disband instead.
+  // Constraint 2: no `--team <candidate>` in either refusal. The members in `--verified` already
+  // carry names derived from the original prefix, so committing them under a different team name
+  // is the two-identity-axes disagreement §1.1 exists to end. Point at disband instead.
+  if (!Number.isInteger(myPid)) {
+    // Without an own pid, ownership cannot be established either way — so this refuses like the
+    // foreign case, but must not ASSERT the team is foreign: it may well be this session's own.
+    fail(
+      `create --commit: a live team ${existing.team_id} (orchestrator pid ${ownerPid}) holds this scope, and this ` +
+        `session has no pid of its own to compare against — pass --orchestrator-pid <pid> (or set CLAUDE_PID) to ` +
+        `commit it as yours, or disband it first`
+    );
+  }
   fail(
     `create --commit: team ${existing.team_id} at this scope is owned by another live orchestrator (pid ${ownerPid}) — ` +
       `disband it first, or have that session commit its own team`
