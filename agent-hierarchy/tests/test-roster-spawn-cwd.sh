@@ -95,6 +95,10 @@ T4_ELSEWHERE="$SANDBOX/t4-elsewhere"
 mkdir -p "$T4_ELSEWHERE"
 T4_REPO="$SANDBOX/t4-repo with space"
 setup_repo "$T4_REPO"
+# Spec 0044 [9.1]: a basename that cannot name a team file refuses rather than falling back to the
+# shared team.json, and a space is exactly such a basename. This test is about the spawn cwd, not
+# about naming, so it pays the documented first-run cost the way a user would.
+HOME="$FAKEHOME" node "$H/roster.mjs" alias --level repo --set t4-repo-with-space --cwd "$T4_REPO" >/dev/null
 T4_LOG="$SANDBOX/t4.log"
 spawn_terminal "$T4_ELSEWHERE" "$T4_REPO" "$T4_LOG"
 check "T4: create --spawn succeeds with a spaced path" '[ "$RC" -eq 0 ]'

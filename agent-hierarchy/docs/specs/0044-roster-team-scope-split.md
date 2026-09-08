@@ -1,9 +1,10 @@
 # 0044 — Roster/team scope split: the roster is read-only reference, the team file is private
 
-Status: r2 — design, not yet implemented. All three forks resolved by the user;
-ready to route to the Implementor.
+Status: r3 — implementation in progress. All three forks resolved by the user; two
+post-review spec-defects ruled on in r3 (§9 lists them).
 Briefs: `20260908-095332-12i8` (+ amendment `20260908-095610-16vk`, fork answers
-`20260908-114010-nzp3`, CLI split `20260908-114146-gi03` / `20260908-114221-1trx`).
+`20260908-114010-nzp3`, CLI split `20260908-114146-gi03` / `20260908-114221-1trx`,
+r3 rulings `20260908-124657-1u06`).
 
 Two things a reader should not have to hunt for:
 
@@ -96,7 +97,9 @@ asserts that. Every consumer routes through `teamPath`/`readTeam`/`writeTeam`/
 `clearTeam`.
 
 **[0.6] Team attribution for peers rests on a heuristic this change would
-break.** `resolveSessionTeam` (`lib-roster.mjs:370-383`) infers a session's team by
+break.** `resolveSessionTeam` (`lib-roster.mjs:370-383` as of r1; now `:432` — the
+r1 line range points at `defaultTeamScope` in the implemented tree, so do not chase
+it) infers a session's team by
 scanning `[null, ...listTeamNames(dir)]` for the one team containing exactly one
 member of that session's role, and returns `null` as soon as a second team also
 matches (`:379`). Today that ambiguity is rare because the common case is a single
@@ -149,6 +152,60 @@ must not apply it on its own. Rationale: a silently derived name is a name the
 user never chose, appearing in their `ListAgents` output and in every member name
 under that team.
 
+**When the default prefix is not a usable team name, the command refuses too** (r3,
+Implementor's §6 gap, Reviewer-confirmed). `teamPrefixInfo` falls back to
+`basename(repoRoot)` **unvalidated** (`lib-config.mjs:527`), while a team name is a
+`teams/<name>.json` path segment and must clear `validateTeamAlias`
+(`lib-config.mjs:466`, `/^[A-Za-z0-9][A-Za-z0-9-]{0,31}$/`). Any repo whose
+basename holds `_`, `.`, a space, or exceeds 32 characters therefore has no usable
+default name. This is a class of repos, not an edge case.
+
+**Requirement.** An unnamable default prefix must not create an unscoped
+`team.json`. `defaultTeamScope` (`lib-roster.mjs:373`) currently returns
+`{ team: null, defaulted: true, unnamable: prefix }` at `:380`, and its caller
+(`roster.mjs:190`) reads only `team`/`defaulted` — so the invocation proceeds and
+writes the shared default file. That is a direct violation of this section's
+invariant, and it lands in exactly the repos where the user never chose anything.
+Instead: bare `create` refuses, exits non-zero, and offers a *suggested* valid name,
+by the same rule as the collision refusal above — suggested, never applied.
+
+Four constraints on that refusal:
+
+1. **Only the bare form is affected.** `create --team <valid-name>` in such a repo
+   works unchanged. The refusal is about the *derivation* having no answer, not
+   about the repo being unusable.
+2. **Reading an existing legacy `team.json` is untouched.** `defaultTeamScope`'s
+   first branch (`:374`, `readTeam(dir, null)` non-empty → unscoped) is §1.7
+   backcompat and must stay. The invariant forbids *creating* the shared default,
+   not resolving one that is already there. These two branches return the same
+   shape today for opposite reasons; only the second one changes.
+3. **The suggestion must clear the validator, and may be absent.** Whatever
+   sanitization produces it, the candidate must pass `validateTeamAlias` and must
+   not already name a team — the same two conditions `deriveTeamCandidate` already
+   applies at `roster.mjs:963`. If no candidate can be produced (a basename with no
+   alphanumeric to start from), refuse with no suggestion rather than inventing one.
+   The sanitization algorithm itself is the Implementor's call.
+4. **Name `alias --set` as the durable fix, not just the one-shot `--team`.** An
+   unnamable basename is precisely the condition `teamAlias` exists for
+   (`lib-config.mjs:521-523`), and setting it fixes every future invocation in that
+   repo instead of one. The refusal should lead with it.
+
+The `unnamable` field may stay as the refusal's reason, but no code may branch on it
+to select a scope; if after this change nothing reads it, delete it.
+
+**Rationale, and the cost, stated plainly.** Sanitizing silently was the tempting
+alternative and it is the same move fork F3 already rejected: a derived name is a
+name the user never chose, and it appears in their `ListAgents` output and in every
+member name under that team. Truncating a >32-character basename is worse than the
+character substitutions — it is lossy and not canonical, so there is no "obvious"
+name to apply on the user's behalf. The cost of refusing is real and should not be
+glossed: bare `create` stops working out of the box in a repo named `my_repo`, where
+today it succeeds. That is a first-run regression for a common naming convention,
+traded for never assigning a name the user did not pick. It is the same tradeoff the
+user settled at F3, decided the same way for consistency — but it is theirs to
+reverse. If they would rather have the sanitize in the no-choice-made case, this
+paragraph and requirement 3 are the only things that change.
+
 **What must not change:** `readTeam(dir, null)` must keep working, and every
 subcommand must keep operating on a legacy `team.json` that already exists. See
 §1.7.
@@ -176,12 +233,37 @@ The brief asks for a structural fix. Prose in `CONTEXT.md` is what already exist
 and is what failed. The enforcement is a refusal:
 
 **Requirement.** When a roster-mutating command (§1.2's list) is invoked by a
-session that currently owns a live team — the team file at the resolving scope has
-an `orchestrator.pid` equal to the invoking session's resolved pid and
-`teamIsLive` holds — the command must refuse and exit non-zero without writing.
-The refusal message must name the ad hoc command from §1.4 as the remedy, in the
-imperative, so an agent reading it has somewhere to go rather than a prohibition
-to route around.
+session that currently owns **any** live team, the command must refuse and exit
+non-zero without writing. The refusal message must name the ad hoc command from
+§1.4 as the remedy, in the imperative, so an agent reading it has somewhere to go
+rather than a prohibition to route around.
+
+**Ownership is session-wide, not scope-local** (r3, Reviewer finding S3). r2 said
+"the team file at the resolving scope", which is narrower than the sentence it was
+meant to implement: an orchestrator that owns `--team foo` could edit the roster
+freely just by omitting `--team`, because the scope the invocation resolves to is
+then the one it does *not* own. The gate must instead ask whether the invoking
+session owns any live team at all: scan `[null, ...listTeamNames(dir)]` and refuse
+if any team file has an `orchestrator.pid` equal to the invoking session's resolved
+pid with `teamIsLive` holding. This restates §1.2's "not part of the team lifecycle
+even when a team happens to be live" — the roster is off limits for the duration of
+ownership, not merely for one argument spelling.
+
+Two properties of that mechanism are load-bearing and must not be traded away:
+
+- **It is pid equality, not inference.** It does not use `resolveSessionTeam`'s
+  role scan and therefore does not inherit [0.6]'s ambiguity: a pid either matches
+  or it does not, so there is no case where the gate has to guess. This is also why
+  the tightening is independent of §1.6 — the gate keys on orchestrator identity
+  from the owner's side, §1.6 keys on member identity from the peer's side. They
+  can land in either order.
+- **An unresolvable pid does not refuse.** With no `--orchestrator-pid` and no
+  `CLAUDE_PID` the gate cannot establish ownership, and it must then allow the
+  write. That hole is deliberate and correctly aimed: it is the plain user shell
+  editing a template, which §1.2 exists to preserve. The agent-invoked paths this
+  spec is actually defending against are exactly the ones where the pid is
+  available. Do not "fix" this by refusing on unknown identity — that breaks the
+  legitimate case to harden a case that is already covered.
 
 **Refuse plus an explicit override flag** (r2, fork F1 resolved as recommended).
 Not warn-only — a warning is exactly what already exists in prose form and exactly
@@ -714,3 +796,53 @@ but a single commit changing the enforcement *and* the command surface has no
 intermediate state where either is independently verifiable, and every test naming
 a command would churn twice. If the Implementor finds a reason the order must be
 reversed or merged, that is a report-back, not a silent choice.
+
+## 9. r3 — post-review rulings (brief `20260908-124657-1u06`)
+
+Two spec-defects raised after the first implementation round. Both are ruled on in
+place, in the sections they belong to; this section is only the changelog.
+
+**[9.1] Unnamable default prefix → §1.1.** Ruled: refuse with a validated
+suggestion; do **not** fall back to creating an unscoped `team.json`. The shipped
+fallback at `lib-roster.mjs:380` is safe (it never puts a bad name in a path) but it
+reinstates the shared-default ownership problem §1.1 exists to end, in a whole class
+of repos, and it does so silently. Reading an existing legacy `team.json` (`:374`) is
+untouched — the invariant forbids creating the shared default, not resolving one
+already there, and those two branches of `defaultTeamScope` return the same shape for
+opposite reasons. Consistency with fork F3 decided the sanitize-vs-refuse call. The
+first-run cost is named in §1.1 and is the user's to reverse.
+
+**[9.2] §1.3's gate was scope-local, not session-wide → §1.3.** Ruled: tighten to
+"any team this session owns", implemented as a pid-equality scan over
+`[null, ...listTeamNames(dir)]`. r2's "the team file at the resolving scope" let an
+orchestrator owning `--team foo` edit the roster by omitting `--team` — narrower
+than the sentence it was implementing. Two properties are load-bearing and recorded
+in §1.3: it is pid equality rather than `resolveSessionTeam`'s inference (so it never
+guesses and does not inherit [0.6]), and an unresolvable pid must **not** refuse (that
+hole is the plain user shell §1.2 preserves).
+
+**No interaction with the parallel Implementor round.** The Orchestrator asked
+whether [9.2] collides with the B2 attribution work. It does not: the gate keys on
+orchestrator identity from the owner's side (pid on the team file), attribution keys
+on member identity from the peer's side (`attributeSessionTeam` →
+`resolveTeamByPane` / `resolveSessionTeam`, `lib-roster.mjs:427-430`). Different
+inputs, different direction, no shared state. They can land in either order.
+
+**Verification added by r3** (§4's list gains these):
+
+- In a repo whose basename fails `validateTeamAlias` and with no pre-existing
+  `team.json`: bare `create` exits non-zero, writes no file under `<hierarchyDir>`,
+  and its message names both a valid suggested name and `alias --set`.
+- Same repo, with `teamAlias` set to a valid name: bare `create` succeeds and writes
+  `teams/<alias>.json`. Confirms the alias is a real remedy and not just advice.
+- Same repo, with a pre-existing legacy `team.json`: bare `create` behaves exactly as
+  before (§1.7 backcompat), proving the `:374` branch was not caught by the change.
+- A session owning `teams/foo.json` (its pid, `teamIsLive`) runs a roster-mutating
+  command with **no** `--team`: refused. This is the S3 regression test and it fails
+  against r2's wording.
+- The same command with no resolvable pid (`--orchestrator-pid` absent, `CLAUDE_PID`
+  unset) while that same live team exists: **allowed**. Guards the deliberate hole
+  against a well-meaning tightening.
+
+**Scope of r3.** Nothing else in this spec changes. §§1.2, 1.4–1.10 and §8 stand as
+written in r2.

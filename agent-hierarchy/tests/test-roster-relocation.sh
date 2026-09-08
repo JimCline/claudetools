@@ -315,12 +315,15 @@ check "T11b: still reports misplaced:false" 'echo "$F2_OUT" | grep -q "\"misplac
 T12="$SANDBOX/t12-repo"
 mkdir -p "$T12/.claude"
 (cd "$T12" && git init -q && git config user.email t@t.com && git config user.name t)
+# Both roster containers are seeded BEFORE either team is created: spec 0044 §1.3/[9.2] refuses a
+# roster edit from a session that owns any live team, so interleaving create with add would refuse
+# teamb's row. Nothing about this scenario needs the template edited mid-flight.
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --team teama --cwd "$T12" >/dev/null
 HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --team teama --cwd "$T12" >/dev/null
-HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --team teama \
-  --verified '["teama-implementor"]' --orchestrator-pid "$$" --cwd "$T12" >/dev/null
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --team teamb --cwd "$T12" >/dev/null
 HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --team teamb --cwd "$T12" >/dev/null
+HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --team teama \
+  --verified '["teama-implementor"]' --orchestrator-pid "$$" --cwd "$T12" >/dev/null
 HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --team teamb \
   --verified '["teamb-implementor"]' --orchestrator-pid "$$" --cwd "$T12" >/dev/null
 append_peer_row "$T12" "t12a-sess" "implementor" "teama" "$$" "true" "$SANDBOX/t12-wrong-a"

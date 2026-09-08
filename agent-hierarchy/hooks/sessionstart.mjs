@@ -49,7 +49,7 @@ import {
   teamPrefix,
 } from "./lib-config.mjs";
 import { appendRosterRecord, buildStateBlock, cacheSessionModel, effectiveRoute, ensureHierarchyDir, realCwd, sessionModel, sweep, SWEEP_DAYS } from "./lib-hier.mjs";
-import { attributeSessionTeam, clearTeam, herdrOnPath, readTeam, teamIsLive } from "./lib-roster.mjs";
+import { clearTeam, herdrOnPath, readTeam, resolveSessionTeam, teamIsLive } from "./lib-roster.mjs";
 import { writeSessionRole } from "./lib-session-role.mjs";
 
 /** Feature A (spec 0010 §2.5): advisory only, never blocks. */
@@ -99,15 +99,16 @@ if (!isSubagent(input)) {
     try {
       const dir = ensureHierarchyDir(cwd);
       // Spec 0036 §3.2 (F4/F6): SessionStart has no --team and no known peer name, only role.
-      // Spec 0044 §1.6: the pane id this session can read about ITSELF is authoritative — the
-      // orchestrator wrote it into the member row at spawn time — so ask that first and keep the
-      // role scan only as the fallback for an adopted or pre-0044 session. Under §1.1 two
-      // concurrent orchestrators each holding one member of a role make the role scan ambiguous,
-      // and ambiguous resolves to nothing, so without this the `team` field silently disappears.
-      // A session that resolves to no team is a legitimate non-peer session, not a mismatch —
-      // detection skips entirely, silently, same reasoning as an absent expected_root.
-      const paneId = process.env.HERDR_PANE_ID || process.env.TMUX_PANE || null;
-      const resolved = attributeSessionTeam(dir, role, { paneId });
+      // Spec 0044 §1.6 chose channel (b), attribute at READ time: this hook fires while the
+      // orchestrator is still launching, BEFORE its `writeTeam` lands, so there is usually no
+      // member row to match this session's pane against yet and nothing here can know the team
+      // reliably. Matching the pane against the member rows is therefore done by the readers
+      // (`roster teams`, `checkin`), which run after the write. What stays here is §3.2's role
+      // scan — the fallback — recorded best-effort and safe-refusing to no `team` field at all
+      // when it is ambiguous. A session that resolves to no team is a legitimate non-peer
+      // session, not a mismatch: detection skips entirely, silently, same reasoning as an
+      // absent expected_root.
+      const resolved = resolveSessionTeam(dir, role);
       const team = resolved && resolved.team;
       expectedRoot = (team && team.expected_root) || null;
       teamId = team && team.team_id;

@@ -487,6 +487,22 @@ export function isValidTeamAlias(alias) {
 }
 
 /**
+ * Spec 0044 §1.1/[9.1]: a `validateTeamAlias`-clean name to offer a user whose repo basename is
+ * not one. The refusal it feeds has to be actionable — "this name is illegal" with nothing to
+ * type next is how a user ends up back on the shared `team.json` the invariant forbids. Sanitize
+ * first so the suggestion still resembles the repo; `team` is the last resort, which is also the
+ * answer when the basename is legal characters but role-token-colliding (e.g. `architect`).
+ */
+export function suggestTeamAlias(raw) {
+  const sanitized = String(raw == null ? "" : raw)
+    .replace(/[^A-Za-z0-9-]/g, "-")
+    .replace(/^[^A-Za-z0-9]+/, "")
+    .slice(0, 32)
+    .replace(/-+$/, "");
+  return [sanitized, `team-${sanitized}`.slice(0, 32).replace(/-+$/, "")].find((c) => validateTeamAlias(c).ok) || "team";
+}
+
+/**
  * Resolve the naming prefix for a repo (spec 0010 §4.1): the first of
  * repo-user, repo carrying a valid top-level `teamAlias` string wins; `global`
  * is never read (§4.3 — an alias is a property of one repo, not a

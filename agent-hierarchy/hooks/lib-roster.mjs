@@ -17,7 +17,7 @@ import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync
 import { createHash, randomBytes } from "node:crypto";
 import { delimiter, dirname, join } from "node:path";
 
-import { isValidTeamAlias, KIND_DEFAULT, KIND_RE, resolveKind, ROLES, routeHasPane, VALID_MODELS_BY_ROLE } from "./lib-config.mjs";
+import { isValidTeamAlias, KIND_DEFAULT, KIND_RE, resolveKind, ROLES, routeHasPane, suggestTeamAlias, VALID_MODELS_BY_ROLE } from "./lib-config.mjs";
 
 // Spec 0043 §1.1/§1.5: `kind`/`route`-shape helpers are DEFINED in lib-config.mjs (the leaf) and
 // re-exported here so the member schema still reads as one module. Defining them here instead
@@ -365,6 +365,12 @@ export function resolveMemberTeam(dir, name) {
  * never moved or migrated; it ages out when its own team disbands, after which the next bare
  * command resolves to the named path. Nothing here ever CREATES `team.json`.
  *
+ * Existence, not liveness, is the gate on that exception: §1.7 promises a legacy team stays
+ * readable, disbandable, resyncable and reapable in place, and a team whose owner has died is
+ * exactly the one still needing `disband`/`reap`. What §1.1's invariant forbids is CREATING the
+ * shared default, so the guard against a new team landing back in a stale `team.json` lives at
+ * the creation site (`roster.mjs resolveWritableTeamScope`), not here.
+ *
  * `prefix` is passed in rather than derived: prefix resolution lives in lib-config.mjs and this
  * module is below it in the import order. Returns `{team, defaulted}` — `team: null` means the
  * legacy default file, and `defaulted` says the caller supplied no `--team` (which is what decides
@@ -374,10 +380,11 @@ export function defaultTeamScope(dir, prefix) {
   if (readTeam(dir, null)) return { team: null, defaulted: true };
   // The prefix becomes a path segment, so it has to clear the same validator an explicit `--team`
   // clears — a repo basename is arbitrary text and `teams/<it>.json` must not be able to escape
-  // the directory. A prefix that cannot: keep the legacy default file rather than refusing, since
-  // failing every bare `create` in such a repo would break what works today. Spec 0044 does not
-  // cover this case — reported as a gap.
-  if (!isValidTeamAlias(prefix)) return { team: null, defaulted: true, unnamable: prefix };
+  // the directory. Spec 0044 [9.1]: a prefix that cannot name a file must not fall back to the
+  // unscoped path, which would silently reinstate the shared default across a whole class of
+  // repos. `unnamable` says so; the CLI refuses on it at the point a team would be CREATED, not
+  // here — refusing during scope resolution would also take out `alias --set`, the remedy.
+  if (!isValidTeamAlias(prefix)) return { team: null, defaulted: true, unnamable: prefix, suggested: suggestTeamAlias(prefix) };
   return { team: prefix, defaulted: true };
 }
 

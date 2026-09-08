@@ -178,15 +178,17 @@ check "3h: §1.3 — the remedy it names actually works while the team is live" 
 r "CLAUDE_PID=$LIVE_PID" add --level repo --role reviewer --model opus --allow-roster-edit
 check "3i: §1.3 — the user's explicit override lets the edit through" \
   '[ "$RC" -eq 0 ] && [ "$(cat "$REPO_ROSTER" | jq_node "j.roster.members.length")" = "2" ]'
-r "" add --level repo --role implementor --model opus
-check "3j: §1.3 — a session that owns no live team is unaffected" '[ "$RC" -eq 0 ]'
-# §1.3 says "the team file at the RESOLVING SCOPE" — owning a live team at one scope must not
-# refuse roster work aimed at another. Scanning every team file instead would make standing up a
-# second, named team impossible for as long as the first one runs.
+# A pid that is alive but owns nothing — NOT an absent CLAUDE_PID, which makes the gate
+# early-return on "no identity" and would pass this check without ever comparing ownership.
+r "CLAUDE_PID=$PPID" add --level repo --role implementor --model opus
+check "3j: §1.3 — a live session that owns no live team is unaffected" '[ "$RC" -eq 0 ]'
+# r3 [9.2]: ownership is session-wide, not scope-local. `--team other` selects a different roster
+# CONTAINER, but the roster is off limits for the duration of ownership — the earlier wording let
+# an owner edit the template just by naming a scope it does not own.
 r "CLAUDE_PID=$LIVE_PID" init --level repo --route peer --team other
-check "3k: §1.3 — a live team at the default scope does not refuse init for --team other" '[ "$RC" -eq 0 ]'
+check "3k: §1.3/[9.2] — owning a live team refuses init for another scope too" '[ "$RC" -ne 0 ]'
 r "CLAUDE_PID=$LIVE_PID" add --level repo --role reviewer --model opus --team other
-check "3k2: ...nor add for that other scope" '[ "$RC" -eq 0 ]'
+check "3k2: ...and add for that other scope" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "spawn-ad-hoc"'
 
 # ================================================================= 3a — §4 item 3a (§1.10)
 # `add` spawns NOTHING, in the case 0039's auto-spawn used to fire (route peer, a
@@ -244,22 +246,43 @@ session_start() { # <pane_id> <session_id>
   printf '{"session_id":"%s","cwd":"%s","agent_type":"ah:architect","source":"startup"}' "$2" "$PROJ" |
     env HOME="$FAKEHOME" HERDR_PANE_ID="$1" CLAUDE_PID=$LIVE_PID node "$H/sessionstart.mjs" >/dev/null 2>&1
 }
+# §1.6 chose channel (b), attribute at READ time, and the ORDERING is the whole reason: a peer's
+# SessionStart fires while the orchestrator is still launching, before its writeTeam lands. So the
+# team files are held aside across the two SessionStart calls, reproducing that ordering exactly —
+# invoking sessionstart.mjs after the write (as this block first did) masks the bug entirely.
+mv "$HIER/teams" "$HIER/teams.hold"
+rm -f "$PEERS_FILE"
 session_start "$ALPHA_PANE" sess-alpha
 session_start "$BETA_PANE" sess-beta
-TEAMS_SEEN="$(node -e '
-  const fs=require("fs");
-  const rows=fs.readFileSync(process.argv[1],"utf8").trim().split("\n").map(l=>JSON.parse(l)).filter(r=>r.status==="up"&&r.role==="architect");
-  console.log(rows.map(r=>String(r.team)).join(","));
-' "$PEERS_FILE" 2>/dev/null)"
-check "4d: §1.6 — each peer recorded its OWN team, resolved from its pane not its role" \
-  '[ "$TEAMS_SEEN" = "alpha,beta" ]'
-# The falsifiable half: with no pane to match on, the role scan is ambiguous across the two
-# teams and must record NO team rather than guess one (§1.6's safe-refuse property).
+mv "$HIER/teams.hold" "$HIER/teams"
+check "4d: §1.6 — a peer registering before its team file exists records NO team of its own" \
+  '! grep -q "\"team\"" "$PEERS_FILE"'
+# ...and the readers, which run after the write, attribute it anyway — by pane, to the exact
+# member name, with role alone matching BOTH teams. Under registration-time attribution both rows
+# stay unattributed forever and this is empty.
+for t in alpha beta; do
+  node -e '
+    const fs=require("fs");const p=process.argv[1];
+    const j=JSON.parse(fs.readFileSync(p,"utf8"));j.expected_root=process.argv[2];
+    fs.writeFileSync(p,JSON.stringify(j));
+  ' "$HIER/teams/$t.json" "$SANDBOX/elsewhere"
+done
+r "" teams
+ATTRIB="$(echo "$OUT" | jq_node 'j.teams.map(t=>t.name+"="+t.misplaced_members.map(m=>m.name).join("|")).sort().join(",")')"
+check "4d2: §1.6(b) — read-time attribution pins each peer to its own team and member" \
+  '[ "$ATTRIB" = "alpha=alpha-architect,beta=beta-architect" ]'
+check "4d3: ...and nothing was left unattributed, so it was not merely under-reporting" \
+  '[ "$(echo "$OUT" | jq_node "j.teams.reduce((a,t)=>a+t.misplaced_unattributed,0)")" = "0" ]'
+# The falsifiable half: with no pane to match on, neither the role scan at registration nor the
+# read-time match can resolve, and both must refuse rather than guess (§1.6's safe-refuse).
 rm -f "$PEERS_FILE"
 printf '{"session_id":"sess-none","cwd":"%s","agent_type":"ah:architect","source":"startup"}' "$PROJ" |
   env HOME="$FAKEHOME" -u HERDR_PANE_ID -u TMUX_PANE CLAUDE_PID=$LIVE_PID node "$H/sessionstart.mjs" >/dev/null 2>&1
 check "4e: §1.6/§3 — an unresolvable attribution records no team, never a guess" \
   '! grep -q "\"team\"" "$PEERS_FILE"'
+r "" teams
+check "4e2: §1.6/§3 — and the reader does not guess one for it either" \
+  '[ "$(echo "$OUT" | jq_node "j.teams.reduce((a,t)=>a+t.misplaced_members.length,0)")" = "0" ]'
 
 # ================================================================= 5 — §4 item 5 (§1.7)
 # A repo holding a pre-existing LIVE legacy team.json upgrades: still readable,
@@ -288,6 +311,100 @@ check "5f: §1.7 — the legacy file ages out when its own team disbands" '[ "$R
 r "" create --plan
 check "5g: §1.7 — with the legacy file gone, the bare scope resolves to the named path" \
   '[ "$RC" -eq 0 ]'
+
+# ---- 5h-5k (B1): a stale legacy team.json still RESOLVES (§1.7), but nothing new is written into
+# it. Without the retarget it would be cleared by the create/spawn path and a brand-new team put
+# straight back into the shared default — breaking §1.1 and self-perpetuating in exactly the
+# pre-0044 repos §1.7 exists for. The stale file is left for `reap`, never reused, never deleted
+# by scope resolution.
+reset_state; clear_all; init_geometry; setup_roster architect
+( : ) & DEAD_PID=$!
+wait "$DEAD_PID" 2>/dev/null
+mkdir -p "$HIER"
+cat > "$LEGACY_TEAM" <<EOF
+{"version":1,"team_id":"stale-1","created":"2020-01-01T00:00:00+00:00","roster_level":"repo","transport":"herdr","orchestrator":{"session_id":null,"pid":$DEAD_PID},"members":[{"role":"architect","name":"myrepo-architect","route":"peer","transport_id":"p9"}],"partial":false,"expected_root":"$PROJ"}
+EOF
+STALE_BEFORE="$(cat "$LEGACY_TEAM")"
+r "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-one architect
+check "5h: §1.1/B1 — a stale legacy team.json is not reused as the scope" \
+  '[ "$RC" -eq 0 ] && [ -f "$SCOPED_TEAM" ]'
+check "5i: §1.1/B1 — and the new team did NOT land back in team.json" \
+  '[ "$(cat "$SCOPED_TEAM" | jq_node "j.team_id")" != "stale-1" ] && [ "$(cat "$LEGACY_TEAM")" = "$STALE_BEFORE" ]'
+r "" reap
+check "5j: §1.7/B1 — the stale file is left intact for reap, which sees it" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "stale-1"'
+r "" reap --commit
+check "5k: §1.7/B1 — reap is what removes it, not the scope resolution" \
+  '[ "$RC" -eq 0 ] && [ ! -f "$LEGACY_TEAM" ]'
+
+# ================================================================= 6 — r3 [9.1]: an unnamable prefix
+# A repo whose basename cannot clear validateTeamAlias must NOT fall back to creating the shared
+# team.json — that reinstates §1.1's ownership problem across a whole class of repos, silently.
+# It refuses with a name the user can paste. The refusal is at the CREATE site, not at scope
+# resolution, so `alias --set` (the remedy the message names) still runs in such a repo.
+BADPROJ="$SANDBOX/_badrepo"
+BADHIER="$BADPROJ/.claude/hierarchy"
+BADROSTER="$BADPROJ/.claude/agent-hierarchy.json"
+mkdir -p "$BADPROJ/.claude"
+(cd "$BADPROJ" && git init -q)
+rb() { # same as r(), against the unnamable repo
+  local extra_env=$1; shift
+  OUT=$(eval "env -u HERDR_ENV -u CLAUDE_PID HOME=\"$FAKEHOME\" HERDR_PANE_ID=p0 PATH=\"$SANDBOX/bin:$NODE_DIR\" FAKE_STATE_DIR=\"$FAKE_STATE_DIR\" $extra_env node \"$H/roster.mjs\" $* --cwd \"$BADPROJ\" 2>&1"); RC=$?
+}
+bad_reset() { rm -rf "$BADHIER" "$BADROSTER"; rb "" init --level repo --route peer >/dev/null; rb "" add --level repo --role architect --model opus >/dev/null; }
+
+reset_state; init_geometry; bad_reset
+check "6a0: [9.1] — the roster commands themselves still work in such a repo" '[ "$RC" -eq 0 ]'
+r_before_count=$(ls -A "$BADHIER" 2>/dev/null | wc -l | tr -d ' ')
+rb "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-one architect
+check "6a: [9.1] — a bare launch refuses rather than creating the shared team.json" '[ "$RC" -ne 0 ]'
+rb "CLAUDE_PID=$LIVE_PID" create --plan
+check "6a1: [9.1] — bare create refuses on the same rule" '[ "$RC" -ne 0 ]'
+check "6a2: [9.1] — and wrote nothing under the hierarchy dir" \
+  '[ ! -f "$BADHIER/team.json" ] && [ "$(ls -A "$BADHIER" 2>/dev/null | wc -l | tr -d " ")" = "$r_before_count" ]'
+check "6a3: [9.1] — the message names a VALID suggested name" \
+  'echo "$OUT" | grep -q "badrepo" && [ "$RC" -ne 0 ]'
+check "6a4: [9.1] — and names alias --set as the remedy, not just the rejection" \
+  'echo "$OUT" | grep -q -- "alias --level repo --set"'
+
+# ---- 6b: the suggested remedy is real, not advice — setting the alias makes bare create work.
+rb "" alias --level repo --set badrepo
+check "6b: [9.1] — alias --set is reachable in the very repo the refusal fires in" '[ "$RC" -eq 0 ]'
+rb "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-one architect
+check "6b2: [9.1] — with the alias set, the bare create path succeeds" '[ "$RC" -eq 0 ]'
+check "6b3: [9.1] — and it landed at teams/<alias>.json, never team.json" \
+  '[ -f "$BADHIER/teams/badrepo.json" ] && [ ! -f "$BADHIER/team.json" ]'
+
+# ---- 6c: the same repo with a pre-existing legacy team.json behaves exactly as §1.7 promises —
+# proving the refusal did not catch defaultTeamScope's legacy-file branch.
+reset_state; init_geometry; bad_reset
+mkdir -p "$BADHIER"
+cat > "$BADHIER/team.json" <<EOF
+{"version":1,"team_id":"legacy-bad","created":"$(date +%Y-%m-%dT%H:%M:%S%z | sed 's/\(..\)$/:\1/')","roster_level":"repo","transport":"herdr","orchestrator":{"session_id":null,"pid":$LIVE_PID},"members":[{"role":"architect","name":"legacy-architect","route":"peer","transport_id":"p9"}],"partial":false,"expected_root":"$BADPROJ"}
+EOF
+BAD_LEGACY_BEFORE="$(cat "$BADHIER/team.json")"
+rb "" disband --plan
+check "6c: §1.7 — an existing legacy team.json still resolves in an unnamable repo" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "legacy-architect"'
+check "6c2: §1.7 — reading it neither refused nor rewrote it" \
+  '[ "$(cat "$BADHIER/team.json")" = "$BAD_LEGACY_BEFORE" ]'
+
+# ================================================================= 7 — r3 [9.2]: ownership is session-wide
+# A session owning teams/foo.json running a roster-mutating command with NO --team is refused: the
+# roster is off limits for the duration of ownership, not merely for one argument spelling. This
+# is the S3 regression and it fails against r2's "team file at the resolving scope" wording.
+reset_state; clear_all; init_geometry; setup_roster architect
+r "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-one architect --team foo >/dev/null
+ROSTER_BEFORE="$(cat "$REPO_ROSTER")"
+r "CLAUDE_PID=$LIVE_PID" add --level repo --role reviewer --model opus
+check "7a: [9.2] — owning teams/foo.json refuses a roster edit made with no --team" '[ "$RC" -ne 0 ]'
+check "7a2: [9.2] — it names the owned team, and the roster is untouched" \
+  'echo "$OUT" | grep -q "\"foo\"" && [ "$(cat "$REPO_ROSTER")" = "$ROSTER_BEFORE" ]'
+# The deliberate hole: no resolvable pid means ownership cannot be established, and §1.3 says the
+# write must then be ALLOWED — that case is the plain user shell §1.2 preserves.
+r "" add --level repo --role reviewer --model opus
+check "7b: [9.2]/§1.3 — with no resolvable pid the same command is allowed, not refused" \
+  '[ "$RC" -eq 0 ] && [ "$(cat "$REPO_ROSTER" | jq_node "j.roster.members.length")" = "2" ]'
 
 echo "---- $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -92,9 +92,9 @@ import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 
-import { CONFIG_VERSION, findGitRoot, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
+import { CONFIG_VERSION, findGitRoot, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, suggestTeamAlias, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
 import { appendRosterRecord, latestRoster, livePeerSlots, newId, localIso, pidAlive, realCwd, recordLiveness } from "./lib-hier.mjs";
-import { attributeSessionTeam, clearTeam, defaultTeamScope, fingerprint, herdrOnPath, historyEntryIsActive, KIND_DEFAULT, kindFieldErrors, listTeamNames, memberArgs, normalizeMembers, readHistory, readTeam, resolveKind, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
+import { attributeSessionTeam, clearTeam, defaultTeamScope, fingerprint, herdrOnPath, historyEntryIsActive, KIND_DEFAULT, kindFieldErrors, listTeamNames, memberArgs, normalizeMembers, readHistory, readTeam, resolveKind, resolveTeamByPane, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
 
 const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config", "no-spawn", "allow-roster-edit"]);
 const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "close", "confirm", "plan-token", "allow-global", "cwd", "team"]);
@@ -180,6 +180,11 @@ let teamFile = teamArg;
 /** No `--team` was given, so the scope was derived — which is what decides whether a collision
     suggests a free candidate (§1.1) or tells the user to disband the team they named. */
 let teamFileDefaulted = false;
+/** Spec 0044 [9.1]: the derived prefix cannot name a file. Recorded rather than refused on sight —
+    every bare command in such a repo would fail, `alias --set` (the remedy) included. Only the
+    paths that would CREATE a team refuse, in `resolveWritableTeamScope`. */
+let teamFileUnnamable = null;
+let teamFileSuggestion = null;
 function resolveTeamFileScope() {
   if (teamArg) {
     teamFile = teamArg;
@@ -189,6 +194,18 @@ function resolveTeamFileScope() {
   const scope = defaultTeamScope(hierarchyDir(cwd), teamPrefix(cwd, null));
   teamFile = scope.team;
   teamFileDefaulted = scope.defaulted;
+  teamFileUnnamable = scope.unnamable || null;
+  teamFileSuggestion = scope.suggested || null;
+}
+
+/** Spec 0044 [9.1]: the repo cannot name its own team file, and creating the shared `team.json`
+    instead is what the invariant forbids. The user is the only party who can fix this, so the
+    message has to carry a name they can paste, not just a rejection. */
+function failUnnamablePrefix(prefix, suggested) {
+  fail(
+    `"${prefix}" cannot name a team file (${validateTeamAlias(prefix).why}), and creating the shared team.json instead is what spec 0044 §1.1 forbids. ` +
+      `Give this repo a usable name with \`roster.mjs alias --level repo --set ${suggested || suggestTeamAlias(prefix)}\`, or pass --team <name>.`
+  );
 }
 resolveTeamFileScope();
 
@@ -980,6 +997,7 @@ function refuseLiveDefaultTeam(dir, existing) {
 
 /** Shared by `resolveMembersPlan` and `planMembersFromHistory` (spec 0015 §7.2): refuse a live Team, clear a stale one. */
 function refuseOrClearExistingTeam(dir) {
+  resolveWritableTeamScope(dir);
   const existing = readTeam(dir, teamFile);
   if (!existing) return;
   if (teamIsLive(existing)) {
@@ -990,6 +1008,29 @@ function refuseOrClearExistingTeam(dir) {
     fail(`a live Team ${existing.team_id} already exists — disband it first`);
   }
   clearTeam(dir, teamFile);
+}
+
+/**
+ * The two things §1.1's invariant demands at the moment a team would be CREATED, both of which
+ * §1.7's read-side leniency has to be kept away from. Only the create/spawn family calls this —
+ * `disband`, `dismiss`, `resync`, `reap` and `adopt` must keep resolving to whatever is there,
+ * because operating on it in place is exactly what §1.7 promises.
+ *
+ * [9.1] A prefix that cannot name a file refuses here rather than at scope resolution, so `show`,
+ * `init`, `add` and above all `alias --set` — the remedy the refusal names — still work.
+ *
+ * (Reviewer B1) A legacy `team.json` resolves for reading whenever one exists, but a team whose
+ * owner is gone must not be written into: it would be cleared and a brand-new team put straight
+ * back into the shared default, which is self-perpetuating in exactly the pre-0044 repos §1.7
+ * exists for. Re-point at the named path and leave the stale file for `reap`. A LIVE legacy team
+ * is still written into — that team is the one §1.7 is carrying across the upgrade.
+ */
+function resolveWritableTeamScope(dir) {
+  if (teamFile !== null || !teamFileDefaulted) return;
+  if (teamFileUnnamable) failUnnamablePrefix(teamFileUnnamable, teamFileSuggestion);
+  const legacy = readTeam(dir, null);
+  if (!legacy || teamIsLive(legacy)) return;
+  teamFile = teamPrefix(cwd, null);
 }
 
 /** Shared by `create --plan` and `create --spawn` (spec 0005 §9 item 1): resolve the roster, refuse/clear a stale Team, compute members[] + spawn shapes. */
@@ -1480,6 +1521,7 @@ function allTeamRows(dir, myPid) {
     caller prints; every refusal goes through `fail()`. `callerLabel` prefixes the error text and
     the layout call. */
 async function spawnOneCore(role, callerLabel, adHocMember = null) {
+  resolveWritableTeamScope(hierarchyDir(cwd));
   if (!PEER_ELIGIBLE_ROLES.includes(role)) fail(`${callerLabel}: role must be one of ${PEER_ELIGIBLE_ROLES.join(", ")}, got ${JSON.stringify(role)}`);
   const resolved = resolveRoster(cwd, teamArg);
   // Spec 0044 §1.4 point 2: an ad hoc member need not exist in the roster, and need not have a
@@ -1650,30 +1692,34 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
  * existed and is what failed, so this refuses instead — the roster is a template for FUTURE teams,
  * and a session that currently owns a live one has no business editing it mid-flight.
  *
- * Every team file in this hierarchy dir is checked, not just the one at the resolving scope: an
- * orchestrator holding `--team foo` is just as much an owner while it runs a bare `add`.
- *
  * The message leads with §1.4's command and mentions the override second, deliberately. An agent
  * that reads a prohibition looks for a way around it; an agent that reads an instruction follows
  * it. The override is the USER's — no code path may supply it, and an agent adding it to get past
  * this refusal is precisely the failure this exists to prevent.
+ *
+ * Every team file in this hierarchy dir is checked, not just the one at the resolving scope: an
+ * orchestrator holding `--team foo` is just as much an owner while it runs a bare `add`, and
+ * scoping the check to the resolving file would let it edit the roster simply by omitting `--team`
+ * (r3 [9.2]). Ownership is decided by pid EQUALITY, never by `resolveSessionTeam`'s role scan — a
+ * pid either matches or it does not, so the gate never has to guess.
  */
 function refuseRosterEditWhileOwningTeam(command) {
   if (!ROSTER_MUTATING_CMDS.has(command)) return;
   if (opts["allow-roster-edit"] === true) return;
   const dir = hierarchyDir(cwd);
-  let myPid = typeof opts["orchestrator-pid"] === "string" ? Number(opts["orchestrator-pid"]) : Number(process.env.CLAUDE_PID);
-  if (!Number.isInteger(myPid)) return; // no identity to compare against — nothing to enforce
-  // Spec 0044 §1.3 scopes this to "the team file at the resolving scope" — the one THIS command
-  // would sit alongside. Scanning every team file instead would refuse `--team B` work merely
-  // because the session happens to own a live team A.
-  const existing = readTeam(dir, teamFile);
-  if (!existing || Number(existing.orchestrator && existing.orchestrator.pid) !== myPid || !teamIsLive(existing)) return;
-  fail(
-    `${command} edits the roster TEMPLATE, and this session owns live team ${existing.team_id} (${teamFile ? `team "${teamFile}"` : "the default team"}). ` +
-      `To add or change a member of the RUNNING team — including one that diverges from the roster, or a role the roster does not define — run \`roster.mjs spawn-ad-hoc <role> [--model M] [--kind K] [--args '[...]']\`, which writes only the team file. ` +
-      `If you genuinely mean to edit the template for future teams while this one runs, the user can re-run with --allow-roster-edit.`
-  );
+  const myPid = typeof opts["orchestrator-pid"] === "string" ? Number(opts["orchestrator-pid"]) : Number(process.env.CLAUDE_PID);
+  // §1.3: an unresolvable pid must NOT refuse. That hole is the plain user shell §1.2 preserves —
+  // every agent-invoked path this defends against does have a pid.
+  if (!Number.isInteger(myPid)) return;
+  for (const name of [null, ...listTeamNames(dir)]) {
+    const existing = readTeam(dir, name);
+    if (!existing || Number(existing.orchestrator && existing.orchestrator.pid) !== myPid || !teamIsLive(existing)) continue;
+    fail(
+      `${command} edits the roster TEMPLATE, and this session owns live team ${existing.team_id} (${name ? `team "${name}"` : "the default team"}). ` +
+        `To add or change a member of the RUNNING team — including one that diverges from the roster, or a role the roster does not define — run \`roster.mjs spawn-ad-hoc <role> [--model M] [--kind K] [--args '[...]']\`, which writes only the team file. ` +
+        `If you genuinely mean to edit the template for future teams while this one runs, the user can re-run with --allow-roster-edit.`
+    );
+  }
 }
 
 try {
@@ -2638,6 +2684,7 @@ try {
         fail(`spawn-ad-hoc: route ${JSON.stringify(adHoc.route)} has no session to spawn — a subagent-routed member is dispatched on demand by the Agent tool, so there is nothing to launch`);
       }
       const dir = hierarchyDir(cwd);
+      resolveWritableTeamScope(dir); // the name below is derived against the team this will write to
       // §1.4 point 5: the name is derived with the TEAM's prefix, against the members that team
       // already holds, so a second member of the same role gets the next ordinal instead of the
       // first one's name. Derived, then checked — a collision refuses rather than overwriting a
@@ -2692,13 +2739,31 @@ try {
       // Filtered to live rows (status "up" and a live pid — same convention upRecordFor uses) —
       // an unclean exit (crash, killed pane, no SessionEnd) otherwise leaves misplaced:true as the
       // latest row forever, nagging about a peer that no longer exists.
-      const liveMisplaced = latestRoster(dir).filter((r) => r.misplaced && r.status === "up" && pidAlive(r.pid));
+      const liveUp = latestRoster(dir).filter((r) => r.status === "up" && pidAlive(r.pid));
+      const liveMisplaced = liveUp.filter((r) => r.misplaced);
       for (const row of rows) {
         const t = readTeam(dir, row.name);
         const members = t && Array.isArray(t.members) ? t.members : [];
         const flagged = [];
         let unattributed = 0;
+        // Spec 0044 §1.6, channel (b): attribute at READ time. The orchestrator wrote this peer's
+        // pane into a member row, and by now that write has landed — which it had NOT when the
+        // peer's own SessionStart wrote its row, so a peer launched into a fresh team carries no
+        // `team` and no `expected_root` of its own and the recorded-flag pass below can never see
+        // it. Matching pane against `transport_id` names the member exactly, and the comparison
+        // against this team's own `expected_root` is redone here rather than trusted from the row.
+        // Safe-refuse is unchanged: `resolveTeamByPane` returns nothing rather than breaking a
+        // tie, so an ambiguous pane falls through to the fallback and is never guessed at.
+        const byPaneSeen = new Set();
+        for (const r of liveUp) {
+          const byPane = r.pane_id ? resolveTeamByPane(dir, r.pane_id) : null;
+          if (!byPane || byPane.teamName !== row.name) continue;
+          byPaneSeen.add(r);
+          const root = t && t.expected_root;
+          if (root && realCwd(r.cwd) !== root) flagged.push({ role: r.role, name: byPane.member.name, observed_cwd: r.cwd });
+        }
         for (const r of liveMisplaced) {
+          if (byPaneSeen.has(r)) continue;
           // A pre-0036 row (no `team` at all) falls into the default team's bucket — the only
           // shape that existed before named teams — but is NEVER flagged, only counted: T16.
           const hasExplicitTeam = Object.prototype.hasOwnProperty.call(r, "team");

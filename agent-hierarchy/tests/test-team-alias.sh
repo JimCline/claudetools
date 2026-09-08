@@ -183,8 +183,13 @@ reset_levels
 run_roster init --level repo --route peer --cwd "$PROJ" >/dev/null
 run_roster add --no-spawn --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
 mkdir -p "$HIER_DIR"
+# Spec 0044 §1.7: the legacy team.json is kept as the scope for the team that is LIVE across the
+# upgrade, so the fixture carries an owner and a creation stamp — without them it reads as stale
+# and a spawn correctly re-points at teams/<prefix>.json instead of warning about this file.
 cat > "$TEAM_FILE" <<EOF
 { "version": 1, "team_id": "t1", "roster_level": "repo", "transport": "herdr",
+  "created": "$(date +%Y-%m-%dT%H:%M:%S%z | sed 's/\(..\)$/:\1/')",
+  "orchestrator": { "session_id": null, "pid": $$ },
   "members": [ { "name": "otherprefix-architect", "role": "architect" } ] }
 EOF
 NODE_DIR="$(dirname "$NODE_BIN")"
@@ -238,6 +243,7 @@ run_roster add --no-spawn --level repo --role implementor --model opus --cwd "$P
 mkdir -p "$HIER_DIR"
 cat > "$TEAM_FILE" <<EOF
 { "version": 1, "team_id": "t12", "roster_level": "repo", "transport": "herdr",
+  "created": "$(date +%Y-%m-%dT%H:%M:%S%z | sed 's/\(..\)$/:\1/')",
   "orchestrator": { "session_id": null, "pid": $$ },
   "members": [ { "name": "old-implementor", "role": "implementor", "route": "peer", "model": "opus", "effort": null, "autoMode": null, "transport_id": "p1" } ] }
 EOF
