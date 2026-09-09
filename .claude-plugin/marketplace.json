@@ -95,7 +95,7 @@
       "name": "task-gopher",
       "source": "./task-gopher",
       "description": "Delegates tool-heavy work to a cheap Haiku runner.",
-      "version": "0.15.1",
+      "version": "0.17.0",
       "author": {
         "name": "Jim Cline"
       },

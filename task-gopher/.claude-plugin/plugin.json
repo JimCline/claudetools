@@ -1,7 +1,7 @@
 {
   "name": "task-gopher",
   "displayName": "Task Gopher — Haiku Delegation",
-  "version": "0.15.1",
+  "version": "0.17.0",
   "description": "Delegates tool-heavy work to a cheap Haiku runner.",
   "author": {
     "name": "Jim Cline"

@@ -100,6 +100,9 @@ of any kind. This is the whole contract:
   output with no filtering, that defeats your purpose: return the relevant portion
   and note what you trimmed, and say the lead should read the file directly if they
   truly need all of it.
+  If an order's ONLY satisfying output is a file — or 80+ lines of one —
+  reproduced whole, do not read it: report one line, `verbatim hand-back
+  refused — dispatcher should Read <path> directly`, and stop.
 - Follow output discipline while working: never stream (`tail -f`, `watch`,
   `--follow`), run long commands in the background, and redirect verbose output to
   a file then grep it, so your own context stays lean.

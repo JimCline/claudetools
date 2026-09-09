@@ -11,11 +11,11 @@
  * either gopher.
  */
 
-import { FULL_DIRECTIVE, isEnabled, isGopherAgent, readHookInput } from "./directive.mjs";
+import { FULL_DIRECTIVE, isEnabled, isGopherAgent, isHierarchyRoleAgent, readHookInput } from "./directive.mjs";
 
 const input = await readHookInput();
 
-if (isEnabled() && !isGopherAgent(input)) {
+if (isEnabled() && !isGopherAgent(input) && !isHierarchyRoleAgent(input)) {
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {

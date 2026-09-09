@@ -194,6 +194,278 @@ export function isGopherAgent(input) {
 }
 
 /**
+ * agent-hierarchy roles. Each one's own md already carries the delegation rule,
+ * so paying for the directive again — relayed into a dispatch, injected into a
+ * `--agent ah:<role>` session at start and on every compact, or reminded each
+ * turn — buys nothing. Exact names, not an `ah:` prefix test: the set is small
+ * and a prefix rule would silently swallow future non-role `ah:` agents.
+ */
+export const AH_ROLE_AGENTS = new Set([
+  "ah:architect",
+  "ah:implementor",
+  "ah:orchestrator",
+  "ah:reviewer",
+  "ah:ultra-advisor",
+  "ah:task-runner",
+]);
+
+/** Is this hook firing inside a `--agent ah:<role>` session? Reads `agent_type`. */
+export function isHierarchyRoleAgent(input) {
+  return AH_ROLE_AGENTS.has(input && input.agent_type);
+}
+
+/**
+ * A range this long or longer is a whole-file hand-back in disguise: ~4 KB, one
+ * Read chunk. Below it, batching a few small ranges into one dispatch is a
+ * defensible trade against N tool round trips. Tuning knob (spec 0001 §2).
+ */
+export const LARGE_RANGE_LINES = 80;
+
+/**
+ * A match is a MENTION, not an order, when the text just before it negates it
+ * ("don't dump the whole file") or frames it as something being described:
+ * a spec, a test case, a labelling rule, a regex. Both live FPs this guard was
+ * widened for were orders ABOUT the gate — describing the phrase is exactly
+ * what spec- and test-writing work does, and under a hard deny there is no
+ * workaround but to reword a description whose point is to name the phrase.
+ *
+ * The quote rule tests the QUALIFIER, never the path: paths are routinely
+ * backticked in legitimate orders.
+ */
+const GUARD_WINDOW = 60;
+const NEGATION = /\b(not|never|no|don'?t|do not|without|unless|instead of|rather than|avoid)\b/i;
+const META =
+  /\b(deny|denies|denied|denial|refuse[sd]?|reject[sd]?|block[sed]?|gate[sd]?|flag[sged]*|detect[sed]?|forbid[s]?|pattern|regex|test case|assert|counts? as|true positive|false positive|TP|FP|label[sled]*|classif\w*|definition|defined?|means|i\.e\.|e\.g\.)\b/i;
+
+/**
+ * A path token names a file: it holds a directory separator, or ends in an
+ * extension whose first character is a letter. A trailing slash makes it a
+ * directory ("docs/"), and a version string ("v0.16.0") has digits where an
+ * extension's letters would be — neither is a file.
+ */
+const PATH_TOKEN =
+  /(?<![\w./~-])[`"']?((?:[\w.~@+-]*\/[\w.~@/+-]*[\w~+-])|(?:[\w-]+\.[A-Za-z]\w{0,4}(?![\w-]|\.\w)))[`"']?(?![\w/~-])/g;
+
+/** Glue may run this far between the qualifier and the path before they stop being one breath. */
+const GLUE_MAX = 40;
+const GLUE_WORDS = /^(?:[\s:,(—–]|\b(?:of|for|from|in|at|and|the|this|these|those|each|both|files?)\b)*$/i;
+
+/**
+ * Is the text between a qualifier and a path token nothing but glue? Any other
+ * word breaks adjacency — that is what keeps "full text of the section
+ * beginning ## Scope in docs/a.md" out. One newline is allowed, optionally
+ * followed by a list marker, so "these files:\n- path" still reads as adjacent.
+ */
+function glueOk(between) {
+  if (between.length > GLUE_MAX) return false;
+  const flattened = between.replace(/\n[ \t]*(?:[-*]|\d+\.)?[ \t]*/, " ");
+  if (flattened.includes("\n")) return false;
+  return GLUE_WORDS.test(flattened);
+}
+
+function pathTokens(text) {
+  PATH_TOKEN.lastIndex = 0;
+  const out = [];
+  let m;
+  while ((m = PATH_TOKEN.exec(text)) !== null) {
+    out.push({ start: m.index, end: m.index + m[0].length, text: m[1] });
+  }
+  return out;
+}
+
+/** Is [start,end) inside a `…` or "…" span? Quotes are paired left to right. */
+function quoted(text, start, end) {
+  for (const q of ["`", '"']) {
+    let open = -1;
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] !== q) continue;
+      if (open < 0) open = i;
+      else {
+        if (start > open && end <= i) return true;
+        open = -1;
+      }
+    }
+  }
+  return false;
+}
+
+function mentioned(text, index, end) {
+  const before = text.slice(Math.max(0, index - GUARD_WINDOW), index);
+  return NEGATION.test(before) || META.test(before) || quoted(text, index, end);
+}
+
+// The object is the discriminator, never the word "verbatim": 70% of real
+// gopher orders contain it and mean "don't paraphrase" (spec 0001 §2).
+const H1_QUALIFIERS = [
+  /\b(full|entire|whole|complete)\b,?(?:\s+\w+){0,2}\s+(file|files|contents?|text|source)\b/gi,
+  /\b(full|entire|whole|complete)\b[^.\n]{0,20}\bcontents?\s+of\b/gi,
+];
+/**
+ * Path-first accepts only a TERMINAL whole-file qualifier. `verbatim` is not
+ * one: it means "do not paraphrase", and 21 of r8's 33 false positives were
+ * bounded excerpts and grep output that happened to say it after a path.
+ * `full source` / `full text` / `complete text` stay qualifier-first only, and
+ * a trailing `of` means the object is something inside the file, not the file.
+ */
+const H1_MIRROR =
+  /\bin full\b|\bin (its )?entirety\b|\bentirely\b|\b(full|entire|whole|complete)\s+(file|files|contents?)\b(?!\s+of\b)/gi;
+const READ_WHOLE = [/\bread\s+(the\s+)?(whole|entire|full)\s+(file|thing)\b/i, /\bin (its )?entirety\b/i];
+
+/**
+ * The order names a file but the object is not the file: a search filters it, a
+ * listing names it, and "read it in full and report back compactly" asks for a
+ * distillation. `report` alone is NOT a distil signal — "report back VERBATIM,
+ * the entire file" is the order this gate exists for.
+ */
+const SEARCH_VERB = /\b(search|grep|scan|find)\b/i;
+const LISTING_NOUN = /^.{0,3}\b(list|listing|names?|paths?|count|size|tree)\b/i;
+const DISTIL = /\b(compact\w*|summar\w*|answer\w*)\b/i;
+
+/** A distil word inside a filename (/tmp/rh-summary.log) is not a distil instruction. */
+function blankPaths(s) {
+  return s.replace(PATH_TOKEN, (m) => " ".repeat(m.length));
+}
+
+function targetGuarded(text, start, end) {
+  if (SEARCH_VERB.test(text.slice(Math.max(0, start - 40), start))) return true;
+  if (LISTING_NOUN.test(text.slice(end, end + 20))) return true;
+  if (DISTIL.test(blankPaths(text.slice(end, end + 60)))) return true;
+  return false;
+}
+
+/** Qualifier-first: the qualifier names the object, the path follows through glue. */
+function pathAdjacent(text, paths, start, end) {
+  return paths.some((p) => p.start >= end && glueOk(text.slice(end, p.start)));
+}
+
+/** H3 names a range, and a range reads the same on either side of its file. */
+function pathEitherSide(text, paths, start, end) {
+  return paths.some(
+    (p) =>
+      (p.start >= end && glueOk(text.slice(end, p.start))) ||
+      (p.end <= start && glueOk(text.slice(p.end, start))),
+  );
+}
+
+function pathBefore(text, paths, start) {
+  return paths.some((p) => p.end <= start && glueOk(text.slice(p.end, start)));
+}
+
+const RANGE_TOOLS = [
+  { re: /sed\s+-n\s+'?(\d+),(\d+)p'?/gi, span: (m) => Number(m[2]) - Number(m[1]) + 1 },
+  { re: /head\s+(?:-n\s*|-)(\d+)/gi, span: (m) => Number(m[1]) },
+  { re: /tail\s+(?:-n\s*|-)(\d+)/gi, span: (m) => Number(m[1]) },
+];
+const LINES_RANGE = /lines?\s+(\d+)\s*(?:-|–|—|to|through)\s*(\d+)/gi;
+const READ_CALL = /Read\(([^)]*)\)/gi;
+
+/** Only flags and whitespace may sit between the tool and its file. */
+const TOOL_ARG_SKIP = /^(?:\s|-{1,2}\w+\s*)*/;
+
+/**
+ * A shell filter reads a stream, not a file, and a redirect sends the bytes to
+ * disk instead of into the runner's context. Either way nothing is handed back.
+ */
+function pipedOrRedirected(text, toolStart, pathEnd) {
+  const lineStart = text.lastIndexOf("\n", toolStart - 1) + 1;
+  const before = text.slice(Math.max(lineStart, toolStart - 40), toolStart);
+  let after = text.slice(pathEnd, pathEnd + 20);
+  const nl = after.indexOf("\n");
+  if (nl >= 0) after = after.slice(0, nl);
+  return before.includes("|") || after.includes("|") || after.includes(">");
+}
+
+function h3Hit(text, paths) {
+  for (const { re, span } of RANGE_TOOLS) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const end = m.index + m[0].length;
+      const skip = TOOL_ARG_SKIP.exec(text.slice(end))[0].length;
+      const p = paths.find((t) => t.start === end + skip);
+      if (!p) continue;
+      if (pipedOrRedirected(text, m.index, p.end)) continue;
+      if (span(m) >= LARGE_RANGE_LINES) return m[0];
+    }
+  }
+  READ_CALL.lastIndex = 0;
+  let r;
+  while ((r = READ_CALL.exec(text)) !== null) {
+    const limit = /limit\D*(\d+)/i.exec(r[1]);
+    if (!limit || Number(limit[1]) < LARGE_RANGE_LINES) continue;
+    if (paths.some((p) => p.start > r.index && p.end < r.index + r[0].length)) return r[0];
+  }
+  LINES_RANGE.lastIndex = 0;
+  let l;
+  while ((l = LINES_RANGE.exec(text)) !== null) {
+    if (Number(l[2]) - Number(l[1]) + 1 < LARGE_RANGE_LINES) continue;
+    if (pathEitherSide(text, paths, l.index, l.index + l[0].length)) return l[0];
+  }
+  return null;
+}
+
+/**
+ * Does this dispatch prompt order the runner to hand back a file whole?
+ * Returns null, or {rule, text} where rule is "H1" (a whole-file qualifier
+ * naming an explicit path), "H2" (read-the-whole-thing) or "H3" (a range tool
+ * applied directly to a path, LARGE_RANGE_LINES or more).
+ *
+ * r8 NARROW (user ruling): deny only when the order names an explicit file AND
+ * asks for it whole in the same breath. Whole-file orders whose path sits
+ * further off are accepted misses — see spec 0001 §2 and §6 case 14.
+ */
+export function verbatimReadHit(prompt) {
+  if (typeof prompt !== "string" || !prompt) return null;
+  const paths = pathTokens(prompt);
+
+  for (const re of H1_QUALIFIERS) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(prompt)) !== null) {
+      const end = m.index + m[0].length;
+      if (mentioned(prompt, m.index, end)) continue;
+      if (targetGuarded(prompt, m.index, end)) continue;
+      if (pathAdjacent(prompt, paths, m.index, end)) return { rule: "H1", text: m[0] };
+    }
+  }
+  H1_MIRROR.lastIndex = 0;
+  let mm;
+  while ((mm = H1_MIRROR.exec(prompt)) !== null) {
+    const end = mm.index + mm[0].length;
+    if (mentioned(prompt, mm.index, end)) continue;
+    if (targetGuarded(prompt, mm.index, end)) continue;
+    if (pathBefore(prompt, paths, mm.index)) return { rule: "H1", text: mm[0] };
+  }
+
+  for (const re of READ_WHOLE) {
+    const m = re.exec(prompt);
+    if (m && !mentioned(prompt, m.index, m.index + m[0].length)) return { rule: "H2", text: m[0] };
+  }
+
+  const h3 = h3Hit(prompt, paths);
+  if (h3) return { rule: "H3", text: h3 };
+  return null;
+}
+
+/**
+ * Denial for a verbatim hand-back order. States the cost argument once so the
+ * dispatcher learns the rule rather than rewording the order: there is no retry
+ * pass, so the only ways forward are a narrower order or a direct Read.
+ */
+export function verbatimDenyMessage(prompt, hit) {
+  const first = pathTokens(typeof prompt === "string" ? prompt : "")[0];
+  const path = first ? first.text : "<path>";
+  return (
+    `task-gopher: this order asks the runner to hand a file back whole (matched: \`${hit.text}\`). ` +
+    `That costs MORE than reading it yourself: Haiku reads it (input), re-emits it (output), and you read it again (input) — ` +
+    `three times the bytes plus a dispatch. Read(${path}[, offset, limit]) directly. ` +
+    `Dispatch gopher only when the answer is SMALLER than the source: grep → file:line + a few lines of context, the one function, ` +
+    `a summary, a count, the first N matches. Rewrite the order that way, or read the file yourself; ` +
+    `this dispatch will not be allowed as written.`
+  );
+}
+
+/**
  * Marker the relay gate looks for at the top of Agent dispatch prompts, to tell
  * an already-stamped dispatch from one that still needs the directive. Both
  * directive texts open with it.
@@ -221,7 +493,7 @@ export const FULL_DIRECTIVE = [
   "",
   "Reserve doing it yourself for: work that needs YOUR judgment, or a genuinely singular trivial peek where a dispatch would plainly cost more than the step (e.g. re-reading one short file already partly in your context). Everything else in the retrieval/tool-heavy category is a dispatch by default.",
   "",
-  'Dispatch must COMPRESS. task-gopher earns its keep only when its report is SMALLER than the raw material it reads — it reads a lot and returns a little. So NEVER order it to read a whole file (or several) and hand the contents back verbatim: that returns just as many tokens to your context, with an extra hop and no saving. If you genuinely need a full file in front of you, read it yourself. Otherwise NARROW the ask — have gopher grep/search and return only the matching file:line plus a little context, the one function or section you care about, a direct answer, or a summary. Ask "where is X handled, and what does that code look like?", not "send me all of foo.ts." Rule of thumb: if you cannot name a compact expected output that is smaller than the source, either narrow the question or do it yourself — do not dispatch.',
+  'Dispatch must COMPRESS. task-gopher earns its keep only when its report is SMALLER than the raw material it reads — it reads a lot and returns a little. So NEVER order it to read a whole file (or several) and hand the contents back verbatim: that returns just as many tokens to your context, with an extra hop and no saving. If you genuinely need a full file in front of you, read it yourself. Otherwise NARROW the ask — have gopher grep/search and return only the matching file:line plus a little context, the one function or section you care about, a direct answer, or a summary. Ask "where is X handled, and what does that code look like?", not "send me all of foo.ts." Rule of thumb: if you cannot name a compact expected output that is smaller than the source, either narrow the question or do it yourself — do not dispatch. A PreToolUse gate denies any gopher order that asks for a whole file or a ≥ 80-line range back — no retry passes; narrow the order or Read it yourself.',
   "",
   "Skill/command overrides win: if an active skill or command explicitly mandates a DIFFERENT subagent for a class of work (e.g. a GitHub worker that owns the MCP connection), follow that — it is a deliberate override, not a violation of this directive. Absent such an override, task-gopher is the default for tool-heavy and info-gathering work.",
   "",
@@ -245,4 +517,4 @@ export const FULL_DIRECTIVE = [
 
 /** Compact per-turn reminder — injected at UserPromptSubmit to keep the behavior alive. */
 export const SHORT_REMINDER =
-  "[task-gopher: ON] If you are Sonnet-tier or higher (any agent, top-level or subagent): by DEFAULT dispatch tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders, and keep reasoning for yourself. A complete order names WHERE (paths, branch for git work), HOW (exact commands/method), WHAT BACK (format + every-match-or-first-N completeness), and WHAT IF (on failure: report and stop) — the runner fills no gaps and may not notice them. Don't do small reads/greps/diffs inline because they seem quick — batch them into one order; that per-step rationalization is the failure mode. Order NARROW queries (grep/answer/summary that come back smaller than the source), never \"read the whole file and send it back\" — if you need a full file, read it yourself. If an order genuinely cannot be made decision-free — which of several files, a summary needing an editorial cut, steps that depend on what earlier steps find — dispatch `task-gopher:smart-gopher` (Sonnet, reasons but cannot dispatch onward) rather than doing it yourself; design and security calls still stay with you. task-gopher is the default — always the least-privileged option that could do the job. Each distinct smart-gopher dispatch is checkpointed once with a nudge to confirm task-gopher couldn't do it; re-run the identical prompt to proceed for good, but any other smart-gopher dispatch gets its own fresh checkpoint even later in the same session. If you are Haiku-tier or have no Agent tool, ignore this. Destructive and outward-facing commands (rm -rf, git reset --hard/clean/worktree remove/branch -D/rebase, push, publish, PR writes, infra teardown) from the runner are intercepted by a guard that asks THE USER to approve them — you cannot consent for them, so prefer doing those steps yourself rather than dispatching them. Escape hatch: take it over if the runner fails or returns too little. Don't copy this directive into subagent prompts — a hook stamps it onto the dispatches that can use it automatically.";
+  "[task-gopher: ON] If you are Sonnet-tier or higher (any agent, top-level or subagent): by DEFAULT dispatch tool-heavy and info-gathering steps to the `task-gopher` (haiku) runner with complete, decision-free orders, and keep reasoning for yourself. A complete order names WHERE (paths, branch for git work), HOW (exact commands/method), WHAT BACK (format + every-match-or-first-N completeness), and WHAT IF (on failure: report and stop) — the runner fills no gaps and may not notice them. Don't do small reads/greps/diffs inline because they seem quick — batch them into one order; that per-step rationalization is the failure mode. Order NARROW queries (grep/answer/summary that come back smaller than the source), never \"read the whole file and send it back\" — if you need a full file, read it yourself. If an order genuinely cannot be made decision-free — which of several files, a summary needing an editorial cut, steps that depend on what earlier steps find — dispatch `task-gopher:smart-gopher` (Sonnet, reasons but cannot dispatch onward) rather than doing it yourself; design and security calls still stay with you. task-gopher is the default — always the least-privileged option that could do the job. Each distinct smart-gopher dispatch is checkpointed once with a nudge to confirm task-gopher couldn't do it; re-run the identical prompt to proceed for good, but any other smart-gopher dispatch gets its own fresh checkpoint even later in the same session. If you are Haiku-tier or have no Agent tool, ignore this. Destructive and outward-facing commands (rm -rf, git reset --hard/clean/worktree remove/branch -D/rebase, push, publish, PR writes, infra teardown) from the runner are intercepted by a guard that asks THE USER to approve them — you cannot consent for them, so prefer doing those steps yourself rather than dispatching them. Escape hatch: take it over if the runner fails or returns too little. Don't copy this directive into subagent prompts — a hook stamps it onto the dispatches that can use it automatically. A PreToolUse gate denies any gopher order that asks for a whole file or a ≥ 80-line range back — no retry passes; narrow the order or Read it yourself.";

@@ -16,6 +16,17 @@ task-gopher uses these files under `~/.claude/`:
   whose definition file declares a `tools:` list without `Agent`/`Task`; this file
   covers the ones it cannot read, notably SDK-defined agents that have no file on
   disk. Exempting an agent that CAN dispatch just means it stops being told to.
+  The six `ah:` hierarchy roles are exempt built in, without this file: each
+  role's own md already carries the delegation rule.
+
+Verbatim-read gate: a dispatch to either runner whose order asks for a whole
+file back — "the full file contents", "read the entire file", or any single
+line range of 80 or more — is DENIED, with the cost argument and the
+`Read(<path>)` remedy. It is a hard deny: there is no retry pass and no
+per-session key, so the only ways forward are a narrower order or reading the
+file yourself. The word "verbatim" alone never trips it; the object does.
+Denials are logged as `verbatim-deny` with the matched text and which rule
+(H1 whole-file object / H2 read-whole / H3 large range) fired.
 - `task-gopher.guard` — how the destructive guard resolves a destructive or
   outward-facing Bash command from either runner (task-gopher or smart-gopher).
   Contents, not existence: `ask`

@@ -109,6 +109,9 @@ import {
   isEnabled,
   isStrict,
   readRelayExempt,
+  AH_ROLE_AGENTS,
+  verbatimDenyMessage,
+  verbatimReadHit,
 } from "./directive.mjs";
 
 // Re-block on the Nth consecutive bypass within a turn (N-1 pass silently).
@@ -122,8 +125,16 @@ const SENTINEL_WINDOW = 200;
 // so rewriting their prompt would only cost tokens. Built-ins ship with no
 // definition file, so they are the one group that has to be named outright —
 // everything else is decided from the agent's own `tools:` list or the user's
-// exempt file.
-const RELAY_EXEMPT = new Set(["Explore", "Plan", "statusline-setup", "output-style-setup"]);
+// exempt file. The hierarchy roles join them for a different reason: each
+// role's md already carries the delegation rule, so the relay would only pay
+// for it twice.
+const RELAY_EXEMPT = new Set([
+  "Explore",
+  "Plan",
+  "statusline-setup",
+  "output-style-setup",
+  ...AH_ROLE_AGENTS,
+]);
 
 /**
  * Why this dispatch must not be stamped, or "" to stamp it. Ordered cheapest
@@ -494,6 +505,24 @@ try {
     // resets the strict-mode consecutive-bypass streak (reward good behavior).
     const target = gopherKind(st);
     if (target) {
+      // Runs before the smart-gate checkpoint: an order that cannot be allowed
+      // at all should not first spend a checkpoint deciding which runner gets
+      // it. Stateless and unconditional — a hit is denied every time, in every
+      // session, because a retry pass would teach rewording rather than
+      // narrowing (spec 0001 §3, user ruling).
+      const verbatim = verbatimReadHit(t.prompt);
+      if (verbatim) {
+        logEvent({
+          pid,
+          aid,
+          event: "verbatim-deny",
+          agent: target,
+          tool: payload.tool_name,
+          detail: `${verbatim.rule}: ${verbatim.text.slice(0, 120)}`,
+        });
+        deny(verbatimDenyMessage(t.prompt, verbatim));
+      }
+
       // Least-privilege-first: each DISTINCT smart-gopher prompt gets a
       // one-shot checkpoint, same speed-bump philosophy as the strict
       // retrieval checkpoint but scoped to (session, exact prompt), not the

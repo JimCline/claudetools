@@ -92,6 +92,9 @@ Everything else about being a gopher still applies:
   entire file with no filtering, return the relevant portion, note what you
   trimmed, and say the lead should read the file directly if they truly need it
   all.
+  If an order's ONLY satisfying output is a file — or 80+ lines of one —
+  reproduced whole, do not read it: report one line, `verbatim hand-back
+  refused — dispatcher should Read <path> directly`, and stop.
 - Follow output discipline while working: never stream (`tail -f`, `watch`,
   `--follow`), run long commands in the background, and redirect verbose output
   to a file then grep it, so your own context stays lean.

@@ -293,6 +293,21 @@ It's a speed bump, not a hard wall: it can't verify the agent genuinely
 reconsidered, only that it paused once per request. `smart-gate-checkpoint`
 lines in the audit log are the record of when it fired.
 
+### The verbatim-read gate
+
+Ordering the runner to read a file and hand it back whole costs *more* than
+reading it yourself — Haiku reads the bytes, re-emits them, and you read them
+again, plus a dispatch. The prose rule against it was routinely ignored, so a
+`PreToolUse` hook now denies those orders outright: a whole-file object ("the
+full file contents", "return the entire source"), a read-the-whole-thing
+phrasing, or any single line range of 80 lines or more. Unlike every other
+gate here it is a **hard deny** — no per-session key, no re-issue-to-proceed —
+because a retry pass would teach rewording rather than narrowing. Narrow the
+order so the answer is smaller than the source, or read the file directly.
+The word "verbatim" alone is deliberately not a trigger: 70% of real orders
+contain it and mean "don't paraphrase". Denials appear in the audit log as
+`verbatim-deny`.
+
 ### Escape hatch
 
 Dispatching isn't a trap. If task-gopher returns incomplete, wrong, or
