@@ -47,6 +47,14 @@ export const NON_AUTHORING_AGENTS = new Set([
   "output-style-setup",
   "task-gopher",
   "task-gopher:task-gopher",
+  // agent-hierarchy roles that never author code: Edit/Write are denied to the
+  // reviewer and ultra-advisor, the task-runner is a retrieval runner, and the
+  // architect edits only its own markdown spec. The implementor and the
+  // orchestrator do author, and keep the injection.
+  "ah:architect",
+  "ah:reviewer",
+  "ah:ultra-advisor",
+  "ah:task-runner",
 ]);
 
 export function userConfigPath() {

@@ -1,7 +1,7 @@
 {
   "name": "comment-discipline",
   "displayName": "Comment Discipline — No Ephemeral Comments",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Blocks comments that only make sense next to the diff.",
   "author": {
     "name": "Jim Cline"

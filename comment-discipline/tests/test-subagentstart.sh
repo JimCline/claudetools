@@ -87,10 +87,19 @@ run "$SPAWN" "$GENERAL"
 check "output is not bare text" 'printf "%s" "$OUT" | head -c 1 | grep -q "{"'
 
 # ---- non-authoring agent types are skipped (optimization, matched exactly)
-for t in Explore Plan output-style-setup task-gopher task-gopher:task-gopher; do
+for t in Explore Plan output-style-setup task-gopher task-gopher:task-gopher \
+         ah:architect ah:reviewer ah:ultra-advisor ah:task-runner; do
   forget
   run "$SPAWN" "$(spawn_payload "$t")"
   check "skips non-authoring agent: $t" is_silent
+done
+
+# The two hierarchy roles that DO author code keep the injection — the skip set
+# is about authoring, not about being a hierarchy role.
+for t in ah:implementor ah:orchestrator; do
+  forget
+  run "$SPAWN" "$(spawn_payload "$t")"
+  check "still injects for authoring hierarchy role: $t" has_rule
 done
 
 # Exact match, not substring: a custom agent whose name merely CONTAINS a
