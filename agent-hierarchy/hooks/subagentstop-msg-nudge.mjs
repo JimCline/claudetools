@@ -37,6 +37,20 @@ function block(reason) {
   process.exit(0);
 }
 
+// Spec 0045 §9.2: the response FILE carries the report; a long inline echo of it
+// after the pointer line is paid for twice. Counted after the pointer so a long
+// absolute path never trips the cap, and set high (E2: median echo 641 B, max
+// 5,016) so the block only catches the tail — a cap near the median costs a
+// round trip about as often as it saves one.
+const ECHO_CAP = 2000;
+
+function echoBytesAfterPointer(text, id) {
+  const lines = String(text || "").split("\n");
+  const i = lines.findIndex((l) => l.includes("[hierarchy-msg") && l.includes(id));
+  if (i < 0) return 0;
+  return Buffer.byteLength(lines.slice(i + 1).join("\n").trim(), "utf8");
+}
+
 function textOf(message) {
   if (typeof message === "string") return message;
   if (Array.isArray(message)) return message.map((p) => (p && typeof p.text === "string" ? p.text : "")).join("\n");
@@ -96,7 +110,19 @@ try {
   if (!meta || meta.type !== "request") allow();
 
   const last = typeof input.last_assistant_message === "string" ? input.last_assistant_message : scanned.lastAssistant;
-  if (hasResponseToken(last, meta.id)) allow();
+  if (hasResponseToken(last, meta.id)) {
+    const echo = echoBytesAfterPointer(last, meta.id);
+    if (echo <= ECHO_CAP) allow();
+    // Bounded the same way the missing-response nudge is: one block per agent,
+    // so an agent that cannot comply is not stopped forever. Its own record
+    // type, so an over-long report does not spend the missing-response slot.
+    if (hasGate(dir, (r) => r.type === "echo-cap" && r.agent_id === agentId)) allow();
+    appendGate(dir, { type: "echo-cap", agent_id: agentId, session_id: input.session_id || null, id: meta.id, bytes: echo });
+    block(
+      `ah: final message must be \`[hierarchy-msg <path>]\` + one status bullet — the file carries the report. ` +
+        `You wrote ${echo} B after the pointer line (cap ${ECHO_CAP}); trim and stop again.`
+    );
+  }
 
   // Spec 0028 §4.3 (r4, finding 2): the one-shot-per-agent_id bound stays —
   // a second block here would be unbounded, not a fix. What was missing was

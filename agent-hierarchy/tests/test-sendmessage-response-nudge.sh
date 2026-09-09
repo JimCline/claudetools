@@ -146,6 +146,29 @@ seed_qualifying "s12"
 hook "s12" "architect" "ct-orchestrator" "[hierarchy-msg $ARCH_RESP]"
 check "12: valid response token whose id matches -> allow" 'allowed'
 
+# ---- 12b: echo cap (spec 0045 §9.2). Same rule on the peer route: the response
+# file carries the report, so a long inline copy after the pointer is denied
+# once per obligation.
+SHORT_ECHO="$(node -e 'process.stdout.write("- done: PASS. ".padEnd(300,"x"))')"
+LONG_ECHO="$(node -e 'process.stdout.write("- done: PASS. ".padEnd(2500,"x"))')"
+
+seed_qualifying "s12b"
+hook "s12b" "architect" "ct-orchestrator" "[hierarchy-msg $ARCH_RESP]
+$SHORT_ECHO"
+check "12b: 300 B after the pointer -> allow" 'allowed'
+
+seed_qualifying "s12c"
+hook "s12c" "architect" "ct-orchestrator" "[hierarchy-msg $ARCH_RESP]
+$LONG_ECHO"
+check "12c: 2500 B after the pointer -> deny" 'denied'
+check "12c: reason names the cap" 'echo "$OUT" | grep -q "cap 2000"'
+check "12c: reason states the contract" 'echo "$OUT" | grep -q "one status bullet"'
+check "12c: recorded in gates.jsonl" 'grep -q "\"type\":\"send-echo-cap\"" "$HD/gates.jsonl"'
+
+hook "s12c" "architect" "ct-orchestrator" "[hierarchy-msg $ARCH_RESP]
+$LONG_ECHO"
+check "12c: second attempt for the same obligation -> allow (bounded)" 'allowed'
+
 msg new --to architect --from orchestrator --slug arch-other
 OTHER_ID=$(field id)
 msg new --type response --id "$OTHER_ID"

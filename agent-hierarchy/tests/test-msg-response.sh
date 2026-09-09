@@ -111,6 +111,31 @@ write_transcript "$T3" "[hierarchy-msg $REQ3]" "[hierarchy-msg $RESP2]"
 nudge a3 ah:reviewer "[hierarchy-msg $RESP2]" "$T3"
 check "pointer to a response for a DIFFERENT id -> block" 'blocked'
 
+# ---- 2b: echo cap (spec 0045 §9.2). The response file carries the report, so a
+# long inline copy of it after the pointer line is blocked ONCE per agent.
+SHORT_ECHO="$(node -e 'process.stdout.write("- done: PASS. ".padEnd(300,"x"))')"
+LONG_ECHO="$(node -e 'process.stdout.write("- done: PASS. ".padEnd(2500,"x"))')"
+nudge a2c ah:reviewer "[hierarchy-msg $RESP2]
+$SHORT_ECHO" "$T2"
+check "echo cap: 300 B after the pointer -> allow" 'allowed'
+
+nudge a2d ah:reviewer "[hierarchy-msg $RESP2]
+$LONG_ECHO" "$T2"
+check "echo cap: 2500 B after the pointer -> block" 'blocked'
+check "echo cap: reason names the cap" 'echo "$OUT" | grep -q "cap 2000"'
+check "echo cap: reason states the contract" 'echo "$OUT" | grep -q "one status bullet"'
+check "echo cap: recorded in gates.jsonl" 'grep -q "\"type\":\"echo-cap\".*\"agent_id\":\"a2d\"" "$HD/gates.jsonl"'
+
+nudge a2d ah:reviewer "[hierarchy-msg $RESP2]
+$LONG_ECHO" "$T2"
+check "echo cap: second stop of the same agent_id -> allow (bounded)" 'allowed'
+
+# A long ABSOLUTE PATH on the pointer line must never trip the cap — the count
+# starts after that line.
+nudge a2e ah:reviewer "[hierarchy-msg $RESP2] $(node -e 'process.stdout.write("".padEnd(2500,"p"))')
+- done: PASS" "$T2"
+check "echo cap: bytes on the pointer line itself do not count" 'allowed'
+
 # ---- 3: last_assistant_message absent -> read the transcript's last assistant line
 nudge a4 ah:reviewer - "$T2"
 check "no last_assistant_message: transcript last assistant line has pointer -> allow" 'allowed'

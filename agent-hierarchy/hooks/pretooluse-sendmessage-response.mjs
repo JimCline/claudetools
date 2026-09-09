@@ -55,6 +55,27 @@ function requesterOf(rec) {
   return req && req.fm && req.fm.from ? req.fm.from : "orchestrator";
 }
 
+// Spec 0045 §9.2: the response FILE carries the report; a long inline echo of it
+// after the pointer line is paid for twice. Counted after the pointer so a long
+// absolute path never trips the cap, and set high (E2: median echo 641 B, max
+// 5,016) so the deny only catches the tail.
+const ECHO_CAP = 2000;
+
+function echoBytesAfterPointer(text, id) {
+  const lines = String(text || "").split("\n");
+  const i = lines.findIndex((l) => l.includes("[hierarchy-msg") && (!id || l.includes(id)));
+  if (i < 0) return 0;
+  return Buffer.byteLength(lines.slice(i + 1).join("\n").trim(), "utf8");
+}
+
+function echoCapReason(bytes) {
+  return [
+    `ah: this SendMessage did not send — your final message must be [hierarchy-msg <path>] + one status bullet; the file carries the report.`,
+    `You wrote ${bytes} B after the pointer line (cap ${ECHO_CAP}).`,
+    "Trim the body to the pointer line plus the [1] status bullet and send again.",
+  ].join("\n");
+}
+
 function denyReason(qualifying, role) {
   const lines = [
     "ah: this SendMessage did not send — you hold an unanswered message-file request and must reply with a response FILE, not inline prose.",
@@ -112,7 +133,14 @@ try {
     for (const rec of qualifying) {
       const meta = parseMsgFilename(rec.msg);
       const check = validateResponseToken(text, dir, callerRole, meta ? meta.id : null);
-      if (check.ok) decide(null);
+      if (!check.ok) continue;
+      const id = meta ? meta.id : rec.msg;
+      const echo = echoBytesAfterPointer(text, meta ? meta.id : null);
+      // Bounded like the missing-response nudge above: one deny per obligation,
+      // so an agent that cannot comply is never stuck.
+      if (echo <= ECHO_CAP || hasGate(dir, (r) => r.type === "send-echo-cap" && r.id === id)) decide(null);
+      appendGate(dir, { type: "send-echo-cap", id, session_id: sessionId, bytes: echo });
+      decide("deny", echoCapReason(echo));
     }
     // Present but satisfies no open request: re-check the oldest for the reported reason.
     const meta = parseMsgFilename(qualifying[0].msg);
