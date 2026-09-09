@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * agent-hierarchy — PreToolUse gate for `mcp__ah__roster_disband_close` (spec 0016 §4.5.1) and
- * `mcp__ah__roster_dismiss_close` (spec 0020 §4.1) — whole-team close and single-member close,
+ * agent-hierarchy — PreToolUse gate for `mcp__ah__team_disband` mode:close (spec 0016 §4.5.1) and
+ * `mcp__ah__team_dismiss` mode:close (spec 0020 §4.1) — whole-team close and single-member close,
  * the only two MCP tools that execute `herdr pane close`/`tmux kill-pane`.
  *
  * Matches ONLY these two exact MCP tool names, never a wildcard/prefix/suffix rule — prompting
@@ -28,12 +28,12 @@ import { readTeam } from "./lib-roster.mjs";
 // the server is installed (plugin-supplied vs a `.mcp.json`-registered `ah` server),
 // not on this code. `mcp__plugin_ah_ah__` is the confirmed live shape for this repo.
 const GATED_TOOLS = new Set([
-  "mcp__plugin_ah_ah__roster_disband_close",
-  "mcp__ah__roster_disband_close",
-  "mcp__plugin_ah_ah__roster_dismiss_close",
-  "mcp__ah__roster_dismiss_close",
+  "mcp__plugin_ah_ah__team_disband",
+  "mcp__ah__team_disband",
+  "mcp__plugin_ah_ah__team_dismiss",
+  "mcp__ah__team_dismiss",
 ]);
-const DISMISS_CLOSE_TOOLS = new Set(["mcp__plugin_ah_ah__roster_dismiss_close", "mcp__ah__roster_dismiss_close"]);
+const DISMISS_TOOLS = new Set(["mcp__plugin_ah_ah__team_dismiss", "mcp__ah__team_dismiss"]);
 
 function ask(reason) {
   process.stdout.write(
@@ -53,7 +53,9 @@ try {
   if (!GATED_TOOLS.has(input.tool_name)) process.exit(0);
 
   const toolInput = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
-  const singleMemberName = DISMISS_CLOSE_TOOLS.has(input.tool_name) && typeof toolInput.name === "string" ? toolInput.name : null;
+  // spec 0046 §3.2: plan and close share one tool now, and only mode:close destroys anything.
+  if (toolInput.mode !== "close") process.exit(0);
+  const singleMemberName = DISMISS_TOOLS.has(input.tool_name) && typeof toolInput.name === "string" ? toolInput.name : null;
   let names = singleMemberName;
   if (!names) {
     try {

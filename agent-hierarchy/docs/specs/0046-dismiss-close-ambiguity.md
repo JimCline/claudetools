@@ -1,7 +1,12 @@
 # 0046 — "dismiss" means close: team lifecycle verbs get their plain-English meaning, and the two surfaces are renamed
 
-Status: **r3, design.** Brief `20260909-123401-1gcs` + user rulings U1–U5
+Status: **r4, design.** Brief `20260909-123401-1gcs` + user rulings U1–U5
 (§0) + GitHub issue #4 folded in. Fixes GitHub issues **#3** and **#4**.
+**r4** (brief `20260909-162541-psdl`): E3/E4 answered by the Implementor's
+code read — both overturned §2's assumptions about `livePeerSlots`
+(`lib-hier.mjs:735-745`); §0 cause, §2.2 attribution, §2.4 resolver, §2.5,
+§7 must-not-change, §8.3/§8.6/§8.7, §10 rewritten against what the code
+and `peers.jsonl` actually carry; r2 alias residue (§5.8, §8.7) removed.
 Ships as agent-hierarchy **0.71.0** (after 0.70.0 from spec 0045);
 `.claude-plugin/plugin.json:4` and root `.claude-plugin/marketplace.json:19`
 bump together. r1 shipped only the four #3 tools and deferred the rename to
@@ -25,16 +30,35 @@ PreToolUse `ask` (`hooks/pretooluse-disband-close-gate.mjs`, matcher
 (ListAgents display name `cam423-architect`; `msg_roster` form
 `architect@754fffb1`): *"no member named … it has: (none); checked live
 peer records too"* (`roster.mjs:2431`). Sessions were live with `pane_id`
-in `peers.jsonl`; the user closed them with raw `herdr pane close`. Cause:
-the team.json row is the only name → transport path close knows
-(`roster.mjs:2415` matches `m.name` only); the peers.jsonl fallback
-(`peerFallbackMembers`, `:1457-1466`) does run when no row matches, but it
-matches on its own derived `s.name` from `livePeerSlots`, which is none of
-the names the user had in hand — and `peers.jsonl` records carry
-`role, session_id, pid, pane_id, tab_id, cwd, team` (`sessionstart.mjs:119-138`),
-no display name. Nothing lists "live but untracked" sessions anywhere
-(`show` lists team.json only; "orphaned" in the code means orchestrator-dead
-teams, `:2921-2938`).
+in `peers.jsonl`; the user closed them with raw `herdr pane close`. Cause
+(r4, from the E3/E4 code read): the team.json row is the only name →
+transport path close knows (`roster.mjs:2415` matches `m.name` only); the
+peers.jsonl fallback (`peerFallbackMembers`, `:1457-1466` →
+`livePeerSlots(dir, teamArg || null)`, `lib-hier.mjs:735-745`) does run —
+`members: []` does **not** short-circuit; disband's close set is already
+`closableMembers([...healedMembers, ...peerExtras(dir, team)])` (`:2313`)
+— but `livePeerSlots` drops the live peers two independent ways:
+
+- `:738` skips every record with no `name`. The rows `sessionstart.mjs:116-131`
+  writes are `{status:"up", role, session_id, pid, ppid, cwd, pane_id,
+  tab_id, workspace_id, team?}` — **never `name`** (deliberate, `:127-129`:
+  `rosterKey = name || session_id`, and a name would merge the row with
+  posttooluse-roster's differently-keyed rows). The only named rows are
+  posttooluse-roster's `seen`/`briefed` rows (`:68`, `:76`), whose `name`
+  is whatever string the orchestrator SendMessage'd — so a registered peer
+  that was never briefed by name is invisible to the fallback, always.
+- `:741` keeps a record only when its effective team `=== team`, and with
+  no `--team` the scope is `null`; a peer tagged with the team it belongs
+  to (`rec.team = resolved.teamName`, `sessionstart.mjs:130`) is filtered
+  *out*. Only untagged peers survive a bare disband/dismiss fallback — the
+  inverse of what #4 needed.
+
+`peers.jsonl` carries no display name; `herdr agent get` (`roster.mjs:583-600`)
+is keyed by name, but `herdr agent list` (`queryHerdrTopology`, `:688-692`)
+returns `{name, pane_id, …}` for every live herdr agent — the display name
+→ `pane_id` map exists, it is just not consulted. Nothing lists "live but
+untracked" sessions anywhere (`show` lists team.json only; "orphaned" in
+the code means orchestrator-dead teams, `:2921-2938`).
 
 User rulings (design targets, not options):
 
@@ -131,13 +155,50 @@ Params: `mode: plan | close` (default plan), `confirm`, `plan_token`,
 `allow_global`.
 
 - **plan**: today's `roster_disband` plan — close list = team.json members
-  **∪ live peers attributed to this team** (today's `peerExtras`; a peer is
-  attributed by its `team` tag, or — untagged — by `cwd` under this
-  checkout, exactly as `peerFallbackMembers` scopes today), `source` per
-  entry, resync summary. **An empty `members: []` must not short-circuit
-  the plan**: the close list is the union, and the union is non-empty
-  whenever a live attributed peer exists (E4: the Implementor confirms why
-  #4's `roster_disband_close` failed and pins it with the §8 test).
+  **∪ live peers attributed to this team** (today's `peerExtras` union at
+  `:2313`, kept), `source` per entry, resync summary. **Attribution rule
+  (r4, replaces "exactly as `peerFallbackMembers` scopes today" — today's
+  scoping is the #4 bug, §0):** let T be the team being disbanded (the
+  team.json `readTeam` returned at the resolved scope, named or default).
+  A live, not-`down` `peers.jsonl` record — **named or nameless** — is
+  attributed to T iff its effective team **equals T's `teamName`**, where
+  the default-scope team's `teamName` is `null` (`lib-roster.mjs:384`,
+  `resolveSessionTeam` `:443-456`) — the same value `sessionstart.mjs:130`
+  tags, so a default-team peer is *untagged* and a named-team peer carries
+  that team's name. Effective team = team.json membership when the
+  record's name has one, else its own `team` tag, exactly as `:739-741`
+  computes today. A record whose effective team is a *different* team is
+  excluded — disbanding named team T never closes default-team or sibling
+  peers, and a bare default-team disband never closes a named team's
+  (the isolation rule `roster()` states, `lib-hier.mjs:747-760`). In the
+  no-team.json branch (`:2293`, spec 0040 §1.1) the scope is "no-team":
+  attributed = untagged records **plus** records whose tag names no team
+  file that exists in this checkout (orphans of a removed team — the
+  untrack-all-then-disband path); a tag naming an existing team stays
+  with that team.
+  **What actually changes:** the comparison at `:741` is already this
+  rule; the bug is the *scope passed in* — `peerFallbackMembers` passes
+  `teamArg || null` (`:1463`, the `--team` flag), not the identity of the
+  team the command is operating on (`readTeam(dir, teamFile)`, `:2292` /
+  `:2410`). The scope must be **T's `teamName` as resolved for
+  `teamFile`** — null for the default file — for every fallback caller
+  (`peerExtras` `:1470`, dismiss `:2418`, no-team disband `:2296` with the
+  "no-team" scope). The `:1458-1462` comment's fear ("a derived scope
+  filters every untagged peer out") holds only when the derived team is
+  named, and then excluding untagged (default-team) peers is *correct*;
+  replace the comment with this rule. This is the Implementor's (b),
+  stated with `null` as the default team's name; (a) "any team in the
+  checkout" would close sibling teams on a bare disband; (c) "union of
+  null and T" would close default-team peers when disbanding a named T.
+  The rule lives in one place and every fallback caller reaches it
+  through that one place; the second half of the fix — nameless rows — is
+  §2.4's synthesized name.
+  **Dedup:** the close set is deduplicated on `transport_id` (`pane_id`),
+  falling back to `session_id` — the same session can appear as a nameless
+  `up` row and a named `briefed` row (`rosterKey` partitions them) and
+  must be closed once.
+  **An empty `members: []` never short-circuits**: the union is non-empty
+  whenever a live attributed peer exists (E4 resolved, §10; pinned by §8.6).
 - **close**: today's `roster_disband_close` (`:2291-2317`) **plus
   bookkeeping**: every team.json member closed → team file removed
   (`clearTeam`, `:2328`); some failed → team.json rewritten minus the ones
@@ -172,38 +233,77 @@ no record to forget; such a `name` fails with "not tracked; it is live —
   agent that untracks after a close that already dropped the row must not
   see an error).
 - `plan` reports what would be removed and each target's liveness.
+- **Output shape (r4 impl, accepted at review r1):** the two predecessors it
+  "equals" had different shapes, so the single-member commit output leads with
+  `untracked: true`, not the old `dismissed: true` — `dismiss` now means "closed
+  the session", and a caller grepping `dismissed` on this output would read a
+  still-live session as gone. It also carries `removed: <name>` alongside the
+  existing `member`, `team_id`, `remaining`, `team_empty`, `config`, `store`.
 
 ### 2.4 Target resolution for `team_dismiss` (and `team_move` unchanged)
 
-Order, first match wins; every form case-sensitive as stored:
+Order, first match wins; every form case-sensitive as stored. (r4:
+rewritten against what `peers.jsonl` carries — `sessionstart` rows have
+`role, session_id, pid, ppid, cwd, pane_id, tab_id, workspace_id, team?`
+and **no `name`**; `seen`/`briefed` rows have `name, role, team` and no
+`session_id`/`pane_id`. `livePeerSlots` must stop skipping nameless rows
+(`lib-hier.mjs:738`) and must carry `session_id` in each slot, §7.)
 
 1. team.json `members[].name` (derived name; today's `:2415`). A **role**
    name that is not a member name keeps today's `:2429` refusal *unless*
-   exactly one live peer of that role is attributed to the team, in which
-   case it resolves (form 3 below) — one architect, "dismiss the
+   exactly one live peer of that role is attributed to the team (§2.2
+   scope), in which case it resolves — one architect, "dismiss the
    architect" is unambiguous.
 2. — when 1 fails, over **live** `peers.jsonl` records attributed to the
-   team (same scoping as `peerFallbackMembers`) — `pane_id` exact;
-   `session_id` exact or unique ≥ 8-char prefix; `role@<session_id prefix>`
-   (the `msg_roster` form, `architect@754fffb1`); `livePeerSlots`' own
-   `s.name` (today's fallback, kept); and the herdr agent / ListAgents
-   display name when the transport can report one (E3).
-3. Ambiguous (two live peers match) → fail listing the candidates with all
-   their identifiers; never pick.
+   team (§2.2 scope, through the same one place):
+   - `pane_id` exact (`sessionstart` rows);
+   - `session_id` exact, or a unique prefix of ≥ 8 chars;
+   - the **synthesized name `role@<first 8 chars of session_id>`** —
+     byte-identical to what `roster()` builds for a nameless record at
+     `lib-hier.mjs:786` (`${role}@${session_id.slice(0,8)}`), which is
+     the name `team_list` / `msg_roster` print (#4's `architect@754fffb1`).
+     Invariant: **every name `team_list` prints for a live peer is
+     accepted by `team_dismiss`** — reuse that expression, never a second
+     formatter;
+   - a `briefed`/`seen` row's `name` (today's `s.name` form, kept —
+     matches only peers the orchestrator has addressed by that string);
+   - **herdr display name** (#4's `cam423-architect`): when the team's
+     transport is herdr (or no team.json and herdr is on PATH), map the
+     name → `pane_id` through `queryHerdrTopology()` (`roster.mjs:688-692`,
+     `herdr agent list`, the single herdr exec site — spec 0002 §11.3
+     forbids a second), then match that `pane_id` as above. Tried last
+     because it costs a herdr call; skipped, not failed, when herdr is
+     absent or the call fails (`allowFailure`). `herdr agent get` (`:583`)
+     is keyed by name and is *not* the path — the Implementor's E3 read
+     looked there only.
+3. Ambiguous (two live records match — e.g. a session-id prefix shared by
+   two rows) → fail listing every candidate with all its identifiers
+   (`role@sid8`, `pane_id`, `session_id`, `pid`); never pick. A nameless
+   `up` row and a `briefed` row for the same session are one candidate
+   when they share `pane_id` (or the briefed row has none) — dedup as
+   §2.2.
 
 A peers-resolved member carries `source: 'peers'`, `route: 'peer'`,
-`transport_id: pane_id` — the shape `peerFallbackMembers` already returns
-(`:1465`), so `closeOne` (`:1481`, reads `name`, `transport_id`, `source`)
-needs no change. Resolution lives in one place and is reused by dismiss
-plan, dismiss close, and the §2.1 error text.
+`transport_id: pane_id`, `name` (the synthesized or briefed name),
+`session_id` — the shape `peerFallbackMembers` returns today (`:1465`)
+plus `session_id`, so `closeOne` (`:1481`, reads `name`, `transport_id`,
+`source`) needs no change. A resolved record with no `pane_id` keeps
+today's `:2439` "no addressable pane" failure. Resolution lives in one
+place and is reused by dismiss plan, dismiss close, and the §2.1 error
+text (which lists the unresolved target's candidates as `untracked_live`
+entries, §2.5).
 
 ### 2.5 Orphan visibility — `untracked_live`
 
 `team_list` (renamed `roster_teams`, §6.1) output gains, per team, an
 `untracked_live: [...]` array — live peers attributed to that team with no
-team.json row — and a top-level `untracked_live` for live peers attributed
-to no team; each entry carries `role`, `pane_id`, `session_id`, `pid`,
-`cwd`, and the `role@sid8` form. `team_reap` reports the same list in its
+team.json row (§2.2 attribution) — and a top-level `untracked_live` for
+live peers attributed to no existing team; each entry carries `name` (the
+§2.4 synthesized `role@sid8`, from the same `lib-hier.mjs:786` expression,
+or the briefed name), `role`, `pane_id`, `session_id`, `pid`, `cwd`.
+Today's `teams` output (`roster.mjs:2802-2856`: `name, team_id, …,
+members, partial, orphaned, misplaced_members, misplaced_unattributed`)
+is unchanged otherwise. `team_reap` reports the same list in its
 output (`untracked_live`, no action taken — reap's contract stays
 orchestrator-dead teams only). The `/agent-team` skill's status/`list`
 guidance says: an `untracked_live` entry is closed with `team_dismiss
@@ -302,7 +402,7 @@ content (wording is the Implementor's; every point must be present):
    from both skills, `commands/agent-team.md` (argument-hint gains
    `untrack`), `commands/agent-roster.md:11-13`, `CONTEXT.md:34`,
    `README.md:366`, `docs/mcp-tools.md` (20 refs — the CLI-fallback table
-   must list the new names with the old as aliases), `docs/troubleshooting.md`
+   lists the new names only; no alias column, U5), `docs/troubleshooting.md`
    (3). Spec files are history and stay.
 
 ## 6. Rename map — all in 0046 (U3)
@@ -372,10 +472,22 @@ the rule for *future* renames unless the user rules otherwise again.
 
 Must NOT change: `closeToken` inputs (`roster.mjs:1366-1369`; comment at
 `:2470-2474`); the `ask` text; `resyncMembers`, `closeOne`,
-`closeMemberPane`, `clearTeam`, `writeTeam`, `peerFallbackMembers`
-signatures; spec 0040 no-team.json outputs; `roster_show`; `msg_*`; the
-peers.jsonl record shape (`sessionstart.mjs:119-138`) — resolution reads
-it, never widens it.
+`closeMemberPane`, `clearTeam`, `writeTeam` signatures; spec 0040
+no-team.json outputs; `roster_show`; `msg_*`; the peers.jsonl **record**
+shape (`sessionstart.mjs:116-131`) — resolution reads it, never widens it;
+`rosterKey` / `latestRoster` partitioning (`lib-hier.mjs:679-691`); the
+`roster()` function's output (`:762+`, the `team_list`/status surface —
+its synthesized name for nameless records is *reused*, not changed).
+
+**Relaxed in r4 (brief ruling): `livePeerSlots` (`lib-hier.mjs:735-745`)
+and `peerFallbackMembers` (`roster.mjs:1457-1466`).** Their RETURN shape
+widens — each slot/member also carries `session_id` and, for a nameless
+record, `name` = the synthesized `role@…` name `roster()` produces for
+that record (§2.4) — and their attribution scoping changes per §2.2. The
+`!rec.name` skip at `:738` goes. Signatures may gain a scope argument;
+`closeOne` keeps reading only `name`, `transport_id`, `source`, so the
+widened shape is additive for it. The peers.jsonl record itself is not
+widened — no `name` on `sessionstart` rows (the `:127-129` comment stands).
 
 ## 8. Verification — tests that fail without the change
 
@@ -391,7 +503,12 @@ Extend `tests/test-mcp-server.sh`, `test-roster-dismiss.sh`,
 2. `team_dismiss` close on a live fake member: pane closed AND row gone,
    `untracked:true`; forced close failure → row kept, `untracked:false`.
 3. `team_disband` close: all closed → team file gone; one failure → file
-   rewritten minus the closed, `partial:true`.
+   rewritten minus the closed, `partial:true`. Failure knob = the existing
+   `FAKE_HERDR_CLOSE_FAIL_ID=<pane_id>` in the fake herdr
+   (`test-roster-disband-close.sh:40-46`; E2 resolved r4); the fixture's
+   `$FAKE_HERDR_STATE` agents plus a `peers.jsonl` with one nameless `up`
+   row (`pane_id` set, `team` tag = the team's name or absent for the
+   default team) so the close set exercises §2.2's union.
 4. `team_untrack` live member without `keep_sessions` → non-zero, message
    names `team_dismiss` and `keep_sessions`; with it → row removed, no close
    recorded. Dead member → removed, no guard. Missing → `already_untracked`.
@@ -402,18 +519,33 @@ Extend `tests/test-mcp-server.sh`, `test-roster-dismiss.sh`,
    for the old name (byte-for-byte on the fake transport) except the
    additive fields (`untracked`, `partial`, `already_untracked`,
    `untracked_live`).
-6. **#4 fails-without**: `team_untrack <name> keep_sessions:true` on a live
-   fake member (the incident's `roster_dismiss --commit` path, now this),
-   then `team_dismiss` plan+close by (a) `pane_id`, (b) `role@sid8`, (c)
-   session-id prefix, (d) `s.name` → each closes; HEAD fails "no member
-   named". `team_disband` close after `members: []` with one live attributed
-   peer → closes it (E4). `team_list` shows the member under
-   `untracked_live` before the close and not after. Unresolvable name →
-   error lists the `untracked_live` entries with their id forms; ambiguous
-   prefix → error lists both candidates, closes nothing.
-7. Close gate: `team_dismiss` plan → pass; close → `ask` (existing text);
-   `roster_dismiss_close` → `ask`. Matcher near-miss test extended to the
-   new names, both prefixes.
+6. **#4 fails-without** (`tests/test-team-untracked-live.sh`): fixture =
+   team.json with one member, `peers.jsonl` with that member's
+   `sessionstart`-shaped row — **nameless**: `{status:"up", role, session_id,
+   pid (alive: the test's own shell pid), pane_id:"PANE1", cwd}` and the
+   team's tag as `sessionstart.mjs:130` would write it (absent/`null` for
+   the default team; run the case twice, default team and `--team named`)
+   — and `$FAKE_HERDR_STATE` listing `{name:"cam423-architect",
+   pane_id:"PANE1"}`. Then `team_untrack <name> keep_sessions:true` (the
+   incident's `roster_dismiss --commit` path) leaves `members: []` and the
+   row. Then `team_dismiss` plan+close by (a) `pane_id`, (b) `role@sid8`
+   built from the fixture's `session_id`, (c) an 8-char session-id prefix,
+   (d) the herdr display name `cam423-architect` (fake `herdr agent list`
+   read from `$FAKE_HERDR_STATE`), (e) a `briefed` row's name after
+   appending one → each closes `PANE1` (invocation log) and reports
+   `untracked:true`; HEAD fails "no member named … checked live peer
+   records too" (`:2431`) for every form. `team_disband` close on the same
+   `members: []` state → closes `PANE1` (E4, both team scopes). `team_list`
+   shows the peer under `untracked_live` with `name` equal to the string
+   (b) used, before the close and not after. Unresolvable name → error
+   lists the `untracked_live` entries with their id forms; two rows sharing
+   a prefix → error lists both candidates, closes nothing. Named team T +
+   an untagged (default-team) live row → `team_disband --team T` does
+   **not** list or close it (isolation).
+7. Close gate: `team_dismiss` / `team_disband` plan → pass; close → `ask`
+   (existing text). Matcher near-miss test extended to the new names, both
+   prefixes; an old `_close` name is *not* in the matcher (it no longer
+   exists — asserting `ask` on it was r2 residue, removed r4).
 8. Skill gate denies each of the eight lifecycle verbs once per session;
    the matcher near-miss test asserts no `roster_*` name is in either
    matcher.
@@ -436,6 +568,19 @@ identifier + `untracked_live` on `team_list` and `team_reap` (not
 Ruled (r3): **U2** = `also_config` on `team_dismiss`, opt-in, as written.
 **U5** = no aliases; §7 exception note.
 
+Ruled (r4, Architect — no new user decision): **attribution scope** = the
+operated-on team's `teamName` (null = default), passed by every fallback
+caller in place of `teamArg` (§2.2, Implementor's option (b)). **Nameless
+rows** become slots named by `roster()`'s own `role@sid8` expression —
+one formatter, so `team_list` output and `team_dismiss` input agree.
+**Display name** form stays, resolved via `queryHerdrTopology()`
+(`herdr agent list`), herdr transport only. `livePeerSlots` /
+`peerFallbackMembers` leave the must-not-change list for return shape and
+scope (§7); the peers.jsonl record does not. E1 accepted on the
+Implementor's inference (the close gate already reads `tool_input` for
+this tool class; `test-disband-close-gate.sh:25`, `:73`) — no live
+capture.
+
 Refused: a PreToolUse liveness hook; a "dismiss the team?" question for
 close verbs (the harness `ask` is one); deleting tracking-only; changing
 slash-command verb names; a special "renamed to X" error for old tool
@@ -445,22 +590,24 @@ whether the transport can supply the display name at resolve time).
 
 ## 10. NEEDS-EVIDENCE
 
-- **E1** — PreToolUse payload for an MCP tool carries `tool_input.mode` as
-  a string (the close gate already reads `tool_input` at `:55-56`; expected
-  yes). If not: new-name gate always `ask` — safe, noisier.
-- **E2** — the fake transport in `test-roster-disband-close.sh` can fail
-  one member's close (needed for §8.3); else add the knob to the stub.
-- **E3** — how `livePeerSlots` derives `s.name`, and which of #4's two
-  forms (`cam423-architect`, `architect@754fffb1`) it would have produced;
-  whether the herdr transport can report the agent/display name for a
-  `pane_id` at resolve time (`herdr agent get`, `:583-602`). Decides
-  whether §2.4's "display name" form is resolvable or documented as
-  "use `pane_id` / `role@sid8`".
-- **E4** — why `roster_disband_close` failed in #4 with `members: []` and a
-  live attributed peer: empty-members short-circuit, peer not attributed
-  (no `team` tag and `teamArg` scoping), or token mismatch. The answer
-  fixes §2.2's plan-list rule or the attribution rule; the §8.6 test pins
-  whichever it is.
+All four resolved in r4; none open.
+
+- **E1** — accepted by inference (§9): PreToolUse passes the MCP tool's
+  argument object through as `tool_input`, so `mode` is present as a
+  string. Fallback if a live run ever disagrees: new-name gate always
+  `ask` — safe, noisier.
+- **E2** — resolved: the fake herdr already has `FAKE_HERDR_CLOSE_FAIL_ID`
+  (`test-roster-disband-close.sh:40-46`); §8.3 uses it.
+- **E3** — resolved: `livePeerSlots`' `s.name` is only ever a
+  `seen`/`briefed` row's SendMessage-target string (`posttooluse-roster.mjs:68`,
+  `:76`); `sessionstart` rows have no `name` and were skipped outright
+  (`lib-hier.mjs:738`) — neither of #4's forms could match. The display
+  name IS resolvable, via `herdr agent list` (`queryHerdrTopology`,
+  `roster.mjs:688-692`), not `agent get`. §2.4 rewritten accordingly.
+- **E4** — resolved: not a short-circuit and not the token; the peers were
+  excluded by `livePeerSlots` (`:738` nameless skip; `:741` scope
+  mismatch because `peerFallbackMembers` passes `teamArg`, not the
+  operated-on team). §2.2 rewritten; §8.6 pins both, in both team scopes.
 
 ## 11. What the full rename makes risky
 
@@ -496,10 +643,12 @@ whether the transport can supply the display name at resolve time).
 ## 12. Confidence
 
 High on the #3 shape and the rename mechanics (every step reuses an
-existing function; no alias layer to get wrong). Medium on #4 recovery until
-E3/E4 — the resolver's forms are right by construction, but whether #4's
-*specific* failure was name-form or attribution is unmeasured, and the
-§8.6 test must reproduce the incident's exact path (`roster_dismiss
---commit` then close by display name) before it is believed. Not
-recommending Ultra-Advisor: the destructive gate is unchanged; new
-behaviour is additive or behind an explicit parameter; U5 is ruled.
+existing function; no alias layer to get wrong). High on #4 after r4: the
+cause is read off two lines of `livePeerSlots`, both fixes reuse existing
+expressions (`roster()`'s `role@sid8`, `queryHerdrTopology`), and §8.6
+reproduces the incident's exact path in both team scopes. Residual risk:
+the scope change touches every fallback caller — the isolation case in
+§8.6 (named-team disband must not close default-team peers) is the guard
+against over-closing. Not recommending Ultra-Advisor: the destructive gate
+is unchanged; new behaviour is additive or behind an explicit parameter;
+U5 is ruled.

@@ -141,7 +141,7 @@ export const TOOLS = [
     },
   },
   {
-    name: "roster_teams",
+    name: "team_list",
     description: "[/agent-team — live Team] List every team in the hierarchy dir via roster.mjs teams. Read-only.",
     inputSchema: {
       type: "object",
@@ -153,48 +153,102 @@ export const TOOLS = [
     },
   },
   {
-    name: "roster_member",
-    description: "[/agent-roster — roster TEMPLATE] Init a roster level, or add, edit, or remove a roster member, via roster.mjs. Edits the TEMPLATE for FUTURE teams and does NOT affect a running team — it launches nothing and terminates nothing. Refused while this session owns a live team (spec 0044 §1.3): to add a member to the RUNNING team, use roster_spawn_ad_hoc.",
+    name: "roster_init",
+    description: "[/agent-roster — roster TEMPLATE] Initialise a roster level via roster.mjs member init. Edits the TEMPLATE for FUTURE teams and does NOT affect a running team — it launches nothing and terminates nothing. Refused while this session owns a live team (spec 0044 §1.3): to add a member to the RUNNING team, use team_spawn_ad_hoc.",
     inputSchema: {
       type: "object",
       properties: {
         cwd: cwdSchema,
-        action: { type: "string", enum: ["init", "add", "edit", "remove"] },
         level: levelSchema,
-        member: { type: "string", description: "The member's derived name. Required with action: edit, remove." },
-        role: { type: "string", description: "Required with action: add." },
-        model: { type: "string", description: "With action: add, edit. kind claude only — rejected for any other kind (spec 0043 §1.3)." },
-        effort: { type: "string", description: "With action: add, edit. kind claude only." },
-        route: { type: "string", enum: ["peer", "subagent", "pane"], description: "Required with action: init. \"pane\" means the member is driven through its Herdr pane rather than SendMessage, and is required for any non-claude kind (spec 0043 §1.5)." },
-        auto_mode: { type: "string", description: "With action: add, edit. kind claude only." },
-        kind: { type: "string", description: "With action: add, edit. Which agent CLI Herdr starts for this member (claude, codex, pi, …). Omitted means claude. Any non-claude kind requires route \"pane\", the herdr transport, and no model/effort/auto_mode (spec 0043)." },
-        args: { type: "array", items: { type: "string" }, description: "With action: add, edit. Native CLI arguments passed verbatim after herdr's `--`. Non-claude kinds only — rejected for kind claude, where model/effort/auto_mode are the validated channel (spec 0043 §1.9)." },
-        on_missing: { type: "string", enum: ["auto", "prompt", "never"], description: "With action: add, edit. Peer-routed members only." },
-        layout: { type: "string", enum: ["auto", "columns", "grid"], description: "With action: init." },
+        route: { type: "string", enum: ["peer", "subagent", "pane"], description: "\"pane\" means the member is driven through its Herdr pane rather than SendMessage, and is required for any non-claude kind (spec 0043 §1.5)." },
+        layout: { type: "string", enum: ["auto", "columns", "grid"] },
       },
-      required: ["cwd", "action"],
+      required: ["cwd", "route"],
     },
   },
   {
-    name: "roster_config",
-    description: "[/agent-roster — roster TEMPLATE] Show or set a roster level's pane layout, or the repo's team-name alias, via roster.mjs. Edits the TEMPLATE for FUTURE teams and does NOT affect a running team. Refused while this session owns a live team (spec 0044 §1.3).",
+    name: "roster_add",
+    description: "[/agent-roster — roster TEMPLATE] Add a member to the roster via roster.mjs member add. Edits the TEMPLATE for FUTURE teams and does NOT affect a running team — it launches nothing and terminates nothing. Refused while this session owns a live team (spec 0044 §1.3): to add a member to the RUNNING team, use team_spawn_ad_hoc.",
     inputSchema: {
       type: "object",
       properties: {
         cwd: cwdSchema,
-        target: { type: "string", enum: ["layout", "alias"] },
         level: levelSchema,
-        layout: { type: "string", enum: ["auto", "columns", "grid"], description: "With target: layout. Omit to read." },
-        set: { type: "string", description: "New alias. With target: alias." },
-        clear: { type: "boolean", description: "With target: alias." },
+        role: { type: "string", description: "Required." },
+        model: { type: "string", description: "kind claude only — rejected for any other kind (spec 0043 §1.3)." },
+        effort: { type: "string", description: "kind claude only." },
+        auto_mode: { type: "string", description: "kind claude only." },
+        kind: { type: "string", description: "Which agent CLI Herdr starts for this member (claude, codex, pi, …). Omitted means claude. Any non-claude kind requires route \"pane\", the herdr transport, and no model/effort/auto_mode (spec 0043)." },
+        args: { type: "array", items: { type: "string" }, description: "Native CLI arguments passed verbatim after herdr's `--`. Non-claude kinds only (spec 0043 §1.9)." },
+        on_missing: { type: "string", enum: ["auto", "prompt", "never"], description: "Peer-routed members only." },
+      },
+      required: ["cwd", "role"],
+    },
+  },
+  {
+    name: "roster_edit",
+    description: "[/agent-roster — roster TEMPLATE] Edit an existing roster member via roster.mjs member edit. Edits the TEMPLATE for FUTURE teams and does NOT affect a running team — it launches nothing and terminates nothing. Refused while this session owns a live team (spec 0044 §1.3): to add a member to the RUNNING team, use team_spawn_ad_hoc.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        level: levelSchema,
+        member: { type: "string", description: "The member's derived name. Required." },
+        model: { type: "string", description: "kind claude only." },
+        effort: { type: "string", description: "kind claude only." },
+        auto_mode: { type: "string", description: "kind claude only." },
+        kind: { type: "string" },
+        args: { type: "array", items: { type: "string" }, description: "Non-claude kinds only." },
+        on_missing: { type: "string", enum: ["auto", "prompt", "never"] },
+      },
+      required: ["cwd", "member"],
+    },
+  },
+  {
+    name: "roster_remove",
+    description: "[/agent-roster — roster TEMPLATE] Remove a member from the roster via roster.mjs member remove. Edits the TEMPLATE for FUTURE teams and does NOT affect a running team — it launches nothing and terminates nothing. Refused while this session owns a live team (spec 0044 §1.3): to add a member to the RUNNING team, use team_spawn_ad_hoc. To close a RUNNING member's session, use team_dismiss.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        level: levelSchema,
+        member: { type: "string", description: "The member's derived name. Required." },
+      },
+      required: ["cwd", "member"],
+    },
+  },
+  {
+    name: "roster_layout",
+    description: "[/agent-roster — roster TEMPLATE] Show or set a roster level's pane layout via roster.mjs config layout. Omit `layout` to read. Edits the TEMPLATE for FUTURE teams and does NOT affect a running team. Refused while this session owns a live team (spec 0044 §1.3).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        level: levelSchema,
+        layout: { type: "string", enum: ["auto", "columns", "grid"], description: "Omit to read." },
         team: teamSchema,
       },
-      required: ["cwd", "target"],
+      required: ["cwd"],
     },
   },
   {
-    name: "roster_create",
-    description: "[/agent-team — live Team] Plan, spawn, or commit a Team from the EXISTING roster (roster_show) via roster.mjs create — an instance, not a roster edit. Do not call roster_member add/edit first unless the roster's member list itself is wrong or missing.",
+    name: "roster_alias",
+    description: "[/agent-roster — roster TEMPLATE] Show, set, or clear this repo's team-name alias via roster.mjs config alias. Edits the TEMPLATE for FUTURE teams and does NOT affect a running team. Refused while this session owns a live team (spec 0044 §1.3).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cwd: cwdSchema,
+        level: levelSchema,
+        set: { type: "string", description: "New alias." },
+        clear: { type: "boolean" },
+        team: teamSchema,
+      },
+      required: ["cwd"],
+    },
+  },
+  {
+    name: "team_create",
+    description: "[/agent-team — live Team] Plan, spawn, or commit a Team from the EXISTING roster (roster_show) via roster.mjs create — an instance, not a roster edit. Do not call roster_add/roster_edit first unless the roster's member list itself is wrong or missing.",
     inputSchema: {
       type: "object",
       properties: {
@@ -213,7 +267,7 @@ export const TOOLS = [
     },
   },
   {
-    name: "roster_adopt",
+    name: "team_adopt",
     description: "[/agent-team — live Team] Re-stamp orchestrator.pid on an existing, orphaned team file via roster.mjs adopt. Recovery only — refuses to hijack a live team.",
     inputSchema: {
       type: "object",
@@ -226,7 +280,7 @@ export const TOOLS = [
     },
   },
   {
-    name: "roster_reap",
+    name: "team_reap",
     description: "[/agent-team — live Team] List orphaned team records (mode: plan, default, read-only), or remove them (mode: commit). A team is orphaned when its orchestrator process is gone. Never touches a team whose orchestrator is alive.",
     inputSchema: {
       type: "object",
@@ -238,7 +292,7 @@ export const TOOLS = [
     },
   },
   {
-    name: "roster_layout_splits",
+    name: "team_layout_splits",
     description: "[/agent-team — live Team] Run or drive the herdr layout-splits phase via roster.mjs layout-splits.",
     inputSchema: {
       type: "object",
@@ -256,35 +310,41 @@ export const TOOLS = [
     },
   },
   {
-    name: "roster_disband",
-    description: "[/agent-team — live Team] Plan, commit, or keep-sessions a Team teardown via roster.mjs disband. Non-destructive modes only — never closes anything. With no team.json, plan mode falls back to the live peer records (peers.jsonl) and reports source:'peers'; with a team.json, the plan also lists extra live non-team peers, each labeled source:'peers' (spec 0040). commit/keep-sessions still require a team.json.",
+    name: "team_disband",
+    description: "[/agent-team — live Team] CLOSE EVERY MEMBER'S SESSION and drop the team record. This is what \"disband the team\" / \"close the team\" / \"tear down the team\" mean. Destructive: mode:plan is read-only and returns the close list plus a close_token; mode:close needs confirm:true and that token, and the harness asks the user once. On success the team file is removed; if some closes fail the file is rewritten minus the ones that closed and partial:true is reported. The close list is team.json's members plus any live peer attributed to this team (spec 0046 §2.2). To forget the record WITHOUT closing anything, use team_untrack.",
     inputSchema: {
       type: "object",
       properties: {
         cwd: cwdSchema,
         team: teamSchema,
-        mode: { type: "string", enum: ["plan", "commit", "keep-sessions"], description: "Default plan." },
+        mode: { type: "string", enum: ["plan", "close"], description: "Default plan." },
+        confirm: { type: "boolean", description: "Required with mode:close, and only after the user has been shown the close list and agreed." },
+        plan_token: { type: "string", description: "close_token from the preceding team_disband mode:plan call. Required with mode:close." },
+        allow_global: { type: "boolean" },
       },
       required: ["cwd"],
     },
   },
   {
-    name: "roster_disband_close",
-    description: "[/agent-team — live Team] Close the live sessions of a Team. Destructive; requires prior user confirmation. Closes exactly the plan's set — including extra non-team live peers labeled source:'peers', and, with no team.json, the live peer records the fallback plan listed (spec 0040).",
+    name: "team_untrack",
+    description: "[/agent-team — live Team] Forget a tracking record WITHOUT touching any session — the non-destructive counterpart to team_dismiss/team_disband. Use it only when the user says to KEEP the session running (\"leave it up\", \"just stop tracking it\"), or when the member is already dead. On a live target it REFUSES unless keep_sessions:true, because forgetting a live session leaves it running with nothing naming it; the record cannot be recovered. Untracking something already gone succeeds with already_untracked:true.",
     inputSchema: {
       type: "object",
       properties: {
         cwd: cwdSchema,
         team: teamSchema,
-        confirm: { type: "boolean", description: "Must be true, and only after the user has been shown the close list and agreed." },
-        plan_token: { type: "string", description: "close_token from the preceding roster_disband mode:plan call." },
-        allow_global: { type: "boolean" },
+        name: { type: "string", description: "A team.json member name. A live session that team.json never recorded has no record to forget — team_dismiss closes it." },
+        all: { type: "boolean", description: "Forget the whole team file instead of one member." },
+        mode: { type: "string", enum: ["plan", "commit"], description: "Default plan." },
+        keep_sessions: { type: "boolean", description: "Required to untrack a target that is live or whose liveness cannot be determined. Says: yes, leave it running untracked." },
+        also_config: { type: "boolean", description: "Single member only. ALSO remove it from the roster TEMPLATE (spec 0044 §8.1)." },
+        level: { type: "string", description: "With also_config." },
       },
-      required: ["cwd", "confirm", "plan_token"],
+      required: ["cwd"],
     },
   },
   {
-    name: "roster_resync",
+    name: "team_resync",
     description: "[/agent-team — live Team] Re-derive every peer member's herdr location from live topology via roster.mjs resync.",
     inputSchema: {
       type: "object",
@@ -298,7 +358,7 @@ export const TOOLS = [
     },
   },
   {
-    name: "roster_move",
+    name: "team_move",
     description: "[/agent-team — live Team] Relocate a member's pane via roster.mjs move.",
     inputSchema: {
       type: "object",
@@ -318,7 +378,7 @@ export const TOOLS = [
     },
   },
   {
-    name: "roster_history",
+    name: "team_history",
     description: "[/agent-team — live Team] List recent team-history entries (for reuse via 'create --from') via roster.mjs history. Read-only.",
     inputSchema: {
       type: "object",
@@ -329,7 +389,7 @@ export const TOOLS = [
     },
   },
   {
-    name: "roster_spawn_one",
+    name: "team_spawn_one",
     description: "[/agent-team — live Team] Spawn or restart one missing/dead peer role (e.g. 'spawn the architect') without touching the rest of the team.",
     inputSchema: {
       type: "object",
@@ -346,7 +406,7 @@ export const TOOLS = [
     },
   },
   {
-    name: "roster_spawn_ad_hoc",
+    name: "team_spawn_ad_hoc",
     description:
       "[/agent-team — live Team] Spawn a team member the roster does NOT define, or one whose parameters diverge from it (different model, effort, kind, args, or route) — e.g. 'spawn a codex reviewer just for this task'. Writes only the team file; the roster template is never touched, whatever the divergence. Use this instead of editing the roster when a running team needs a member the roster does not describe.",
     inputSchema: {
@@ -370,35 +430,22 @@ export const TOOLS = [
     },
   },
   {
-    name: "roster_dismiss",
-    description: "[/agent-team — live Team] Dismiss ONE member from a live team's check-in registry by derived name (e.g. 'dismiss bps-implementor-2'). Does not close sessions. A name not in team.json (or no team.json at all) falls back to the live peer records for plan mode, reporting source:'peers' (spec 0040); commit still requires the team.json row.",
+    name: "team_dismiss",
+    description: "[/agent-team — live Team] CLOSE ONE MEMBER'S SESSION and drop its row. This is what \"dismiss the architect\" / \"remove the implementor\" / \"drop that member\" mean on a LIVE member. Destructive: mode:plan is read-only and returns the member, its liveness and a close_token; mode:close needs confirm:true and that token, and the harness asks the user once. On a successful close the team.json row is removed (untracked:true); on failure the row stays. `name` accepts any identifier the user can see for a live session — the derived member name, a pane_id, a session_id or a unique 8+ char prefix of one, the role@sid8 form team_list prints, or the herdr display name (spec 0046 §2.4). A dead member cannot be closed: use team_untrack.",
     inputSchema: {
       type: "object",
       properties: {
         cwd: cwdSchema,
         team: teamSchema,
-        name: { type: "string", description: "Derived member name from team.json, not a role." },
-        mode: { type: "string", enum: ["plan", "commit"], description: "plan (default) is read-only; commit rewrites team.json minus this member." },
-        also_config: { type: "boolean", description: "With mode:commit, also remove the matching roster config entry so a future create does not rebuild it." },
-        level: { type: "string", enum: ["global", "repo", "repo-user"], description: "Config level for also_config; defaults to the resolving level." },
+        name: { type: "string", description: "The member's derived name, or any identifier team_list shows for a live untracked session (pane_id, session_id or 8+ char prefix, role@sid8, herdr display name)." },
+        mode: { type: "string", enum: ["plan", "close"], description: "Default plan." },
+        confirm: { type: "boolean", description: "Required with mode:close, and only after the user has been shown the close list and agreed." },
+        plan_token: { type: "string", description: "close_token from the preceding team_dismiss mode:plan call. Required with mode:close." },
+        allow_global: { type: "boolean" },
+        also_config: { type: "boolean", description: "With mode:close, ALSO remove the member from the roster TEMPLATE. Opt-in; shifts later same-role ordinals (spec 0044 §8.1)." },
+        level: { type: "string", description: "With also_config." },
       },
       required: ["cwd", "name"],
-    },
-  },
-  {
-    name: "roster_dismiss_close",
-    description: "[/agent-team — live Team] Close ONE live team member's session. Destructive; requires prior user confirmation. Falls back to the member's live peer record when it is not in team.json or no team.json exists (spec 0040).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        cwd: cwdSchema,
-        team: teamSchema,
-        name: { type: "string" },
-        confirm: { type: "boolean", description: "Must be true, and only after the user has been shown the close list and agreed." },
-        plan_token: { type: "string", description: "close_token from the preceding roster_dismiss mode:plan call." },
-        allow_global: { type: "boolean" },
-      },
-      required: ["cwd", "name", "confirm", "plan_token"],
     },
   },
 ];
@@ -528,83 +575,111 @@ export async function callTool(name, input) {
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
-    case "roster_teams": {
+    case "team_list": {
       const args = ["teams"];
       pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
-    case "roster_member": {
-      const action = args_in.action;
-      if (!["init", "add", "edit", "remove"].includes(action)) {
-        return err(`roster_member: "action" must be one of init, add, edit, remove, got ${JSON.stringify(action)}`);
-      }
-      if (action === "init") {
-        if (!args_in.level) return err('roster_member: action "init" requires "level".');
-        if (!args_in.route) return err('roster_member: action "init" requires "route".');
-      }
-      if (action === "add" && !args_in.role) return err('roster_member: action "add" requires "role".');
-      if ((action === "edit" || action === "remove") && !args_in.member) {
-        return err(`roster_member: action "${action}" requires "member".`);
-      }
-
-      const args = [action];
+    case "roster_init": {
+      // Spec 0046 §6.2: the discriminator is gone with the split. A stray one means the caller is
+      // still working from the old single-tool schema, so say so rather than silently ignoring it.
+      if (args_in.action !== undefined) return err('roster_init: "action" is not a parameter — the roster_member tool was split in 0046; this tool IS the action.');
+      if (!args_in.level) return err('roster_init: "level" is required.');
+      if (!args_in.route) return err('roster_init: "route" is required.');
+      const args = ["init"];
       pushArg(args, "level", args_in.level);
-      if (action === "init") {
-        pushArg(args, "route", args_in.route);
-        pushArg(args, "layout", args_in.layout);
-      }
-      if (action === "add") pushArg(args, "role", args_in.role);
-      if (action === "edit" || action === "remove") pushArg(args, "member", args_in.member);
-      if (action === "edit") pushArg(args, "role", args_in.role);
-      if (action === "add" || action === "edit") {
-        pushArg(args, "model", args_in.model);
-        pushArg(args, "effort", args_in.effort);
-        pushArg(args, "route", args_in.route);
-        pushArg(args, "auto-mode", args_in.auto_mode);
-        pushArg(args, "on-missing", args_in.on_missing);
-        pushArg(args, "kind", args_in.kind);
-        // roster.mjs takes --args as a JSON array string; the tool takes a real array so callers
-        // do not hand-encode it.
-        if (args_in.args !== undefined && args_in.args !== null) pushArg(args, "args", JSON.stringify(args_in.args));
-      }
-      // Spec 0044 §1.10 R1/R3: `no_spawn`, `allow_global` and `orchestrator_pid` are still ACCEPTED
-      // here and ignored — `add` no longer spawns, so there is nothing for them to gate — but they
-      // are gone from the schema above, because a documented `no_spawn` asserts that spawning is
-      // what happens without it, which is exactly the confusion this spec removes.
-      // §1.3 needs an identity to compare the live team's owner pid against, and this server
-      // process is not the session, so the pid is plumbed on every action rather than just `add`.
+      pushArg(args, "route", args_in.route);
+      pushArg(args, "layout", args_in.layout);
       pushArg(args, "orchestrator-pid", SESSION_PID);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
-    case "roster_config": {
-      const target = args_in.target;
-      if (target !== "layout" && target !== "alias") {
-        return err(`roster_config: "target" must be one of layout, alias, got ${JSON.stringify(target)}`);
-      }
-      const args = [target];
+    case "roster_add": {
+      // Spec 0046 §6.2: the discriminator is gone with the split. A stray one means the caller is
+      // still working from the old single-tool schema, so say so rather than silently ignoring it.
+      if (args_in.action !== undefined) return err('roster_add: "action" is not a parameter — the roster_member tool was split in 0046; this tool IS the action.');
+      if (!args_in.role) return err('roster_add: "role" is required.');
+      // Spec 0044 §1.10 R1/R3: `no_spawn`, `allow_global` and `orchestrator_pid` are still
+      // ACCEPTED and ignored — `add` no longer spawns — but stay out of the schema, because a
+      // documented `no_spawn` asserts that spawning is what happens without it.
+      const args = ["add"];
       pushArg(args, "level", args_in.level);
-      if (target === "layout") {
-        pushArg(args, "layout", args_in.layout);
-      } else {
-        pushArg(args, "set", args_in.set);
-        pushFlag(args, "clear", args_in.clear);
-        pushArg(args, "team", args_in.team);
-      }
-      // Spec 0044 §1.3: `layout` and `alias` write roster level files, so the refusal applies —
-      // and it needs the calling session's pid, which this server process does not otherwise pass.
+      pushArg(args, "role", args_in.role);
+      pushArg(args, "model", args_in.model);
+      pushArg(args, "effort", args_in.effort);
+      pushArg(args, "route", args_in.route);
+      pushArg(args, "auto-mode", args_in.auto_mode);
+      pushArg(args, "on-missing", args_in.on_missing);
+      pushArg(args, "kind", args_in.kind);
+      if (args_in.args !== undefined && args_in.args !== null) pushArg(args, "args", JSON.stringify(args_in.args));
       pushArg(args, "orchestrator-pid", SESSION_PID);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
-    case "roster_create": {
+    case "roster_edit": {
+      // Spec 0046 §6.2: the discriminator is gone with the split. A stray one means the caller is
+      // still working from the old single-tool schema, so say so rather than silently ignoring it.
+      if (args_in.action !== undefined) return err('roster_edit: "action" is not a parameter — the roster_member tool was split in 0046; this tool IS the action.');
+      if (!args_in.member) return err('roster_edit: "member" is required.');
+      const args = ["edit"];
+      pushArg(args, "level", args_in.level);
+      pushArg(args, "member", args_in.member);
+      pushArg(args, "role", args_in.role);
+      pushArg(args, "model", args_in.model);
+      pushArg(args, "effort", args_in.effort);
+      pushArg(args, "route", args_in.route);
+      pushArg(args, "auto-mode", args_in.auto_mode);
+      pushArg(args, "on-missing", args_in.on_missing);
+      pushArg(args, "kind", args_in.kind);
+      if (args_in.args !== undefined && args_in.args !== null) pushArg(args, "args", JSON.stringify(args_in.args));
+      pushArg(args, "orchestrator-pid", SESSION_PID);
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_remove": {
+      // Spec 0046 §6.2: the discriminator is gone with the split. A stray one means the caller is
+      // still working from the old single-tool schema, so say so rather than silently ignoring it.
+      if (args_in.action !== undefined) return err('roster_remove: "action" is not a parameter — the roster_member tool was split in 0046; this tool IS the action.');
+      if (!args_in.member) return err('roster_remove: "member" is required.');
+      const args = ["remove"];
+      pushArg(args, "level", args_in.level);
+      pushArg(args, "member", args_in.member);
+      pushArg(args, "orchestrator-pid", SESSION_PID);
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_layout": {
+      // Spec 0046 §6.2: the discriminator is gone with the split. A stray one means the caller is
+      // still working from the old single-tool schema, so say so rather than silently ignoring it.
+      if (args_in.target !== undefined) return err('roster_layout: "target" is not a parameter — the roster_config tool was split in 0046; this tool IS the target.');
+      const args = ["layout"];
+      pushArg(args, "level", args_in.level);
+      pushArg(args, "layout", args_in.layout);
+      pushArg(args, "orchestrator-pid", SESSION_PID);
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "roster_alias": {
+      // Spec 0046 §6.2: the discriminator is gone with the split. A stray one means the caller is
+      // still working from the old single-tool schema, so say so rather than silently ignoring it.
+      if (args_in.target !== undefined) return err('roster_alias: "target" is not a parameter — the roster_config tool was split in 0046; this tool IS the target.');
+      const args = ["alias"];
+      pushArg(args, "level", args_in.level);
+      pushArg(args, "set", args_in.set);
+      pushFlag(args, "clear", args_in.clear);
+      pushArg(args, "team", args_in.team);
+      pushArg(args, "orchestrator-pid", SESSION_PID);
+      pushArg(args, "cwd", cwd);
+      return execCli(ROSTER_CLI, args);
+    }
+    case "team_create": {
       const mode = args_in.mode;
       if (mode !== "plan" && mode !== "spawn" && mode !== "commit") {
-        return { content: [{ type: "text", text: `roster_create: "mode" must be one of plan, spawn, commit, got ${JSON.stringify(mode)}` }], isError: true };
+        return { content: [{ type: "text", text: `team_create: "mode" must be one of plan, spawn, commit, got ${JSON.stringify(mode)}` }], isError: true };
       }
       if (mode === "commit" && typeof args_in.verified !== "string") {
-        return { content: [{ type: "text", text: 'roster_create: mode "commit" requires "verified" (a JSON array string).' }], isError: true };
+        return { content: [{ type: "text", text: 'team_create: mode "commit" requires "verified" (a JSON array string).' }], isError: true };
       }
       const args = ["create", `--${mode}`];
       pushArg(args, "team", args_in.team);
@@ -623,7 +698,7 @@ export async function callTool(name, input) {
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
-    case "roster_layout_splits": {
+    case "team_layout_splits": {
       const args = ["layout-splits"];
       pushArg(args, "mode", args_in.mode);
       pushArg(args, "pane-count", args_in.pane_count);
@@ -635,38 +710,21 @@ export async function callTool(name, input) {
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args, new Set([3]));
     }
-    case "roster_disband": {
+    case "team_disband": {
       const mode = args_in.mode || "plan";
-      if (mode !== "plan" && mode !== "commit" && mode !== "keep-sessions") {
-        return { content: [{ type: "text", text: `roster_disband: "mode" must be one of plan, commit, keep-sessions, got ${JSON.stringify(mode)}` }], isError: true };
-      }
+      if (mode !== "plan" && mode !== "close") return err(`team_disband: "mode" must be one of plan, close, got ${JSON.stringify(mode)}`);
       const args = ["disband"];
-      if (mode === "commit") args.push("--commit");
-      else if (mode === "keep-sessions") args.push("--keep-sessions");
+      if (mode === "close") {
+        if (args_in.confirm !== true) return err('team_disband: "confirm" must be true, and only after the user has been shown the close list and agreed.');
+        if (typeof args_in.plan_token !== "string" || !args_in.plan_token.trim()) return err('team_disband: "plan_token" is required — pass the close_token from a preceding team_disband mode:plan call.');
+        args.push("--close", "--confirm", "--plan-token", args_in.plan_token);
+        pushFlag(args, "allow-global", args_in.allow_global);
+      }
       pushArg(args, "team", args_in.team);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
-    case "roster_disband_close": {
-      if (args_in.confirm !== true) {
-        return {
-          content: [{ type: "text", text: 'roster_disband_close: "confirm" must be true, and only after the user has been shown the close list and agreed.' }],
-          isError: true,
-        };
-      }
-      if (typeof args_in.plan_token !== "string" || !args_in.plan_token.trim()) {
-        return {
-          content: [{ type: "text", text: 'roster_disband_close: "plan_token" is required — pass the close_token from a preceding roster_disband mode:plan call.' }],
-          isError: true,
-        };
-      }
-      const args = ["disband", "--close", "--confirm", "--plan-token", args_in.plan_token];
-      pushArg(args, "team", args_in.team);
-      pushFlag(args, "allow-global", args_in.allow_global);
-      pushArg(args, "cwd", cwd);
-      return execCli(ROSTER_CLI, args);
-    }
-    case "roster_resync": {
+    case "team_resync": {
       const args = ["resync"];
       pushFlag(args, "dry-run", args_in.dry_run);
       pushArg(args, "team", args_in.team);
@@ -674,9 +732,9 @@ export async function callTool(name, input) {
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
-    case "roster_move": {
+    case "team_move": {
       if (typeof args_in.name !== "string" || !args_in.name.trim()) {
-        return { content: [{ type: "text", text: 'roster_move: "name" is required.' }], isError: true };
+        return { content: [{ type: "text", text: 'team_move: "name" is required.' }], isError: true };
       }
       const args = ["move", args_in.name];
       pushArg(args, "tab", args_in.tab);
@@ -690,14 +748,14 @@ export async function callTool(name, input) {
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
-    case "roster_history": {
+    case "team_history": {
       const args = ["history"];
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
-    case "roster_spawn_one": {
+    case "team_spawn_one": {
       if (typeof args_in.role !== "string" || !args_in.role.trim()) {
-        return { content: [{ type: "text", text: 'roster_spawn_one: "role" is required.' }], isError: true };
+        return { content: [{ type: "text", text: 'team_spawn_one: "role" is required.' }], isError: true };
       }
       const args = ["spawn-one", args_in.role];
       pushArg(args, "member", args_in.member);
@@ -709,9 +767,9 @@ export async function callTool(name, input) {
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
-    case "roster_spawn_ad_hoc": {
+    case "team_spawn_ad_hoc": {
       if (!args_in.role) {
-        return { content: [{ type: "text", text: 'roster_spawn_ad_hoc: "role" is required.' }], isError: true };
+        return { content: [{ type: "text", text: 'team_spawn_ad_hoc: "role" is required.' }], isError: true };
       }
       const args = ["spawn-ad-hoc"];
       pushArg(args, "role", args_in.role);
@@ -721,7 +779,7 @@ export async function callTool(name, input) {
       pushArg(args, "auto-mode", args_in.auto_mode);
       pushArg(args, "on-missing", args_in.on_missing);
       pushArg(args, "kind", args_in.kind);
-      // Same encoding roster_member uses: a real array on the wire, a JSON string on the CLI.
+      // Same encoding roster_add uses: a real array on the wire, a JSON string on the CLI.
       if (args_in.args !== undefined && args_in.args !== null) pushArg(args, "args", JSON.stringify(args_in.args));
       pushArg(args, "team", args_in.team);
       pushFlag(args, "dry-run", args_in.dry_run);
@@ -730,55 +788,51 @@ export async function callTool(name, input) {
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
-    case "roster_dismiss": {
-      if (typeof args_in.name !== "string" || !args_in.name.trim()) {
-        return { content: [{ type: "text", text: 'roster_dismiss: "name" is required.' }], isError: true };
-      }
+    case "team_dismiss": {
+      if (typeof args_in.name !== "string" || !args_in.name.trim()) return err('team_dismiss: "name" is required.');
       const mode = args_in.mode || "plan";
-      if (mode !== "plan" && mode !== "commit") {
-        return { content: [{ type: "text", text: `roster_dismiss: "mode" must be one of plan, commit, got ${JSON.stringify(mode)}` }], isError: true };
-      }
+      if (mode !== "plan" && mode !== "close") return err(`team_dismiss: "mode" must be one of plan, close, got ${JSON.stringify(mode)}`);
       const args = ["dismiss", args_in.name];
-      if (mode === "commit") args.push("--commit");
+      if (mode === "close") {
+        if (args_in.confirm !== true) return err('team_dismiss: "confirm" must be true, and only after the user has been shown the close list and agreed.');
+        if (typeof args_in.plan_token !== "string" || !args_in.plan_token.trim()) return err('team_dismiss: "plan_token" is required — pass the close_token from a preceding team_dismiss mode:plan call.');
+        args.push("--close", "--confirm", "--plan-token", args_in.plan_token);
+        pushFlag(args, "allow-global", args_in.allow_global);
+      }
       pushFlag(args, "also-config", args_in.also_config);
       pushArg(args, "level", args_in.level);
       pushArg(args, "team", args_in.team);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
-    case "roster_dismiss_close": {
-      if (typeof args_in.name !== "string" || !args_in.name.trim()) {
-        return { content: [{ type: "text", text: 'roster_dismiss_close: "name" is required.' }], isError: true };
-      }
-      if (args_in.confirm !== true) {
-        return {
-          content: [{ type: "text", text: 'roster_dismiss_close: "confirm" must be true, and only after the user has been shown the close list and agreed.' }],
-          isError: true,
-        };
-      }
-      if (typeof args_in.plan_token !== "string" || !args_in.plan_token.trim()) {
-        return {
-          content: [{ type: "text", text: 'roster_dismiss_close: "plan_token" is required — pass the close_token from a preceding roster_dismiss mode:plan call.' }],
-          isError: true,
-        };
-      }
-      const args = ["dismiss", args_in.name, "--close", "--confirm", "--plan-token", args_in.plan_token];
+    case "team_untrack": {
+      const mode = args_in.mode || "plan";
+      if (mode !== "plan" && mode !== "commit") return err(`team_untrack: "mode" must be one of plan, commit, got ${JSON.stringify(mode)}`);
+      const named = typeof args_in.name === "string" && args_in.name.trim();
+      if (!named && args_in.all !== true) return err('team_untrack: pass "name" for one member, or all:true for the whole team record.');
+      if (named && args_in.all === true) return err('team_untrack: pass "name" or all:true, not both.');
+      const args = ["untrack"];
+      if (named) args.push(args_in.name);
+      else args.push("--all");
+      args.push(mode === "commit" ? "--commit" : "--plan");
+      pushFlag(args, "keep-sessions", args_in.keep_sessions);
+      pushFlag(args, "also-config", args_in.also_config);
+      pushArg(args, "level", args_in.level);
       pushArg(args, "team", args_in.team);
-      pushFlag(args, "allow-global", args_in.allow_global);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
-    case "roster_adopt": {
+    case "team_adopt": {
       const args = ["adopt"];
       pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
       pushArg(args, "team", args_in.team);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
-    case "roster_reap": {
+    case "team_reap": {
       const mode = args_in.mode || "plan";
       if (mode !== "plan" && mode !== "commit") {
-        return { content: [{ type: "text", text: `roster_reap: "mode" must be one of plan, commit, got ${JSON.stringify(mode)}` }], isError: true };
+        return { content: [{ type: "text", text: `team_reap: "mode" must be one of plan, commit, got ${JSON.stringify(mode)}` }], isError: true };
       }
       const args = ["reap"];
       if (mode === "commit") args.push("--commit");

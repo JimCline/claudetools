@@ -363,7 +363,7 @@ under [docs/specs/](./docs/specs/); high-value entry points:
 /hierarchy peers                    # live peer roster
 /hierarchy sweep [days]             # archive old closed exchanges
 /hierarchy on | off                 # toggle without losing the config
-/agent-roster [show|init|add|edit|remove|layout|create [auto|manual]|disband]   # define, spawn, or disband the roster
+/agent-roster [show|init|add|edit|remove|layout|create [auto|manual]|disband|untrack]  # define, spawn, or tear down the roster
 ```
 
 Model/roster assignment (which roles exist, their model/effort/route) is an

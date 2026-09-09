@@ -57,12 +57,19 @@ cat > "$PROJ/.claude/agent-hierarchy.json" <<'EOF'
 {"version":1,"enabled":true,"roster":{"route":"peer","members":[{"role":"architect","model":"opus"},{"role":"implementor","model":"sonnet"},{"role":"reviewer","model":"opus"}]}}
 EOF
 
-seed_peer() { # <name> <role> <status> <pid> [pane_id]
-  node -e 'const fs=require("fs");const[f,n,r,st,p,pane]=process.argv.slice(1);
+# Spec 0046 §2.2: the 6th arg is the checkin `team` TAG. sessionstart.mjs:130 writes
+# `resolved.teamName` for every peer whose role resolves to a team, and this sandbox's team lives
+# at teams/<basename>.json, so its peers are tagged with that basename. An UNTAGGED row is a peer
+# of the legacy default team (team.json) — a different team, which a scoped disband must leave
+# alone. Seeding extras untagged was how this fixture encoded the GitHub #4 scoping bug.
+seed_peer() { # <name> <role> <status> <pid> [pane_id] [team]
+  node -e 'const fs=require("fs");const[f,n,r,st,p,pane,team]=process.argv.slice(1);
     const rec={type:"peer",status:st,name:n,role:r,pid:Number(p)||undefined,ts:new Date().toISOString()};
     if(pane) rec.pane_id=pane;
-    fs.appendFileSync(f,JSON.stringify(rec)+"\n");' "$PEERS_FILE" "$1" "$2" "$3" "$4" "${5:-}"
+    if(team) rec.team=team;
+    fs.appendFileSync(f,JSON.stringify(rec)+"\n");' "$PEERS_FILE" "$1" "$2" "$3" "$4" "${5:-}" "${6:-}"
 }
+TEAMTAG="$(basename "$PROJ")"
 fresh() { rm -f "$TEAM_FILE" "$PEERS_FILE"; : > "$INVOKED_LOG"; }
 
 write_team() {
@@ -118,12 +125,12 @@ check "T4: dismiss no-op with extended reason" '[ "$RC" -eq 0 ] && [ "$(jq_ "o.d
 
 # ---- T5: --commit / --keep-sessions byte-identical no-ops without team.json, even with live records
 seed_peer myrepo-architect architect up $$ pA
+run untrack --all --commit --keep-sessions
+check "T5 (0046 §2.3): untrack --all with no team.json is idempotent, closes nothing" '[ "$RC" -eq 0 ] && [ "$(jq_ o.already_untracked)" = "true" ]'
 run disband --commit
-check "T5: --commit no-op unchanged" '[ "$RC" -eq 0 ] && [ "$(jq_ "o.removed===false && Object.keys(o).length===2 && o.reason")" = "no active team" ]'
-run disband --keep-sessions
-check "T5: --keep-sessions no-op unchanged" '[ "$RC" -eq 0 ] && [ "$(jq_ "o.disbanded===false && Object.keys(o).length===2 && o.reason")" = "no active team" ]'
+check "T5 (0046 §3): disband --commit is gone and the error names untrack" '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "untrack --all"'
 run dismiss myrepo-architect --commit
-check "T5: dismiss --commit no-op unchanged" '[ "$RC" -eq 0 ] && [ "$(jq_ "o.dismissed===false && Object.keys(o).length===2 && o.reason")" = "no active team" ]'
+check "T5 (0046 §3): dismiss --commit is gone and the error names untrack" '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "untrack <name>"'
 check "T5: nothing closed" '[ "$(closes)" = "0" ]'
 
 # ---- T6: dismiss <name> without team.json
@@ -141,7 +148,7 @@ check "T6: whole-set token cannot authorise the single-member close" '[ "$RC" -e
 run dismiss myrepo-implementor --close --confirm --plan-token "$DTOKEN"
 check "T6: --close closes exactly that member" '[ "$RC" -eq 0 ] && [ "$(jq_ o.closed)" = "true" ] && [ "$(jq_ o.source)" = "peers" ] && [ "$(closes)" = "1" ] && grep -q "\"pB\"" "$INVOKED_LOG"'
 run dismiss nobody
-check "T6b: unknown name with records -> not-found error naming the registry" '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "live peer records" && echo "$OUT" | grep -q myrepo-architect'
+check "T6b: unknown name with records -> not-found error listing every visible identifier (0046 §2.1)" '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "live untracked sessions" && echo "$OUT" | grep -q myrepo-architect && echo "$OUT" | grep -q "pA"'
 
 # ---- T7c: team.json with zero extras -> plan/token byte-identical to the pre-0040 team path
 fresh
@@ -157,7 +164,7 @@ check "T7c: token is the team-only token" '[ "$BASE_TOKEN" = "$EXPECT_TOKEN" ]'
 
 # ---- T7: mixed — team.json + an extra live peer record
 seed_peer myrepo-architect architect up $$ PANE1
-seed_peer myrepo-implementor-2 implementor up $$ pX
+seed_peer myrepo-implementor-2 implementor up $$ pX "$TEAMTAG"
 run disband
 check "T7: plan keeps team rows unchanged and adds the extra labeled source:peers" \
   '[ "$RC" -eq 0 ] && [ "$(jq_ "o.close.length")" = "3" ] && [ "$(jq_ "o.close.filter(c=>c.source===\"peers\").map(c=>c.name).join()")" = "myrepo-implementor-2" ] && [ "$(jq_ "o.close[0].source===undefined && o.close[0].name")" = "myrepo-architect" ] && [ "$(jq_ "o.source===undefined")" = "true" ]'
@@ -181,14 +188,15 @@ check "T7: dismiss <extra> falls back per-member with the team-scoped single tok
   '[ "$RC" -eq 0 ] && [ "$(jq_ o.source)" = "peers" ] && [ "$(jq_ o.member.name)" = "myrepo-implementor-2" ] && [ "$(jq_ o.close_token)" = "$(node -e "const {createHash}=require(\"crypto\");console.log(createHash(\"sha256\").update(JSON.stringify({team_id:\"t1\",ids:[\"pX\"]})).digest(\"hex\").slice(0,16))")" ]'
 run dismiss myrepo-implementor-2 --close --confirm --plan-token "$(jq_ o.close_token)"
 check "T7: dismiss --close on the extra closes exactly it" '[ "$RC" -eq 0 ] && [ "$(closes)" = "1" ] && grep -q "\"pX\"" "$INVOKED_LOG"'
-run dismiss myrepo-implementor-2 --commit
-check "T7: dismiss --commit never falls back (team.json-only)" '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "no member named"'
+run untrack myrepo-implementor-2 --commit
+check "T7 (0046 §2.3): untrack never falls back to a live peer — it names dismiss instead" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "LIVE untracked session" && echo "$OUT" | grep -q "closes it"'
 
 # ---- T7b: plan taken, then a new extra appears -> old token refused
 : > "$INVOKED_LOG"
 run disband
 OLD="$(jq_ o.close_token)"
-seed_peer myrepo-reviewer-9 reviewer up $$ pNEW
+seed_peer myrepo-reviewer-9 reviewer up $$ pNEW "$TEAMTAG"
 run disband --close --confirm --plan-token "$OLD"
 check "T7b: token from before the new extra is refused" '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qi "re-run"'
 check "T7b: nothing unlisted ever closes" '[ "$(closes)" = "0" ]'
@@ -220,10 +228,10 @@ check "T9b: dismiss --close on a no-pane record fails before any gate" '[ "$RC" 
 # ---- T10: team exists, name in neither store
 fresh
 write_team
-seed_peer myrepo-implementor-2 implementor up $$ pX
+seed_peer myrepo-implementor-2 implementor up $$ pX "$TEAMTAG"
 run dismiss ghost
-check "T10: not-found error names the team and says the registry was checked" \
-  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "no member named" && echo "$OUT" | grep -q "checked live peer records"'
+check "T10: not-found error names the team and lists every live untracked identifier (0046 §2.1)" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "no member named" && echo "$OUT" | grep -q "live untracked sessions" && echo "$OUT" | grep -q "pX" && echo "$OUT" | grep -q "myrepo-implementor-2"'
 run dismiss architect
 check "T10: role-vs-name hint preserved" '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "that is a role"'
 
@@ -231,7 +239,10 @@ check "T10: role-vs-name hint preserved" '[ "$RC" -eq 2 ] && echo "$OUT" | grep 
 check "T8: roster.mjs no longer carries the freshness arithmetic" '! grep -q "ROSTER_FRESH_SEC" "$H/roster.mjs"'
 check "T8: lib-hier computes the freshness comparison exactly once" '[ "$(grep -c "ageSec < ROSTER_FRESH_SEC" "$H/lib-hier.mjs")" = "1" ]'
 check "T8: roster() and livePeerSlots both route through recordLiveness" '[ "$(grep -c "recordLiveness(rec, now)" "$H/lib-hier.mjs")" = "2" ]'
-check "T8: the fallback enumerates via livePeerSlots (no second enumeration in roster.mjs)" 'grep -q "livePeerSlots(dir, teamArg" "$H/roster.mjs" && [ "$(grep -c "latestRoster(dir).find((r) => r.name === name)" "$H/roster.mjs")" = "1" ]'
+check "T8: the fallback enumerates via livePeerSlots (no second enumeration in roster.mjs)" 'grep -q "livePeerSlots(dir, scope)" "$H/roster.mjs" && [ "$(grep -c "latestRoster(dir).find((r) => r.name === name)" "$H/roster.mjs")" = "1" ]'
+# Spec 0046 §2.2: the scope is the operated-on team's identity, never the --team FLAG. Passing
+# `teamArg` here WAS GitHub #4 — a bare disband scoped to null and excluded every tagged peer.
+check "T8: peerFallbackMembers never scopes on teamArg again (0046 §2.2)" '! grep -q "livePeerSlots(dir, teamArg" "$H/roster.mjs"'
 
 # ---- allow-global guard applies to the fallback close
 fresh

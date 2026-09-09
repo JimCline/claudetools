@@ -306,8 +306,8 @@ check "5d: §1.7 — a second orchestrator arriving is refused and offered a non
 r "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-one architect --team myrepo-2 >/dev/null
 check "5e: §1.7 — the second orchestrator's team lands beside the legacy one, not over it" \
   '[ -f "$HIER/teams/myrepo-2.json" ] && [ "$(cat "$LEGACY_TEAM")" = "$LEGACY_BEFORE" ]'
-r "" disband --commit
-check "5f: §1.7 — the legacy file ages out when its own team disbands" '[ "$RC" -eq 0 ] && [ ! -f "$LEGACY_TEAM" ]'
+r "" untrack --all --commit --keep-sessions
+check "5f: §1.7 — the legacy file ages out when its own team record is dropped" '[ "$RC" -eq 0 ] && [ ! -f "$LEGACY_TEAM" ]'
 r "" create --plan
 check "5g: §1.7 — with the legacy file gone, the bare scope resolves to the named path" \
   '[ "$RC" -eq 0 ]'

@@ -83,7 +83,7 @@ gate() { # <tool_name> <session_id>
     "$2" "$PROJ" "$1" "$PROJ" | HOME="$FAKEHOME" node "$GATE" 2>&1); RC=$?
 }
 i=0
-for verb in roster_create roster_spawn_one roster_spawn_ad_hoc roster_adopt roster_move roster_dismiss roster_disband; do
+for verb in team_create team_spawn_one team_spawn_ad_hoc team_adopt team_move team_dismiss team_disband team_untrack; do
   for prefix in mcp__ah__ mcp__plugin_ah_ah__; do
     i=$((i+1)); rm -rf "$HIER/gates.jsonl"
     gate "$prefix$verb" "sess-$i"
@@ -98,8 +98,8 @@ for verb in roster_create roster_spawn_one roster_spawn_ad_hoc roster_adopt rost
   done
 done
 # The roster-side (template) tools stay OUT of the lifecycle gate, exactly as before.
-rm -rf "$HIER/gates.jsonl"; gate "mcp__ah__roster_member" "sess-member"
-check "8: roster_member (template edit) is NOT captured by the lifecycle gate" \
+rm -rf "$HIER/gates.jsonl"; gate "mcp__ah__roster_add" "sess-member"
+check "8: roster_add (template edit) is NOT captured by the lifecycle gate" \
   '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
 rm -rf "$HIER/gates.jsonl"; gate "mcp__ah__roster_show" "sess-show"
 check "8: roster_show (read-only) is NOT gated" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
@@ -118,10 +118,10 @@ MCP_PROJ="$SANDBOX/mcprepo"; mkdir -p "$MCP_PROJ/.claude"; (cd "$MCP_PROJ" && gi
 cat > "$SANDBOX/mcp-refusal.mjs" <<'JSEOF'
 const { callTool } = await import(process.env.SERVER_PATH);
 const cwd = process.env.PROJ;
-await callTool("roster_member", { cwd, action: "init", level: "repo", route: "peer" });
-await callTool("roster_member", { cwd, action: "add", level: "repo", role: "architect", model: "opus" });
-const made = await callTool("roster_create", { cwd, mode: "commit", verified: JSON.stringify(["mcprepo-architect"]), transport: "terminal", roster_level: "repo" });
-const res = await callTool("roster_member", { cwd, action: "add", level: "repo", role: "reviewer", model: "opus" });
+await callTool("roster_init", { cwd, level: "repo", route: "peer" });
+await callTool("roster_add", { cwd, level: "repo", role: "architect", model: "opus" });
+const made = await callTool("team_create", { cwd, mode: "commit", verified: JSON.stringify(["mcprepo-architect"]), transport: "terminal", roster_level: "repo" });
+const res = await callTool("roster_add", { cwd, level: "repo", role: "reviewer", model: "opus" });
 console.log(JSON.stringify({ created: !made.isError, isError: Boolean(res.isError), text: res.content[0].text }));
 JSEOF
 OUT=$(HOME="$FAKEHOME" SERVER_PATH="$PLUGIN/mcp/server.mjs" PROJ="$MCP_PROJ" node "$SANDBOX/mcp-refusal.mjs" 2>&1); RC=$?

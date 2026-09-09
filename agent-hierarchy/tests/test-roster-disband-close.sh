@@ -106,8 +106,8 @@ check "--close: exit 0, both peer members closed" \
 check "--close: the metacharacter-laden transport_id reached herdr as one argv element, not shell-expanded" \
   'grep -qF "PANE;rm -rf /tmp/pwned" "$INVOKED_LOG" && [ ! -e "/tmp/pwned" ]'
 check "--close: team.json left in place (not removed)" '[ -e "$TEAM_FILE" ]'
-check "--close: disband --commit still removes it afterward" \
-  'run disband --commit; echo "$OUT" | grep -q "\"removed\""; [ ! -e "$TEAM_FILE" ]'
+check "--close: untrack --all --commit --keep-sessions still removes it afterward" \
+  'run untrack --all --commit --keep-sessions; echo "$OUT" | grep -q "\"removed\""; [ ! -e "$TEAM_FILE" ]'
 
 # ---- a close that fails for one member is reported, not fatal; others still close
 write_team
@@ -116,7 +116,7 @@ TOKEN2=$(echo "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("en
 FAKE_HERDR_CLOSE_FAIL_ID="PANE1" run disband --close --confirm --plan-token "$TOKEN2"
 check "--close: a per-member close failure is reported, call still succeeds overall" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const o=JSON.parse(s);const failed=o.results.find(r=>r.transport_id===\"PANE1\");const ok=o.results.find(r=>r.transport_id!==\"PANE1\");process.exit(failed&&failed.closed===false&&failed.error&&ok&&ok.closed===true?0:1)})"'
-run disband --commit
+run untrack --all --commit --keep-sessions
 
 # ---- --close --commit / --close --keep-sessions: mutually exclusive
 write_team
@@ -124,9 +124,9 @@ run disband --close --confirm --plan-token x --commit
 check "--close --commit: rejected, exit 2" '[ "$RC" -eq 2 ]'
 run disband --close --confirm --plan-token x --keep-sessions
 check "--close --keep-sessions: rejected, exit 2" '[ "$RC" -eq 2 ]'
-run disband --commit
+run untrack --all --commit --keep-sessions
 
-# ---- roster_disband_close's --allow-global guard, matching spawn-one/create --spawn (spec 0016 §4.5)
+# ---- team_disband mode:close's --allow-global guard, matching spawn-one/create --spawn (spec 0016 §4.5)
 mkdir -p "$FAKEHOME/.claude"
 cat > "$FAKEHOME/.claude/agent-hierarchy.json" <<'EOF'
 {"version":1,"enabled":true,"roster":{"route":"peer","members":[{"role":"architect","model":"opus"}]}}
@@ -140,7 +140,7 @@ check "--close: refused without --allow-global when the roster resolves at globa
 check "--close: team.json untouched by the refused attempt" '[ -e "$TEAM_FILE" ]'
 run disband --close --confirm --plan-token "$TOKEN3" --allow-global
 check "--close --allow-global: succeeds against the global roster" '[ "$RC" -eq 0 ]'
-run disband --commit
+run untrack --all --commit --keep-sessions
 rm -f "$FAKEHOME/.claude/agent-hierarchy.json"
 
 # ---- disband's three non-destructive modes never invoke herdr pane close (spec 0016 §4.5) —
@@ -152,13 +152,13 @@ check "disband (plan): never invokes pane close" '! grep -q "\"close\"" "$INVOKE
 
 write_team
 : > "$INVOKED_LOG"
-run disband --keep-sessions
-check "disband --keep-sessions: never invokes pane close" '! grep -q "\"close\"" "$INVOKED_LOG"'
+run untrack --all --commit --keep-sessions
+check "untrack --all --commit --keep-sessions: never invokes pane close" '! grep -q "\"close\"" "$INVOKED_LOG"'
 
 write_team
 : > "$INVOKED_LOG"
-run disband --commit
-check "disband --commit: never invokes pane close" '! grep -q "\"close\"" "$INVOKED_LOG"'
+run untrack --all --commit --keep-sessions
+check "untrack --all --commit --keep-sessions: never invokes pane close" '! grep -q "\"close\"" "$INVOKED_LOG"'
 
 echo
 echo "passed: $PASS  failed: $FAIL"

@@ -79,7 +79,7 @@ Seven steps, in order:
    recorded answer: `peers`, `subagents`, or `prefer-peers`) — never assume
    one. It determines liveness coverage (§ Liveness) and is one of the four
    facts the run-start notification carries.
-4. **Create the team** — `roster_create` plan → confirm → commit exactly as
+4. **Create the team** — `team_create` plan → confirm → commit exactly as
    [`skills/agent-roster/SKILL.md` § Create](../agent-roster/SKILL.md#create)
    describes — do not re-derive that contract here.
 5. **Run the push pre-flight checks** — both guards, before any work starts
@@ -94,7 +94,7 @@ Seven steps, in order:
 
 ### Elastic membership
 
-`mcp__ah__roster_spawn_one` adds one role to a live team without touching
+`mcp__ah__team_spawn_one` adds one role to a live team without touching
 the rest — that's the whole growth primitive, already shipped. Two hard
 constraints on the other direction:
 

@@ -759,8 +759,14 @@ check "F7c: dismiss reads the record's kind and sees the running codex agent as 
   '[ "$RC" -eq 0 ] && [ "$(jo "o.live")" = "true" ]'
 
 # and the same record, committed while that agent is still running, must not go out silently
-r "HERDR_ENV=1 FAKE_HERDR_GET_JSON='{\"result\":{\"agent\":{\"name\":\"myrepo-implementor\",\"agent_status\":\"idle\"}}}'" dismiss myrepo-implementor --commit
-check "F7d: dismiss --commit on a live codex member warns rather than silently dropping it" \
+# Spec 0046 §2.1/§2.3: the tracking-only removal is `untrack`, and forgetting a LIVE record is
+# the explicit --keep-sessions opt-in. The kind-aware liveness read is what makes that opt-in
+# required here, so this still exercises F7c's codex path.
+r "HERDR_ENV=1 FAKE_HERDR_GET_JSON='{\"result\":{\"agent\":{\"name\":\"myrepo-implementor\",\"agent_status\":\"idle\"}}}'" untrack myrepo-implementor --commit
+check "F7d: untrack --commit on a live codex member refuses without --keep-sessions" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q -- "--keep-sessions"'
+r "HERDR_ENV=1 FAKE_HERDR_GET_JSON='{\"result\":{\"agent\":{\"name\":\"myrepo-implementor\",\"agent_status\":\"idle\"}}}'" untrack myrepo-implementor --commit --keep-sessions
+check "F7d2: with --keep-sessions it untracks and warns rather than silently dropping it" \
   '[ "$RC" -eq 0 ] && grep -q "is still live" "$STDERR_F"'
 
 # F7 hand-builds a team.json in $PROJ; the regression suites below run in the same environment,

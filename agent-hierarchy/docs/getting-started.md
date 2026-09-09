@@ -101,18 +101,15 @@ and re-dispatch. See [docs/mcp-tools.md](./mcp-tools.md) and
 ## 7. Tearing down
 
 Bare `roster.mjs disband` is **read-only** — it's just the plan step,
-showing what would close. `/agent-roster disband` runs the whole contract
-(plan → confirm → close → commit) and **will close sessions** once you
-confirm — see
-[SKILL.md — `disband`](../skills/agent-roster/SKILL.md#disband) for the full
-sequence. **Never remove `team.json` before the close has run** — it's what
-identifies the members, so removing it first orphans live sessions with
-nothing left pointing at them.
+showing what would close. `/agent-team disband` runs the whole contract
+(plan → confirm → close) and **will close sessions** once you confirm — see
+[SKILL.md — `disband`](../skills/agent-team/SKILL.md#disband) for the full
+sequence.
 
-Use `roster.mjs disband --keep-sessions` when you just want the bookkeeping cleared and
-the sessions left running — a single, non-destructive call that removes
-`team.json` and closes nothing, for when those sessions hold work worth
-keeping.
+Use `roster.mjs untrack --all --keep-sessions --commit` when you just want the
+bookkeeping cleared and the sessions left running — a single, non-destructive
+call that removes `team.json` and closes nothing, for when those sessions hold
+work worth keeping.
 
 ## 8. Where to go next
 

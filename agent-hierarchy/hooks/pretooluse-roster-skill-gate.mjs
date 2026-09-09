@@ -6,17 +6,12 @@
  * exact-name matcher, no wildcards, matching set duplicated in hooks.json
  * (load-bearing in both places — see that file's header for why).
  *
- * Gated verbs: roster_create, roster_spawn_one, roster_spawn_ad_hoc,
- * roster_adopt, roster_move, roster_dismiss, roster_disband — the team-side
- * (lifecycle) tools of spec 0044 §8.1. Each is enumerated under BOTH MCP name
- * prefixes — `mcp__plugin_ah_ah__<verb>` (this repo's confirmed live shape,
- * a plugin-supplied server) and `mcp__ah__<verb>` (a `.mcp.json`-registered
- * server) — because the live name is a function of how the user installed
- * the server, not of this code (spec 0042 §1.3/E2). Read-only tools
- * (roster_show, roster_teams, roster_history, roster_member, roster_reap,
- * roster_resync, roster_layout_splits), the two `*_close` tools (already
- * gated, always-ask, by pretooluse-disband-close-gate.mjs), every `msg_*`
- * tool, and `roster_config` (spec 0042 E3: only ever called internally by
+ * Gated verbs: team_create, team_spawn_one, team_spawn_ad_hoc,
+ * team_adopt, team_move, team_dismiss, team_disband, team_untrack — the team-side
+ * lifecycle verbs (spec 0046 §3.3). NOT gated: the read-only tools
+ * (roster_show, team_list, team_history, team_reap, team_resync,
+ * team_layout_splits), the roster-TEMPLATE CRUD tools, and roster_layout /
+ * roster_alias (spec 0042 E3: only ever called internally by
  * the skill's own flow) are deliberately NOT in this set.
  *
  * One-shot per session, recorded at DENY time: the immediate identical
@@ -35,7 +30,7 @@
 import { isSubagent, readHookInput } from "./lib-config.mjs";
 import { appendGate, hasGate, hierarchyDir } from "./lib-hier.mjs";
 
-const VERBS = ["roster_create", "roster_spawn_one", "roster_spawn_ad_hoc", "roster_adopt", "roster_move", "roster_dismiss", "roster_disband"];
+const VERBS = ["team_create", "team_spawn_one", "team_spawn_ad_hoc", "team_adopt", "team_move", "team_dismiss", "team_disband", "team_untrack"];
 const GATED_TOOLS = new Set(VERBS.flatMap((v) => [`mcp__plugin_ah_ah__${v}`, `mcp__ah__${v}`]));
 
 function deny(reason) {

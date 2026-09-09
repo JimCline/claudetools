@@ -227,7 +227,8 @@ INVOK next-split --mode grid --pane-count 1 --self p0 --created '[]' --geometry 
 INVOK create --plan
 INVOK create --commit --transport terminal --roster-level repo --verified '[]'
 INVOK disband --kill --plan
-INVOK disband --kill --commit
+# Spec 0046 §2.1: `disband --commit` is gone; dropping the record without closing is `untrack`.
+INVOK untrack --all --commit --keep-sessions
 check "invariant: no subcommand but layout-splits reaches herdrCall (marker never created)" \
   '[ ! -e "$SANDBOX/marker" ]'
 

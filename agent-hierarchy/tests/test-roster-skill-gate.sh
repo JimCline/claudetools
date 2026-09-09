@@ -30,7 +30,7 @@ hook() {
 
 is_deny() { case "$OUT" in *'"permissionDecision":"deny"'*) return 0;; *) return 1;; esac; }
 
-VERBS="roster_create roster_spawn_one roster_spawn_ad_hoc roster_adopt roster_move roster_dismiss roster_disband"
+VERBS="team_create team_spawn_one team_spawn_ad_hoc team_adopt team_move team_dismiss team_disband team_untrack"
 PREFIXES="mcp__plugin_ah_ah__ mcp__ah__"
 
 # ---- 1/2: each gated tool, both prefixes: clean session denies + names the skill;
@@ -48,17 +48,18 @@ for verb in $VERBS; do
 done
 
 # ---- 3: explicitly-not-gated tools produce no output at all
-for tool in mcp__ah__roster_show mcp__ah__roster_teams mcp__ah__roster_history mcp__ah__roster_member \
-            mcp__ah__roster_reap mcp__ah__roster_resync mcp__ah__roster_layout_splits \
-            mcp__ah__roster_disband_close mcp__ah__roster_dismiss_close mcp__ah__roster_config \
-            mcp__plugin_ah_ah__roster_show mcp__plugin_ah_ah__roster_config \
+for tool in mcp__ah__roster_show mcp__ah__team_list mcp__ah__team_history mcp__ah__roster_add \
+            mcp__ah__roster_init mcp__ah__roster_edit mcp__ah__roster_remove \
+            mcp__ah__team_reap mcp__ah__team_resync mcp__ah__team_layout_splits \
+            mcp__ah__roster_layout mcp__ah__roster_alias \
+            mcp__plugin_ah_ah__roster_show mcp__plugin_ah_ah__roster_layout \
             mcp__ah__msg_new mcp__plugin_ah_ah__msg_new; do
   hook "$tool" "notgated-$tool"
   check "not gated, no output: $tool" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
 done
 
 # ---- 5: subagent context never denies
-hook "mcp__plugin_ah_ah__roster_create" "sub1" "agent123"
+hook "mcp__plugin_ah_ah__team_create" "sub1" "agent123"
 check "subagent context: no deny" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
 
 # ---- 6: malformed/unreadable input fails open, never throws

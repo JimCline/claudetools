@@ -9,7 +9,7 @@ Invoke the `agent-roster` skill (this plugin, `ah:agent-roster`) to handle it,
 passing `$ARGUMENTS` through, and follow that skill's instructions exactly.
 
 If `$ARGUMENTS` names a live-Team lifecycle command — `create`, `spawn-one`,
-`spawn-ad-hoc`, `dismiss`, `disband`, `adopt`, `move`, `resync`, `reap`,
+`spawn-ad-hoc`, `dismiss`, `disband`, `untrack`, `adopt`, `move`, `resync`, `reap`,
 `teams`, `history`, `checkin` — invoke `ah:agent-team` instead and pass
 `$ARGUMENTS` through to it. That alias is permanent and the result is
 identical (spec 0044 §8.3); handle it silently, without commentary about

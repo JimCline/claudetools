@@ -78,13 +78,13 @@ everything is the default roster exactly as before — most sessions never pass
 it.
 
 - `show [--level global|repo|repo-user]` (`mcp__ah__roster_show`) — resolved roster, or one level's raw file.
-- `init --level <L> --route <peer|subagent> [--layout auto|columns|grid]` (`mcp__ah__roster_member`, `action: "init"`) — replaces that level's roster wholesale.
-- `add --role <R> [--level L] [--model M] [--effort E] [--route peer|subagent|pane] [--kind K] [--args '<json>'] [--auto-mode A]` (`mcp__ah__roster_member`, `action: "add"`) — writes the template row and **spawns nothing** (spec 0044 §1.10, superseding 0039). To start the member afterwards, that is `/agent-team`'s job: `spawn-one <role>` for a roster-conforming one, `spawn-ad-hoc` for a divergent or ad hoc one.
-- `edit --member <NAME> [--level L] [--role R] [--model M] [--effort E] [--route ...] [--auto-mode A]` (`mcp__ah__roster_member`, `action: "edit"`)
-- `remove --member <NAME> [--level L]` (`mcp__ah__roster_member`, `action: "remove"`) — edits the
+- `init --level <L> --route <peer|subagent> [--layout auto|columns|grid]` (`mcp__ah__roster_init`) — replaces that level's roster wholesale.
+- `add --role <R> [--level L] [--model M] [--effort E] [--route peer|subagent|pane] [--kind K] [--args '<json>'] [--auto-mode A]` (`mcp__ah__roster_add`) — writes the template row and **spawns nothing** (spec 0044 §1.10, superseding 0039). To start the member afterwards, that is `/agent-team`'s job: `spawn-one <role>` for a roster-conforming one, `spawn-ad-hoc` for a divergent or ad hoc one.
+- `edit --member <NAME> [--level L] [--role R] [--model M] [--effort E] [--route ...] [--auto-mode A]` (`mcp__ah__roster_edit`)
+- `remove --member <NAME> [--level L]` (`mcp__ah__roster_remove`) — edits the
   roster **template**, not a live Team; `/agent-team`'s `dismiss` is the live-Team equivalent.
-- `layout [--level <L>] [--layout auto|columns|grid]` (`mcp__ah__roster_config`, `target: "layout"`) — show or set the team-wide pane layout.
-- `alias [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]` (`mcp__ah__roster_config`, `target: "alias"`) — read, set, or
+- `layout [--level <L>] [--layout auto|columns|grid]` (`mcp__ah__roster_layout`) — show or set the team-wide pane layout.
+- `alias [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]` (`mcp__ah__roster_alias`) — read, set, or
   clear the repo's `teamAlias` (the team-prefix members are named under). No `--set`/`--clear`
   reads the currently-effective alias; `--level` is required with `--set`/`--clear` when it can't
   be inferred from an already-resolving roster. Never accepts `--level global` — an alias is
@@ -196,7 +196,7 @@ Team the CLI will refuse the edit outright and name `spawn-ad-hoc` instead
 `--allow-roster-edit` override is the **user's**, never one an agent adds to
 get its call through.
 
-`--no-spawn` (`no_spawn: true` on `roster_member`) is still accepted and does
+`--no-spawn` (`no_spawn: true` on `roster_add`) is still accepted and does
 nothing at all — it is a no-op kept only so existing scripts do not break
 (§1.10 R1). Do not pass it, and do not read it as evidence that spawning is
 otherwise what happens.
@@ -216,7 +216,7 @@ of any member's `onMissing`.
 
 ### `--kind`: non-Claude members (spec 0043)
 
-`--kind <k>` (`kind` on `roster_member`) picks which agent CLI Herdr starts
+`--kind <k>` (`kind` on `roster_add`) picks which agent CLI Herdr starts
 for this member. **Omitted means `claude`**, including for every roster file
 written before this key existed, and an explicit `--kind claude` is not
 written to the file at all — the default is total.
@@ -236,7 +236,7 @@ Choosing a non-claude kind changes four things, all enforced at `add`/`edit`:
 | `args` | optional; native CLI arguments, passed verbatim after Herdr's `--` |
 | transport | spawning needs a Herdr session (`HERDR_ENV=1`); `add`/`edit` still work anywhere |
 
-`--args '<json-array>'` (`args` on `roster_member`, a real array there) is the
+`--args '<json-array>'` (`args` on `roster_add`, a real array there) is the
 *only* way a non-claude member gets flags, since the three Claude flags are
 rejected for it. Each element is one argument and is shell-quoted before it
 reaches the launch line. `args` is a **hard error for `kind: claude`** — for a

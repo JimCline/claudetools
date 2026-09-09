@@ -725,21 +725,41 @@ export function recordLiveness(rec, now = Date.now()) {
 }
 
 /**
- * Spec 0040 §1.2: the named, not-down peers.jsonl records attributed to `team` (null =
+ * Spec 0040 §1.2 + 0046 §2.2/§2.4: the not-down peers.jsonl records attributed to `team` (null =
  * default team), each with recordLiveness() applied — the enumeration disband/dismiss fall
  * back to when no team.json exists, and disband's source of extra non-team peers when one
  * does. A record's team is its team.json membership when it has one (as roster() resolves
  * it); with no membership — the very case this exists for — its own checkin `team` tag
  * decides, untagged meaning the default team.
  */
+export const NO_TEAM_SCOPE = Symbol("no-team");
+
+/** Spec 0046 §2.4: the name `roster()` displays for a nameless record. One expression, reused —
+    the invariant is that every name the status surface prints is accepted by `team_dismiss`. */
+export function synthesizedPeerName(rec) {
+  const role = rec.role || null;
+  const sid = String(rec.session_id || "");
+  return role && sid ? `${role}@${sid.slice(0, 8)}` : null;
+}
+
+/** Spec 0046 §2.2: is this record's effective team the one being operated on? `team` is a team
+    name, `null` for the default team, or NO_TEAM_SCOPE for the no-team.json branch — where a tag
+    naming a team file that no longer exists is an orphan of that team and counts as unattributed. */
+function inScope(dir, effective, team) {
+  if (team === NO_TEAM_SCOPE) return effective === null || !listTeamNames(dir).includes(effective);
+  return effective === team;
+}
+
 export function livePeerSlots(dir, team = null, now = Date.now()) {
   const slots = [];
   for (const rec of latestRoster(dir)) {
-    if (rec.status === "down" || !rec.name) continue;
-    const membership = resolveMemberTeam(dir, rec.name);
+    if (rec.status === "down") continue;
+    const name = rec.name || synthesizedPeerName(rec);
+    if (!name) continue;
+    const membership = rec.name ? resolveMemberTeam(dir, rec.name) : { found: false, team: null };
     const tag = rec.team !== undefined ? rec.team : null;
-    if ((membership.found ? membership.team : tag) !== team) continue;
-    slots.push({ name: rec.name, role: rec.role || null, pid: rec.pid ?? null, pane_id: rec.pane_id || null, ...recordLiveness(rec, now) });
+    if (!inScope(dir, membership.found ? membership.team : tag, team)) continue;
+    slots.push({ name, role: rec.role || null, pid: rec.pid ?? null, pane_id: rec.pane_id || null, session_id: rec.session_id || null, cwd: rec.cwd || null, ...recordLiveness(rec, now) });
   }
   return slots;
 }
@@ -783,7 +803,7 @@ export function roster(dir, resolved, repoBasename, now = Date.now()) {
       // isolated (spec 0011 §4.2/§11 test 4), while the default team keeps
       // exactly the display every existing no-`--team` caller depends on.
       if (team === null) {
-        const name = `${role}@${String(rec.session_id || "").slice(0, 8)}`;
+        const name = synthesizedPeerName({ ...rec, role });
         const mine = open.filter((o) => o.to === role && (o.toName === name || o.toName === null));
         out[role].push({ ...base, name, openBriefs: mine.length, unassigned: mine.filter((o) => o.toName === null).length });
       }

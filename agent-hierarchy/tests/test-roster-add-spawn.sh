@@ -223,7 +223,7 @@ check "T8b: add --kind codex --route pane exits 0 with the row written" '[ "$RC"
 check "T8b: §1.10 — a pane-routed non-claude add launches nothing either" '[ "$(starts)" -eq 0 ] && no_team_file'
 check "T8b: the kind is recorded in the roster" 'grep -q "\"kind\": \"codex\"" "$CFG"'
 
-# ==== T9 — MCP roster_member add: same contract through the tool surface. §1.10 R3 keeps
+# ==== T9 — MCP roster_add: same contract through the tool surface. §1.10 R3 keeps
 #          no_spawn accepted and ignored, and it is gone from the tool schema. ====
 mcp_add() { # <extra args JSON fragment>
   OUT=$(eval "env -u HERDR_ENV HOME=\"$FAKEHOME\" HERDR_ENV=1 HERDR_PANE_ID=p0 PATH=\"$SANDBOX/bin:$NODE_DIR\" FAKE_STATE_DIR=\"$FAKE_STATE_DIR\" node --input-type=module -e '
@@ -233,7 +233,7 @@ mcp_add() { # <extra args JSON fragment>
     let buf = \"\";
     child.stdout.on(\"data\", (d) => { buf += d; for (const line of buf.split(\"\\n\")) { let m; try { m = JSON.parse(line); } catch { continue; } if (m.id === 2) { process.stdout.write(JSON.stringify(m)); child.kill(); process.exit(0); } } });
     child.stdin.write(JSON.stringify({ jsonrpc: \"2.0\", id: 1, method: \"initialize\", params: {} }) + \"\\n\");
-    child.stdin.write(JSON.stringify({ jsonrpc: \"2.0\", id: 2, method: \"tools/call\", params: { name: \"roster_member\", arguments: { cwd, action: \"add\", role: \"reviewer\", ...JSON.parse(extra) } } }) + \"\\n\");
+    child.stdin.write(JSON.stringify({ jsonrpc: \"2.0\", id: 2, method: \"tools/call\", params: { name: \"roster_add\", arguments: { cwd, role: \"reviewer\", ...JSON.parse(extra) } } }) + \"\\n\");
     setTimeout(() => { process.stdout.write(\"TIMEOUT\"); process.exit(1); }, 15000);
   ' \"$PLUGIN/mcp/server.mjs\" \"$PROJ\" '$1' 2>&1"); RC=$?
 }
@@ -250,7 +250,7 @@ fresh
 mcp_add '{"allow_global":true,"orchestrator_pid":1}'
 check "T9c: R3 — allow_global and orchestrator_pid are still accepted and inert on add" \
   '[ "$RC" -eq 0 ] && ! echo "$OUT" | grep -q "\"isError\":true" && [ "$(roles_in_cfg)" = "reviewer" ] && [ "$(starts)" -eq 0 ]'
-check "T9d: R3 — no_spawn is gone from the roster_member tool schema" \
+check "T9d: R3 — no_spawn is gone from the roster_add tool schema" \
   '! grep -q "no_spawn:" "$PLUGIN/mcp/server.mjs"'
 
 # ==== T10 — global-level roster. 0039's §1.6 --allow-global guard was reached only through the

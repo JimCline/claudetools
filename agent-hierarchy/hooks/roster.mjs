@@ -93,12 +93,15 @@ import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 
 import { CONFIG_VERSION, findGitRoot, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, suggestTeamAlias, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
-import { appendRosterRecord, latestRoster, livePeerSlots, newId, localIso, pidAlive, realCwd, recordLiveness } from "./lib-hier.mjs";
+import { appendRosterRecord, latestRoster, livePeerSlots, newId, localIso, NO_TEAM_SCOPE, pidAlive, realCwd, recordLiveness, synthesizedPeerName } from "./lib-hier.mjs";
 import { attributeSessionTeam, clearTeam, defaultTeamScope, fingerprint, herdrOnPath, historyEntryIsActive, KIND_DEFAULT, kindFieldErrors, listTeamNames, memberArgs, normalizeMembers, readHistory, readTeam, resolveKind, resolveTeamByPane, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
 
 const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config", "no-spawn", "allow-roster-edit"]);
-const DISBAND_FLAGS = new Set(["kill", "commit", "keep-sessions", "plan", "close", "confirm", "plan-token", "allow-global", "cwd", "team"]);
-const DISMISS_FLAGS = new Set(["plan", "close", "commit", "confirm", "plan-token", "also-config", "level", "allow-global", "cwd", "team"]);
+const DISBAND_FLAGS = new Set(["kill", "plan", "close", "confirm", "plan-token", "allow-global", "cwd", "team"]);
+// Spec 0046 §3: tracking-only removal moved OFF dismiss/disband and onto its own verb, so the
+// destructive verbs cannot be reached with a flag that quietly means "do not close anything".
+const UNTRACK_FLAGS = new Set(["all", "plan", "commit", "keep-sessions", "also-config", "level", "cwd", "team"]);
+const DISMISS_FLAGS = new Set(["plan", "close", "confirm", "plan-token", "also-config", "level", "allow-global", "cwd", "team"]);
 const RESYNC_FLAGS = new Set(["dry-run", "cwd", "team", "bind"]);
 const MOVE_FLAGS = new Set(["tab", "split", "new-tab", "workspace", "new-workspace", "dry-run", "allow-global", "cwd", "team"]);
 const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global", "team", "orchestrator-pid", "member"]);
@@ -389,6 +392,106 @@ function findMemberIndex(members, name) {
     template for future teams) — shared by `remove` and `dismiss --also-config` so there is
     exactly one config-edit path. Resolves the level exactly as `remove` always has
     (targetLevel()). Writes nothing when the member isn't found. */
+/** Spec 0046 §2.3: forget ONE member's team.json row, touching no session. This is verbatim the
+    body `dismiss --commit` had through 0.70.0 — including the ordinal-shift warning — moved here
+    because `dismiss` is now destructive-only (§3). The live guard that fronts it is the caller's. */
+function untrackMember(dir, team, target, name) {
+  const outTeam = { ...team, members: team.members.filter((m) => m.name !== name) };
+  writeTeam(dir, outTeam, teamFile);
+  // §3.4: a commit on a still-live member is allowed, but must never be silent about it.
+  // Spec 0043 §1.6: kind-aware, and an indeterminate answer warns too — the whole point of
+  // the third value is that "Herdr did not answer" must not be spent as "it is dead".
+  const commitState = memberLiveness(dir, target);
+  if (commitState.live || commitState.indeterminate) {
+    let command = null;
+    if (routeHasPane(target.route) && target.transport_id) {
+      if (team.transport === "herdr") command = `herdr pane close ${target.transport_id}`;
+      else if (team.transport === "tmux") command = `tmux kill-pane -t ${target.transport_id}`;
+    }
+    process.stderr.write(
+      `roster.mjs: ah: ${target.name} ${commitState.indeterminate ? `may still be live — could not determine (${commitState.why})` : `is still live`} (${team.transport} ${target.transport_id}). Its record is gone from team ${team.team_id}.` +
+        (command ? ` Close it with \`${command}\` if you did not mean to leave it running.\n` : "\n")
+    );
+  }
+  const teamEmpty = outTeam.members.length === 0;
+  if (teamEmpty) {
+    process.stderr.write(`roster.mjs: ah: team ${team.team_id} has no members left. If you meant to end the team entirely, use \`untrack --all\` (forget it) or \`disband --close\` (close the sessions too).\n`);
+  }
+  // Spec 0046 §2.3: `untracked`, not `dismissed` — dismiss now means "closed the session", and a
+  // caller that greps for `dismissed` on this output would read a live session as gone.
+  const dismissOut = {
+    untracked: true,
+    member: { role: target.role, name: target.name },
+    team_id: team.team_id,
+    removed: target.name,
+    remaining: outTeam.members.map((m) => m.name),
+    team_empty: teamEmpty,
+    config: null,
+    store: `team ${JSON.stringify(team.team_id)}`,
+  };
+  if (opts["also-config"] === true) {
+    const result = removeConfigMember(target.name);
+    if (!result.removed) {
+      process.stderr.write(
+        `roster.mjs: ah: untracked ${target.name} from team ${team.team_id}, but no roster member named ${target.name} exists at level "${result.level}" — the config was not changed.\n`
+      );
+      dismissOut.config = { removed: false, level: result.level, reason: result.reason };
+    } else {
+      // §3.5.1: ordinal shift. `result.before`/`result.after` are the config's
+      // ordinal-derived names before/after this removal, in array order. Everything at or
+      // before the removed index is unaffected; every later same-role sibling's ordinal
+      // (and therefore derived name) shifts down by one. Warn — never refuse — whenever a
+      // shifted name belongs to a member team.json still records as live under the OLD name.
+      const reordinaled = [];
+      for (let i = result.idx; i < result.before.length - 1; i++) {
+        const oldName = result.before[i + 1].name;
+        const newName = result.after[i].name;
+        if (oldName === newName) continue;
+        const teamHasRecord = outTeam.members.some((m) => m.name === oldName);
+        // Spec 0043 §1.6: ask the recorded member (kind-aware), not a bare name. An
+        // indeterminate answer warns — a Herdr blip must not silently drop the shift notice.
+        const oldMember = outTeam.members.find((m) => m.name === oldName);
+        const oldState = oldMember ? memberLiveness(dir, oldMember) : null;
+        if (teamHasRecord && oldState && (oldState.live || oldState.indeterminate)) reordinaled.push({ from: oldName, to: newName });
+      }
+      dismissOut.config = { removed: true, level: result.level, path: result.path, reordinaled };
+      if (reordinaled.length > 0) {
+        const pairs = reordinaled.map((r) => `${r.from} is now derived as ${r.to}`).join(", ");
+        process.stderr.write(
+          `roster.mjs: ah: removing ${target.name} from the roster re-ordinals later ${target.role} members: ${pairs}. ` +
+            `Live team records keep their original names and still dispatch correctly; a future create/spawn-one will use the new names.\n`
+        );
+      }
+    }
+  }
+  return dismissOut;
+}
+
+/** Spec 0043 §1.6 three-valued liveness as an output field: `null` is "could not determine",
+    which is NOT `false`. */
+function liveField(dir, member) {
+  const st = memberLiveness(dir, member);
+  return st.indeterminate ? { live: null, live_unknown: st.why } : { live: st.live };
+}
+
+/** Spec 0046 §2.3: three-valued liveness for the guard. `indeterminate` counts as live —
+    "Herdr did not answer" must never be spent as "it is dead" (spec 0043 §1.6). */
+function untrackLiveGuard(dir, members, verb) {
+  const stillUp = [];
+  for (const m of members) {
+    const st = memberLiveness(dir, m);
+    if (st.live || st.indeterminate) stillUp.push({ name: m.name, why: st.indeterminate ? st.why : "live" });
+  }
+  if (stillUp.length === 0) return;
+  fail(
+    `untrack: ${stillUp.length === 1 ? `${stillUp[0].name} is` : `${stillUp.map((s) => s.name).join(", ")} are`} still live — ` +
+      `untrack only forgets the record and CANNOT BE UNDONE; the session would keep running with nothing tracking it. ` +
+      `Use \`${verb}\` to close ${stillUp.length === 1 ? "it" : "them"}, or re-run with --keep-sessions to forget the record and leave ${stillUp.length === 1 ? "it" : "them"} running. ` +
+      `Detail: ${JSON.stringify(stillUp)}`,
+  );
+}
+
+
 function removeConfigMember(name) {
   const { level, wasDefaulted, teamKey } = targetLevel();
   const path = rosterLevelPaths(cwd)[level];
@@ -1450,26 +1553,120 @@ function memberLiveness(dir, member) {
   return herdrAgentState(member.name);
 }
 
+/** Spec 0046 §2.4: every identifier a user can actually see for a live peer, in one place —
+    reused by dismiss plan, dismiss close, and the unresolved-target error. Forms, first match
+    wins: pane_id; session_id exact then unique >=8-char prefix; the name the status surface
+    prints (synthesized `role@sid8` for a nameless row, or a briefed row's own name); and last
+    the herdr display name, which costs a `herdr agent list` and is SKIPPED, never failed, when
+    herdr is absent. Two matches never pick — GitHub #4 was a dead end precisely because tooling
+    would not say what it could see, so ambiguity reports every candidate. */
+function peerIdentifiers(m) {
+  return { name: m.name, pane_id: m.transport_id || null, session_id: m.session_id || null, role: m.role || null };
+}
+
+function resolvePeerTarget(fallback, name, teamTransport) {
+  const uniq = (matches) => {
+    if (matches.length > 1) {
+      fail(
+        `dismiss: ${JSON.stringify(name)} is ambiguous — ${matches.length} live peers match: ` +
+          JSON.stringify(matches.map(peerIdentifiers)) +
+          " — re-run with a pane_id or a full session_id; nothing was closed",
+      );
+    }
+    return matches[0] || null;
+  };
+
+  let hit = uniq(fallback.filter((m) => m.transport_id && m.transport_id === name));
+  if (hit) return hit;
+
+  hit = uniq(fallback.filter((m) => m.session_id && m.session_id === name));
+  if (hit) return hit;
+
+  if (name.length >= 8) {
+    hit = uniq(fallback.filter((m) => m.session_id && m.session_id.startsWith(name)));
+    if (hit) return hit;
+  }
+
+  hit = uniq(fallback.filter((m) => m.name === name));
+  if (hit) return hit;
+
+  // Herdr display name last: only when this team actually rides herdr, and a failed/absent herdr
+  // is not an error here — it just means this form is unavailable (spec 0046 §2.4).
+  if (teamTransport === null || teamTransport === "herdr") {
+    let topology = null;
+    try {
+      topology = queryHerdrTopology();
+    } catch {
+      topology = null;
+    }
+    if (topology) {
+      const panes = topology.filter((p) => p.name === name).map((p) => p.pane_id);
+      if (panes.length > 0) {
+        hit = uniq(fallback.filter((m) => m.transport_id && panes.includes(m.transport_id)));
+        if (hit) return hit;
+      }
+    }
+  }
+  return null;
+}
+
+/** Spec 0046 §2.2: one session can appear as a nameless `up` row AND a named `briefed` row —
+    `rosterKey` partitions them — so the close set is deduplicated on `transport_id`, falling
+    back to `session_id`. A row with neither is kept as its own entry (nothing can merge it). */
+function dedupPeers(members) {
+  const seen = new Set();
+  const out = [];
+  for (const m of members) {
+    const key = m.transport_id || m.session_id || null;
+    if (key !== null) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    out.push(m);
+  }
+  return out;
+}
+
 /** Spec 0040 §1.2: the live peer records for the current team, shaped like team.json members so
     closableMembers/closeToken/closeMemberPane apply verbatim. Records store the herdr pane id
     from checkin (HERDR_PANE_ID); a record without one has no transport_id and is listed but
     never closable. `source: "peers"` marks the row as coming from the registry, not team.json. */
-function peerFallbackMembers(dir) {
-  // Spec 0044: `teamArg`, NOT `teamFile`. This filters `peers.jsonl`'s `team` TAG, which is a
-  // different axis from which team file a command writes — the whole point of this fallback is
-  // peers that no team record accounts for, and those are exactly the rows carrying no tag. An
-  // explicit `--team` is the only narrowing that was ever meant here; a derived scope would
-  // filter every untagged peer out and turn the fallback into a no-op.
-  return livePeerSlots(dir, teamArg || null)
+function peerFallbackMembers(dir, scope) {
+  // Spec 0046 §2.2 (replaces the 0044 `teamArg` rule, which WAS GitHub #4): the scope is the
+  // identity of the team being operated on — `teamFile` (null for the default team), or
+  // NO_TEAM_SCOPE in the no-team.json branch — never the `--team` FLAG. Passing `teamArg || null`
+  // meant a bare command scoped to null and so excluded every peer carrying a real team tag,
+  // leaving the close set empty while the sessions were plainly live. The old comment's fear (a
+  // derived scope filters untagged peers out) holds only when the derived team is NAMED, and
+  // there excluding default-team peers is the correct isolation.
+  return livePeerSlots(dir, scope)
     .filter((s) => s.live)
-    .map((s) => ({ role: s.role, name: s.name, route: "peer", transport_id: s.pane_id, live: s.live, how: s.how, source: "peers" }));
+    .map((s) => ({ role: s.role, name: s.name, route: "peer", transport_id: s.pane_id, session_id: s.session_id || null, live: s.live, how: s.how, source: "peers" }));
 }
 
 /** Spec 0040 §1.4a: registry peers not named in team.json — a record matching a member's name IS
     that member, never an extra. */
-function peerExtras(dir, team) {
+function peerExtras(dir, team, scope) {
   const named = new Set(team.members.map((m) => m.name));
-  return peerFallbackMembers(dir).filter((m) => !named.has(m.name));
+  return dedupPeers(peerFallbackMembers(dir, scope).filter((m) => !named.has(m.name)));
+}
+
+/** Spec 0046 §2.5: live peers attributed to `scope` that no team.json row names — the orphans
+    `teams`/`reap` must surface so a user can see what `team_dismiss`/`team_disband` would close. */
+/** Every member name any team file in this dir records — what "untracked" is measured against. */
+function trackedNames(dir, rows) {
+  const names = new Set();
+  for (const row of rows) {
+    const t = readTeam(dir, row.name);
+    for (const m of (t && Array.isArray(t.members) ? t.members : [])) if (m.name) names.add(m.name);
+  }
+  return names;
+}
+
+function untrackedLive(dir, scope, tracked) {
+  return livePeerSlots(dir, scope)
+    .filter((s) => s.live && !tracked.has(s.name))
+    .map((s) => ({ name: s.name, role: s.role, pane_id: s.pane_id, session_id: s.session_id, pid: s.pid, cwd: s.cwd }));
 }
 
 function peerFallbackPlanEntry(m) {
@@ -2275,13 +2472,18 @@ try {
       // by-default) bare path. --kill is accepted-and-ignored (§5.4) for 0002-era callers.
       for (const key of Object.keys(opts)) {
         if (key === "_") continue;
-        if (!DISBAND_FLAGS.has(key)) fail(`disband: unrecognized flag --${key} (use --commit, --keep-sessions, --plan, or --close --confirm --plan-token <tok>)`);
+        if (!DISBAND_FLAGS.has(key) && key !== "commit" && key !== "keep-sessions") fail(`disband: unrecognized flag --${key} (use --plan, or --close --confirm --plan-token <tok>; tracking-only removal is \`untrack --all\`)`);
       }
-      if (opts["keep-sessions"] === true && (opts.commit === true || opts.kill === true)) {
-        fail("disband --keep-sessions cannot be combined with --commit or --kill");
+      // Spec 0046 §3: these modes moved to `untrack`. A named error, not the generic unknown-flag
+      // one — the caller asked for tracking-only removal and needs the verb that still does it.
+      if (opts.commit === true || opts["keep-sessions"] === true) {
+        fail(
+          `${cmd}: --commit and --keep-sessions were removed in 0046 — \`${cmd}\` now only plans or CLOSES sessions. ` +
+            `To forget the record and leave the session running, use \`untrack ${cmd === "disband" ? "--all" : "<name>"} --commit --keep-sessions\`.`,
+        );
       }
-      if (opts.close === true && (opts.commit === true || opts["keep-sessions"] === true || opts.kill === true)) {
-        fail("disband --close cannot be combined with --commit, --keep-sessions, or --kill");
+      if (opts.close === true && opts.kill === true) {
+        fail("disband --close cannot be combined with --kill");
       }
       const dir = hierarchyDir(cwd);
 
@@ -2293,7 +2495,10 @@ try {
         if (!team) {
           // Spec 0040 §1.1/§1.3: no team.json — close the live registry peers instead, under the
           // same three gates, with the literal "no-team" standing in for team_id in the token.
-          const closable = closableMembers(peerFallbackMembers(dir));
+          // Dedup like :2521's plan does. closeToken() sorts the ids WITHOUT deduping, so one
+          // session appearing as both a nameless `up` row and a `briefed` row yields a plan token
+          // over one id and a close set over two — the token never matches its own plan.
+          const closable = closableMembers(dedupPeers(peerFallbackMembers(dir, NO_TEAM_SCOPE)));
           if (closable.length === 0) {
             out({ closed: false, reason: "no active team and no live peers" });
             break;
@@ -2310,38 +2515,14 @@ try {
         }
         // Spec 0040 §1.4a: the close set is the union of team.json members and live registry
         // peers outside it; the token pins exactly that union.
-        const closable = closableMembers([...healedMembers, ...peerExtras(dir, team)]);
+        const closable = closableMembers([...healedMembers, ...peerExtras(dir, team, teamFile)]);
         gateClose("disband", team.team_id, closable);
         const results = closable.map((m) => closeOne(m, team.transport));
         out({ closed: results.every((r) => r.closed), results });
         break;
       }
 
-      // --commit: removes team.json only, never re-reads the member list (spec 0002 §8.1/§8.3,
-      // spec 0006 §5.2 — no longer gated on --kill).
-      if (opts.commit === true) {
-        const team = readTeam(dir, teamFile);
-        if (!team) {
-          out({ removed: false, reason: "no active team" });
-          break;
-        }
-        clearTeam(dir, teamFile);
-        out({ removed: teamPath(dir, teamFile) });
-        break;
-      }
 
-      // --keep-sessions: the old safe default (spec 0006 §5.3) — single call, removes team.json,
-      // emits nothing, closes nothing.
-      if (opts["keep-sessions"] === true) {
-        const team = readTeam(dir, teamFile);
-        if (!team) {
-          out({ disbanded: false, reason: "no active team" });
-          break;
-        }
-        clearTeam(dir, teamFile);
-        out({ disbanded: true, team_id: team.team_id, members: team.members.map((m) => ({ role: m.role, name: m.name, transport_id: m.transport_id })) });
-        break;
-      }
 
       // Bare disband / --plan / --kill (ignored): the new default (spec 0006 §5.1). Read-only,
       // emits the close plan, writes nothing. Spec 0008 §5.6 (AMENDMENT): for herdr, resync the
@@ -2350,7 +2531,7 @@ try {
       const team = readTeam(dir, teamFile);
       if (!team) {
         // Spec 0040 §1.1/§1.5: plan over the live registry peers; `source: "peers"` says so.
-        const fallback = peerFallbackMembers(dir);
+        const fallback = dedupPeers(peerFallbackMembers(dir, NO_TEAM_SCOPE));
         const closable = closableMembers(fallback);
         if (closable.length === 0) {
           out({ disbanded: false, reason: "no active team and no live peers" });
@@ -2384,7 +2565,7 @@ try {
       });
       // Spec 0040 §1.4a: live registry peers outside team.json join the plan, labeled, and the
       // token hashes the union — with none present, output and token are exactly the team-only ones.
-      const extras = peerExtras(dir, team);
+      const extras = peerExtras(dir, team, teamFile);
       for (const m of extras) close.push(peerFallbackPlanEntry(m));
       const disbandOut = { close, close_token: closeToken(team.team_id, closableMembers([...healedMembers, ...extras])) };
       if (resyncSummary) disbandOut.resync = resyncSummary;
@@ -2398,37 +2579,51 @@ try {
       // close-path helper verbatim (§2/§3.3). Do not fork a second close implementation.
       for (const key of Object.keys(opts)) {
         if (key === "_") continue;
-        if (!DISMISS_FLAGS.has(key)) fail(`dismiss: unrecognized flag --${key} (use --plan, --close --confirm --plan-token <tok>, or --commit [--also-config] [--level L])`);
+        if (!DISMISS_FLAGS.has(key) && key !== "commit" && key !== "keep-sessions") fail(`dismiss: unrecognized flag --${key} (use --plan, or --close --confirm --plan-token <tok> [--also-config] [--level L]; tracking-only removal is \`untrack <name>\`)`);
       }
-      if (opts.close === true && opts.commit === true) fail("dismiss --close cannot be combined with --commit");
-      if (opts.plan === true && (opts.close === true || opts.commit === true)) fail("dismiss --plan cannot be combined with --close or --commit");
-      if ((opts["also-config"] === true || typeof opts.level === "string") && opts.commit !== true) {
-        fail("dismiss: --also-config and --level are only valid with --commit");
+      // Spec 0046 §3: these modes moved to `untrack`. A named error, not the generic unknown-flag
+      // one — the caller asked for tracking-only removal and needs the verb that still does it.
+      if (opts.commit === true || opts["keep-sessions"] === true) {
+        fail(
+          `${cmd}: --commit and --keep-sessions were removed in 0046 — \`${cmd}\` now only plans or CLOSES sessions. ` +
+            `To forget the record and leave the session running, use \`untrack ${cmd === "disband" ? "--all" : "<name>"} --commit --keep-sessions\`.`,
+        );
       }
-      const name = typeof opts._[0] === "string" ? opts._[0] : fail("dismiss needs a member name: roster.mjs dismiss <name> [--plan|--close --confirm --plan-token <tok>|--commit [--also-config]]");
+      if (opts.plan === true && opts.close === true) fail("dismiss --plan cannot be combined with --close");
+      if ((opts["also-config"] === true || typeof opts.level === "string") && opts.close !== true) {
+        fail("dismiss: --also-config and --level are only valid with --close (0046 U2) — a plan removes nothing");
+      }
+      const name = typeof opts._[0] === "string" ? opts._[0] : fail("dismiss needs a member name: roster.mjs dismiss <name> [--plan|--close --confirm --plan-token <tok>]");
       const dir = hierarchyDir(cwd);
       const team = readTeam(dir, teamFile);
-      if (!team && opts.commit === true) {
-        out({ dismissed: false, reason: "no active team" });
-        break;
-      }
       const target = team ? team.members.find((m) => m.name === name) : null;
-      // Spec 0040 §1.4b: a name absent from team.json (or no team.json at all) is looked up in
-      // the live registry for plan/--close; --commit is team.json-only and never falls back.
-      const fallback = target || opts.commit === true ? [] : peerFallbackMembers(dir);
-      const fbTarget = target ? null : fallback.find((m) => m.name === name) || null;
+      // Spec 0040 §1.4b + 0046 §2.4: a name absent from team.json (or no team.json at all) is
+      // resolved against the live registry by every identifier the user can see.
+      const fallback = target ? [] : dedupPeers(peerFallbackMembers(dir, team ? teamFile : NO_TEAM_SCOPE));
+      const fbTarget = target ? null : resolvePeerTarget(fallback, name, team ? team.transport : null);
       if (!team && !fbTarget) {
         if (closableMembers(fallback).length === 0) {
           out({ dismissed: false, reason: "no active team and no live peers" });
           break;
         }
-        fail(`dismiss: no member named ${JSON.stringify(name)} — no team.json; live peer records have: ${fallback.map((m) => m.name).join(", ")}`);
+        fail(
+          `dismiss: no member named ${JSON.stringify(name)} — no team.json; live untracked sessions: ` +
+            JSON.stringify(fallback.map(peerIdentifiers)) +
+            " — dismiss accepts any of those name / pane_id / session_id values",
+        );
       }
       if (!target && !fbTarget) {
         if (team.members.some((m) => m.role === name)) {
           fail(`dismiss: no member named ${JSON.stringify(name)} in team ${team.team_id} — that is a role, not a member name; dismiss takes a derived name (0019 §3.2)`);
         }
-        fail(`dismiss: no member named ${JSON.stringify(name)} in team ${team.team_id} — it has: ${team.members.map((m) => m.name).join(", ") || "(none)"}${opts.commit === true ? "" : "; checked live peer records too"}`);
+        fail(
+          `dismiss: no member named ${JSON.stringify(name)} in team ${team.team_id} — it has: ${team.members.map((m) => m.name).join(", ") || "(none)"}` +
+            (fallback.length > 0
+              ? "; live untracked sessions in this team: " +
+                JSON.stringify(fallback.map(peerIdentifiers)) +
+                " — dismiss accepts any of those name / pane_id / session_id values"
+              : "; no live untracked sessions in this team either"),
+        );
       }
       if (fbTarget) {
         // Spec 0040 §1.4b/§1.5: single-record plan/close, same shapes as the team path plus
@@ -2484,80 +2679,19 @@ try {
             return { name: m.name, transport_id: m.transport_id, closed: false, error: err.message };
           }
         });
-        out({ closed: results.every((r) => r.closed), results });
+        const allClosed = results.every((r) => r.closed);
+        // §2.1 bookkeeping: the row goes only when the close actually succeeded. A failed close
+        // that still dropped the record is exactly the orphan GitHub #4 was about.
+        const dismissClose = { closed: allClosed, results, untracked: false };
+        if (allClosed) {
+          writeTeam(dir, { ...team, members: team.members.filter((m) => m.name !== name) }, teamFile);
+          dismissClose.untracked = true;
+          if (opts["also-config"] === true) dismissClose.config = removeConfigMember(target.name);
+        }
+        out(dismissClose);
         break;
       }
 
-      // --commit [--also-config]: merge-write team.json minus this member. Closes nothing.
-      if (opts.commit === true) {
-        const outTeam = { ...team, members: team.members.filter((m) => m.name !== name) };
-        writeTeam(dir, outTeam, teamFile);
-        // §3.4: a commit on a still-live member is allowed, but must never be silent about it.
-        // Spec 0043 §1.6: kind-aware, and an indeterminate answer warns too — the whole point of
-        // the third value is that "Herdr did not answer" must not be spent as "it is dead".
-        const commitState = memberLiveness(dir, target);
-        if (commitState.live || commitState.indeterminate) {
-          let command = null;
-          if (routeHasPane(target.route) && target.transport_id) {
-            if (team.transport === "herdr") command = `herdr pane close ${target.transport_id}`;
-            else if (team.transport === "tmux") command = `tmux kill-pane -t ${target.transport_id}`;
-          }
-          process.stderr.write(
-            `roster.mjs: ah: ${target.name} ${commitState.indeterminate ? `may still be live — could not determine (${commitState.why})` : `is still live`} (${team.transport} ${target.transport_id}). Its record is gone from team ${team.team_id}.` +
-              (command ? ` Close it with \`${command}\` if you did not mean to leave it running.\n` : "\n")
-          );
-        }
-        const teamEmpty = outTeam.members.length === 0;
-        if (teamEmpty) {
-          process.stderr.write(`roster.mjs: ah: team ${team.team_id} has no members left. If you meant to end the team entirely, use \`disband --commit\`.\n`);
-        }
-        const dismissOut = {
-          dismissed: true,
-          member: { role: target.role, name: target.name },
-          team_id: team.team_id,
-          remaining: outTeam.members.map((m) => m.name),
-          team_empty: teamEmpty,
-          config: null,
-          store: `team ${JSON.stringify(team.team_id)}`,
-        };
-        if (opts["also-config"] === true) {
-          const result = removeConfigMember(target.name);
-          if (!result.removed) {
-            process.stderr.write(
-              `roster.mjs: ah: dismissed ${target.name} from team ${team.team_id}, but no roster member named ${target.name} exists at level "${result.level}" — the config was not changed.\n`
-            );
-            dismissOut.config = { removed: false, level: result.level, reason: result.reason };
-          } else {
-            // §3.5.1: ordinal shift. `result.before`/`result.after` are the config's
-            // ordinal-derived names before/after this removal, in array order. Everything at or
-            // before the removed index is unaffected; every later same-role sibling's ordinal
-            // (and therefore derived name) shifts down by one. Warn — never refuse — whenever a
-            // shifted name belongs to a member team.json still records as live under the OLD name.
-            const reordinaled = [];
-            for (let i = result.idx; i < result.before.length - 1; i++) {
-              const oldName = result.before[i + 1].name;
-              const newName = result.after[i].name;
-              if (oldName === newName) continue;
-              const teamHasRecord = outTeam.members.some((m) => m.name === oldName);
-              // Spec 0043 §1.6: ask the recorded member (kind-aware), not a bare name. An
-              // indeterminate answer warns — a Herdr blip must not silently drop the shift notice.
-              const oldMember = outTeam.members.find((m) => m.name === oldName);
-              const oldState = oldMember ? memberLiveness(dir, oldMember) : null;
-              if (teamHasRecord && oldState && (oldState.live || oldState.indeterminate)) reordinaled.push({ from: oldName, to: newName });
-            }
-            dismissOut.config = { removed: true, level: result.level, path: result.path, reordinaled };
-            if (reordinaled.length > 0) {
-              const pairs = reordinaled.map((r) => `${r.from} is now derived as ${r.to}`).join(", ");
-              process.stderr.write(
-                `roster.mjs: ah: removing ${target.name} from the roster re-ordinals later ${target.role} members: ${pairs}. ` +
-                  `Live team records keep their original names and still dispatch correctly; a future create/spawn-one will use the new names.\n`
-              );
-            }
-          }
-        }
-        out(dismissOut);
-        break;
-      }
 
       // Bare dismiss / --plan: read-only. For herdr, resync in memory first (0008 §5.6) so the
       // plan names the member's current pane; never persist the heal.
@@ -2587,6 +2721,85 @@ try {
         team_id: team.team_id,
         remaining: team.members.filter((m) => m.name !== name).map((m) => m.name),
       });
+      break;
+    }
+
+    case "untrack": {
+      // Spec 0046 §2.3: the ONLY way to drop a tracking record without closing a session. GitHub
+      // #4 happened because that capability was a --commit FLAG on the destructive verbs, so an
+      // agent reaching for "remove the member" got tracking-only removal and left live sessions
+      // orphaned with nothing naming them. As its own verb it can carry a live guard that every
+      // caller passes through, and the guard says untrack is not undo.
+      for (const key of Object.keys(opts)) {
+        if (key === "_") continue;
+        if (!UNTRACK_FLAGS.has(key)) fail(`untrack: unrecognized flag --${key} (use <name>|--all [--plan|--commit] [--keep-sessions] [--also-config] [--level L])`);
+      }
+      if (opts.plan === true && opts.commit === true) fail("untrack --plan cannot be combined with --commit");
+      const untrackAll = opts.all === true;
+      const untrackName = typeof opts._[0] === "string" ? opts._[0] : null;
+      if (untrackAll && untrackName) fail("untrack: pass a member name or --all, not both");
+      if (!untrackAll && !untrackName) fail("untrack needs a member name or --all: roster.mjs untrack <name>|--all [--plan|--commit] [--keep-sessions]");
+      if ((opts["also-config"] === true || typeof opts.level === "string") && untrackAll) {
+        fail("untrack: --also-config and --level apply to a single member, not --all");
+      }
+      const dir = hierarchyDir(cwd);
+      const team = readTeam(dir, teamFile);
+      const commit = opts.commit === true;
+      const keep = opts["keep-sessions"] === true;
+
+      // §2.3 idempotency: a skill-driven agent that untracks after a close which already dropped
+      // the row must not see an error.
+      if (!team) {
+        out({ untracked: false, already_untracked: true, reason: "no team file to forget" });
+        break;
+      }
+      if (untrackAll) {
+        if (!commit) {
+          out({
+            plan: "untrack-all",
+            team_id: team.team_id,
+            members: team.members.map((m) => ({ role: m.role, name: m.name, ...liveField(dir, m) })),
+            removes: teamPath(dir, teamFile),
+          });
+          break;
+        }
+        if (!keep) untrackLiveGuard(dir, team.members, "disband --close");
+        clearTeam(dir, teamFile);
+        out({
+          untracked: true,
+          team_id: team.team_id,
+          removed: teamPath(dir, teamFile),
+          members: team.members.map((m) => ({ role: m.role, name: m.name, transport_id: m.transport_id })),
+        });
+        break;
+      }
+
+      const utTarget = team.members.find((m) => m.name === untrackName) || null;
+      if (!utTarget) {
+        // §2.3: a live peer that team.json never recorded has no record to forget — say so, and
+        // name the verb that CAN act on it, rather than repeating #4's dead end.
+        const livePeers = dedupPeers(peerFallbackMembers(dir, teamFile));
+        const asPeer = resolvePeerTarget(livePeers, untrackName, team.transport);
+        if (asPeer) {
+          fail(
+            `untrack: ${JSON.stringify(untrackName)} is not tracked in team ${team.team_id} — it is a LIVE untracked session ` +
+              `(${JSON.stringify(peerIdentifiers(asPeer))}). There is no record to forget; \`dismiss ${asPeer.name} --close\` closes it.`,
+          );
+        }
+        out({ untracked: false, already_untracked: true, team_id: team.team_id, member: untrackName });
+        break;
+      }
+      if (!commit) {
+        out({
+          plan: "untrack",
+          team_id: team.team_id,
+          member: { role: utTarget.role, name: utTarget.name, ...liveField(dir, utTarget) },
+          remaining: team.members.filter((m) => m.name !== untrackName).map((m) => m.name),
+        });
+        break;
+      }
+      if (!keep) untrackLiveGuard(dir, [utTarget], `dismiss ${utTarget.name} --close`);
+      out(untrackMember(dir, team, utTarget, untrackName));
       break;
     }
 
@@ -2850,8 +3063,11 @@ try {
         }
         row.misplaced_members = flagged;
         row.misplaced_unattributed = unattributed;
+        row.untracked_live = untrackedLive(dir, row.name, new Set(members.map((m) => m.name).filter(Boolean)));
       }
-      out({ teams: rows });
+      // Spec 0046 §2.5: a briefed peer's row carries its team.json member NAME, so the top-level
+      // list must exclude every tracked name in the whole hierarchy dir, not just one team's.
+      out({ teams: rows, untracked_live: untrackedLive(dir, NO_TEAM_SCOPE, trackedNames(dir, rows)) });
       break;
     }
 
@@ -2928,11 +3144,13 @@ try {
       }
       const dir = hierarchyDir(cwd);
       const orphans = allTeamRows(dir, null).filter((t) => t.orphaned);
+      // Spec 0046 §2.5: reported, never acted on — reap's contract stays orchestrator-dead teams only.
+      const untracked_live = untrackedLive(dir, NO_TEAM_SCOPE, trackedNames(dir, allTeamRows(dir, null)));
       if (opts.commit === true) {
         for (const t of orphans) clearTeam(dir, t.name);
-        out({ committed: true, reaped: orphans });
+        out({ committed: true, reaped: orphans, untracked_live });
       } else {
-        out({ committed: false, orphans });
+        out({ committed: false, orphans, untracked_live });
       }
       break;
     }
@@ -2958,7 +3176,7 @@ try {
     }
 
     default:
-      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one|spawn-ad-hoc|adopt|teams|reap|history|checkin [--commit|--keep-sessions] [--level global|repo|repo-user] [--team <name>] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
+      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one|spawn-ad-hoc|adopt|untrack|teams|reap|history|checkin [--commit] [--level global|repo|repo-user] [--team <name>] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
   }
 } catch (err) {
   fail(err && err.message ? err.message : String(err));

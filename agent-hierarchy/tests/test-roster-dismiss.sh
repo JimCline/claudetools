@@ -90,8 +90,8 @@ plan_token() { # dismiss <name>, prints close_token from stdout
 # ===========================================================================
 write_team
 BEFORE=$(cat "$TEAM_FILE")
-run dismiss myrepo-task-runner --commit
-check "1: dismiss --commit: exit 0, dismissed true" '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"dismissed\": true"'
+run untrack myrepo-task-runner --commit --keep-sessions
+check "1: untrack --commit --keep-sessions: exit 0, untracked true" '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"untracked\": true"'
 check "1: 4 members remain" \
   'node -e "const t=JSON.parse(require(\"fs\").readFileSync(\"$TEAM_FILE\",\"utf8\"));process.exit(t.members.length===4?0:1)"'
 check "1: team_id/created/transport/roster_level/orchestrator preserved, other 4 records byte-identical" \
@@ -161,15 +161,16 @@ run disband --close --confirm --plan-token "$DISMISS_TOKEN"
 check "6: a single-member dismiss token does not authorise disband --close" '[ "$RC" -ne 0 ]'
 
 # ===========================================================================
-# 7. Close does not prune; a following --commit does.
+# 7. Close prunes the row itself (0046 §2.1) — no second --commit call exists any more.
 # ===========================================================================
 write_team
 run dismiss myrepo-architect
 TOKEN7=$(plan_token)
 run dismiss myrepo-architect --close --confirm --plan-token "$TOKEN7"
 check "7: --close: exit 0, closed true" '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"closed\": true"'
-check "7: --close: team.json still contains the member" 'grep -q "myrepo-architect" "$TEAM_FILE"'
-run dismiss myrepo-architect --commit
+check "7 (0046 §2.1): --close drops the row itself and says so" \
+  '! grep -q "myrepo-architect" "$TEAM_FILE" && echo "$OUT" | grep -q "\"untracked\": true"'
+run untrack myrepo-architect --commit --keep-sessions
 check "7: a following --commit removes it" \
   'node -e "const t=JSON.parse(require(\"fs\").readFileSync(\"$TEAM_FILE\",\"utf8\"));process.exit(t.members.some(m=>m.name===\"myrepo-architect\")?1:0)"'
 
@@ -179,7 +180,7 @@ check "7: a following --commit removes it" \
 write_team
 : > "$PEERS_FILE"
 seed_peer "myrepo-reviewer" "reviewer" "up" "$$"
-run dismiss myrepo-reviewer --commit
+run untrack myrepo-reviewer --commit --keep-sessions
 check "8: --commit on a live member still succeeds" '[ "$RC" -eq 0 ]'
 check "8: stderr warns, naming the member and its close command" \
   'echo "$OUT" | grep -q "myrepo-reviewer is still live" && echo "$OUT" | grep -q "herdr pane close P3"'
@@ -215,7 +216,7 @@ cat > "$TEAM_FILE" <<EOF
   "members": [ {"role": "architect", "name": "myrepo-architect", "route": "peer", "model": "opus", "transport_id": "P1"} ],
   "partial": false }
 EOF
-run dismiss myrepo-architect --commit
+run untrack myrepo-architect --commit --keep-sessions
 check "13: dismissing the only member: team_empty true" 'echo "$OUT" | grep -q "\"team_empty\": true"'
 check "13: team.json still exists with members:[]" \
   '[ -e "$TEAM_FILE" ] && node -e "const t=JSON.parse(require(\"fs\").readFileSync(\"$TEAM_FILE\",\"utf8\"));process.exit(Array.isArray(t.members)&&t.members.length===0?0:1)"'
@@ -244,7 +245,7 @@ cat > "$TEAM_FILE" <<EOF
     {"role": "implementor", "name": "myrepo-implementor-2", "route": "peer", "model": "sonnet", "transport_id": "P2"}
   ], "partial": false }
 EOF
-run dismiss myrepo-implementor-2 --commit --also-config
+run untrack myrepo-implementor-2 --commit --keep-sessions --also-config
 check "14: also-config happy path: exit 0, config.removed true, names the level" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"removed\": true" && echo "$OUT" | grep -q "\"level\": \"repo\""'
 run show --level repo
@@ -264,7 +265,7 @@ EOF
 : > "$PEERS_FILE"
 seed_peer "myrepo-implementor" "implementor" "up" "$$"
 seed_peer "myrepo-implementor-2" "implementor" "up" "$$"
-run dismiss myrepo-implementor --commit --also-config
+run untrack myrepo-implementor --commit --keep-sessions --also-config
 check "15: ordinal-shift: exit 0, stderr names the re-ordinaling" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "re-ordinals later implementor members"'
 check "15: output carries config.reordinaled [{from:...-implementor-2,to:...-implementor}]" \
@@ -284,9 +285,9 @@ cat > "$TEAM_FILE" <<EOF
   "members": [ {"role": "reviewer", "name": "myrepo-reviewer", "route": "peer", "model": "opus", "transport_id": "P1"} ],
   "partial": false }
 EOF
-run dismiss myrepo-reviewer --commit --also-config
-check "16: also-config miss: exit 0, dismissed true, config.removed false with a reason" \
-  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"dismissed\": true" && echo "$OUT" | grep -q "\"removed\": false"'
+run untrack myrepo-reviewer --commit --keep-sessions --also-config
+check "16: also-config miss: exit 0, untracked true, config.removed false with a reason" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"untracked\": true" && echo "$OUT" | grep -q "\"removed\": false"'
 check "16: stderr says the config was not changed" 'echo "$OUT" | grep -q "the config was not changed"'
 check "16: team.json IS modified (member removed)" \
   'node -e "const t=JSON.parse(require(\"fs\").readFileSync(\"$TEAM_FILE\",\"utf8\"));process.exit(t.members.length===0?0:1)"'
@@ -296,9 +297,9 @@ check "16: team.json IS modified (member removed)" \
 # ===========================================================================
 write_team
 run dismiss myrepo-architect --also-config
-check "17a: --also-config without --commit: exit non-zero" '[ "$RC" -ne 0 ]'
+check "17a (0046 U2): --also-config on a read-only plan is refused" '[ "$RC" -ne 0 ]'
 run dismiss myrepo-architect --level repo
-check "17b: --level without --commit: exit non-zero" '[ "$RC" -ne 0 ]'
+check "17b (0046 U2): --level on a read-only plan is refused" '[ "$RC" -ne 0 ]'
 run dismiss myrepo-architect --close --commit
 check "17c: --close --commit: exit non-zero" '[ "$RC" -ne 0 ]'
 
@@ -317,7 +318,7 @@ check "18: --close refused without --allow-global when roster resolves at global
   '[ "$RC" -ne 0 ] && echo "$OUT" | grep -qi "allow-global"'
 run dismiss myrepo-architect --close --confirm --plan-token "$TOKEN18" --allow-global
 check "18: --close --allow-global succeeds" '[ "$RC" -eq 0 ]'
-run dismiss myrepo-architect --commit
+run untrack myrepo-architect --commit --keep-sessions
 rm -f "$FAKEHOME/.claude/agent-hierarchy.json"
 
 # ===========================================================================
@@ -337,7 +338,7 @@ write_team
 BEFORE20=$(cat "$TEAM_FILE")
 run create --team named1 --commit --verified '[{"name":"named1-reviewer","role":"reviewer","route":"peer"}]' --transport terminal --roster-level repo --orchestrator-pid "$$"
 check "20 setup: create --team named1 --commit succeeds" '[ "$RC" -eq 0 ]'
-run dismiss named1-reviewer --commit --team named1
+run untrack named1-reviewer --commit --keep-sessions --team named1
 check "20: dismiss --team named1 --commit succeeds" '[ "$RC" -eq 0 ]'
 check "20: teams/named1.json now has no members" \
   'node -e "const t=JSON.parse(require(\"fs\").readFileSync(\"$HIER_DIR/teams/named1.json\",\"utf8\"));process.exit(t.members.length===0?0:1)"'

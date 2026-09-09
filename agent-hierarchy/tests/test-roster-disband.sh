@@ -97,14 +97,14 @@ check "disband (bare): not_found member (empty stub topology) still gets a non-n
   'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const o=JSON.parse(s);const m=o.close.find(c=>c.name===\"myrepo-architect\");process.exit(m&&m.command===\"herdr pane close PANE1\"&&m.resync_status===\"not_found\"?0:1)})"'
 
 # ---- --commit: removes team.json only, no longer requires --kill
-run disband --commit
+run untrack --all --commit --keep-sessions
 check "--commit: reports removed, team.json now gone" \
   'echo "$OUT" | grep -q "\"removed\"" && ! echo "$OUT" | grep -q "\"close\"" && [ ! -e "$TEAM_FILE" ]'
 
 # ---- --commit on an already-gone team: no active team, same shape as before
-run disband --commit
-check "--commit (retry, no active team): removed false, reason given" \
-  'echo "$OUT" | grep -q "\"removed\": false"'
+run untrack --all --commit --keep-sessions
+check "0046 §2.3: untrack --all on an already-gone team is idempotent, not an error" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"already_untracked\": true"'
 
 # ---- bare disband, tmux transport
 write_team tmux
@@ -113,34 +113,35 @@ check "disband (bare, tmux): emits tmux kill-pane -t for the peer member with a 
   'echo "$OUT" | grep -q "\"command\": \"tmux kill-pane -t PANE1\""'
 check "disband (bare, tmux): no resync key, no resync_status field — tmux is untouched by spec 0008 §5.6" \
   '! echo "$OUT" | grep -q "\"resync\"" && [ ! -s "$INVOKED_LOG" ]'
-run disband --commit
+run untrack --all --commit --keep-sessions
 
 # ---- bare disband, terminal transport: no transport_id is ever non-null for terminal, so no commands
 write_team terminal
 run disband
 check "disband (bare, terminal): every command is null (nothing addressable to close)" \
   'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const o=JSON.parse(s);process.exit(o.close.every(c=>c.command===null)?0:1)})"'
-run disband --commit
+run untrack --all --commit --keep-sessions
 
 # ---- bare disband emits only; never executes (no herdr/tmux binary needs to exist on PATH for this to work)
 write_team herdr
 OUT=$(HOME="$FAKEHOME" PATH="$(dirname "$(command -v node)")" node "$H/roster.mjs" disband --cwd "$PROJ" 2>&1); RC=$?
 check "disband (bare): succeeds with no herdr binary on PATH (emit-only, does not execute)" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"command\": \"herdr pane close PANE1\""'
-run disband --commit
+run untrack --all --commit --keep-sessions
 
 # ---- --keep-sessions: the old safe default, single call, no close key
 write_team herdr
-run disband --keep-sessions
-check "--keep-sessions: reports disbanded, no 'close' key emitted" \
-  'echo "$OUT" | grep -q "\"disbanded\": true" && ! echo "$OUT" | grep -q "\"close\""'
+run untrack --all --commit --keep-sessions
+check "0046 §2.3: untrack --all reports untracked and emits no close list" \
+  'echo "$OUT" | grep -q "\"untracked\": true" && ! echo "$OUT" | grep -q "\"close\""'
 check "--keep-sessions: team.json removed" \
   '[ ! -e "$TEAM_FILE" ]'
-check "--keep-sessions: output byte-identical to pre-0006 plain-disband fixture" \
+check "0046 §2.3: untrack --all output is byte-identical to this fixture" \
   '[ "$OUT" = "$(cat <<FIX
 {
-  "disbanded": true,
+  "untracked": true,
   "team_id": "t1",
+  "removed": "'"$TEAM_FILE"'",
   "members": [
     {
       "role": "architect",
@@ -163,9 +164,9 @@ FIX
 )" ]'
 
 # ---- --keep-sessions with no active team
-run disband --keep-sessions
-check "--keep-sessions: no active team -> disbanded false, reason given" \
-  'echo "$OUT" | grep -q "\"disbanded\": false"'
+run untrack --all --commit --keep-sessions
+check "0046 §2.3: untrack --all with no active team is idempotent" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"already_untracked\": true"'
 
 # ---- unknown flag rejection (spec 0006 §6): fails, team.json intact, no close emitted
 write_team herdr
@@ -180,12 +181,12 @@ check "disband --nonsense: exit 2, team.json intact, no close key" \
   '[ "$RC" -eq 2 ] && [ -e "$TEAM_FILE" ] && ! echo "$OUT" | grep -q "\"close\""'
 
 # ---- --keep-sessions combination rules: contradictory pairs rejected
-run disband --keep-sessions --commit
-check "--keep-sessions --commit: exit 2, team.json intact" \
+run untrack --all --plan --commit
+check "0046 §2.3: untrack --plan --commit is contradictory -> exit 2, team.json intact" \
   '[ "$RC" -eq 2 ] && [ -e "$TEAM_FILE" ]'
-run disband --keep-sessions --kill
-check "--keep-sessions --kill: exit 2, team.json intact" \
-  '[ "$RC" -eq 2 ] && [ -e "$TEAM_FILE" ]'
+run untrack --all --commit --keep-sessions --kill
+check "0046 §3: --kill is not an untrack flag -> exit 2 naming the usage, team.json intact" \
+  '[ "$RC" -eq 2 ] && [ -e "$TEAM_FILE" ] && echo "$OUT" | grep -q "unrecognized flag --kill"'
 
 # ---- --kill is a no-op: identical stdout to the paths it used to select
 run disband --kill --plan
@@ -196,20 +197,14 @@ run disband
 BARE_OUT=$OUT
 check "--kill is a no-op: --kill --plan, --kill, and bare disband produce identical stdout" \
   '[ "$KILL_PLAN_OUT" = "$KILL_BARE_OUT" ] && [ "$KILL_BARE_OUT" = "$BARE_OUT" ]'
-run disband --kill --commit
-KILL_COMMIT_OUT=$OUT
 write_team herdr
-run disband --commit
-COMMIT_OUT=$OUT
-check "--kill is a no-op: --kill --commit and --commit produce identical stdout" \
-  '[ "$KILL_COMMIT_OUT" = "$COMMIT_OUT" ]'
 
 # ---- --plan is read-only (regression test for the pre-0006 defect: bare --plan used to delete team.json)
 write_team herdr
 run disband --plan
 check "disband --plan: team.json left on disk" \
   '[ -e "$TEAM_FILE" ]'
-run disband --commit
+run untrack --all --commit --keep-sessions
 
 # ---- spec 0008 §5.6 AMENDMENT — the core case: member relocated out-of-band (stub topology
 # reports it at PANE9); disband must emit the close for its CURRENT pane, not the stale PANE1.
@@ -222,7 +217,7 @@ check "disband (bare, §5.6 core): emits close for the member's current pane (PA
 check "disband (bare, §5.6 core): resync_status updated, resync.ok true" \
   'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const o=JSON.parse(s);const m=o.close.find(c=>c.name===\"myrepo-architect\");process.exit(m&&m.resync_status===\"updated\"&&o.resync&&o.resync.ok===true?0:1)})"'
 echo '[]' > "$SANDBOX/agents.json"
-run disband --commit
+run untrack --all --commit --keep-sessions
 
 # ---- spec 0008 §5.6: topology query fails -> degrade, never fail(), exit 0, plan from stored
 # ids, resync.ok false, every resync_status "unqueried"
@@ -235,15 +230,15 @@ check "disband (bare): topology query fails -> resync.ok false" \
   'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const o=JSON.parse(s);process.exit(o.resync&&o.resync.ok===false?0:1)})"'
 check "disband (bare): topology query fails -> every resync_status is unqueried" \
   'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const o=JSON.parse(s);process.exit(o.close.every(c=>c.resync_status===\"unqueried\")?0:1)})"'
-run disband --commit
+run untrack --all --commit --keep-sessions
 
 # ---- --commit and --keep-sessions: no resync key, no topology query at all (herdr not invoked)
 write_team herdr
-run disband --commit
+run untrack --all --commit --keep-sessions
 check "--commit: no resync key, herdr never invoked" \
   '! echo "$OUT" | grep -q "\"resync\"" && [ ! -s "$INVOKED_LOG" ]'
 write_team herdr
-run disband --keep-sessions
+run untrack --all --commit --keep-sessions
 check "--keep-sessions: no resync key, herdr never invoked" \
   '! echo "$OUT" | grep -q "\"resync\"" && [ ! -s "$INVOKED_LOG" ]'
 

@@ -1,6 +1,6 @@
 ---
 name: agent-team
-description: Stand up, inspect, reshape, or tear down a live Team of agent sessions from the existing agent-hierarchy roster. Use for /agent-team, for "set up my team", "set up a team", "spawn the team", "spawn my team", "spin up the team", "start the team", "spawn the architect", "spawn just the reviewer", "add a peer to the running team", "dismiss a member", "disband the team", or "disband my team".
+description: Stand up, inspect, reshape, or tear down a live Team of agent sessions from the existing agent-hierarchy roster. Use for /agent-team, for "set up my team", "set up a team", "spawn the team", "spawn my team", "spin up the team", "start the team", "spawn the architect", "spawn just the reviewer", "add a peer to the running team", "dismiss a member", "dismiss the architect", "remove the architect", "close that session", "close the sessions", "kick the reviewer", "dismiss the team", "close the team", "disband the team", "disband my team", "shut down the team", "tear down the team", "end the team", "stop tracking a member", "leave it running but forget it", or "untrack the team".
 ---
 
 # agent-team
@@ -8,7 +8,7 @@ description: Stand up, inspect, reshape, or tear down a live Team of agent sessi
 A **Team** is a live instance: real sessions, real panes, recorded in a team
 file under `.claude/hierarchy/teams/`. It is created FROM the roster, which is
 a template. This skill owns every process lifecycle operation — create, spawn,
-dismiss, disband, move, resync, adopt, reap — and writes only the team file.
+dismiss, disband, untrack, move, resync, adopt, reap — and writes only the team file.
 
 **It never edits the roster.** Changing WHO belongs on the roster is the
 `ah:agent-roster` skill's job (`init`/`add`/`edit`/`remove`/`layout`/`alias`),
@@ -51,53 +51,67 @@ shared `team.json`** — spec 0044 §1.1 defaults the file to
 A pre-0044 `team.json` keeps working, unmigrated. See § Create for what
 happens when a bare `create` collides with someone else's live Team.
 
-- `create [--plan | --commit ... | --spawn --mode <m>]` (`mcp__ah__roster_create`, `mode: plan|spawn|commit`) — see § Create.
-- `spawn-one <role> [--member <name>] [--cwd <path>] [--dry-run] [--allow-global]` (`mcp__ah__roster_spawn_one`) — stands up ONE missing or dead
+- `create [--plan | --commit ... | --spawn --mode <m>]` (`mcp__ah__team_create`, `mode: plan|spawn|commit`) — see § Create.
+- `spawn-one <role> [--member <name>] [--cwd <path>] [--dry-run] [--allow-global]` (`mcp__ah__team_spawn_one`) — stands up ONE missing or dead
   peer FROM THE ROSTER and persists it into the team file, without touching any other member. Prefer this over
   Create when a Team already exists and only one role needs (re)starting — Create refuses to run
   against a live Team. The direct match for "spawn the architect" / "spawn just the reviewer"
   style requests. See § spawn-one.
 - `spawn-ad-hoc <role> [--model M] [--effort E] [--kind K] [--route R] [--args '<json>'] [--auto-mode A] [--on-missing O] [--dry-run] [--allow-global]`
-  (`mcp__ah__roster_spawn_ad_hoc`) — stands up ONE member that is **not in the roster**: a divergent
+  (`mcp__ah__team_spawn_ad_hoc`) — stands up ONE member that is **not in the roster**: a divergent
   variant of a roster role, or a role the roster does not define at all. Launches through the same
   path as `spawn-one` and writes **only** the team file — the roster is never touched. This is the
   answer whenever the running team needs a member the roster does not describe; editing the roster
   to get one is the mistake spec 0044 exists to prevent. See § spawn-ad-hoc.
-- `dismiss <name> [--plan | --close --confirm --plan-token <tok> | --commit [--also-config]]`
-  (`mcp__ah__roster_dismiss`/`roster_dismiss_close`) — drops ONE member from a live Team by its
-  derived name, the inverse of `spawn-one`. `--also-config` additionally removes the row from the
-  roster template and is the one command that crosses into roster territory: it is an explicit,
-  never-inferred opt-in. See § dismiss.
-- `disband [--commit|--keep-sessions]` (`mcp__ah__roster_disband`, `mode: plan|commit|keep-sessions`, default `plan`) —
-  tears down the Team. Bare `disband`/`mode: plan` emits close commands (read-only); `--commit`
-  removes the team file after the closes have actually run; `--keep-sessions` removes it
-  without closing anything. **Never closes anything itself** — see § disband and § disband's close
-  step below for the separate, destructive `roster_disband_close`.
-- `disband --close --confirm --plan-token <tok>` (`mcp__ah__roster_disband_close`) — **destructive**:
-  closes the live sessions the preceding plan call named. Gated by default: the harness itself
-  prompts the user for `roster_disband_close` (see § disband step 3). Never call it without the
-  `close_token` from a `disband`/`mode: plan` call immediately before it.
-- `resync [--dry-run]` (`mcp__ah__roster_resync`) — re-derives every peer member's herdr pane/tab/workspace location from
+- `dismiss <name> [--plan | --close --confirm --plan-token <tok>] [--also-config]`
+  (`mcp__ah__team_dismiss`, `mode: plan|close`, default `plan`) — **CLOSES ONE MEMBER'S SESSION**
+  and drops its row: the inverse of `spawn-one`, and what "dismiss the architect" / "remove that
+  member" / "kick the reviewer" mean. `mode: plan` is read-only and returns a `close_token`;
+  `mode: close` needs `confirm: true` and that token, and the harness asks the user once.
+  `<name>` accepts anything the user can see for a live session — the derived member name, a
+  `pane_id`, a `session_id` or a unique 8+ character prefix of one, the `role@sid8` form
+  `teams` prints, or the herdr display name (spec 0046 §2.4). `--also-config` additionally
+  removes the row from the roster template and is the one command that crosses into roster
+  territory: an explicit, never-inferred opt-in. To forget a record WITHOUT closing anything, that
+  is `untrack`, never `dismiss`. See § dismiss.
+- `disband [--plan | --close --confirm --plan-token <tok>]` (`mcp__ah__team_disband`,
+  `mode: plan|close`, default `plan`) — **CLOSES EVERY MEMBER'S SESSION** and drops the team
+  record: what "disband the team" / "close the team" / "tear down the team" mean. `mode: plan` is
+  read-only and returns the close list plus a `close_token`; `mode: close` needs `confirm: true`
+  and that token, and the harness asks the user once. The close list is `team.json`'s members
+  **plus any live peer attributed to this team** with no row of its own (spec 0046 §2.2). To drop
+  the record without closing anything, that is `untrack --all`. See § disband.
+- `untrack <name>|--all [--plan|--commit] [--keep-sessions] [--also-config]`
+  (`mcp__ah__team_untrack`, `mode: plan|commit`, default `plan`) — **forgets a tracking record and
+  touches no session**: the non-destructive counterpart to `dismiss`/`disband`. Use it only when
+  the user says to KEEP the session running ("leave it up", "just stop tracking it"), or when the
+  target is already dead. On a live target it REFUSES unless `--keep-sessions`, because forgetting
+  a live session leaves it running with nothing naming it, and the record cannot be recovered.
+  Untracking something already gone succeeds with `already_untracked: true`. See § untrack.
+- `resync [--dry-run]` (`mcp__ah__team_resync`) — re-derives every peer member's herdr pane/tab/workspace location from
   herdr's live topology and rewrites the team file. See § resync / move.
 - `move <name> --tab <id> --split right|down | --new-tab [--workspace <id>] | --new-workspace
-  [--dry-run] [--allow-global]` (`mcp__ah__roster_move`) — relocates a member's pane via `herdr pane move`, then resyncs its record.
+  [--dry-run] [--allow-global]` (`mcp__ah__team_move`) — relocates a member's pane via `herdr pane move`, then resyncs its record.
   Needs `--allow-global` whenever the roster resolves at the global level, exactly like `spawn-one`/`create --spawn` (§4.4) —
   `move` relocates a live agent pane, so it gets the same confirm-gate protection. See § resync / move.
-- `adopt [--orchestrator-pid <pid>] [--team <name>]` (`mcp__ah__roster_adopt`) — re-stamps
+- `adopt [--orchestrator-pid <pid>] [--team <name>]` (`mcp__ah__team_adopt`) — re-stamps
   `orchestrator.pid` on an ORPHANED team. Recovery only; it refuses to hijack a live team.
-- `reap [--commit]` (`mcp__ah__roster_reap`) — lists orphaned team records, or removes them with
+- `reap [--commit]` (`mcp__ah__team_reap`) — lists orphaned team records, or removes them with
   `--commit`.
-- `teams [--cwd <path>]` (`mcp__ah__roster_teams`) — read-only: every team file in this hierarchy dir (default plus every
+- `teams [--cwd <path>]` (`mcp__ah__team_list`) — read-only: every team file in this hierarchy dir (default plus every
   named team), with member count, orchestrator pid, whether that pid is alive, and whether it's
   this session's own. Use it to see a stale or a sibling orchestrator's Team before `create`. Also
   reports `misplaced_members` (peers confirmed relocated away from where the Team expects them)
   and `misplaced_unattributed` (a count of misplaced peers this session could not safely attribute
-  to a specific member) — see § Relocation.
-- `history [--json]` (`mcp__ah__roster_history`) — recent team-history entries, the input to
+  to a specific member) — see § Relocation. Each row also carries `untracked_live`: live peers
+  attributed to that team with no `team.json` row, plus a top-level `untracked_live` for peers
+  attributed to no team at all (spec 0046 §2.5). An `untracked_live` entry is closed with
+  `dismiss <pane_id | role@sid8>` or `disband` — nothing else lists it.
+- `history [--json]` (`mcp__ah__team_history`) — recent team-history entries, the input to
   `create --from`. See § Create.
 - `checkin [--team <T>] [--cwd <path>]` (CLI only, no MCP tool yet) — re-registers the *current*
   session's cwd. Spec 0036 §3.3. See § Relocation.
-- `layout-splits --mode <m> --pane-count <n> [--self <id>] [--cwd <p>] [--next|--apply …]` (`mcp__ah__roster_layout_splits`) — performs
+- `layout-splits --mode <m> --pane-count <n> [--self <id>] [--cwd <p>] [--next|--apply …]` (`mcp__ah__team_layout_splits`) — performs
   the herdr layout phase. Used by § Create phase 3a. Not a user-facing command.
 - `next-split --mode <m> --pane-count <n> --self <id> --created <json> --geometry <json>` — the pure
   decision function, exposed for testing. The skill does not call it; `layout-splits` does. No
@@ -148,7 +162,7 @@ running session can do — drive the sequence yourself:
 
 **Reuse a recent team (spec 0015).** Before planning a Team from the roster
 files, offer to reuse a recent one: run `roster.mjs history --json`
-(`mcp__ah__roster_history`), and if it returns any entries, present them via
+(`mcp__ah__team_history`), and if it returns any entries, present them via
 **AskUserQuestion** (label, role list, active/idle, last-used) alongside a
 "start fresh from the roster" option. If the user picks an entry, run
 `roster.mjs create --from <id> --commit --spawn` (its own id, not the alias)
@@ -356,7 +370,7 @@ fire on the CLI/skill path.
    `ref` from `ListAgents` — do not recompute the rest by hand. Run
    `roster.mjs create --commit --transport <t> --roster-level <L> --verified
    '<json>'` (add `--partial` if any peer-routed member never checked in). The
-   orchestrator pid it records is supplied automatically — via `mcp__ah__roster_create`
+   orchestrator pid it records is supplied automatically — via `mcp__ah__team_create`
    (spec 0018), the server derives it from its own process tree; on the Bash CLI path it
    comes from the `CLAUDE_PID` env var (the same source `sessionstart.mjs` uses for peer
    liveness records). `--orchestrator-pid <pid>` / `orchestrator_pid` is an override, not
@@ -402,9 +416,10 @@ candidate, not a place for invented judgment calls.
 
 ## `disband`
 
-Bare `disband` tears the Team all the way down by default. It is a **two-call
-contract**, mirroring `create`'s `--plan`/`--commit` split, so removal cannot
-happen before the real closes do:
+`disband` **closes every member's session** and drops the team record. It is a
+**two-call contract** — plan, then close — so nothing is destroyed before the
+user has seen exactly what would be. To drop the record and leave the sessions
+running, that is `untrack --all` (§ untrack), never `disband`.
 
 **No `team.json`?** (spec 0040) Plan and `--close` do not no-op: they operate on
 the live peer records in `peers.jsonl` instead — the peers `add`/`spawn-one`
@@ -413,11 +428,10 @@ brought up, or a Team whose `team.json` was lost. The same plan → `close_token
 `source: "peers"`. When a `team.json` exists, the plan also lists live peers
 that are not in it, each row labeled `source: "peers"`, and `--close` closes
 that whole set — the token pins the union, so a peer appearing after the plan
-forces a re-plan. `--commit`/`--keep-sessions` still require a `team.json`
-(nothing to remove otherwise). Only herdr peers are closable this way: checkin
-records the herdr pane id, so a tmux peer surfaces with `command: null`.
+forces a re-plan. Only herdr peers are closable this way: checkin records the
+herdr pane id, so a tmux peer surfaces with `command: null`.
 
-1. Run `roster_disband` (`mode: plan`, or bare `roster.mjs disband`). Read-only — `team.json` is untouched. Its output now carries a `close_token`, bound to this exact plan — keep it, step 3 needs it. For the
+1. Run `team_disband` (`mode: plan`, or bare `roster.mjs disband`). Read-only — `team.json` is untouched. Its output now carries a `close_token`, bound to this exact plan — keep it, step 3 needs it. For the
    herdr transport it resyncs the member list **in memory** first (never
    persisted), so the plan targets each member's *current* pane rather than
    the one it was spawned into — you do **not** need to run `resync` first;
@@ -435,32 +449,28 @@ records the herdr pane id, so a tmux peer surfaces with `command: null`.
    naming the members. Stop here if they decline. This conversational
    confirmation is still required and is not replaced by step 3's harness
    prompt below — the two are independent layers, both intended.
-3. Call `roster_disband_close` with `confirm: true` and the `close_token`
+3. Call `team_disband mode:close` with `confirm: true` and the `close_token`
    from step 1. The harness will *also* prompt the user interactively for
-   `roster_disband_close` — every time, unconditionally — before it runs; that
+   `team_disband mode:close` — every time, unconditionally — before it runs; that
    prompt is enforced by the plugin itself and cannot be satisfied by this
    session on its own. Report, per member, whether its session actually
    closed or the close call failed (e.g. the pane was already gone) — a
    failed close is reported, not fatal. If the token is stale (the topology
    changed since step 1), it refuses — go back to step 1, plan again, and
    redo steps 2–3 with the fresh token.
-4. Only now run `roster_disband` `mode: commit` (or `roster.mjs disband --commit`)
-   to remove `team.json`. If it reports no active team (e.g. a retry after
-   step 4 already ran), that's fine — the teardown already completed.
+   `mode: close` removes the team file itself once the closes have run. If some
+   closes failed, the file is rewritten minus the ones that closed and the
+   output reports `partial: true` — re-plan and close the remainder.
 
-Never call `mode: commit` before running the close from the plan call, and
-never skip the plan call's confirmation step — folding plan → confirm → close
-→ commit into fewer calls is exactly what would leave `team.json` gone before
-a declined prompt or a failed close could be honored. `roster_disband`'s
-non-destructive modes (`plan`/`commit`/`keep-sessions`) never close anything;
-only `roster_disband_close` does, and it is deliberately a separate tool so it
-can carry its own always-ask permission gate without gating the harmless modes.
+Never skip the plan call or its confirmation step — folding plan → confirm →
+close into fewer calls is exactly what would close sessions before a declined
+prompt could be honored. `mode: plan` never closes anything; only
+`mode: close` does, and only it carries the always-ask permission gate.
 
-**`roster.mjs disband --keep-sessions`** — the safe form: removes `team.json`
-and closes nothing, since sessions may hold work that already cost tokens.
-Single call, no confirmation needed since nothing destructive to a live
-session happens. Print the member names and `transport_id`s it returns so
-the user can close them themselves if they want to.
+**Want the bookkeeping cleared without closing anything?** That is
+`untrack --all --keep-sessions --commit` (§ untrack) — sessions may hold work
+that already cost tokens. Print the member names and `transport_id`s it returns
+so the user can close them themselves if they want to.
 
 A stale Team (dead orchestrator pid, or older than the fixed 24h cap) is also
 swept automatically on the next plain top-level SessionStart — that sweep
@@ -469,7 +479,7 @@ unaffected by which flag is the default here.
 
 **Recovering an orphaned Team (spec 0018 §5).** A Team whose `orchestrator.pid`
 is `null` (a team hit by the pre-0018 MCP bug) reads as dead and is on the same
-sweep clock — it must be re-owned via `mcp__ah__roster_adopt` /
+sweep clock — it must be re-owned via `mcp__ah__team_adopt` /
 `roster.mjs adopt --orchestrator-pid <pid>` **before the next SessionStart**,
 or the sweep deletes it (members, refs, `transport_id`s — everything) before
 `adopt` gets a chance to run. `adopt` refuses to touch a Team whose recorded
@@ -553,26 +563,29 @@ fallback, not a disposable subagent.
 Spec 0020. `remove --member <NAME>` edits the roster **config** (the template
 for future Teams); `dismiss <name>` edits the **live Team's `team.json`** —
 they write different stores, and each names the store it wrote in its output.
-`dismiss` mirrors `disband`'s plan/close/commit split, scoped to one member:
-(spec 0040: a name that is not in `team.json` — or no `team.json` at all — is
-looked up in the live peer records for plan/`--close`, output carrying
-`source: "peers"`; `--commit` still needs the `team.json` row.)
+`dismiss` mirrors `disband`'s plan/close split, scoped to one member. Spec 0040:
+a name that is not in `team.json` — or no `team.json` at all — is looked up in
+the live peer records, output carrying `source: "peers"`; spec 0046 §2.4 widens
+what `<name>` accepts to any identifier the user can see for such a session —
+a `pane_id`, a `session_id` or a unique 8+ character prefix of one, the
+`role@sid8` form `teams` prints, or the herdr display name. An ambiguous
+identifier fails and lists every candidate rather than guessing.
 
-1. `roster_dismiss` `mode: plan` (or bare `roster.mjs dismiss <name>`) —
+1. `team_dismiss` `mode: plan` (or bare `roster.mjs dismiss <name>`) —
    read-only, resyncs that one member in memory for herdr, and returns
    `member`/`live`/`close_token`/`remaining`. `live` reads the check-in
    registry; a stale-registry member can still report a non-null `command`.
 2. If `live` is true and the session should actually close, prompt the user,
-   then call `roster_dismiss_close` with `confirm: true` and the `close_token`
-   from step 1 — same always-ask harness gate as `roster_disband_close`. This
+   then call `team_dismiss mode:close` with `confirm: true` and the `close_token`
+   from step 1 — same always-ask harness gate as `team_disband mode:close`. This
    never touches `team.json`.
-3. `roster_dismiss` `mode: commit` (or `roster.mjs dismiss <name> --commit`)
-   removes the member's record from `team.json`. Safe to call directly,
-   skipping 1-2, when the member is already dead (the common case: pruning a
-   stale record). A commit against a still-live member succeeds but warns.
+   On a successful close the `team.json` row is removed too (`untracked: true`);
+   if the close failed, the row stays, because a live session with no record is
+   exactly the orphan spec 0046 exists to prevent. A member that is already
+   dead has nothing to close — prune its record with `untrack` instead.
 
-`--also-config` (commit only) additionally removes the matching roster config
-entry, so a future `create`/`spawn-one` doesn't rebuild the instance just
+`--also-config` (with `mode: close`) additionally removes the matching roster
+config entry, so a future `create`/`spawn-one` doesn't rebuild the instance just
 dismissed. Default off — plain `dismiss` never touches the config. Removing a
 non-last same-role config entry re-ordinals later siblings' derived names
 (§3.5.1) — the CLI warns and reports it (`config.reordinaled`); live
@@ -580,7 +593,32 @@ non-last same-role config entry re-ordinals later siblings' derived names
 
 Dismissing the last member leaves `team.json` with `members: []` rather than
 removing the file — `team_empty: true` in the output flags this; point the
-user at `disband --commit` if they meant to end the Team entirely.
+user at `disband` if they meant to end the Team entirely.
+
+## `untrack`
+
+Spec 0046 §2.3. `untrack` is the **only** verb that forgets a record without
+touching a session, and it is the answer to exactly two situations:
+
+- the user explicitly wants the session kept — "leave it running", "just stop
+  tracking it", "forget the team but don't close anything";
+- the target is already gone, and its record is stale bookkeeping to prune.
+
+Anything else — "dismiss", "remove", "drop", "kick", "close", "disband", "tear
+down", "get rid of" — means `dismiss`/`disband`, which CLOSE the session. When
+the user's words are genuinely ambiguous, ask; do not pick.
+
+1. `team_untrack` `mode: plan` (or `roster.mjs untrack <name>`) — read-only:
+   reports what would be forgotten and each target's liveness.
+2. `mode: commit` removes the record. A target that is live, or whose liveness
+   cannot be determined, is REFUSED unless `keep_sessions: true` — the refusal
+   names both remedies (`dismiss` to close it, or `--keep-sessions` to leave it
+   running untracked) and says the record cannot be recovered.
+
+`--all` forgets the whole team file instead of one member. Untracking
+something already gone succeeds with `already_untracked: true`, so a retry is
+never an error. `--also-config` (single member only) additionally removes the
+roster template row, with the same ordinal-shift warning `dismiss` gives.
 
 ## Check-in registry (`team.json`)
 

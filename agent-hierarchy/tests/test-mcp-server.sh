@@ -113,12 +113,15 @@ const toolsList = await call("tools/list", {});
 const names = (toolsList && toolsList.result && toolsList.result.tools || []).map((t) => t.name).sort();
 const expected = [
   "msg_downstream", "msg_index", "msg_list", "msg_new", "msg_roster",
-  "roster_adopt", "roster_config", "roster_create", "roster_disband", "roster_disband_close",
-  "roster_dismiss", "roster_dismiss_close",
-  "roster_history", "roster_layout_splits", "roster_member", "roster_move",
-  "roster_reap", "roster_resync", "roster_show", "roster_spawn_ad_hoc", "roster_spawn_one", "roster_teams",
+  "roster_add", "roster_alias", "roster_edit", "roster_init", "roster_layout",
+  "roster_remove", "roster_show",
+  "team_adopt", "team_create", "team_disband", "team_dismiss", "team_history",
+  "team_layout_splits", "team_list", "team_move", "team_reap", "team_resync",
+  "team_spawn_ad_hoc", "team_spawn_one", "team_untrack",
 ].sort();
-report("tools/list returns exactly the 22-tool inventory (spec 0015/0016/0017/0018/0020/0026/0033/0044)", JSON.stringify(names) === JSON.stringify(expected), JSON.stringify(names));
+report("tools/list returns exactly the 25-tool inventory (spec 0015/0016/0017/0018/0020/0026/0033/0044/0046)", JSON.stringify(names) === JSON.stringify(expected), JSON.stringify(names));
+// Spec 0046 §6 U5: hard rename, no aliases — an old name must be an unknown tool, not a shim.
+report("no pre-0046 tool name survives", !names.some((n) => ["roster_create", "roster_teams", "roster_dismiss", "roster_dismiss_close", "roster_disband", "roster_disband_close", "roster_member", "roster_config", "roster_adopt", "roster_move", "roster_reap", "roster_resync", "roster_history", "roster_layout_splits", "roster_spawn_one", "roster_spawn_ad_hoc"].includes(n)), JSON.stringify(names));
 
 const ping = await call("ping", {});
 report("ping answered", Boolean(ping && ping.result && typeof ping.result === "object" && !ping.error), JSON.stringify(ping));
@@ -137,8 +140,8 @@ await new Promise((r) => setTimeout(r, 300));
 report("unknown notification produces NO response", lineCount === beforeUnknownNotif, `lineCount ${beforeUnknownNotif} -> ${lineCount}`);
 
 const [c1, c2] = await Promise.all([
-  call("tools/call", { name: "roster_teams", arguments: { cwd: repoA } }),
-  call("tools/call", { name: "roster_teams", arguments: { cwd: repoB } }),
+  call("tools/call", { name: "team_list", arguments: { cwd: repoA } }),
+  call("tools/call", { name: "team_list", arguments: { cwd: repoB } }),
 ]);
 report("concurrent tools/call requests both resolve", Boolean(c1 && c1.result && c2 && c2.result), JSON.stringify([c1, c2]));
 
@@ -155,7 +158,7 @@ report(
 const newA = await call("tools/call", { name: "msg_new", arguments: { cwd: repoA, to: "architect", from: "orchestrator", slug: "isolation-test" } });
 report("msg_new against repo A succeeds", Boolean(newA && newA.result && !newA.result.isError), JSON.stringify(newA));
 
-const EXPECTED_RESULT_COUNT = 11;
+const EXPECTED_RESULT_COUNT = 12;
 report("driver reported exactly the expected number of results", results.length === EXPECTED_RESULT_COUNT, `got ${results.length}, expected ${EXPECTED_RESULT_COUNT}`);
 
 console.log(JSON.stringify({ results, done: true }));
@@ -228,10 +231,10 @@ const toolNewNorm = normalize(toolNew.content[0].text);
 const cliNewNorm = normalize(cliNewRaw);
 const newMatch = JSON.stringify(toolNewNorm) === JSON.stringify(cliNewNorm);
 
-// roster_disband on a team-less repo with a live peer record: inherits spec 0040's fallback via execCli.
+// team_disband on a team-less repo with a live peer record: inherits spec 0040's fallback via execCli.
 mkdirSync(join(repoA, ".claude", "hierarchy"), { recursive: true });
 writeFileSync(join(repoA, ".claude", "hierarchy", "peers.jsonl"), JSON.stringify({ type: "peer", status: "up", name: "repoa-architect", role: "architect", pid: process.pid, pane_id: "pZ", ts: new Date().toISOString() }) + "\n");
-const toolDisband = await callViaServer("roster_disband", { cwd: repoA });
+const toolDisband = await callViaServer("team_disband", { cwd: repoA });
 const disbandObj = JSON.parse(toolDisband.content[0].text.split("\nstderr:\n")[0]);
 const disbandPeers = disbandObj.source === "peers" && Array.isArray(disbandObj.close) && disbandObj.close.length === 1 && disbandObj.close[0].command === "herdr pane close pZ" && typeof disbandObj.close_token === "string";
 
@@ -247,7 +250,7 @@ check "roster_show tool output is byte-identical to the CLI invocation" \
   'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/equiv-out.json\",\"utf8\")); process.exit(d.showMatch?0:1)"'
 check "msg_new tool output matches the CLI invocation apart from id/timestamp" \
   'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/equiv-out.json\",\"utf8\")); process.exit(d.newMatch?0:1)"'
-check "roster_disband on a team-less repo with a live peer record returns the source:peers fallback plan (spec 0040)" \
+check "team_disband on a team-less repo with a live peer record returns the source:peers fallback plan (spec 0040)" \
   'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/equiv-out.json\",\"utf8\")); process.exit(d.disbandPeers?0:1)"'
 
 # ---------------------------------------------------------------------------
@@ -293,17 +296,17 @@ check "mapExecResult: exit 3 in expectedNonZero -> not isError, full payload pre
 # ---- callTool pre-checks that must refuse BEFORE spawning the CLI at all (spec 0016 §4.2/§4.5)
 PRECHECK="$(node --input-type=module -e "
 import { callTool } from '$SERVER';
-const noVerified = await callTool('roster_create', { cwd: '/tmp', mode: 'commit' });
+const noVerified = await callTool('team_create', { cwd: '/tmp', mode: 'commit' });
 const okNoVerified = noVerified.isError === true && noVerified.content[0].text.toLowerCase().includes('verified');
-const noConfirm = await callTool('roster_disband_close', { cwd: '/tmp', plan_token: 'x' });
+const noConfirm = await callTool('team_disband', { cwd: '/tmp', mode: 'close', plan_token: 'x' });
 const okNoConfirm = noConfirm.isError === true && noConfirm.content[0].text.toLowerCase().includes('confirm');
-const falseConfirm = await callTool('roster_disband_close', { cwd: '/tmp', confirm: false, plan_token: 'x' });
+const falseConfirm = await callTool('team_disband', { cwd: '/tmp', mode: 'close', confirm: false, plan_token: 'x' });
 const okFalseConfirm = falseConfirm.isError === true;
-const noToken = await callTool('roster_disband_close', { cwd: '/tmp', confirm: true });
+const noToken = await callTool('team_disband', { cwd: '/tmp', mode: 'close', confirm: true });
 const okNoToken = noToken.isError === true && noToken.content[0].text.toLowerCase().includes('plan_token');
 console.log(okNoVerified && okNoConfirm && okFalseConfirm && okNoToken ? 'PASS' : 'FAIL ' + JSON.stringify({okNoVerified,okNoConfirm,okFalseConfirm,okNoToken}));
 " 2>&1)"
-check "callTool: roster_create mode:commit without verified, and roster_disband_close without confirm:true/plan_token, all refuse before invoking the CLI" \
+check "callTool: team_create mode:commit without verified, and team_disband mode:close without confirm:true/plan_token, all refuse before invoking the CLI" \
   '[ "$PRECHECK" = "PASS" ]'
 
 # ---------------------------------------------------------------------------
@@ -416,7 +419,7 @@ check "gate.mjs and lib-gate.mjs are untouched by this spec's changes" \
   '[ -z "$GATE_DIFF_HITS" ]'
 
 # ---------------------------------------------------------------------------
-# roster_create's `verified` JSON, containing nested double quotes and an
+# team_create's `verified` JSON, containing nested double quotes and an
 # apostrophe, reaches roster.mjs's --verified argv element unmodified — argv,
 # not a shell string, so no re-interpretation or escaping loss.
 # ---------------------------------------------------------------------------
@@ -426,41 +429,41 @@ const { callTool } = await import(process.env.SERVER_PATH);
 const cwd = process.env.TEST_REPO;
 const weirdName = 'weird "quoted" and \'apostrophe\' name';
 const verified = JSON.stringify([{ role: "architect", name: weirdName, model: "opus", route: "peer", autoMode: null }]);
-const res = await callTool("roster_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo" });
+const res = await callTool("team_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo" });
 const ok1 = !res.isError;
 const team = JSON.parse(readFileSync(cwd + "/.claude/hierarchy/teams/" + cwd.split("/").pop() + ".json", "utf8"));
 const ok2 = team.members[0].name === weirdName;
 console.log(ok1 && ok2 ? "PASS" : "FAIL " + JSON.stringify({ ok1, ok2, got: team.members && team.members[0] && team.members[0].name }));
 JSEOF
 VERIFIED_ROUNDTRIP="$(SERVER_PATH="$SERVER" TEST_REPO="$REPO_B" node "$TMP/verified-roundtrip.mjs" 2>&1)"
-check "roster_create: verified JSON with nested quotes/apostrophes reaches --verified unmodified" \
+check "team_create: verified JSON with nested quotes/apostrophes reaches --verified unmodified" \
   '[ "$VERIFIED_ROUNDTRIP" = "PASS" ]'
 
 # ---------------------------------------------------------------------------
-# spec 0017 §7: roster_member / roster_config callTool pre-checks that must
-# refuse BEFORE spawning the CLI (mirrors the roster_create/roster_disband_close
-# block above).
+# spec 0017 §7 + 0046 §11: the split CRUD tools' callTool pre-checks that must
+# refuse BEFORE spawning the CLI (mirrors the team_create/team_disband block
+# above).
 # ---------------------------------------------------------------------------
 PRECHECK2="$(node --input-type=module -e "
 import { callTool } from '$SERVER';
-const badAction = await callTool('roster_member', { cwd: '/tmp', action: 'bogus' });
-const okBadAction = badAction.isError === true && badAction.content[0].text.toLowerCase().includes('action');
-const initNoLevel = await callTool('roster_member', { cwd: '/tmp', action: 'init', route: 'peer' });
+const strayAction = await callTool('roster_init', { cwd: '/tmp', action: 'add', level: 'repo', route: 'peer' });
+const okBadAction = strayAction.isError === true && strayAction.content[0].text.toLowerCase().includes('action');
+const initNoLevel = await callTool('roster_init', { cwd: '/tmp', route: 'peer' });
 const okInitNoLevel = initNoLevel.isError === true && initNoLevel.content[0].text.toLowerCase().includes('level');
-const initNoRoute = await callTool('roster_member', { cwd: '/tmp', action: 'init', level: 'repo' });
+const initNoRoute = await callTool('roster_init', { cwd: '/tmp', level: 'repo' });
 const okInitNoRoute = initNoRoute.isError === true && initNoRoute.content[0].text.toLowerCase().includes('route');
-const addNoRole = await callTool('roster_member', { cwd: '/tmp', action: 'add' });
+const addNoRole = await callTool('roster_add', { cwd: '/tmp' });
 const okAddNoRole = addNoRole.isError === true && addNoRole.content[0].text.toLowerCase().includes('role');
-const editNoMember = await callTool('roster_member', { cwd: '/tmp', action: 'edit' });
+const editNoMember = await callTool('roster_edit', { cwd: '/tmp' });
 const okEditNoMember = editNoMember.isError === true && editNoMember.content[0].text.toLowerCase().includes('member');
-const removeNoMember = await callTool('roster_member', { cwd: '/tmp', action: 'remove' });
+const removeNoMember = await callTool('roster_remove', { cwd: '/tmp' });
 const okRemoveNoMember = removeNoMember.isError === true && removeNoMember.content[0].text.toLowerCase().includes('member');
-const badTarget = await callTool('roster_config', { cwd: '/tmp', target: 'bogus' });
-const okBadTarget = badTarget.isError === true && badTarget.content[0].text.toLowerCase().includes('target');
+const strayTarget = await callTool('roster_layout', { cwd: '/tmp', target: 'alias', level: 'repo' });
+const okBadTarget = strayTarget.isError === true && strayTarget.content[0].text.toLowerCase().includes('target');
 const ok = okBadAction && okInitNoLevel && okInitNoRoute && okAddNoRole && okEditNoMember && okRemoveNoMember && okBadTarget;
 console.log(ok ? 'PASS' : 'FAIL ' + JSON.stringify({okBadAction,okInitNoLevel,okInitNoRoute,okAddNoRole,okEditNoMember,okRemoveNoMember,okBadTarget}));
 " 2>&1)"
-check "callTool: roster_member bad/missing action, per-action missing-required fields, and roster_config bad/missing target all refuse before invoking the CLI" \
+check "callTool: the split CRUD tools reject a stray action/target (spec 0046 §11) and their own missing-required fields, all before invoking the CLI" \
   '[ "$PRECHECK2" = "PASS" ]'
 
 # ---------------------------------------------------------------------------
@@ -509,7 +512,7 @@ const results = {};
 
 {
   const { a, b } = pair("init");
-  const mcpRes = await callTool("roster_member", { cwd: a, action: "init", level: "repo", route: "peer", layout: "columns" });
+  const mcpRes = await callTool("roster_init", { cwd: a, level: "repo", route: "peer", layout: "columns" });
   const cliRes = cli("init", ["--level", "repo", "--route", "peer", "--layout", "columns"], b);
   results.init = eq(mcpRes, cliRes, a, b);
 }
@@ -517,7 +520,7 @@ const results = {};
   const { a, b } = pair("add");
   cli("init", ["--level", "repo", "--route", "peer"], a);
   cli("init", ["--level", "repo", "--route", "peer"], b);
-  const mcpRes = await callTool("roster_member", { cwd: a, action: "add", no_spawn: true, level: "repo", role: "implementor", model: "sonnet", effort: "medium", route: "peer", auto_mode: "acceptEdits" });
+  const mcpRes = await callTool("roster_add", { cwd: a, no_spawn: true, level: "repo", role: "implementor", model: "sonnet", effort: "medium", route: "peer", auto_mode: "acceptEdits" });
   const cliRes = cli("add", ["--no-spawn", "--level", "repo", "--role", "implementor", "--model", "sonnet", "--effort", "medium", "--route", "peer", "--auto-mode", "acceptEdits"], b);
   results.add = eq(mcpRes, cliRes, a, b);
 }
@@ -528,7 +531,7 @@ const results = {};
   const setupA = cli("add", ["--no-spawn", "--level", "repo", "--role", "architect"], a);
   cli("add", ["--no-spawn", "--level", "repo", "--role", "architect"], b);
   const member = JSON.parse(setupA.out).members?.[0]?.name || JSON.parse(setupA.out).member?.name;
-  const mcpRes = await callTool("roster_member", { cwd: a, action: "edit", level: "repo", member, model: "opus" });
+  const mcpRes = await callTool("roster_edit", { cwd: a, level: "repo", member, model: "opus" });
   const cliRes = cli("edit", ["--level", "repo", "--member", member, "--model", "opus"], b);
   results.edit = eq(mcpRes, cliRes, a, b);
 }
@@ -539,7 +542,7 @@ const results = {};
   const setupA = cli("add", ["--no-spawn", "--level", "repo", "--role", "architect"], a);
   cli("add", ["--no-spawn", "--level", "repo", "--role", "architect"], b);
   const member = JSON.parse(setupA.out).members?.[0]?.name || JSON.parse(setupA.out).member?.name;
-  const mcpRes = await callTool("roster_member", { cwd: a, action: "remove", level: "repo", member });
+  const mcpRes = await callTool("roster_remove", { cwd: a, level: "repo", member });
   const cliRes = cli("remove", ["--level", "repo", "--member", member], b);
   results.remove = eq(mcpRes, cliRes, a, b);
 }
@@ -547,7 +550,7 @@ const results = {};
   const { a, b } = pair("layout");
   cli("init", ["--level", "repo", "--route", "peer"], a);
   cli("init", ["--level", "repo", "--route", "peer"], b);
-  const mcpRes = await callTool("roster_config", { cwd: a, target: "layout", level: "repo", layout: "grid" });
+  const mcpRes = await callTool("roster_layout", { cwd: a, level: "repo", layout: "grid" });
   const cliRes = cli("layout", ["--level", "repo", "--layout", "grid"], b);
   results.layout = eq(mcpRes, cliRes, a, b);
 }
@@ -557,7 +560,7 @@ const results = {};
   // actually exercises `team`, the one field §4.1 forwards for "alias" and
   // withholds for "layout".
   const { a, b } = pair("alias");
-  const mcpRes = await callTool("roster_config", { cwd: a, target: "alias", level: "repo", team: "eqteam" });
+  const mcpRes = await callTool("roster_alias", { cwd: a, level: "repo", team: "eqteam" });
   const cliRes = cli("alias", ["--level", "repo", "--team", "eqteam"], b);
   results.alias = eq(mcpRes, cliRes, a, b);
 }
@@ -570,7 +573,7 @@ JSEOF
 EQ_OUT_FILE="$TMP/eq-results.json"
 EQ_OUT="$(SERVER_PATH="$SERVER" ROSTER_CLI="$ROSTER_CLI" EQ_BASE="$TMP/eq" EQ_OUT_FILE="$EQ_OUT_FILE" node "$TMP/argv-equivalence.mjs" 2>&1)"
 for case_name in init add edit remove layout alias; do
-  check "roster_member/roster_config argv equivalence with pre-collapse CLI: $case_name" \
+  check "split CRUD tools argv equivalence with the CLI: $case_name" \
     'node -e "const r=JSON.parse(require(\"fs\").readFileSync(\"$EQ_OUT_FILE\",\"utf8\")); process.exit(r.'"$case_name"' && r.'"$case_name"'.ok ? 0 : 1)"'
 done
 if ! [ -s "$EQ_OUT_FILE" ] || ! node -e "const r=JSON.parse(require('fs').readFileSync('$EQ_OUT_FILE','utf8')); process.exit(Object.values(r).every(v=>v&&v.ok)?0:1)" 2>/dev/null; then
@@ -588,7 +591,7 @@ check "server.mjs: process.ppid appears exactly once (captured once at module lo
 
 # ---------------------------------------------------------------------------
 # spec 0018 §9: the MCP path's data-loss regression test — a team committed
-# via roster_create with no explicit orchestrator_pid gets the server's own
+# via team_create with no explicit orchestrator_pid gets the server's own
 # SESSION_PID (this test process's ppid, alive for the run), reads as live,
 # and therefore survives sessionstart.mjs's sweepStaleTeam (which clears any
 # team for which teamIsLive() is false). Also: an explicit orchestrator_pid
@@ -603,7 +606,7 @@ const { callTool } = await import(process.env.SERVER_PATH);
 const cwd = process.env.TEST_REPO;
 const verified = JSON.stringify([{ role: "architect", name: "repoc-architect", model: "opus", route: "peer", autoMode: null }]);
 
-const res = await callTool("roster_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo" });
+const res = await callTool("team_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo" });
 const dir = cwd + "/.claude/hierarchy";
 const team = readTeam(dir, cwd.split("/").pop());
 const sessionPidOwned = !res.isError && team && team.orchestrator.pid != null && team.orchestrator.pid !== 1;
@@ -616,19 +619,19 @@ const { rmSync } = await import("node:fs");
 rmSync(dir + "/teams/" + cwd.split("/").pop() + ".json", { force: true });
 
 const OVERRIDE_PID = process.pid; // this node process — alive, distinct from the server's own ppid
-const res2 = await callTool("roster_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo", orchestrator_pid: OVERRIDE_PID });
+const res2 = await callTool("team_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo", orchestrator_pid: OVERRIDE_PID });
 const team2 = readTeam(dir, cwd.split("/").pop());
 const overrideWon = !res2.isError && team2 && team2.orchestrator.pid === OVERRIDE_PID;
 
 console.log(sessionPidOwned && survivesSweep && overrideWon ? "PASS" : "FAIL " + JSON.stringify({ sessionPidOwned, survivesSweep, overrideWon, pid: team && team.orchestrator.pid }));
 JSEOF
 SWEEP_SURVIVAL="$(SERVER_PATH="$SERVER" LIB_ROSTER="$REPO_ROOT/hooks/lib-roster.mjs" TEST_REPO="$REPO_C" node "$TMP/sweep-survival.mjs" 2>&1)"
-check "roster_create via MCP: SESSION_PID-owned team is live and survives sweepStaleTeam; explicit orchestrator_pid overrides SESSION_PID" \
+check "team_create via MCP: SESSION_PID-owned team is live and survives sweepStaleTeam; explicit orchestrator_pid overrides SESSION_PID" \
   '[ "$SWEEP_SURVIVAL" = "PASS" ]'
 
 # ---------------------------------------------------------------------------
 # spec 0018 §9 follow-up (claude-tools-orchestrator, post-certification): an
-# executed (not just argv-read) roster_teams end-to-end check that `own`
+# executed (not just argv-read) team_list end-to-end check that `own`
 # reflects the SESSION_PID-resolved owner correctly, both when this session
 # owns the team and when it doesn't.
 # ---------------------------------------------------------------------------
@@ -636,12 +639,12 @@ cat > "$TMP/teams-own.mjs" <<'JSEOF'
 const { callTool } = await import(process.env.SERVER_PATH);
 const cwd = process.env.TEST_REPO;
 const verified = JSON.stringify([{ role: "architect", name: "repod-architect", model: "opus", route: "peer", autoMode: null }]);
-await callTool("roster_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo" });
+await callTool("team_create", { cwd, mode: "commit", verified, transport: "terminal", roster_level: "repo" });
 
-const ownTrue = await callTool("roster_teams", { cwd });
+const ownTrue = await callTool("team_list", { cwd });
 const ownTrueOk = !ownTrue.isError && JSON.parse(ownTrue.content[0].text).teams.some((t) => t.own === true);
 
-const notOwn = await callTool("roster_teams", { cwd, orchestrator_pid: 1 }); // pid 1 never equals SESSION_PID
+const notOwn = await callTool("team_list", { cwd, orchestrator_pid: 1 }); // pid 1 never equals SESSION_PID
 const notOwnOk = !notOwn.isError && JSON.parse(notOwn.content[0].text).teams.every((t) => t.own === false);
 
 console.log(ownTrueOk && notOwnOk ? "PASS" : "FAIL " + JSON.stringify({ ownTrueOk, notOwnOk }));
@@ -650,11 +653,11 @@ REPO_D="$TMP/repo-d"
 mkdir -p "$REPO_D"
 (cd "$REPO_D" && git init -q)
 TEAMS_OWN="$(SERVER_PATH="$SERVER" TEST_REPO="$REPO_D" node "$TMP/teams-own.mjs" 2>&1)"
-check "roster_teams via MCP: own field reflects SESSION_PID vs an explicit non-owning orchestrator_pid" \
+check "team_list via MCP: own field reflects SESSION_PID vs an explicit non-owning orchestrator_pid" \
   '[ "$TEAMS_OWN" = "PASS" ]'
 
 # ---------------------------------------------------------------------------
-# spec 0018 §9 follow-up: an executed roster_spawn_one end-to-end check that
+# spec 0018 §9 follow-up: an executed team_spawn_one end-to-end check that
 # a newly-created team is SESSION_PID-owned (live), not null (the §1.2 site a
 # commit-only fix would miss). Terminal transport, forced by a fake `claude`
 # stub on PATH with no herdr binary present, so no real pane is launched.
@@ -672,9 +675,9 @@ const { teamIsLive, readTeam } = await import(process.env.LIB_ROSTER);
 const { callTool } = await import(process.env.SERVER_PATH);
 const cwd = process.env.TEST_REPO;
 
-await callTool("roster_member", { cwd, action: "init", level: "repo", route: "peer" });
-await callTool("roster_member", { cwd, action: "add", no_spawn: true, level: "repo", role: "ultra-advisor", model: "opus" });
-const res = await callTool("roster_spawn_one", { cwd, role: "ultra-advisor" });
+await callTool("roster_init", { cwd, level: "repo", route: "peer" });
+await callTool("roster_add", { cwd, no_spawn: true, level: "repo", role: "ultra-advisor", model: "opus" });
+const res = await callTool("team_spawn_one", { cwd, role: "ultra-advisor" });
 const dir = cwd + "/.claude/hierarchy";
 const team = readTeam(dir, cwd.split("/").pop());
 const ok = !res.isError && team && team.orchestrator.pid != null && team.orchestrator.pid !== 1 && teamIsLive(team);
@@ -684,22 +687,22 @@ REPO_E="$TMP/repo-e"
 mkdir -p "$REPO_E"
 (cd "$REPO_E" && git init -q)
 SPAWN_ONE_OWN="$(env -u HERDR_ENV PATH="$BIN_CLAUDE_ONLY:$NODE_DIR" SERVER_PATH="$SERVER" LIB_ROSTER="$REPO_ROOT/hooks/lib-roster.mjs" TEST_REPO="$REPO_E" node "$TMP/spawn-one-own.mjs" 2>&1)"
-check "roster_spawn_one via MCP: new team is SESSION_PID-owned and live, not null" \
+check "team_spawn_one via MCP: new team is SESSION_PID-owned and live, not null" \
   '[ "$SPAWN_ONE_OWN" = "PASS" ]'
 
 
 # ---------------------------------------------------------------------------
-# spec 0019 §3.6: roster_spawn_one passes an optional `member` param through
+# spec 0019 §3.6: team_spawn_one passes an optional `member` param through
 # to `--member <name>`, to disambiguate two same-role roster members.
 # ---------------------------------------------------------------------------
 cat > "$TMP/spawn-one-member.mjs" <<'JSEOF'
 const { callTool } = await import(process.env.SERVER_PATH);
 const cwd = process.env.TEST_REPO;
 
-await callTool("roster_member", { cwd, action: "init", level: "repo", route: "peer" });
-await callTool("roster_member", { cwd, action: "add", no_spawn: true, level: "repo", role: "architect", model: "opus" });
-await callTool("roster_member", { cwd, action: "add", no_spawn: true, level: "repo", role: "architect", model: "opus" });
-const res = await callTool("roster_spawn_one", { cwd, role: "architect", member: "bogus-member-name" });
+await callTool("roster_init", { cwd, level: "repo", route: "peer" });
+await callTool("roster_add", { cwd, no_spawn: true, level: "repo", role: "architect", model: "opus" });
+await callTool("roster_add", { cwd, no_spawn: true, level: "repo", role: "architect", model: "opus" });
+const res = await callTool("team_spawn_one", { cwd, role: "architect", member: "bogus-member-name" });
 const text = (res.content && res.content[0] && res.content[0].text) || "";
 const ok = res.isError === true && text.includes("bogus-member-name") && text.includes("-architect-2");
 console.log(ok ? "PASS" : "FAIL " + JSON.stringify({ res }));
@@ -708,7 +711,7 @@ REPO_F="$TMP/repo-f"
 mkdir -p "$REPO_F"
 (cd "$REPO_F" && git init -q)
 SPAWN_ONE_MEMBER="$(env -u HERDR_ENV PATH="$BIN_CLAUDE_ONLY:$NODE_DIR" SERVER_PATH="$SERVER" TEST_REPO="$REPO_F" node "$TMP/spawn-one-member.mjs" 2>&1)"
-check "roster_spawn_one via MCP: member param passes through to --member and disambiguates same-role members" \
+check "team_spawn_one via MCP: member param passes through to --member and disambiguates same-role members" \
   '[ "$SPAWN_ONE_MEMBER" = "PASS" ]'
 
 echo ""
