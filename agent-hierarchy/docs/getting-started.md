@@ -45,8 +45,9 @@ then `/agent-roster add` adds a member per role. Each member has these keys:
   `subagent` (spawned in-process by the Agent tool), or `pane` (driven through
   its Herdr pane). A non-claude kind **must** be `pane`.
 - `auto_mode` — the spawned session's permission mode. **`kind: claude` only.**
-  If set to `bypassPermissions`, that session can get stuck at a startup
-  confirmation screen instead of coming up ready — worth knowing before you spawn.
+  `auto` (`--permission-mode auto`) is the hands-off mode. `bypassPermissions`
+  is still accepted, but that session can get stuck at a startup confirmation
+  screen instead of coming up ready — prefer `auto`.
 - `args` — native CLI arguments passed verbatim to the agent. **Non-claude
   kinds only** — for a Claude member, `model`/`effort`/`auto_mode` are the
   validated way to set flags, and `args` would bypass that validation.

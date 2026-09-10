@@ -66,14 +66,11 @@ bootstrap (below) and say so in the run-start notification:
 
 Seven steps, in order:
 
-1. **auto-mode is `bypassPermissions`, knowingly.** A fully hands-off run
-   requires it; do not substitute `acceptEdits` or defer to per-member
-   config. `bypassPermissions` can leave a headless peer stuck at a startup
-   confirmation screen — state this as a fact in the run-start notification
-   (below), not as a prompt, so a team that fails to come up already has a
-   visible explanation. **Practical consequence:** if a member does not
-   check in after spawn, a startup-confirmation hang is the first
-   hypothesis to check, not the last.
+1. **auto-mode is `auto`, knowingly.** A fully hands-off run requires it
+   (`--permission-mode auto`); do not substitute `acceptEdits` or
+   `bypassPermissions`, and do not defer to per-member config.
+   **Practical consequence:** if a member never checks in after spawn, run
+   `roster.mjs doctor`.
 2. **Resolve the roster**.
 3. **Resolve the active dispatch route** (`msg.mjs route` / the session's
    recorded answer: `peers`, `subagents`, or `prefer-peers`) — never assume
@@ -320,7 +317,7 @@ completes, naming all four:
 
 1. The branch.
 2. The resolved dispatch route (§ Bootstrap / § Liveness coverage).
-3. Auto-mode (`bypassPermissions`) and its startup-hang caveat.
+3. Auto-mode (`auto`).
 4. Whether either push guard put the run in degraded mode.
 
 **After that, notify only on:** the 3-round cap being hit on an item; the

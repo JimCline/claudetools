@@ -2242,7 +2242,7 @@ try {
       const memberErrors = validateMember({ ...member, route: member.route || container.route });
       if (memberErrors.length) fail(memberErrors.join("; "));
       if (member.autoMode === "bypassPermissions" && (member.route || container.route) === "peer") {
-        process.stderr.write('roster.mjs: warning — auto-mode "bypassPermissions" can leave a headless peer stuck at a startup confirmation screen\n');
+        process.stderr.write('roster.mjs: warning — auto-mode "bypassPermissions" can leave a headless peer stuck at a startup confirmation screen; use --auto-mode auto for hands-off runs\n');
       }
       container.members.push(member);
       const blockErrors = validateRosterBlock(container);
@@ -2344,7 +2344,7 @@ try {
       const errors = validateMember({ ...updated, route: updated.route || container.route });
       if (errors.length) fail(errors.join("; "));
       if (updated.autoMode === "bypassPermissions" && (updated.route || container.route) === "peer") {
-        process.stderr.write('roster.mjs: warning — auto-mode "bypassPermissions" can leave a headless peer stuck at a startup confirmation screen\n');
+        process.stderr.write('roster.mjs: warning — auto-mode "bypassPermissions" can leave a headless peer stuck at a startup confirmation screen; use --auto-mode auto for hands-off runs\n');
       }
       container.members[idx] = updated;
       const editedNamed = namedMembers(container.members)[idx];

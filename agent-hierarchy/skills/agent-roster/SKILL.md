@@ -148,7 +148,10 @@ configured at any level), say so and offer to run `init`.
    tests/builds/log-sifting/search), `ultra-advisor` (deepest-reasoning
    escalation for hard or high-stakes calls). Then, for each role picked,
    ask (AskUserQuestion, batched into calls of up to 4 questions) its model,
-   effort, and auto-mode. Prefill/offer defaults from `ROLE_DEFAULTS` in
+   effort, and auto-mode. The auto-mode options are exactly `auto
+   (Recommended)`, `acceptEdits`, `plan`, and `default (none)` —
+   `bypassPermissions` is never offered, and is accepted only if the user
+   types it into Other. Prefill/offer defaults from `ROLE_DEFAULTS` in
    `hooks/lib-config.mjs` — do not invent separate defaults here. For each
    picked role, run `roster.mjs add --level <L> --role <role>
    [--model ...] [--effort ...] [--auto-mode ...]`. `add` writes config and

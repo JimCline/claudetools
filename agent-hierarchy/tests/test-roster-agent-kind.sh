@@ -397,6 +397,13 @@ check "4.3b3: the claude launch string carries NO --timeout either" \
   '[ "$RC" -eq 0 ] && ! launch_str | grep -qF -- "--timeout"'
 
 reset_state; clear_hierarchy; init_geometry; init_roster
+r "" add --no-spawn --role architect --model opus --auto-mode auto
+check "4.3b4: --auto-mode auto is accepted on a claude member" '[ "$RC" -eq 0 ]'
+r "HERDR_ENV=1" spawn-one architect --dry-run
+check "4.3b5: ...and the claude launch string carries --permission-mode auto" \
+  '[ "$RC" -eq 0 ] && launch_str | grep -qF -- "--permission-mode auto"'
+
+reset_state; clear_hierarchy; init_geometry; init_roster
 r "" add --no-spawn --role implementor --kind codex --route pane
 
 # non-herdr transport: refused, nothing shelled, the rest of a team still launches

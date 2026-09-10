@@ -320,7 +320,7 @@ skill path.
 
    If any peer-routed member's `auto_mode` is `bypassPermissions`, say once
    before launching that it can leave that session stuck at a startup
-   confirmation screen instead of ready.
+   confirmation screen instead of ready, and suggest `auto` instead.
 
    **3b — Launch.** Substitute each member's target id for its
    `target_placeholder` inside its `launch` commands, then issue every member's

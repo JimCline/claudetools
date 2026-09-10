@@ -20,7 +20,7 @@ Whether a roster member's role is dispatched as a **peer** (a separate live Clau
 _Avoid_: mode, dispatch type
 
 **Auto-mode**:
-A roster member's Claude Code permission mode (e.g. default / acceptEdits / plan / bypassPermissions) — how autonomously that member's spawned session runs tool calls.
+A roster member's Claude Code permission mode (e.g. default / acceptEdits / plan / auto) — how autonomously that member's spawned session runs tool calls.
 _Avoid_: handoff mode (that's a separate, existing `/hierarchy` setting — confirm vs. auto dispatch by the Orchestrator)
 
 **Orchestrator**:

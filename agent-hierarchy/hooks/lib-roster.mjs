@@ -76,8 +76,12 @@ export const ROSTER_LAYOUT_VALUES = ["auto", "columns", "grid"];
 /** `claude --effort <level>` values (verified via `claude --help`, NEEDS-EVIDENCE #1). */
 export const EFFORT_VALUES = ["low", "medium", "high", "xhigh", "max"];
 
-/** `claude --permission-mode <mode>` values (verified via `claude --help`, NEEDS-EVIDENCE #2). */
-export const AUTO_MODE_VALUES = ["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"];
+/**
+ * `claude --permission-mode <mode>` values (verified via `claude --help`, NEEDS-EVIDENCE #2).
+ * Listed most-recommended first: `auto` is the hands-off mode to reach for. `bypassPermissions`
+ * is accepted only so legacy configs keep working — it is never recommended or offered.
+ */
+export const AUTO_MODE_VALUES = ["auto", "acceptEdits", "plan", "dontAsk", "manual", "bypassPermissions"];
 
 /** What the peer-fallback gate does when this member has no live instance (spec 0021). */
 export const ON_MISSING_VALUES = ["auto", "prompt", "never"];
