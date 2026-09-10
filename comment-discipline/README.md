@@ -69,11 +69,13 @@ The full design, and how to choose a channel in other plugins, is written up in
 
 ## The rule
 
-**Don't write:** change narration, reviewer-directed asides, restatements of the line,
-task narration (`// Step 1: …`), or bare time markers.
+**Don't write:** change narration, references of any kind (ticket or issue IDs, spec
+numbers, finding IDs, review-round labels, decision markers), reviewer-directed asides,
+restatements of the line, task narration (`// Step 1: …`), or bare time markers.
 
 **Do write:** public-API behavior and contracts, and **why** non-obvious code is the way
-it is — a workaround, an external constraint, a deliberate tradeoff, a spec or bug ref.
+it is — a workaround, an external constraint, a deliberate tradeoff. A comment describes
+how the CURRENT code works, never what changed, which spec applied, or what was decided.
 
 Two guards keep it from backfiring:
 
@@ -84,8 +86,18 @@ Two guards keep it from backfiring:
 2. **It only governs comments you write or edit.** No drive-by cleanup of pre-existing
    comments; that produces noisy diffs and is out of scope.
 
-Time markers are allowed *with a qualifier* — `// TODO(#4127): remove once the v2 endpoint
-lands` is good and stays. Bare `// for now` is not.
+Time markers are allowed *with a qualifier* — `// TODO: remove once the v2 endpoint lands`
+is good and stays. Bare `// for now` is not, and neither is an issue number in place of the
+condition. A TODO is the one place a reminder about a decided deferral belongs.
+
+## Sweeping what is already there
+
+The directive only governs comments written from now on. `/comment-discipline sweep [path]` audits
+the comments already in the tree: `hooks/sweep.mjs` finds candidates deterministically (git-tracked
+source only, `docs/specs/**` excluded, one regex table per do-not class, `--json` / `--count`), then
+the command judges each one — keep, rewrite to drop just the offending clause, or remove — fanning
+out to subagents past 40 candidates. It reports, then asks once: apply, diff first, or report only.
+The finder is tuned for precision, so treat its output as candidates rather than verdicts.
 
 ## Setup
 

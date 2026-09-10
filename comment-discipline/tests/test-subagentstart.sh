@@ -159,6 +159,16 @@ run "$SPAWN" "$GENERAL"
 check "directive no longer asks agents to copy it by hand" '! printf "%s" "$OUT" | grep -q "copy this entire block verbatim"'
 check "directive tells agents NOT to copy it" 'printf "%s" "$OUT" | grep -q "do NOT copy this block"'
 
+# ---- 0.5.0: comments carry no references of any kind, and TODO is the one carve-out.
+# The injected text is what reaches the model, so these assert the rendered output, not the
+# module constant.
+check "no-references rule: the do-not list names references" 'printf "%s" "$OUT" | grep -q "References of any kind"'
+check "no-references rule: the old \"spec or bug reference\" permission is gone" '! printf "%s" "$OUT" | grep -q "spec or bug reference"'
+check "no-references rule: the good TODO example carries no issue number" \
+  'printf "%s" "$OUT" | grep -q "TODO: remove once the v2 endpoint lands" && ! printf "%s" "$OUT" | grep -q "TODO(#"'
+check "no-references rule: TODO is allowed for a decided deferral" 'printf "%s" "$OUT" | grep -q "TODO for a decided deferral"'
+check "no-references rule: guard 2 (no drive-by cleanup) survives" 'printf "%s" "$OUT" | grep -q "pre-existing comments you were not asked to touch"'
+
 # ---- wiring
 check "hooks.json registers SubagentStart" 'grep -q "\"SubagentStart\"" "$PLUGIN/hooks/hooks.json"'
 check "hooks.json points at subagentstart.mjs" 'grep -q "subagentstart.mjs" "$PLUGIN/hooks/hooks.json"'
