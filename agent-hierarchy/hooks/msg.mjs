@@ -11,6 +11,9 @@
  *   msg.mjs index <path>
  *   msg.mjs sweep [--days 7]
  *   msg.mjs roster
+ *
+ * Every subcommand also accepts `--orchestrator-pid <pid>`, which overrides `CLAUDE_PID` when
+ * resolving which team this session owns (spec 0048 §2.3).
  *   msg.mjs route [peers|subagents|prefer-peers] --session <id>
  *   msg.mjs global-scope <roster|config> <allow|deny> --session <id>
  *
@@ -29,6 +32,9 @@
  * `gates.jsonl`, which spec 0011 §6.2 leaves shared and unscoped — no
  * `--team` there.
  */
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { PEER_ELIGIBLE_ROLES, resolveConfig, ROUTE_VALUES, teamPrefix, validateTeamAlias } from "./lib-config.mjs";
 import {
@@ -87,11 +93,24 @@ const all = parseArgs(process.argv.slice(2));
 const cmd = all._.shift();
 const opts = all;
 const cwd = typeof opts.cwd === "string" ? opts.cwd : process.cwd();
+/**
+ * Spec 0048 §2.6: `--help`, or no verb at all, prints this file's own usage block on stdout and
+ * exits 0 — the CLIs are the whole interface now, so discovering them must not look like an error.
+ */
+function printUsage() {
+  const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
+  const block = /^\/\*\*\n([\s\S]*?)\n \*\//m.exec(src);
+  process.stdout.write((block ? block[1].replace(/^ \* ?/gm, "") : "msg.mjs") + "\n");
+  process.exit(0);
+}
+if (opts.help === true || cmd === undefined) printUsage();
+
 const plain = opts.plain === true;
 
 /**
  * `--team <name>` if given (validated with 0010's alias validator); else
  * spec 0011 §4.4 rung 3 — `CLAUDE_PID` matched against a team's
+ * `--orchestrator-pid` overrides `CLAUDE_PID` (spec 0048 §2.3). Either is matched against a team's
  * `orchestrator.pid`, `pidAlive`-guarded so a recycled pid from a dead
  * orchestrator never matches a stale team. No match falls through to the
  * default team (null), same as before this rung existed.
@@ -102,7 +121,9 @@ function resolveTeamArg() {
     if (!v.ok) fail(`--team: ${v.why}`);
     return opts.team;
   }
-  const pid = Number(process.env.CLAUDE_PID);
+  // Spec 0048 §2.3: `--orchestrator-pid` first, mirroring roster.mjs, so a test or a human shell
+  // can pin the session identity the Bash tool's CLAUDE_PID otherwise supplies.
+  const pid = Number(opts["orchestrator-pid"] !== undefined ? opts["orchestrator-pid"] : process.env.CLAUDE_PID);
   if (Number.isInteger(pid) && pid > 0 && pidAlive(pid)) {
     try {
       const dir = hierarchyDir(cwd);

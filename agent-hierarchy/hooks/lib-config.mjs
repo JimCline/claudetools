@@ -46,6 +46,14 @@ export const MSG_CLI = join(dirname(fileURLToPath(import.meta.url)), "msg.mjs");
 /** Absolute path to the roster CLI, same resolution as GATE_CLI/MSG_CLI. */
 export const ROSTER_CLI = join(dirname(fileURLToPath(import.meta.url)), "roster.mjs");
 
+/** The `ah CLI root:` line appended to every SessionStart injection (spec 0048 §2.1): the absolute CLI paths, which only a hook can resolve. */
+export function cliRootLine() {
+  return (
+    `ah CLI root: ${dirname(dirname(ROSTER_CLI))} — roster: \`node ${ROSTER_CLI} <verb> --cwd <abs cwd>\`, ` +
+    `messages: \`node ${MSG_CLI} <verb> --cwd <abs cwd>\` (verbs: agent-hierarchy/docs/cli-tools.md)`
+  );
+}
+
 /** Message-file enforcement: "required" gates role dispatches and responses on message files; "off" disables both gates (CLI and listing stay). */
 export const MSGS_MODES = ["required", "off"];
 

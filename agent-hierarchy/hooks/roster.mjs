@@ -30,10 +30,11 @@
  *                       --geometry '<json array of {pane_id, rect}>'
  *   roster.mjs layout-splits --mode <m> --pane-count <n> [--self <id>] [--cwd <p>]
  *                       (or --next --created <json>, or --apply --target <id> --direction <right|down>)
- *   roster.mjs disband [--commit|--keep-sessions] [--cwd <path>]
+ *   roster.mjs disband [--plan] [--cwd <path>] [--team <T>]
+ *   roster.mjs disband --close --confirm --plan-token <tok> [--allow-global] [--cwd <path>] [--team <T>]
  *   roster.mjs dismiss <name> [--plan] [--cwd <path>] [--team <T>]
- *   roster.mjs dismiss <name> --close --confirm --plan-token <tok> [--allow-global] [--cwd <path>] [--team <T>]
- *   roster.mjs dismiss <name> --commit [--also-config] [--level L] [--cwd <path>] [--team <T>]
+ *   roster.mjs dismiss <name> --close --confirm --plan-token <tok> [--also-config] [--level L]
+ *                       [--allow-global] [--cwd <path>] [--team <T>]
  *   roster.mjs resync  [--dry-run] [--cwd <path>]
  *   roster.mjs move    <name> --tab <tab_id> [--split right|down]
  *                       <name> --new-tab [--workspace <id>]
@@ -91,6 +92,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { CONFIG_VERSION, findGitRoot, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, suggestTeamAlias, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
 import { appendRosterRecord, latestRoster, livePeerSlots, newId, localIso, NO_TEAM_SCOPE, pidAlive, realCwd, recordLiveness, synthesizedPeerName } from "./lib-hier.mjs";
@@ -157,6 +159,18 @@ const all = parseArgs(process.argv.slice(2));
 const cmd = all._.shift();
 const opts = all;
 const cwd = typeof opts.cwd === "string" ? opts.cwd : process.cwd();
+/**
+ * Spec 0048 §2.6: `--help`, or no verb at all, prints this file's own usage block on stdout and
+ * exits 0 — the CLIs are the whole interface now, so discovering them must not look like an error.
+ */
+function printUsage() {
+  const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
+  const block = /^\/\*\*\n([\s\S]*?)\n \*\//m.exec(src);
+  process.stdout.write((block ? block[1].replace(/^ \* ?/gm, "") : "roster.mjs") + "\n");
+  process.exit(0);
+}
+if (opts.help === true || cmd === undefined) printUsage();
+
 
 /** `--team <name>` (spec 0011 §5.1), validated once with the same validator 0010's alias uses. */
 function resolveTeamArg() {

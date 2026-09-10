@@ -1,111 +1,101 @@
 #!/usr/bin/env node
-// agent-hierarchy — generic name-agreement check (spec 0042 §4 item 4): for every
-// PreToolUse gate that enumerates this plugin's own MCP tool names, the set the hook
-// BODY gates and the set the hooks.json MATCHER selects for it must be identical, and
-// every enumerated verb must appear under both the `mcp__plugin_ah_ah__` and
-// `mcp__ah__` prefixes. This is the exact hole that shipped the disband-close gate
-// inert while its own tests passed (0042 §1.6) — assert it structurally, don't trust it.
+// agent-hierarchy — gate/matcher agreement check (spec 0042 §4 item 4, re-keyed by 0048 §2.4.5).
+// The ah CLIs are invoked through the Bash tool, so "agreement" now means: every PreToolUse gate
+// that keys on a parsed ah command is wired on the `Bash` matcher, no matcher mentions an MCP tool
+// name any more, and each gate's VERB SET is exactly the set its spec section names. The verb sets
+// are the thing that drifts — a verb added to a gate's body but not to the spec list, or a gate
+// quietly narrowed — and that drift is what shipped the disband-close gate inert once already
+// (0042 §1.6). Assert it structurally, don't trust it.
 //
-// Parses hook source as text rather than importing the .mjs modules: both gate hooks
-// run their whole PreToolUse body via top-level await at import time (reading stdin,
-// then process.exit), so `import()`ing them here would hang/exit this test process.
-//
-// Gate discovery is generic (0042 review G2): every hooks.json PreToolUse rule whose
-// matcher contains "mcp__" is treated as a gate under test, not a hardcoded file list —
-// a third such gate added later is covered automatically. A rule whose hook file's name
-// set cannot be statically extracted FAILS the check rather than being silently skipped.
+// Parses hook source as text rather than importing the .mjs modules: the gate hooks run their whole
+// PreToolUse body via top-level await at import time (reading stdin, then process.exit), so
+// `import()`ing them here would hang/exit this test process.
 
 import { readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
-const HOOKS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "hooks");
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const HOOKS_DIR = join(ROOT, "hooks");
 const HOOKS_JSON = JSON.parse(readFileSync(join(HOOKS_DIR, "hooks.json"), "utf8"));
-const PREFIXES = ["mcp__plugin_ah_ah__", "mcp__ah__"];
 
-function verbOf(name) {
-  return PREFIXES.reduce((n, p) => (n.startsWith(p) ? n.slice(p.length) : n), name);
-}
+// hook file → [the const whose array literal holds its verbs, the file that const lives in,
+// the verb set spec 0048 names for it]. The close gate's verbs live in the shared parser, which is
+// the single definition the allow hook's silence and the gate's `ask` both read (0048 §2.4.2).
+const GATES = [
+  {
+    hook: "pretooluse-disband-close-gate.mjs",
+    source: "lib-ah-cli.mjs",
+    constName: "CLOSE_VERBS",
+    expect: ["dismiss", "disband"],
+    spec: "0048 §2.4.2",
+  },
+  {
+    hook: "pretooluse-roster-skill-gate.mjs",
+    source: "pretooluse-roster-skill-gate.mjs",
+    constName: "VERBS",
+    expect: ["create", "spawn-one", "spawn-ad-hoc", "adopt", "move", "dismiss", "disband", "untrack"],
+    spec: "0048 §2.4.3",
+  },
+];
 
-// Strategy A: an explicit, fully-qualified set — `<NAME> = new Set([...literal strings...])`.
-// Scoped to the initializer's own bracket contents, never the whole file (0042 review G1:
-// a whole-file literal scrape double-counted `DISMISS_CLOSE_TOOLS`, which duplicates two of
-// `GATED_TOOLS`'s four names, reporting 6 for a gate that gates 4).
-function namesFromLiteralSet(src) {
-  const m = src.match(/(?:const|let)\s+GATED_TOOLS\s*=\s*new Set\(\[([\s\S]*?)\]\)/);
+function verbsFrom(file, constName) {
+  const src = readFileSync(join(HOOKS_DIR, file), "utf8");
+  const m = src.match(new RegExp(`(?:const|let)\\s+${constName}\\s*=\\s*(?:new Set\\()?\\[([^\\]]+)\\]`));
   if (!m) return null;
-  const names = [...m[1].matchAll(/"(mcp__[A-Za-z0-9_]+)"/g)].map((x) => x[1]);
-  return names.length ? names : null;
+  const verbs = [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+  return verbs.length ? verbs : null;
 }
 
-// Strategy B: verbs crossed with prefixes, e.g. `VERBS.flatMap((v) => [\`mcp__plugin_ah_ah__${v}\`, \`mcp__ah__${v}\`])`.
-// Prefixes are read out of the flatMap's own template literals so a differently-prefixed
-// gate is still discovered; falls back to this file's PREFIXES only if that read fails.
-function namesFromVerbs(src) {
-  const vm = src.match(/(?:const|let)\s+VERBS\s*=\s*\[([^\]]+)\]/);
-  if (!vm) return null;
-  const verbs = [...vm[1].matchAll(/"([^"]+)"/g)].map((v) => v[1]);
-  if (!verbs.length) return null;
-  const fm = src.match(/flatMap\(\(v\)\s*=>\s*\[([^\]]+)\]\)/);
-  const templatePrefixes = fm ? [...fm[1].matchAll(/`([^`]*)\$\{v\}`/g)].map((m) => m[1]) : [];
-  const prefixes = templatePrefixes.length ? templatePrefixes : PREFIXES;
-  return verbs.flatMap((v) => prefixes.map((p) => `${p}${v}`));
-}
-
-function extractGatedNames(hookFile) {
-  let src;
-  try {
-    src = readFileSync(join(HOOKS_DIR, hookFile), "utf8");
-  } catch {
-    return null;
-  }
-  return namesFromLiteralSet(src) || namesFromVerbs(src) || null;
-}
-
-function hookFilesForRule(rule) {
-  return rule.hooks
-    .map((h) => (typeof h.command === "string" ? h.command.match(/hooks\/([\w.-]+\.mjs)/) : null))
-    .filter(Boolean)
-    .map((m) => m[1]);
+function rulesFor(hookFile) {
+  return (HOOKS_JSON.hooks.PreToolUse || []).filter((r) =>
+    (r.hooks || []).some((h) => typeof h.command === "string" && h.command.includes(`hooks/${hookFile}`))
+  );
 }
 
 let fail = false;
-const rules = (HOOKS_JSON.hooks.PreToolUse || []).filter((r) => typeof r.matcher === "string" && r.matcher.includes("mcp__"));
 
-if (!rules.length) {
-  console.log("FAIL: no hooks.json PreToolUse rule matches any mcp__ tool name — discovery found nothing to check");
-  fail = true;
+for (const rule of HOOKS_JSON.hooks.PreToolUse || []) {
+  if (typeof rule.matcher === "string" && rule.matcher.includes("mcp__")) {
+    console.log(`FAIL: PreToolUse matcher still names MCP tools: ${rule.matcher}`);
+    fail = true;
+  }
 }
 
-for (const rule of rules) {
-  const matcher = rule.matcher.split("|");
-  const matcherSet = new Set(matcher);
-  for (const hookFile of hookFilesForRule(rule)) {
-    const body = extractGatedNames(hookFile);
-    if (!body) {
-      console.log(`FAIL ${hookFile}: matcher "${rule.matcher}" contains mcp__ names but no gated-name set could be statically extracted from the hook body`);
-      fail = true;
-      continue;
-    }
-    const bodySet = new Set(body);
-    const onlyBody = body.filter((n) => !matcherSet.has(n));
-    const onlyMatcher = matcher.filter((n) => !bodySet.has(n));
-    if (onlyBody.length || onlyMatcher.length) {
-      console.log(`FAIL ${hookFile}: body/matcher disagree — onlyBody=${JSON.stringify(onlyBody)} onlyMatcher=${JSON.stringify(onlyMatcher)}`);
-      fail = true;
-    } else {
-      console.log(`PASS ${hookFile}: body and matcher agree (${bodySet.size} names)`);
-    }
-
-    const verbs = [...new Set(body.map(verbOf))];
-    for (const verb of verbs) {
-      const missing = PREFIXES.filter((p) => !bodySet.has(`${p}${verb}`));
-      if (missing.length) {
-        console.log(`FAIL ${hookFile}: verb "${verb}" missing prefix(es) ${JSON.stringify(missing)}`);
-        fail = true;
-      }
-    }
+for (const gate of GATES) {
+  const rules = rulesFor(gate.hook);
+  if (rules.length !== 1) {
+    console.log(`FAIL ${gate.hook}: expected exactly one hooks.json PreToolUse rule to run it, found ${rules.length}`);
+    fail = true;
+    continue;
   }
+  if (rules[0].matcher !== "Bash") {
+    console.log(`FAIL ${gate.hook}: matcher is ${JSON.stringify(rules[0].matcher)}, must be "Bash" (${gate.spec})`);
+    fail = true;
+  }
+  const verbs = verbsFrom(gate.source, gate.constName);
+  if (!verbs) {
+    console.log(`FAIL ${gate.hook}: could not statically extract ${gate.constName} from hooks/${gate.source}`);
+    fail = true;
+    continue;
+  }
+  const onlyBody = verbs.filter((v) => !gate.expect.includes(v));
+  const onlySpec = gate.expect.filter((v) => !verbs.includes(v));
+  if (onlyBody.length || onlySpec.length) {
+    console.log(`FAIL ${gate.hook}: verb set drifted from ${gate.spec} — extra=${JSON.stringify(onlyBody)} missing=${JSON.stringify(onlySpec)}`);
+    fail = true;
+  } else {
+    console.log(`PASS ${gate.hook}: matcher Bash, ${verbs.length} verbs agree with ${gate.spec}`);
+  }
+}
+
+// The allow hook must be wired on the same matcher, or nothing grants the prompt-free path.
+const allowRules = rulesFor("pretooluse-ah-cli.mjs");
+if (allowRules.length !== 1 || allowRules[0].matcher !== "Bash") {
+  console.log(`FAIL pretooluse-ah-cli.mjs: expected exactly one PreToolUse rule on matcher "Bash", found ${JSON.stringify(allowRules.map((r) => r.matcher))}`);
+  fail = true;
+} else {
+  console.log("PASS pretooluse-ah-cli.mjs: wired on matcher Bash");
 }
 
 process.exit(fail ? 1 : 0);

@@ -1,3 +1,5 @@
+> **Superseded by 0048 — MCP server removed in 0.73.0.**
+
 # 0047 — A stable `ah` MCP server: diagnose first, then move the transport to a local HTTP daemon
 
 Status: **r2, amended after implementation** (brief `20260909-201437-1jd1`;

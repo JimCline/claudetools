@@ -1,3 +1,0 @@
-{"ts":"2026-09-09T22:00:00.000Z","event":"start","pid":4242,"transport":"http","version":"0.72.0","ppid":1,"identity":"peer-socket","root":"/cache/ah/0.72.0"}
-{"ts":"2026-09-09T22:05:00.010Z","event":"signal","pid":4242,"transport":"http","version":"0.72.0","signal":"SIGTERM"}
-{"ts":"2026-09-09T22:05:00.020Z","event":"exit","pid":4242,"transport":"http","version":"0.72.0","code":0}

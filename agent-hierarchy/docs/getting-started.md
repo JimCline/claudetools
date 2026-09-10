@@ -95,7 +95,14 @@ prose — you'll see a line like this in your terminal:
 ```
 
 That's normal: it's the brief, written to a file so it survives compaction
-and re-dispatch. See [docs/mcp-tools.md](./mcp-tools.md) and
+and re-dispatch. You write one with the message CLI:
+
+```
+node <AH_ROOT>/hooks/msg.mjs new --to architect --from orchestrator --slug new-feature --cwd "$(pwd)"
+```
+
+`<AH_ROOT>` comes from the `ah CLI root:` line the plugin injects at session
+start. See [docs/cli-tools.md](./cli-tools.md) and
 [docs/comms-protocol.md](./comms-protocol.md) for the format.
 
 ## 7. Tearing down
@@ -113,8 +120,8 @@ work worth keeping.
 
 ## 8. Where to go next
 
-- [docs/mcp-tools.md](./mcp-tools.md) — the MCP tool surface and the
-  `msg.mjs` CLI.
+- [docs/cli-tools.md](./cli-tools.md) — the `roster.mjs` / `msg.mjs` verb
+  surface, the invocation form, and permissions.
 - [docs/troubleshooting.md](./troubleshooting.md) — symptom → cause → fix.
 - [README.md](../README.md) — the full picture: roles, lanes, gates, usage
   tracking.

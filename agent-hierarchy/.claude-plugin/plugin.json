@@ -1,7 +1,7 @@
 {
   "name": "ah",
   "displayName": "Agent Hierarchy — Role/Model Assignment",
-  "version": "0.72.0",
+  "version": "0.73.0",
   "description": "Multi-agent role hierarchy, each on the right model. Optional herdr transport for pane-based teams.",
   "author": {
     "name": "Jim Cline"
@@ -15,11 +15,5 @@
     "review",
     "cost",
     "herdr"
-  ],
-  "mcpServers": {
-    "ah": {
-      "type": "http",
-      "url": "http://127.0.0.1:${AH_MCP_PORT:-7434}/"
-    }
-  }
+  ]
 }

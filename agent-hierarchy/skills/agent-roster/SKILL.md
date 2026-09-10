@@ -6,13 +6,12 @@ description: Define, edit, or inspect the agent-hierarchy ROSTER — the templat
 # agent-roster
 
 The roster is a `roster` block in the existing `agent-hierarchy.json` config,
-at one of three levels (§ Levels below). `$CLAUDE_PLUGIN_ROOT/hooks/roster.mjs`
-(preferably via `mcp__ah__roster_show` for reads) does all the file I/O and
+at one of three levels (§ Levels below). `<AH_ROOT>/hooks/roster.mjs` does all the file I/O and
 validation; this skill is the interactive prose surface that drives it — do
 not hand-edit the JSON, and do not duplicate its validation here.
 
 **Roster vs. Team — the roster is definitions, a Team is an instance created
-FROM it.** If a roster already exists (check `roster_show`) and you just need
+FROM it.** If a roster already exists (check `roster.mjs show`) and you just need
 a live Team — including at a worktree, which usually inherits the repo's
 existing roster — this is the wrong skill: invoke `ah:agent-team` and go
 straight to its § Create. You do NOT need to add/edit/remove roster members
@@ -41,10 +40,10 @@ drifted — say so rather than silently picking one.
 
 Resolution is **whole-level replace**, not a per-key merge: the winning
 level's `roster` block is used in its entirety — a member defined only at a
-losing level does not appear. Use `mcp__ah__roster_show`. With no
+losing level does not appear. To inspect the roster run `node <AH_ROOT>/hooks/roster.mjs show --cwd <abs cwd>`; never read `.claude/agent-hierarchy.json` directly — it misses the worktree/main-checkout and global fallback resolution that `show` implements. With no
 `--level`/`level` argument it always prints the resolved (winning) roster;
 with one, it prints that level's raw file and says if it's shadowed.
-Always try `mcp__ah__*` first — it is the preferred path. Only if it is absent from your toolset or a call to it fails as not-connected, fall back to the CLI equivalents listed in `agent-hierarchy/docs/mcp-tools.md` rather than guessing the arguments, and say so ONCE: apply the notice per your role — if you are the top-level session, tell the user; if you were dispatched, add one line to your report. Tool names in this file are written with the `mcp__ah__` prefix as shorthand. The live prefix depends on install shape — a plugin-supplied server surfaces to the model as `mcp__plugin_ah_ah__<verb>`, the same server configured directly in a `.mcp.json` under the name `ah` surfaces as `mcp__ah__<verb>`. Resolve the real name from your own tool list. Code that matches on these names (a hook matcher, a gate) must enumerate BOTH prefixes rather than pick one — see spec 0042 §1.6.
+The ah CLI is the only interface: every roster/team/message operation is a Bash call to `node <AH_ROOT>/hooks/roster.mjs <verb> … --cwd <abs cwd>` or `node <AH_ROOT>/hooks/msg.mjs <verb> … --cwd <abs cwd>`. `<AH_ROOT>` is on this session's `ah CLI root:` line, or in the hook message that sent you here — never guess a path; if no root line is in your context, ask the Orchestrator for it. Verb reference: `agent-hierarchy/docs/cli-tools.md`. Output is always JSON; a non-zero exit says why on stdout/stderr.
 
 Member names are **derived, never stored**: the first member of a role at the
 winning level is `<team-prefix>-<role>` (e.g. `claudetools-architect`) — the
@@ -58,16 +57,12 @@ from the roster.
 
 ## Command surface
 
-Each `roster_*` MCP tool maps 1:1 to `node roster.mjs <verb>` with the same
-flags (snake_case tool params ↔ kebab-case CLI flags, e.g. `auto_mode` ↔
-`--auto-mode`). Use the tool — `mcp__ah__roster_<verb>` — the model should
-never need Bash for any roster operation. See the MCP-unavailable fallback
-protocol under § Levels above; it applies here too. (The per-verb bullets
-below already give the CLI form alongside its MCP tool, since this section
-is `roster.mjs`'s own reference, not a copy of the fallback mapping —
-`docs/mcp-tools.md` stays the single source of truth for that.)
+Every verb below runs as `node <AH_ROOT>/hooks/roster.mjs <verb> … --cwd <abs cwd>`
+through the Bash tool — `<AH_ROOT>` from this session's `ah CLI root:` line.
+`docs/cli-tools.md` is the single source of truth for the full verb/flag surface;
+the bullets below are this skill's operational notes on top of it.
 
-All CLI subcommands run via `node "$CLAUDE_PLUGIN_ROOT/hooks/roster.mjs" <cmd> ...`
+All CLI subcommands run via `node "<AH_ROOT>/hooks/roster.mjs" <cmd> ...`
 with `--cwd "$(pwd)"` (or the relevant repo path). Level may be given as
 `--level <L>` or as the first bare word: `roster.mjs add repo --role architect`
 ≡ `--level repo`.
@@ -77,14 +72,14 @@ of the default one, so a repo can keep more than one template. Omitted,
 everything is the default roster exactly as before — most sessions never pass
 it.
 
-- `show [--level global|repo|repo-user]` (`mcp__ah__roster_show`) — resolved roster, or one level's raw file.
-- `init --level <L> --route <peer|subagent> [--layout auto|columns|grid]` (`mcp__ah__roster_init`) — replaces that level's roster wholesale.
-- `add --role <R> [--level L] [--model M] [--effort E] [--route peer|subagent|pane] [--kind K] [--args '<json>'] [--auto-mode A]` (`mcp__ah__roster_add`) — writes the template row and **spawns nothing** (spec 0044 §1.10, superseding 0039). To start the member afterwards, that is `/agent-team`'s job: `spawn-one <role>` for a roster-conforming one, `spawn-ad-hoc` for a divergent or ad hoc one.
-- `edit --member <NAME> [--level L] [--role R] [--model M] [--effort E] [--route ...] [--auto-mode A]` (`mcp__ah__roster_edit`)
-- `remove --member <NAME> [--level L]` (`mcp__ah__roster_remove`) — edits the
+- `show [--level global|repo|repo-user]` — resolved roster, or one level's raw file.
+- `init --level <L> --route <peer|subagent> [--layout auto|columns|grid]` — replaces that level's roster wholesale.
+- `add --role <R> [--level L] [--model M] [--effort E] [--route peer|subagent|pane] [--kind K] [--args '<json>'] [--auto-mode A]` — writes the template row and **spawns nothing** (spec 0044 §1.10, superseding 0039). To start the member afterwards, that is `/agent-team`'s job: `spawn-one <role>` for a roster-conforming one, `spawn-ad-hoc` for a divergent or ad hoc one.
+- `edit --member <NAME> [--level L] [--role R] [--model M] [--effort E] [--route ...] [--auto-mode A]`
+- `remove --member <NAME> [--level L]` — edits the
   roster **template**, not a live Team; `/agent-team`'s `dismiss` is the live-Team equivalent.
-- `layout [--level <L>] [--layout auto|columns|grid]` (`mcp__ah__roster_layout`) — show or set the team-wide pane layout.
-- `alias [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]` (`mcp__ah__roster_alias`) — read, set, or
+- `layout [--level <L>] [--layout auto|columns|grid]` — show or set the team-wide pane layout.
+- `alias [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]` — read, set, or
   clear the repo's `teamAlias` (the team-prefix members are named under). No `--set`/`--clear`
   reads the currently-effective alias; `--level` is required with `--set`/`--clear` when it can't
   be inferred from an already-resolving roster. Never accepts `--level global` — an alias is
@@ -196,7 +191,7 @@ Team the CLI will refuse the edit outright and name `spawn-ad-hoc` instead
 `--allow-roster-edit` override is the **user's**, never one an agent adds to
 get its call through.
 
-`--no-spawn` (`no_spawn: true` on `roster_add`) is still accepted and does
+`--no-spawn` (`no_spawn: true` on `roster.mjs add`) is still accepted and does
 nothing at all — it is a no-op kept only so existing scripts do not break
 (§1.10 R1). Do not pass it, and do not read it as evidence that spawning is
 otherwise what happens.
@@ -216,7 +211,7 @@ of any member's `onMissing`.
 
 ### `--kind`: non-Claude members (spec 0043)
 
-`--kind <k>` (`kind` on `roster_add`) picks which agent CLI Herdr starts
+`--kind <k>` (`kind` on `roster.mjs add`) picks which agent CLI Herdr starts
 for this member. **Omitted means `claude`**, including for every roster file
 written before this key existed, and an explicit `--kind claude` is not
 written to the file at all — the default is total.
@@ -236,7 +231,7 @@ Choosing a non-claude kind changes four things, all enforced at `add`/`edit`:
 | `args` | optional; native CLI arguments, passed verbatim after Herdr's `--` |
 | transport | spawning needs a Herdr session (`HERDR_ENV=1`); `add`/`edit` still work anywhere |
 
-`--args '<json-array>'` (`args` on `roster_add`, a real array there) is the
+`--args '<json-array>'` (`args` on `roster.mjs add`, a real array there) is the
 *only* way a non-claude member gets flags, since the three Claude flags are
 rejected for it. Each element is one argument and is shell-quoted before it
 reaches the launch line. `args` is a **hard error for `kind: claude`** — for a

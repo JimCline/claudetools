@@ -6,6 +6,7 @@
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 HOOK="$PLUGIN/hooks/pretooluse-roster-skill-gate.mjs"
+ROSTER="$PLUGIN/hooks/roster.mjs"
 PROMPT_HOOK="$PLUGIN/hooks/userpromptsubmit-peer-tracking.mjs"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-roster-skill-gate-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -20,46 +21,51 @@ check() {
   if eval "$@"; then PASS=$((PASS+1)); echo "PASS: $name"; else FAIL=$((FAIL+1)); echo "FAIL: $name (RC=$RC OUT=${OUT:0:300})"; fi
 }
 
-# hook <tool_name> [extra json fields for tool_input/top-level]
+# hook <bash command string> [session id] [agent id]
+# Spec 0048 §2.4.3: the gate keys on the parsed Bash command, not on a tool name.
 hook() {
-  local tool=$1 session=${2:-s1} agent_id=${3:-}
-  local agent_field=""
-  [ -n "$agent_id" ] && agent_field=",\"agent_id\":\"$agent_id\""
-  OUT=$(printf '{"session_id":"%s","cwd":"%s","tool_name":"%s","tool_input":{"cwd":"%s"}%s}' "$session" "$PROJ" "$tool" "$PROJ" "$agent_field" | HOME="$FAKEHOME" node "$HOOK" 2>&1); RC=$?
+  local cmd=$1 session=${2:-s1} agent_id=${3:-}
+  OUT=$(node -e '
+    const payload = { session_id: process.argv[1], cwd: process.argv[2], tool_name: "Bash", tool_input: { command: process.argv[3] } };
+    if (process.argv[4]) payload.agent_id = process.argv[4];
+    process.stdout.write(JSON.stringify(payload));
+  ' "$session" "$PROJ" "$cmd" "$agent_id" | HOME="$FAKEHOME" node "$HOOK" 2>&1); RC=$?
 }
 
 is_deny() { case "$OUT" in *'"permissionDecision":"deny"'*) return 0;; *) return 1;; esac; }
 
-VERBS="team_create team_spawn_one team_spawn_ad_hoc team_adopt team_move team_dismiss team_disband team_untrack"
-PREFIXES="mcp__plugin_ah_ah__ mcp__ah__"
+VERBS="create spawn-one spawn-ad-hoc adopt move dismiss disband untrack"
 
-# ---- 1/2: each gated tool, both prefixes: clean session denies + names the skill;
+# ---- 1/2: each gated verb: clean session denies + names the skill;
 # the immediate identical retry proceeds (self-cleared).
 n=0
 for verb in $VERBS; do
-  for prefix in $PREFIXES; do
-    n=$((n+1))
-    sess="clean-$n"
-    hook "${prefix}${verb}" "$sess"
-    check "deny+skill-name: ${prefix}${verb}" '[ "$RC" -eq 0 ] && is_deny && echo "$OUT" | grep -q "ah:agent-team"'
-    hook "${prefix}${verb}" "$sess"
-    check "self-clears on retry: ${prefix}${verb}" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
-  done
+  n=$((n+1))
+  sess="clean-$n"
+  CMD="node $ROSTER $verb --plan --cwd $PROJ"
+  hook "$CMD" "$sess"
+  check "deny+skill-name: roster.mjs $verb" '[ "$RC" -eq 0 ] && is_deny && echo "$OUT" | grep -q "ah:agent-team"'
+  check "deny text tells the caller to re-run the same command" 'echo "$OUT" | grep -q "Re-running the same command"'
+  hook "$CMD" "$sess"
+  check "self-clears on retry: roster.mjs $verb" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
 done
 
-# ---- 3: explicitly-not-gated tools produce no output at all
-for tool in mcp__ah__roster_show mcp__ah__team_list mcp__ah__team_history mcp__ah__roster_add \
-            mcp__ah__roster_init mcp__ah__roster_edit mcp__ah__roster_remove \
-            mcp__ah__team_reap mcp__ah__team_resync mcp__ah__team_layout_splits \
-            mcp__ah__roster_layout mcp__ah__roster_alias \
-            mcp__plugin_ah_ah__roster_show mcp__plugin_ah_ah__roster_layout \
-            mcp__ah__msg_new mcp__plugin_ah_ah__msg_new; do
-  hook "$tool" "notgated-$tool"
-  check "not gated, no output: $tool" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
+# ---- 3: explicitly-not-gated verbs produce no output at all
+for verb in show teams history reap resync layout-splits init add edit remove layout alias checkin; do
+  hook "node $ROSTER $verb --cwd $PROJ" "notgated-$verb"
+  check "not gated, no output: roster.mjs $verb" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
 done
+hook "node $PLUGIN/hooks/msg.mjs new --to architect --from orchestrator --slug s --cwd $PROJ" "notgated-msg"
+check "not gated, no output: msg.mjs new" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
+hook "ls -la" "notgated-bash"
+check "not gated, no output: an unrelated Bash command" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
+
+# ---- 0048 §6 T4: the old key is gone — an MCP tool name is no longer gated
+OUT=$(printf '{"session_id":"mcp-key","cwd":"%s","tool_name":"mcp__plugin_ah_ah__team_create","tool_input":{"cwd":"%s"}}' "$PROJ" "$PROJ" | HOME="$FAKEHOME" node "$HOOK" 2>&1); RC=$?
+check "an mcp__ tool name is no longer gated (MCP surface removed)" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
 
 # ---- 5: subagent context never denies
-hook "mcp__plugin_ah_ah__team_create" "sub1" "agent123"
+hook "node $ROSTER create --plan --cwd $PROJ" "sub1" "agent123"
 check "subagent context: no deny" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
 
 # ---- 6: malformed/unreadable input fails open, never throws
@@ -69,10 +75,10 @@ check "malformed input: RC 0, no output, no throw" '[ "$RC" -eq 0 ] && [ -z "$OU
 OUT=$(printf '' | HOME="$FAKEHOME" node "$HOOK" 2>&1); RC=$?
 check "empty input: RC 0, no output" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
 
-# ---- 4: generic name-agreement check (also covers §1.6's gate — see the checker's own header)
+# ---- 4: verb-set/matcher agreement check (spec 0048 §2.4.5)
 NAME_AGREEMENT=$(node "$PLUGIN/tests/check-gate-name-agreement.mjs" 2>&1); NA_RC=$?
 echo "$NAME_AGREEMENT"
-check "gate name-agreement (body vs hooks.json matcher, both prefixes)" '[ "$NA_RC" -eq 0 ]'
+check "gate verb-set/matcher agreement" '[ "$NA_RC" -eq 0 ]'
 
 # ---------------------------------------------------------------------------
 # §1.5: team-intent nudge in userpromptsubmit-peer-tracking.mjs

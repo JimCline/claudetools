@@ -21,7 +21,7 @@ lanes, and tiers on one static page
 ## Where to read next
 
 - **[Getting started](./docs/getting-started.md)** — zero to a running team, task-ordered.
-- **[MCP tools](./docs/mcp-tools.md)** — the `mcp__ah__*` tool surface and the `msg.mjs` CLI.
+- **[CLI reference](./docs/cli-tools.md)** — the `roster.mjs` / `msg.mjs` verb surface, the invocation form, and permissions.
 - **[Troubleshooting](./docs/troubleshooting.md)** — symptom → cause → fix.
 - **[Comms protocol](./docs/comms-protocol.md)** — message-file wire format and gates, for contributors.
 
@@ -384,7 +384,6 @@ directory itself is the file list. At a glance:
 ```
 agents/          one contract per role (frontmatter pins model + tool denies)
 hooks/           hooks and the libraries they share
-mcp/             the MCP server (a localhost HTTP daemon) — see docs/mcp-tools.md
 commands/        the /hierarchy and /agent-roster commands
 skills/          the agent-roster skill
 docs/specs/      per-feature design records

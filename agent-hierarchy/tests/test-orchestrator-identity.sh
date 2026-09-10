@@ -1,5 +1,6 @@
 #!/bin/bash
-# agent-hierarchy — spec 0018 (orchestrator identity on the MCP path): Bash-path
+# agent-hierarchy — spec 0018 (orchestrator identity, now resolved entirely on the Bash path
+# per spec 0048 §2.3): Bash-path
 # refusals for the two write sites (create --commit is covered in test-roster-cli.sh;
 # spawn-one is covered here), and the `adopt` recovery verb / hijack guard (§5).
 # HOME-redirected; real state untouched.
@@ -89,6 +90,36 @@ rm -f "$TEAM_FILE"
 run adopt --orchestrator-pid "$NOTEAM_PID"
 check "adopt: no team file at this scope -> refused" '[ "$RC" -eq 2 ]'
 kill "$NOTEAM_PID" 2>/dev/null
+
+# ---------------------------------------------------------------------------
+# spec 0048 §2.3 / §6 T5: msg.mjs resolves the owning team from --orchestrator-pid
+# FIRST, falling back to CLAUDE_PID. Roster-side cases are above; this is the msg side.
+# ---------------------------------------------------------------------------
+( sleep 30 ) & PID_A=$!
+( sleep 30 ) & PID_B=$!
+TEAMS_DIR="$PROJ/.claude/hierarchy/teams"
+mkdir -p "$TEAMS_DIR"
+cat > "$TEAMS_DIR/alpha.json" <<EOF
+{"version":1,"team_id":"alpha","created":"2026-01-01T00:00:00Z","roster_level":"repo","transport":"terminal","orchestrator":{"session_id":null,"pid":$PID_B},"members":[],"partial":false}
+EOF
+rm -f "$TEAM_FILE"
+
+msg_team() {
+  # $1 = CLAUDE_PID value, $2… = extra args; prints the `team:` frontmatter value of the new file
+  local pid=$1; shift
+  local path
+  path=$(CLAUDE_PID="$pid" HOME="$FAKEHOME" node "$H/msg.mjs" new --to architect --from orchestrator --slug t5-probe --cwd "$PROJ" "$@" 2>&1 | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{process.stdout.write(JSON.parse(s).path||'')}catch{process.stdout.write('')}})")
+  [ -n "$path" ] && grep -m1 '^team:' "$path" || echo "team: <no file>"
+}
+
+OUT=$(msg_team "$PID_B"); RC=0
+check "T5: msg.mjs resolves the team from CLAUDE_PID when no flag is given" 'echo "$OUT" | grep -q "team: alpha"'
+OUT=$(msg_team "$PID_A" --orchestrator-pid "$PID_B"); RC=0
+check "T5: --orchestrator-pid wins over a CLAUDE_PID that owns nothing" 'echo "$OUT" | grep -q "team: alpha"'
+OUT=$(msg_team "$PID_B" --orchestrator-pid "$PID_A"); RC=0
+check "T5: --orchestrator-pid wins over a CLAUDE_PID that owns the team (override, not merge)" '! echo "$OUT" | grep -q "team: alpha"'
+kill "$PID_A" "$PID_B" 2>/dev/null
+rm -f "$TEAMS_DIR/alpha.json"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"

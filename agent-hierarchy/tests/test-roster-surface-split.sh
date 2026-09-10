@@ -78,62 +78,38 @@ check "7: spawn-ad-hoc is dispatched by the same roster.mjs" \
 # pretooluse-roster-skill-gate.mjs on one path is the named failure mode.
 ########################################################################
 GATE="$H/pretooluse-roster-skill-gate.mjs"
-gate() { # <tool_name> <session_id>
-  OUT=$(printf '{"session_id":"%s","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"%s","tool_input":{"cwd":"%s"}}' \
-    "$2" "$PROJ" "$1" "$PROJ" | HOME="$FAKEHOME" node "$GATE" 2>&1); RC=$?
+# Spec 0048 §2.4.3: the gate keys on the parsed Bash command, not on an MCP tool name.
+gate() { # <bash command string> <session_id>
+  OUT=$(node -e 'process.stdout.write(JSON.stringify({ session_id: process.argv[1], cwd: process.argv[2], hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: process.argv[3] } }))' \
+    "$2" "$PROJ" "$1" | HOME="$FAKEHOME" node "$GATE" 2>&1); RC=$?
 }
 i=0
-for verb in team_create team_spawn_one team_spawn_ad_hoc team_adopt team_move team_dismiss team_disband team_untrack; do
-  for prefix in mcp__ah__ mcp__plugin_ah_ah__; do
-    i=$((i+1)); rm -rf "$HIER/gates.jsonl"
-    gate "$prefix$verb" "sess-$i"
-    check "8: $prefix$verb is gated (both MCP name shapes)" \
-      'echo "$OUT" | grep -q "\"permissionDecision\":\"deny\""'
-    check "8: ...and the denial routes to the agent-team skill, not the roster one" \
-      'echo "$OUT" | grep -q "ah:agent-team"'
-    # hooks.json's matcher is load-bearing in parallel with the JS set — a verb
-    # present in one and absent from the other is silently ungated.
-    check "8: ...and hooks.json's matcher lists it too" \
-      'grep -q "$prefix$verb" "$H/hooks.json"'
-  done
+for verb in create spawn-one spawn-ad-hoc adopt move dismiss disband untrack; do
+  i=$((i+1)); rm -rf "$HIER/gates.jsonl"
+  gate "node $H/roster.mjs $verb --cwd $PROJ" "sess-$i"
+  check "8: roster.mjs $verb is gated" \
+    'echo "$OUT" | grep -q "\"permissionDecision\":\"deny\""'
+  check "8: ...and the denial routes to the agent-team skill, not the roster one" \
+    'echo "$OUT" | grep -q "ah:agent-team"'
 done
-# The roster-side (template) tools stay OUT of the lifecycle gate, exactly as before.
-rm -rf "$HIER/gates.jsonl"; gate "mcp__ah__roster_add" "sess-member"
-check "8: roster_add (template edit) is NOT captured by the lifecycle gate" \
+# hooks.json's matcher is load-bearing in parallel with the JS verb set — a gate the matcher
+# never selects for is silently ungated, whatever its body says (0042 §1.6, 0048 §2.4.5).
+check "8: hooks.json runs the gate on the Bash matcher" \
+  'node -e "const c=require(\"fs\").readFileSync(process.argv[1],\"utf8\");const j=JSON.parse(c);process.exit((j.hooks.PreToolUse||[]).some((r)=>r.matcher===\"Bash\"&&r.hooks.some((h)=>h.command.includes(\"pretooluse-roster-skill-gate.mjs\")))?0:1)" "$H/hooks.json"'
+# The roster-side (template) verbs stay OUT of the lifecycle gate, exactly as before.
+rm -rf "$HIER/gates.jsonl"; gate "node $H/roster.mjs add --role reviewer --cwd $PROJ" "sess-member"
+check "8: add (template edit) is NOT captured by the lifecycle gate" \
   '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
-rm -rf "$HIER/gates.jsonl"; gate "mcp__ah__roster_show" "sess-show"
-check "8: roster_show (read-only) is NOT gated" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
+rm -rf "$HIER/gates.jsonl"; gate "node $H/roster.mjs show --cwd $PROJ" "sess-show"
+check "8: show (read-only) is NOT gated" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
 
 # §1.3's refusal is the OTHER thing that must not become surface-conditional:
-# it lives in roster.mjs, so both surfaces and the MCP server inherit it.
+# it lives in roster.mjs, so both skill surfaces inherit it.
 r "" create --commit --verified '["myrepo-architect"]' --transport terminal --roster-level repo --orchestrator-pid "$$"
 check "8: a live team exists for the refusal check" '[ "$RC" -eq 0 ]'
 r "CLAUDE_PID=$$" add --level repo --role reviewer --model opus
 check "8: §1.3 refuses the roster edit whichever surface issued it" \
   '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "spawn-ad-hoc"'
-# Own the team through the SAME surface, so the identity §1.3 compares against is the
-# server's own SESSION_PID rather than a pid the test invented — that is exactly how a
-# real session reaches these tools, and stamping a foreign pid would test nothing.
-MCP_PROJ="$SANDBOX/mcprepo"; mkdir -p "$MCP_PROJ/.claude"; (cd "$MCP_PROJ" && git init -q)
-cat > "$SANDBOX/mcp-refusal.mjs" <<'JSEOF'
-const { callTool } = await import(process.env.SERVER_PATH);
-const cwd = process.env.PROJ;
-await callTool("roster_init", { cwd, level: "repo", route: "peer" });
-await callTool("roster_add", { cwd, level: "repo", role: "architect", model: "opus" });
-const made = await callTool("team_create", { cwd, mode: "commit", verified: JSON.stringify(["mcprepo-architect"]), transport: "terminal", roster_level: "repo" });
-const res = await callTool("roster_add", { cwd, level: "repo", role: "reviewer", model: "opus" });
-console.log(JSON.stringify({ created: !made.isError, isError: Boolean(res.isError), text: res.content[0].text }));
-JSEOF
-OUT=$(HOME="$FAKEHOME" SERVER_PATH="$PLUGIN/mcp/server.mjs" PROJ="$MCP_PROJ" node "$SANDBOX/mcp-refusal.mjs" 2>&1); RC=$?
-check "8: the MCP surface stood its own team up first" 'echo "$OUT" | grep -q "\"created\":true"' 
-check "8: ...and identically through the MCP tool surface" \
-  'echo "$OUT" | grep -q "spawn-ad-hoc"'
-check "8: ...as an error, not a silent success" 'echo "$OUT" | grep -q "\"isError\":true"'
-# The override must not be reachable as an MCP parameter — §1.3 says it is the
-# USER's flag and no code path may supply it on the user's behalf.
-check "8: --allow-roster-edit is deliberately absent from the MCP schema" \
-  '! grep -q "allow_roster_edit" "$PLUGIN/mcp/server.mjs"'
-
 ########################################################################
 # 9 — §4 item 9: the surfaces list the right commands. This is the part of
 # §8 that does the actual work (an agent picks from the menu it is shown),

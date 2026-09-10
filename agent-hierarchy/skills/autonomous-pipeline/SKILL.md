@@ -27,12 +27,12 @@ duplicates what already exists; where it doesn't, it links.
 ## Liveness — nothing new here
 
 Every peer dispatch you make during a run carries `--eta` scaled honestly
-to the task, via `mcp__ah__msg_new`. The Orchestrator's
+to the task, via `msg.mjs new`. The Orchestrator's
 standing check-in contract in `agents/orchestrator.md` governs everything
 from there — thresholds, nudge counts, when to tell the user. This skill
 adds nothing to it and does not restate it.
 
-Always try `mcp__ah__*` first — it is the preferred path. Only if it is absent from your toolset or a call to it fails as not-connected, fall back to the CLI equivalents listed in `agent-hierarchy/docs/mcp-tools.md` rather than guessing the arguments, and say so ONCE: apply the notice per your role — if you are the top-level session, tell the user; if you were dispatched, add one line to your report. `mcp__ah__*` here means the ah MCP tools under whichever prefix your install surfaces — commonly `mcp__plugin_ah_ah__<verb>`. Match on the verb, not the prefix, and treat MCP as absent only if no such tool appears under any prefix.
+The ah CLI is the only interface: every roster/team/message operation is a Bash call to `node <AH_ROOT>/hooks/roster.mjs <verb> … --cwd <abs cwd>` or `node <AH_ROOT>/hooks/msg.mjs <verb> … --cwd <abs cwd>`. `<AH_ROOT>` is on this session's `ah CLI root:` line, or in the hook message that sent you here — never guess a path; if no root line is in your context, ask the Orchestrator for it. Verb reference: `agent-hierarchy/docs/cli-tools.md`. Output is always JSON; a non-zero exit says why on stdout/stderr.
 
 **One gap the standing contract leaves open, and this skill closes it:**
 after the liveness Stop hook's nudge budget (`MAX_NUDGES`, 2 per
@@ -74,12 +74,12 @@ Seven steps, in order:
    visible explanation. **Practical consequence:** if a member does not
    check in after spawn, a startup-confirmation hang is the first
    hypothesis to check, not the last.
-2. **Resolve the roster** (`mcp__ah__roster_show`).
+2. **Resolve the roster**.
 3. **Resolve the active dispatch route** (`msg.mjs route` / the session's
    recorded answer: `peers`, `subagents`, or `prefer-peers`) — never assume
    one. It determines liveness coverage (§ Liveness) and is one of the four
    facts the run-start notification carries.
-4. **Create the team** — `team_create` plan → confirm → commit exactly as
+4. **Create the team** — `roster.mjs create` plan → confirm → commit exactly as
    [`skills/agent-roster/SKILL.md` § Create](../agent-roster/SKILL.md#create)
    describes — do not re-derive that contract here.
 5. **Run the push pre-flight checks** — both guards, before any work starts
@@ -94,7 +94,7 @@ Seven steps, in order:
 
 ### Elastic membership
 
-`mcp__ah__team_spawn_one` adds one role to a live team without touching
+`roster.mjs spawn-one` adds one role to a live team without touching
 the rest — that's the whole growth primitive, already shipped. Two hard
 constraints on the other direction:
 
@@ -166,7 +166,7 @@ user** — do not start a 4th. This is per work item, never a global counter
 anywhere).
 
 **Round count for an item = the number of message exchanges whose `slug`
-equals that item's slug**, via `mcp__ah__msg_list` / `msg.mjs list`
+equals that item's slug**, via `msg.mjs list` / `msg.mjs list`
 **with `--all`** — not the default listing. Two requirements make this
 work:
 
@@ -249,7 +249,7 @@ and the user should not discover the difference only at the end.
 A remembered branch name is not trustworthy after compaction — and this is
 the one decision in the whole skill where being wrong writes to a remote.
 Frontmatter cannot carry the fix: `frontmatterText`'s key order is fixed
-and `msg_new`'s schema has no branch parameter, so adding one is a
+and `msg.mjs new`'s schema has no branch parameter, so adding one is a
 `lib-hier.mjs` change, out of scope here. The message **body** is
 free-form, so that's where the durable record goes.
 
@@ -339,7 +339,7 @@ Orchestrator; nothing here offers a second path to the user.
   a message file; team state is `team.json`; dispatch state is
   `peers.jsonl`.
 - No new hook — everything this depends on shipped with spec 0028.
-- No change to `msg_list`'s row shape, no new frontmatter key, and no
+- No change to `msg.mjs list`'s row shape, no new frontmatter key, and no
   change to the injected state block's cap or fields.
 - No reliance on the injected state block as a content channel — see
   § Push regime's run anchor.

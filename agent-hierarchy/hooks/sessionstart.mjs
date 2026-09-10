@@ -41,6 +41,7 @@ import {
   buildDirective,
   buildNudge,
   buildRoleSessionNotice,
+  cliRootLine,
   hierarchyRoleOf,
   isSubagent,
   isTopLevelAgentSession,
@@ -183,7 +184,13 @@ if (!isSubagent(input)) {
   }
 }
 
+// Spec 0048 §2.1: hooks own the path to the ah CLIs — they are the only participants that know
+// `CLAUDE_PLUGIN_ROOT`, and since 0.73.0 the CLIs are the whole interface. Every session this hook
+// injects into learns the absolute root here; subagents (which get nothing, by design) learn it
+// from the hook messages that name the full command.
 if (context) {
+  context += `\n\n${cliRootLine()}`;
+
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {

@@ -1,11 +1,12 @@
 #!/bin/bash
-# agent-hierarchy — pretooluse-disband-close-gate.mjs (spec 0016 §4.5.1): PreToolUse ask-rule for
-# `mcp__ah__team_disband`, matched by name only (never a wildcard), always ask, no caching.
-# HOME-redirected; real state untouched.
+# agent-hierarchy — pretooluse-disband-close-gate.mjs (spec 0016 §4.5.1, 0020 §4.1), re-keyed onto
+# the parsed Bash command by spec 0048 §2.4.2/§6 T3: it fires on `roster.mjs dismiss|disband --close`
+# and on nothing else, always asks, never caches. HOME-redirected; real state untouched.
 # Usage: bash tests/test-disband-close-gate.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 HOOK="$PLUGIN/hooks/pretooluse-disband-close-gate.mjs"
+ROSTER="$PLUGIN/hooks/roster.mjs"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-disband-close-gate-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 FAKEHOME="$SANDBOX/home"
@@ -19,17 +20,18 @@ check() {
   if eval "$@"; then PASS=$((PASS+1)); echo "PASS: $name"; else FAIL=$((FAIL+1)); echo "FAIL: $name (RC=$RC OUT=${OUT:0:300})"; fi
 }
 
-# hook <tool_name> <tool_input json>
+# hook <bash command string>
 hook() {
-  local tool=$1 input=$2
-  OUT=$(printf '{"session_id":"s1","cwd":"%s","tool_name":"%s","tool_input":%s}' "$PROJ" "$tool" "$input" | HOME="$FAKEHOME" node "$HOOK" 2>&1); RC=$?
+  OUT=$(node -e '
+    process.stdout.write(JSON.stringify({ session_id: "s1", cwd: process.argv[1], tool_name: "Bash", tool_input: { command: process.argv[2] } }));
+  ' "$PROJ" "$1" | HOME="$FAKEHOME" node "$HOOK" 2>&1); RC=$?
 }
 
 is_ask() { case "$OUT" in *'"permissionDecision":"ask"'*) return 0;; *) return 1;; esac; }
 
-# ---- fires on the exact tool name, always ask
-hook "mcp__ah__team_disband" '{"cwd":"'"$PROJ"'","mode":"close","confirm":true,"plan_token":"t"}'
-check "fires on mcp__ah__team_disband: RC 0, permissionDecision ask" '[ "$RC" -eq 0 ] && is_ask'
+# ---- fires on disband --close, always ask
+hook "node $ROSTER disband --close --confirm --plan-token t --cwd $PROJ"
+check "fires on roster.mjs disband --close: RC 0, permissionDecision ask" '[ "$RC" -eq 0 ] && is_ask'
 check "generic message when no team.json exists (readTeam enrichment has nothing)" \
   'echo "$OUT" | grep -q "close the live sessions of this Team"'
 
@@ -39,47 +41,48 @@ mkdir -p "$(dirname "$TEAM_FILE")"
 cat > "$TEAM_FILE" <<EOF
 {"version":1,"team_id":"t1","created":"2026-01-01T00:00:00Z","roster_level":"repo","transport":"herdr","orchestrator":{"session_id":null,"pid":null},"members":[{"role":"architect","name":"proj-architect","route":"peer","transport_id":"P1"}],"partial":false}
 EOF
-hook "mcp__ah__team_disband" '{"cwd":"'"$PROJ"'","mode":"close","confirm":true,"plan_token":"t"}'
-check "enrichment: names the live member in the ask message" \
-  'echo "$OUT" | grep -q "proj-architect"'
+hook "node $ROSTER disband --close --confirm --plan-token t --cwd $PROJ"
+check "enrichment: names the live member in the ask message" 'echo "$OUT" | grep -q "proj-architect"'
+
+# ---- asking twice asks twice: never cached, nothing recorded (spec 0048 §2.4.2)
+hook "node $ROSTER disband --close --confirm --plan-token t --cwd $PROJ"
+check "second identical close command asks again (no caching)" '[ "$RC" -eq 0 ] && is_ask'
+check "nothing is recorded in gates.jsonl by this gate" '[ ! -f "$PROJ/.claude/hierarchy/gates.jsonl" ]'
 
 # ---- readTeam enrichment failing (unreadable cwd) still asks, generic message, never skipped
-hook "mcp__ah__team_disband" '{"cwd":"/nonexistent/definitely-not-a-real-path","mode":"close","confirm":true,"plan_token":"t"}'
+hook "node $ROSTER disband --close --confirm --plan-token t --cwd /nonexistent/definitely-not-a-real-path"
 check "enrichment failure: still asks (never skips the prompt)" '[ "$RC" -eq 0 ] && is_ask'
 
-# ---- does NOT fire on other mcp__ah__* tools, including the near-miss team_disband
-hook "mcp__ah__team_disband" '{"cwd":"'"$PROJ"'","mode":"plan"}'
-check "does NOT fire on team_disband mode:plan (spec 0046 §4, E1)" '[ -z "$OUT" ]'
-hook "mcp__ah__team_dismiss" '{"cwd":"'"$PROJ"'","mode":"plan","name":"proj-architect"}'
-check "does NOT fire on team_dismiss mode:plan (spec 0046 §4, E1)" '[ -z "$OUT" ]'
-hook "mcp__ah__team_untrack" '{"cwd":"'"$PROJ"'","mode":"commit","all":true}'
-check "does NOT fire on team_untrack (never destructive to a session)" '[ -z "$OUT" ]'
-
-hook "mcp__ah__roster_show" '{"cwd":"'"$PROJ"'"}'
-check "does NOT fire on an unrelated tool (roster_show)" '[ -z "$OUT" ]'
-
-hook "Bash" '{"command":"ls"}'
-check "does NOT fire on a non-MCP tool" '[ -z "$OUT" ]'
-
-# ---------------------------------------------------------------------------
-# spec 0020 §4.1 / §6 item 17/21: parallel coverage for mcp__ah__team_dismiss.
-# TWO distinct checks, deliberately not one: the ask-decision case exercises the hook
-# BODY directly (same as every case above — it pipes JSON straight to the .mjs file, never
-# touching hooks.json), and the matcher-reachability case inspects hooks.json itself. A
-# body-only fix (tool name added to GATED_TOOLS but not to the hooks.json matcher) would pass
-# the first case while shipping completely ungated in production — exactly what §4.1 warns
-# against — so the second case is the one that actually proves the tool is reachable at all.
-# ---------------------------------------------------------------------------
-
-# ---- ask-decision: fires on the exact new tool name, always ask (same as disband_close)
-hook "mcp__ah__team_dismiss" '{"cwd":"'"$PROJ"'","mode":"close","name":"proj-architect","confirm":true,"plan_token":"t"}'
-check "fires on mcp__ah__team_dismiss: RC 0, permissionDecision ask" '[ "$RC" -eq 0 ] && is_ask'
-check "dismiss_close: enrichment names the single member from tool_input.name, not the whole team" \
+# ---- dismiss: the member name comes from argv, not a tool input
+hook "node $ROSTER dismiss proj-architect --close --confirm --plan-token t --cwd $PROJ"
+check "fires on roster.mjs dismiss <name> --close: RC 0, permissionDecision ask" '[ "$RC" -eq 0 ] && is_ask'
+check "dismiss: enrichment names the single member from argv, not the whole team" \
   'echo "$OUT" | grep -q "proj-architect"'
 
-# ---- matcher-reachability: hooks.json's PreToolUse matcher must name the new tool IN THE SAME
-# rule that points at pretooluse-disband-close-gate.mjs — a hook the matcher never selects for
-# never runs, and the ask-decision case above cannot detect that (it bypasses hooks.json).
+# ---- plan forms and the non-destructive verbs are NOT gated (0048 §2.4.2: --close is the mode)
+hook "node $ROSTER disband --cwd $PROJ"
+check "does NOT fire on bare disband (the plan form)" '[ -z "$OUT" ]'
+hook "node $ROSTER dismiss proj-architect --cwd $PROJ"
+check "does NOT fire on bare dismiss <name> (the plan form)" '[ -z "$OUT" ]'
+hook "node $ROSTER untrack --all --commit --cwd $PROJ"
+check "does NOT fire on untrack (never destructive to a session)" '[ -z "$OUT" ]'
+hook "node $ROSTER show --cwd $PROJ"
+check "does NOT fire on an unrelated verb (show)" '[ -z "$OUT" ]'
+hook "ls"
+check "does NOT fire on an unrelated Bash command" '[ -z "$OUT" ]'
+
+# ---- the old key is gone: an MCP tool name must no longer reach this gate (0048 §3)
+OUT=$(printf '{"session_id":"s1","cwd":"%s","tool_name":"mcp__ah__team_disband","tool_input":{"cwd":"%s","mode":"close","confirm":true,"plan_token":"t"}}' "$PROJ" "$PROJ" \
+  | HOME="$FAKEHOME" node "$HOOK" 2>&1); RC=$?
+check "an mcp__ah__team_disband tool call is no longer gated (MCP surface removed)" '[ -z "$OUT" ]'
+
+# ---- a close command the parser rejects must NOT be silently allowed past the gate either:
+# it is unrecognised, so the gate stays silent and the user's normal permission flow applies.
+hook "cd /x && node $ROSTER disband --close --confirm --plan-token t --cwd $PROJ"
+check "a compound command is not recognised (parser fails closed, gate silent)" '[ -z "$OUT" ]'
+
+# ---- matcher reachability: the cases above pipe JSON straight to the .mjs and bypass hooks.json,
+# so a gate whose matcher no longer selects it would ship ungated while they all pass (0020 §4.1).
 HOOKS_JSON="$PLUGIN/hooks/hooks.json"
 MATCHER_CHECK=$(node -e '
   const fs = require("fs");
@@ -87,46 +90,14 @@ MATCHER_CHECK=$(node -e '
   const rule = (cfg.hooks.PreToolUse || []).find((r) =>
     Array.isArray(r.hooks) && r.hooks.some((h) => typeof h.command === "string" && h.command.includes("pretooluse-disband-close-gate.mjs"))
   );
-  const names = rule ? String(rule.matcher).split("|") : [];
-  console.log(names.includes("mcp__ah__team_dismiss") ? "PASS" : "FAIL " + JSON.stringify(names));
+  console.log(rule && rule.matcher === "Bash" ? "PASS" : "FAIL " + JSON.stringify(rule && rule.matcher));
 ' "$HOOKS_JSON")
-check "hooks.json PreToolUse matcher for pretooluse-disband-close-gate.mjs names mcp__ah__team_dismiss" \
-  '[ "$MATCHER_CHECK" = "PASS" ]'
+check "hooks.json PreToolUse matcher for pretooluse-disband-close-gate.mjs is Bash" '[ "$MATCHER_CHECK" = "PASS" ]'
 
-# ---------------------------------------------------------------------------
-# spec 0042 §1.6/§4 item 10: dual-prefix coverage. The gate was inert in production
-# because it only matched the short `mcp__ah__` prefix while the live tool name (a
-# plugin-supplied MCP server) is `mcp__plugin_ah_ah__*` — same root cause §1.3 fixes
-# for the new gate. Both close verbs, both prefixes, plus the single-member path
-# selection for team_dismiss under either prefix.
-# ---------------------------------------------------------------------------
-
-for prefix in mcp__plugin_ah_ah__ mcp__ah__; do
-  hook "${prefix}team_disband" '{"cwd":"'"$PROJ"'","mode":"close","confirm":true,"plan_token":"t"}'
-  check "0042: ${prefix}team_disband asks" '[ "$RC" -eq 0 ] && is_ask'
-
-  hook "${prefix}team_dismiss" '{"cwd":"'"$PROJ"'","mode":"close","name":"proj-architect","confirm":true,"plan_token":"t"}'
-  check "0042: ${prefix}team_dismiss asks and names the single member" \
-    '[ "$RC" -eq 0 ] && is_ask && echo "$OUT" | grep -q "proj-architect"'
-done
-
-DUAL_MATCHER_CHECK=$(node -e '
-  const fs = require("fs");
-  const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-  const rule = (cfg.hooks.PreToolUse || []).find((r) =>
-    Array.isArray(r.hooks) && r.hooks.some((h) => typeof h.command === "string" && h.command.includes("pretooluse-disband-close-gate.mjs"))
-  );
-  const names = new Set(rule ? String(rule.matcher).split("|") : []);
-  const want = ["mcp__plugin_ah_ah__team_disband", "mcp__ah__team_disband", "mcp__plugin_ah_ah__team_dismiss", "mcp__ah__team_dismiss"];
-  const missing = want.filter((n) => !names.has(n));
-  console.log(missing.length ? "FAIL " + JSON.stringify(missing) : "PASS");
-' "$HOOKS_JSON")
-check "hooks.json matcher enumerates both prefixes for both close verbs" '[ "$DUAL_MATCHER_CHECK" = "PASS" ]'
-
-# generic name-agreement check (spec 0042 §4 item 4) also covers this gate
+# gate/matcher agreement check (spec 0042 §4 item 4, re-keyed by 0048 §2.4.5)
 NAME_AGREEMENT=$(node "$PLUGIN/tests/check-gate-name-agreement.mjs" 2>&1); NA_RC=$?
 echo "$NAME_AGREEMENT"
-check "gate name-agreement (body vs hooks.json matcher, both prefixes)" '[ "$NA_RC" -eq 0 ]'
+check "gate verb-set/matcher agreement" '[ "$NA_RC" -eq 0 ]'
 
 echo
 echo "passed: $PASS  failed: $FAIL"

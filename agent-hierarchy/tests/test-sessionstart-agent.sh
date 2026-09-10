@@ -93,11 +93,12 @@ check "top-level --agent role: pane_id/tab_id/workspace_id written from env" \
 ORDINARY_OUT="$(start "{\"session_id\":\"sX\",\"cwd\":\"$TMP\",\"hook_event_name\":\"SessionStart\",\"source\":\"startup\"}")"
 FOREIGN_OUT="$(start "{\"session_id\":\"sX\",\"cwd\":\"$TMP\",\"agent_type\":\"some-plugin:notetaker\",\"hook_event_name\":\"SessionStart\",\"source\":\"startup\"}")"
 EXPECTED="$(HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node --input-type=module -e "
-  import { buildDirective, buildNudge, resolveConfig } from '$H/lib-config.mjs';
+  import { buildDirective, buildNudge, cliRootLine, resolveConfig } from '$H/lib-config.mjs';
   const resolved = resolveConfig('$TMP');
   let context = null;
   if (!resolved.configured) context = buildNudge(resolved);
   else if (resolved.enabled) context = buildDirective(resolved, 'sX');
+  if (context) context += '\n\n' + cliRootLine();
   if (context) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } }));
 ")"
 
@@ -116,7 +117,7 @@ check "configured session: HIERARCHY STATE block appended" 'echo "$CONF_OUT" | g
 check "configured session: message-protocol items 12-14 in directive" 'echo "$CONF_OUT" | grep -q "MESSAGE FILES" && echo "$CONF_OUT" | grep -q "PEER ROSTER" && echo "$CONF_OUT" | grep -q "TIER RULE"'
 CONF_EXPECTED="$(HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node --input-type=module -e "
   import { basename } from 'node:path';
-  import { buildDirective, resolveConfig } from '$H/lib-config.mjs';
+  import { buildDirective, cliRootLine, resolveConfig } from '$H/lib-config.mjs';
   import { buildStateBlock, effectiveRoute, ensureHierarchyDir, sessionModel } from '$H/lib-hier.mjs';
   const resolved = resolveConfig('$PROJ');
   const dir = ensureHierarchyDir('$PROJ');
@@ -124,6 +125,7 @@ CONF_EXPECTED="$(HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node --input-type=mo
   const route = effectiveRoute(dir, resolved, 'sC');
   let context = buildDirective(resolved, 'sC', { hierDir: dir, model, route });
   context += '\n\n' + buildStateBlock(dir, resolved, basename(resolved.cwd), model, 'sC', route);
+  context += '\n\n' + cliRootLine();
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } }));
 ")"
 check "configured session: byte-identical to buildDirective(extra) + state block" '[ "$CONF_OUT" = "$CONF_EXPECTED" ]'

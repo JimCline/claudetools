@@ -1,5 +1,0 @@
-{"debug":"Starting connection with timeout of 30000ms","timestamp":"2026-09-09T18:43:04.642Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000001","cwd":"/repo"}
-{"debug":"Successfully connected (transport: stdio) in 291ms","timestamp":"2026-09-09T18:43:04.933Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000001","cwd":"/repo"}
-{"debug":"Connection established with capabilities: {\"hasTools\":true,\"hasPrompts\":false,\"hasResources\":false,\"serverVersion\":{\"name\":\"ah\",\"version\":\"0.72.0\"}}","timestamp":"2026-09-09T18:43:04.934Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000001","cwd":"/repo"}
-{"debug":"Calling MCP tool: roster_show","timestamp":"2026-09-09T18:43:10.000Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000001","cwd":"/repo"}
-{"debug":"Tool 'roster_show' completed successfully in 42ms","timestamp":"2026-09-09T18:43:10.042Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000001","cwd":"/repo"}

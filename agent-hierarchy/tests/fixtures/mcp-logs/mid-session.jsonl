@@ -1,7 +1,0 @@
-{"debug":"Starting connection with timeout of 30000ms","timestamp":"2026-09-09T18:43:04.642Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000003","cwd":"/repo"}
-{"debug":"Successfully connected (transport: stdio) in 180ms","timestamp":"2026-09-09T18:43:04.822Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000003","cwd":"/repo"}
-{"debug":"Connection established with capabilities: {\"hasTools\":true,\"serverVersion\":{\"name\":\"ah\",\"version\":\"0.71.0\"}}","timestamp":"2026-09-09T18:43:04.823Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000003","cwd":"/repo"}
-{"debug":"Calling MCP tool: msg_new","timestamp":"2026-09-09T18:44:00.000Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000003","cwd":"/repo"}
-{"debug":"Tool 'msg_new' completed successfully in 30ms","timestamp":"2026-09-09T18:44:00.030Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000003","cwd":"/repo"}
-{"error":"Transport error: connection closed unexpectedly","timestamp":"2026-09-09T18:44:01.000Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000003","cwd":"/repo"}
-{"debug":"UNKNOWN connection closed after 56s","timestamp":"2026-09-09T18:44:01.010Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000003","cwd":"/repo"}

@@ -8,7 +8,6 @@
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 H="$PLUGIN/hooks"
-SERVER="$PLUGIN/mcp/server.mjs"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-reply-beside-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 SANDBOX="$(cd "$SANDBOX" && pwd -P)"
@@ -105,29 +104,6 @@ check "T7b: both values quoted" 'echo "$OUT" | grep -qF "\"architect\"" && echo 
 mcli "$WT" new --type response --id "$ID" --to orchestrator --from implementor --to-name wrong-name --req "$REQ"
 check "T7c: --to-name ≠ request.from_name exits non-zero, both quoted" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -qF "\"wrong-name\"" && echo "$OUT" | grep -qF "\"main-orchestrator\""'
 check "T7: nothing written by any mismatch" '[ "$(responses_under "$SANDBOX")" = "$BEFORE" ]'
-
-# ---- T8: MCP msg_new with req_path, called from the worktree's cwd -> same as T1. ----
-mint_request t8
-OUT=$(HOME="$FAKEHOME" node --input-type=module -e '
-  import { spawn } from "node:child_process";
-  const [server, cwd, id, req] = process.argv.slice(1);
-  const child = spawn(process.execPath, [server], { stdio: ["pipe", "pipe", "ignore"] });
-  let buf = "";
-  child.stdout.on("data", (d) => {
-    buf += d;
-    for (const line of buf.split("\n")) {
-      if (!line.trim()) continue;
-      let m; try { m = JSON.parse(line); } catch { continue; }
-      if (m.id === 2) { process.stdout.write(JSON.stringify(m)); child.kill(); process.exit(0); }
-    }
-  });
-  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) + "\n");
-  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "msg_new", arguments: { cwd, type: "response", id, to: "orchestrator", from: "implementor", req_path: req } } }) + "\n");
-  setTimeout(() => { process.stdout.write("TIMEOUT"); process.exit(1); }, 15000);
-' "$SERVER" "$WT" "$ID" "$REQ" 2>&1); RC=$?
-check "T8: MCP msg_new with req_path returns a result, not an error" '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"result\"" && ! echo "$OUT" | grep -q "\"isError\":true"'
-check "T8: response landed in MAIN's msgs dir" '[ -f "$MAIN_MSGS/$ID--orchestrator--t8--response.md" ]'
-check "T8: worktree pool still holds no copy" '[ "$(responses_under "$WT_POOL")" = "0" ]'
 
 # ---- T9: divergence info line — --req write from a divergent pool prints the one-line note; exit 0. ----
 mint_request t9

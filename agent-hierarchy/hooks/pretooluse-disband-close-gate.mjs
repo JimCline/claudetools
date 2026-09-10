@@ -1,39 +1,27 @@
 #!/usr/bin/env node
 /**
- * agent-hierarchy — PreToolUse gate for `mcp__ah__team_disband` mode:close (spec 0016 §4.5.1) and
- * `mcp__ah__team_dismiss` mode:close (spec 0020 §4.1) — whole-team close and single-member close,
- * the only two MCP tools that execute `herdr pane close`/`tmux kill-pane`.
+ * agent-hierarchy — PreToolUse gate for `roster.mjs disband --close` (spec 0016 §4.5.1) and
+ * `roster.mjs dismiss <name> --close` (spec 0020 §4.1) — whole-team close and single-member close,
+ * the only two operations that execute `herdr pane close`/`tmux kill-pane`.
  *
- * Matches ONLY these two exact MCP tool names, never a wildcard/prefix/suffix rule — prompting
- * on every roster tool would train users to blanket-allow the whole server, destroying the one
- * gate that matters here. The exact-name match lives in TWO places, both load-bearing: this set
- * below, AND the hooks.json PreToolUse matcher that decides whether this hook runs at all. A
- * tool absent from the matcher never reaches this body; a tool absent from this body exits(0)
- * with no gate. Registering a new close tool in only one of the two ships it ungated (0020 §4.1).
+ * Keyed on the PARSED Bash command (spec 0048 §2.4.2), not on a tool name: the ah CLIs are
+ * invoked through the Bash tool now. `--close` presence is the mode — a plan call (no `--close`)
+ * destroys nothing and is not gated. The matcher in hooks.json is `Bash`, so this hook sees every
+ * Bash call and decides for itself; the gated verb set lives here alone, and
+ * tests/check-gate-name-agreement.mjs asserts it against hooks.json's matcher.
  * Always asks: no caching, no allowlist, no "don't ask again" — closing live sessions is exactly
- * the operation that should re-prompt every time.
+ * the operation that should re-prompt every time. pretooluse-ah-cli.mjs deliberately stays silent
+ * on close commands so this `ask` is the only decision in play.
  *
  * Enriches the prompt with the live member list via `readTeam` when it can; if that read fails
  * for any reason, it still asks, with a generic message — never skips the prompt because
- * enrichment failed. Deliberately trivial: no herdr calls, no network, no topology queries,
- * nothing beyond `readTeam` and a formatted string, so there is nothing here that can throw
- * past the enrichment's own try/catch.
+ * enrichment failed.
  */
 
 import { readHookInput } from "./lib-config.mjs";
 import { hierarchyDir } from "./lib-hier.mjs";
 import { readTeam } from "./lib-roster.mjs";
-
-// spec 0042 §1.6: both MCP name prefixes are gated — the live shape depends on how
-// the server is installed (plugin-supplied vs a `.mcp.json`-registered `ah` server),
-// not on this code. `mcp__plugin_ah_ah__` is the confirmed live shape for this repo.
-const GATED_TOOLS = new Set([
-  "mcp__plugin_ah_ah__team_disband",
-  "mcp__ah__team_disband",
-  "mcp__plugin_ah_ah__team_dismiss",
-  "mcp__ah__team_dismiss",
-]);
-const DISMISS_TOOLS = new Set(["mcp__plugin_ah_ah__team_dismiss", "mcp__ah__team_dismiss"]);
+import { isCloseCommand, parseAhCommand } from "./lib-ah-cli.mjs";
 
 function ask(reason) {
   process.stdout.write(
@@ -48,20 +36,22 @@ function ask(reason) {
   process.exit(0);
 }
 
+let recognised = false;
 try {
   const input = await readHookInput();
-  if (!GATED_TOOLS.has(input.tool_name)) process.exit(0);
-
+  if (input.tool_name !== "Bash") process.exit(0);
   const toolInput = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
-  // spec 0046 §3.2: plan and close share one tool now, and only mode:close destroys anything.
-  if (toolInput.mode !== "close") process.exit(0);
-  const singleMemberName = DISMISS_TOOLS.has(input.tool_name) && typeof toolInput.name === "string" ? toolInput.name : null;
+  const parsed = parseAhCommand(toolInput.command);
+  if (!isCloseCommand(parsed)) process.exit(0);
+  recognised = true;
+
+  const singleMemberName = parsed.verb === "dismiss" && typeof parsed.positional[0] === "string" ? parsed.positional[0] : null;
   let names = singleMemberName;
   if (!names) {
     try {
-      const cwd = typeof toolInput.cwd === "string" && toolInput.cwd ? toolInput.cwd : null;
+      const cwd = typeof parsed.flags.cwd === "string" && parsed.flags.cwd ? parsed.flags.cwd : null;
       if (cwd) {
-        const team = readTeam(hierarchyDir(cwd), typeof toolInput.team === "string" ? toolInput.team : null);
+        const team = readTeam(hierarchyDir(cwd), typeof parsed.flags.team === "string" ? parsed.flags.team : null);
         if (team && Array.isArray(team.members)) names = team.members.map((m) => m.name).filter(Boolean).join(", ") || null;
       }
     } catch {
@@ -74,8 +64,10 @@ try {
       : "ah: close the live sessions of this Team? This is destructive and cannot be undone from here."
   );
 } catch {
-  // This hook's matcher (hooks.json) fires it only for the tools in GATED_TOOLS, so a parse
-  // failure here still means one of them is being called — fail closed with the generic prompt
-  // rather than letting the destructive call through unprompted (spec 0016 §4.5.1, 0020 §4.1).
-  ask("ah: close the live sessions of this Team? This is destructive and cannot be undone from here.");
+  // Once the command is known to be a close command, any later throw still fails closed with the
+  // generic prompt rather than letting a destructive call through unprompted (0016 §4.5.1,
+  // 0020 §4.1). Before that point the hook cannot know the call is ah's at all — the matcher is
+  // now every Bash call — so it stays out of the way.
+  if (recognised) ask("ah: close the live sessions of this Team? This is destructive and cannot be undone from here.");
+  process.exit(0);
 }
