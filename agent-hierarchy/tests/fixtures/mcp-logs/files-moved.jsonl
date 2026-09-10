@@ -1,0 +1,5 @@
+{"debug":"Starting connection with timeout of 30000ms","timestamp":"2026-09-09T10:00:00.000Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000005","cwd":"/repo"}
+{"debug":"Successfully connected (transport: stdio) in 150ms","timestamp":"2026-09-09T10:00:00.150Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000005","cwd":"/repo"}
+{"debug":"Connection established with capabilities: {\"hasTools\":true,\"serverVersion\":{\"name\":\"ah\",\"version\":\"0.67.0\"}}","timestamp":"2026-09-09T10:00:00.151Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000005","cwd":"/repo"}
+{"debug":"Calling MCP tool: roster_show","timestamp":"2026-09-09T10:05:00.000Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000005","cwd":"/repo"}
+{"error":"MCP tool roster_show failed: exit=1 invoking /cache/ah/0.67.0/hooks/roster.mjs\nError [ERR_MODULE_NOT_FOUND]: Cannot find module '/cache/ah/0.67.0/hooks/roster.mjs'","timestamp":"2026-09-09T10:05:00.010Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000005","cwd":"/repo"}

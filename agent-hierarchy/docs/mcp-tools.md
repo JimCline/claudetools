@@ -1,7 +1,16 @@
 # MCP tools
 
 `plugin.json` registers agent-hierarchy's MCP server as `ah`
-(`mcpServers.ah`), so every tool is addressed `mcp__ah__<tool>`. This page is
+(`mcpServers.ah`), so every tool is addressed `mcp__ah__<tool>`. Since 0.72.0
+that registration is an HTTP URL — `http://127.0.0.1:${AH_MCP_PORT:-7434}/` — and
+the server is a per-user daemon a SessionStart hook starts on demand, rather
+than a per-session stdio child (spec 0047). The URL is a constant, so a version
+bump no longer changes the config and no longer costs you a `/reload-plugins`;
+the daemon notices the new install and re-execs itself from it. The first
+session after an install connects on the harness's own retry, about 2 s in, with
+nothing to do. A marketplace rename or a cache relocation still needs a session
+restart — the new install is no longer a sibling of the running daemon's
+directory, so the daemon does not replace itself for it. This page is
 generated from [`mcp/server.mjs`](../mcp/server.mjs)'s tool list — that file
 is the source of truth; if this page and the server ever disagree, the server
 wins.
@@ -66,8 +75,13 @@ On trigger:
    - **Orchestrator / any top-level session:** tell the user directly, in
      your next user-facing message — one line covering (i) that the `ah` MCP
      server is not connected, (ii) that you're using the CLI equivalents so
-     work isn't blocked, and (iii) the remedy: `/reload-plugins`, or restart
-     the session (see [0024](./specs/0024-mcp-connect-failure-after-update.md)).
+     work isn't blocked, and (iii) the remedy: run
+     `node <plugin root>/mcp/server.mjs --diag` and paste its output — it
+     classifies the failure and names the fix — falling back to
+     `/reload-plugins` or restarting the session (see
+     [0024](./specs/0024-mcp-connect-failure-after-update.md),
+     [0047](./specs/0047-mcp-stability.md) and
+     [troubleshooting](./troubleshooting.md#the-ah-server-is-disconnected)).
    - **A dispatched or peer role reporting upward:** one line in your
      report/response message. Don't address the user directly — the
      Orchestrator relays it if it judges the user should know.
@@ -158,3 +172,19 @@ the CLI's own `--help`/usage output; from reading `hooks/msg.mjs` directly:
   or MCP surface — the gate itself invokes it.
 
 None of these three has an MCP wrapper.
+
+## If the daemon cannot run at all
+
+The stdio server is still the same file and still works: run `mcp/server.mjs`
+with no arguments and it speaks newline-delimited JSON-RPC on stdin/stdout,
+exactly as it did before 0.72.0. To register it that way for one project,
+bypassing the plugin's HTTP registration:
+
+```
+claude mcp add ah -- node <plugin root>/mcp/server.mjs
+```
+
+The name collides with nothing — plugin servers are namespaced `plugin:ah:ah` —
+and every tool, schema and output is identical. What you give up is what the
+daemon buys: the harness will not reconnect a stdio server, so a version bump
+costs a `/reload-plugins` again.

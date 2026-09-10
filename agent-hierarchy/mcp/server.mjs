@@ -18,9 +18,11 @@
  * resolution problem was already solved for gate.mjs before 0013 existed.
  */
 
-import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { execFileSync, spawn } from "node:child_process";
+import { appendFileSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, statSync } from "node:fs";
+import { createServer } from "node:http";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
@@ -43,6 +45,105 @@ try {
 } catch {
   PLUGIN_MANIFEST = { version: "unknown" };
 }
+
+// ---------------------------------------------------------------------------
+// Lifecycle log (spec 0047 §3.2).
+//
+// One append-only JSONL file. Deliberately ONE global path rather than
+// lib-config's `hierarchyDir(cwd)`: that resolver is per-cwd (git root first),
+// and under §4 a single daemon serves every cwd at once, so a per-cwd log would
+// scatter one process's lifetime across directories. AGENT_HIERARCHY_DIR still
+// overrides, the way every hook honours it.
+//
+// Nothing here may throw: a server that dies because it could not write its own
+// diagnostic log is the failure this log exists to diagnose.
+// ---------------------------------------------------------------------------
+const LOG_DIR = process.env.AGENT_HIERARCHY_DIR
+  ? resolve(process.env.AGENT_HIERARCHY_DIR.trim())
+  : join(homedir(), ".claude", "hierarchy");
+const LOG_PATH = join(LOG_DIR, "mcp-server.log");
+const LOG_CAP_BYTES = 1024 * 1024;
+const SERVER_ROOT = join(HERE, "..");
+const STARTED_AT = new Date().toISOString();
+
+let TRANSPORT = "stdio";
+let IDENTITY_METHOD = "ppid";
+
+function logEvent(event, extra) {
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+    appendFileSync(
+      LOG_PATH,
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event,
+        pid: process.pid,
+        transport: TRANSPORT,
+        version: PLUGIN_MANIFEST.version,
+        ...(extra || {}),
+      }) + "\n",
+    );
+  } catch {
+    // A log write must never affect the server. No stderr either: in stdio mode
+    // the harness surfaces stderr, and a noisy disk error would bury the real one.
+  }
+}
+
+/** §3.2 size cap: one generation, checked once at `start`. No rotation library, no scheduler. */
+function capLog() {
+  try {
+    if (statSync(LOG_PATH).size > LOG_CAP_BYTES) renameSync(LOG_PATH, LOG_PATH + ".1");
+  } catch {
+    // Missing file is the common case, not an error.
+  }
+}
+
+function logStart(extra) {
+  capLog();
+  logEvent("start", {
+    // The startup capture, never a fresh read: after the parent exits this process
+    // is reparented, so reading again here would stamp a different and meaningless
+    // number into the log (spec 0018 §4.1).
+    ppid: PPID_AT_STARTUP,
+    // Under HTTP the session pid is per-MCP-session, not per-process: claiming one
+    // here would be a lie about whichever client connects first.
+    session_pid: TRANSPORT === "stdio" ? SESSION_PID : null,
+    identity: IDENTITY_METHOD,
+    node: process.version,
+    exec: process.execPath,
+    root: SERVER_ROOT,
+    cwd: process.cwd(),
+    argv: process.argv.slice(1),
+    ...(extra || {}),
+  });
+}
+
+/**
+ * §3.3: log and then do the conventional thing. A signal handler that swallows
+ * its signal would make the harness's "exited cleanly" line a lie, and a server
+ * left hung after an uncaught throw is worse than one that is simply gone.
+ */
+function installProcessHandlers() {
+  process.on("uncaughtException", (err) => {
+    logEvent("uncaught", { message: err && err.message ? err.message : String(err), stack: err && err.stack ? err.stack : null });
+    process.exit(1);
+  });
+  process.on("unhandledRejection", (reason) => {
+    const err = reason instanceof Error ? reason : null;
+    logEvent("unhandled", { message: err ? err.message : String(reason), stack: err ? err.stack : null });
+    process.exit(1);
+  });
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.on(sig, () => {
+      logEvent("signal", { signal: sig });
+      onShutdown(sig);
+    });
+  }
+  process.on("exit", (code) => logEvent("exit", { code }));
+}
+
+/** Replaced by the HTTP transport so SIGTERM can close the listener first (§4.3). */
+let onShutdown = (sig) => process.exit(sig === "SIGINT" ? 130 : 0);
 
 const cwdSchema = {
   type: "string",
@@ -484,6 +585,7 @@ function execCli(scriptPath, args, expectedNonZero) {
     try {
       child = spawn(process.execPath, [scriptPath, ...args], { stdio: ["ignore", "pipe", "pipe"] });
     } catch (err) {
+      logEvent("exec-error", { script: scriptPath, code: (err && err.code) || null, message: err && err.message ? err.message : String(err) });
       resolve(mapExecResult({ code: -1, stdout: "", stderr: String(err && err.message ? err.message : err), scriptPath, expectedNonZero }));
       return;
     }
@@ -492,9 +594,20 @@ function execCli(scriptPath, args, expectedNonZero) {
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));
     child.on("error", (err) => {
+      logEvent("exec-error", { script: scriptPath, code: (err && err.code) || null, message: err && err.message ? err.message : String(err) });
       resolve(mapExecResult({ code: -1, stdout, stderr: stderr || String(err && err.message ? err.message : err), scriptPath, expectedNonZero }));
     });
     child.on("close", (code) => {
+      // Trigger (ii), spec 0047 §3.2 r2: spawning process.execPath always succeeds — the
+      // executable exists by definition — so a deleted install dir surfaces as node's own
+      // module resolution failing, not as a spawn error. This is the only way shape C′
+      // reaches the lifecycle log.
+      if (code !== 0) {
+        const missing = /(?:ERR_MODULE_NOT_FOUND|Cannot find module)[^'"\n]*['"]([^'"]+)['"]/.exec(stderr);
+        if (missing || /ERR_MODULE_NOT_FOUND|Cannot find module/.test(stderr)) {
+          logEvent("exec-error", { script: scriptPath, code: "MODULE_NOT_FOUND", missing: missing ? missing[1] : null });
+        }
+      }
       resolve(mapExecResult({ code, stdout, stderr, scriptPath, expectedNonZero }));
     });
   });
@@ -514,7 +627,12 @@ function err(text) {
   return { content: [{ type: "text", text }], isError: true };
 }
 
-export async function callTool(name, input) {
+/**
+ * @param sessionPid The calling session's pid for the seven team_* tools that record an
+ *   owner (spec 0018). Under stdio it is this process's parent; under the §4 HTTP daemon
+ *   it is per-MCP-session and must be passed in, because the daemon has no session parent.
+ */
+export async function callTool(name, input, sessionPid = SESSION_PID) {
   const args_in = input && typeof input === "object" ? input : {};
   const cwd = args_in.cwd;
   if (typeof cwd !== "string" || !cwd.trim()) {
@@ -577,7 +695,7 @@ export async function callTool(name, input) {
     }
     case "team_list": {
       const args = ["teams"];
-      pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
+      pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? sessionPid);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
@@ -591,7 +709,7 @@ export async function callTool(name, input) {
       pushArg(args, "level", args_in.level);
       pushArg(args, "route", args_in.route);
       pushArg(args, "layout", args_in.layout);
-      pushArg(args, "orchestrator-pid", SESSION_PID);
+      pushArg(args, "orchestrator-pid", sessionPid);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
@@ -613,7 +731,7 @@ export async function callTool(name, input) {
       pushArg(args, "on-missing", args_in.on_missing);
       pushArg(args, "kind", args_in.kind);
       if (args_in.args !== undefined && args_in.args !== null) pushArg(args, "args", JSON.stringify(args_in.args));
-      pushArg(args, "orchestrator-pid", SESSION_PID);
+      pushArg(args, "orchestrator-pid", sessionPid);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
@@ -633,7 +751,7 @@ export async function callTool(name, input) {
       pushArg(args, "on-missing", args_in.on_missing);
       pushArg(args, "kind", args_in.kind);
       if (args_in.args !== undefined && args_in.args !== null) pushArg(args, "args", JSON.stringify(args_in.args));
-      pushArg(args, "orchestrator-pid", SESSION_PID);
+      pushArg(args, "orchestrator-pid", sessionPid);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
@@ -645,7 +763,7 @@ export async function callTool(name, input) {
       const args = ["remove"];
       pushArg(args, "level", args_in.level);
       pushArg(args, "member", args_in.member);
-      pushArg(args, "orchestrator-pid", SESSION_PID);
+      pushArg(args, "orchestrator-pid", sessionPid);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
@@ -656,7 +774,7 @@ export async function callTool(name, input) {
       const args = ["layout"];
       pushArg(args, "level", args_in.level);
       pushArg(args, "layout", args_in.layout);
-      pushArg(args, "orchestrator-pid", SESSION_PID);
+      pushArg(args, "orchestrator-pid", sessionPid);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
@@ -669,7 +787,7 @@ export async function callTool(name, input) {
       pushArg(args, "set", args_in.set);
       pushFlag(args, "clear", args_in.clear);
       pushArg(args, "team", args_in.team);
-      pushArg(args, "orchestrator-pid", SESSION_PID);
+      pushArg(args, "orchestrator-pid", sessionPid);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
@@ -691,7 +809,7 @@ export async function callTool(name, input) {
         pushArg(args, "transport", args_in.transport);
         pushArg(args, "verified", args_in.verified);
         // Spec 0018 §4.2: explicit param wins, else the pid captured at server startup.
-        pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
+        pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? sessionPid);
         pushArg(args, "session", args_in.orchestrator_session_id);
         pushFlag(args, "partial", args_in.partial);
       }
@@ -763,7 +881,7 @@ export async function callTool(name, input) {
       pushFlag(args, "allow-global", args_in.allow_global);
       pushArg(args, "team", args_in.team);
       // Spec 0018 §4.2: explicit param wins, else the pid captured at server startup.
-      pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
+      pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? sessionPid);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
@@ -784,7 +902,7 @@ export async function callTool(name, input) {
       pushArg(args, "team", args_in.team);
       pushFlag(args, "dry-run", args_in.dry_run);
       pushFlag(args, "allow-global", args_in.allow_global);
-      pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
+      pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? sessionPid);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
     }
@@ -824,7 +942,7 @@ export async function callTool(name, input) {
     }
     case "team_adopt": {
       const args = ["adopt"];
-      pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? SESSION_PID);
+      pushArg(args, "orchestrator-pid", args_in.orchestrator_pid ?? sessionPid);
       pushArg(args, "team", args_in.team);
       pushArg(args, "cwd", cwd);
       return execCli(ROSTER_CLI, args);
@@ -856,40 +974,61 @@ function sendError(id, code, message) {
   send({ jsonrpc: "2.0", id, error: { code, message } });
 }
 
-async function handleRequest(msg) {
-  const { id, method, params } = msg;
+/**
+ * The single JSON-RPC method implementation both transports drive (spec 0047 §4.2).
+ * Returns `{result}` or `{error}` — it never writes anywhere, so the stdio loop and
+ * the HTTP handler cannot drift apart on what a method means.
+ *
+ * @param sessionPid the calling session's pid, per transport (§4.4).
+ */
+export async function dispatch(method, params, sessionPid = SESSION_PID) {
   if (method === "initialize") {
-    sendResult(id, {
-      protocolVersion: PROTOCOL_VERSION,
-      capabilities: { tools: {} },
-      serverInfo: { name: "ah", version: PLUGIN_MANIFEST.version },
-      instructions:
-        "To show/inspect the agent-hierarchy roster, call roster_show directly " +
-        "(pass cwd) rather than shelling out — hand-rolled bash/cat reads only " +
-        "the local .claude/agent-hierarchy.json and misses worktree/main-checkout " +
-        "and global fallback resolution that roster_show already implements.",
-    });
-    return;
+    return {
+      result: {
+        protocolVersion: PROTOCOL_VERSION,
+        capabilities: { tools: {} },
+        serverInfo: { name: "ah", version: PLUGIN_MANIFEST.version },
+        instructions:
+          "To show/inspect the agent-hierarchy roster, call roster_show directly " +
+          "(pass cwd) rather than shelling out — hand-rolled bash/cat reads only " +
+          "the local .claude/agent-hierarchy.json and misses worktree/main-checkout " +
+          "and global fallback resolution that roster_show already implements.",
+      },
+    };
   }
-  if (method === "tools/list") {
-    sendResult(id, { tools: TOOLS });
-    return;
-  }
+  if (method === "tools/list") return { result: { tools: TOOLS } };
   if (method === "tools/call") {
     const toolName = params && params.name;
-    if (!TOOL_NAMES.has(toolName)) {
-      sendError(id, -32602, `unknown tool ${JSON.stringify(toolName)}`);
-      return;
+    if (toolName === "__test_crash" && process.env.AH_MCP_TEST_CRASH === "1") {
+      // Spec 0047 §7.1 test 2's only hook into the crash path. Thrown from a
+      // macrotask on purpose: a throw returned through this function would be
+      // caught and answered as -32603, which is the opposite of what the test
+      // must observe. Without the env var the name is just an unknown tool.
+      setImmediate(() => {
+        throw new Error("AH_MCP_TEST_CRASH: deliberate handler throw");
+      });
+      return { result: { content: [{ type: "text", text: "crashing" }] } };
     }
-    const result = await callTool(toolName, params && params.arguments);
-    sendResult(id, result);
-    return;
+    if (!TOOL_NAMES.has(toolName)) {
+      return { error: { code: -32602, message: `unknown tool ${JSON.stringify(toolName)}` } };
+    }
+    return { result: await callTool(toolName, params && params.arguments, sessionPid) };
   }
-  if (method === "ping") {
-    sendResult(id, {});
-    return;
+  if (method === "ping") return { result: {} };
+  if (method === "server/discover") {
+    // Undocumented, but the harness POSTs it before `initialize` on an HTTP transport
+    // (observed while running spec 0047 §6 E1/E2 against a probe daemon). An empty
+    // result is what the probe answered on the run that connected successfully.
+    return { result: {} };
   }
-  sendError(id, -32601, `method not found: ${JSON.stringify(method)}`);
+  return { error: { code: -32601, message: `method not found: ${JSON.stringify(method)}` } };
+}
+
+async function handleRequest(msg) {
+  const { id, method, params } = msg;
+  const res = await dispatch(method, params);
+  if (res.error) sendError(id, res.error.code, res.error.message);
+  else sendResult(id, res.result);
 }
 
 function isNotification(msg) {
@@ -900,44 +1039,618 @@ function isValidRequestShape(msg) {
   return Boolean(msg) && typeof msg === "object" && !Array.isArray(msg) && typeof msg.method === "string";
 }
 
-// Only run the stdio loop when launched as the server process, not when this module
+// ---------------------------------------------------------------------------
+// Identity under a shared daemon (spec 0047 §4.4).
+//
+// E1 result: `${CLAUDE_PID}` does NOT expand in a plugin manifest's `headers` —
+// with CLAUDE_PID absent from the launching env the daemon receives the literal
+// string, and when it IS present the value is the *parent* session's pid, not the
+// connecting one. So method 1 is out and this, method 2, is the mechanism: resolve
+// the client's ephemeral port back to the process that owns it.
+// ---------------------------------------------------------------------------
+function peerSessionPid(port) {
+  if (!port) return null;
+  try {
+    const linux = process.platform === "linux";
+    const out = linux
+      ? execFileSync("ss", ["-tnpH", `sport = :${port}`], { encoding: "utf8", timeout: 2000 })
+      : execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:ESTABLISHED", "-Fp"], { encoding: "utf8", timeout: 2000 });
+    const pids = linux
+      ? [...out.matchAll(/pid=(\d+)/g)].map((m) => Number(m[1]))
+      : out.split("\n").filter((l) => l.startsWith("p")).map((l) => Number(l.slice(1)));
+    // Both ends of a loopback connection own a socket on that port: the client's and
+    // our own accepted one. Ours is the one we can name, so drop it and the remainder
+    // is the client.
+    const peers = [...new Set(pids.filter((p) => Number.isInteger(p) && p > 0 && p !== process.pid))];
+    if (peers.length > 1) {
+      // A forked client leaves several pids holding the same socket. The smallest is the
+      // oldest, i.e. the session itself rather than anything it spawned (spec 0047 §12 F4).
+      peers.sort((a, b) => a - b);
+      logEvent("identity-ambiguous", { pids: peers, chosen: peers[0] });
+    }
+    return peers.length ? peers[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Self-replacement on update (spec 0047 §4.3).
+// ---------------------------------------------------------------------------
+function installedAhRoot() {
+  try {
+    const j = JSON.parse(readFileSync(join(homedir(), ".claude", "plugins", "installed_plugins.json"), "utf8"));
+    for (const [key, val] of Object.entries(j)) {
+      if (!key.startsWith("ah@")) continue;
+      for (const entry of Array.isArray(val) ? val : [val]) {
+        if (entry && typeof entry.installPath === "string" && entry.installPath) return entry.installPath;
+      }
+    }
+  } catch {
+    // No manifest, or unreadable: treat as "not an installed lineage" and never replace.
+  }
+  return null;
+}
+
+function realOrNull(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The root to re-exec from, or null to stay put (spec 0047 §4.3).
+ *
+ * Replace iff `installPath !== root` AND `dirname(installPath) === dirname(root)` —
+ * both are version dirs under the same marketplace cache dir. The sibling-dir rule
+ * admits a genuine version bump and excludes every `--plugin-dir` checkout; a
+ * marketplace rename or a cache relocation does not self-replace either, and needs a
+ * session restart.
+ */
+function replacementRoot() {
+  const target = installedAhRoot();
+  if (!target) return null;
+  const a = realOrNull(target);
+  const b = realOrNull(SERVER_ROOT);
+  if (!a || !b || a === b) return null;
+  if (dirname(a) !== dirname(b)) return null;
+  return a;
+}
+
+function logFd() {
+  try {
+    mkdirSync(LOG_DIR, { recursive: true });
+    return openSync(LOG_PATH, "a");
+  } catch {
+    return "ignore";
+  }
+}
+
+function spawnDaemon(root) {
+  const fd = logFd();
+  const child = spawn(process.execPath, [join(root, "mcp", "server.mjs"), "--http"], {
+    detached: true,
+    stdio: ["ignore", fd, fd],
+    env: process.env,
+  });
+  child.unref();
+}
+
+// ---------------------------------------------------------------------------
+// HTTP transport (spec 0047 §4.2). Streamable HTTP, plain JSON responses only —
+// no SSE is ever emitted. 127.0.0.1 only.
+// ---------------------------------------------------------------------------
+const DEFAULT_PORT = 7434;
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const REPLACE_HEALTH_TIMEOUT_MS = 3000;
+/**
+ * Backoff after a failed self-replace (§12 F5′, Orchestrator r2.1). Without it a
+ * permanently broken `next` root spawns one doomed child per request for as long as the
+ * daemon lives. In-memory on purpose: a restarted daemon gets a fresh attempt.
+ */
+const REPLACE_RETRY_MS = 5 * 60 * 1000;
+
+/**
+ * Methods a request may carry with no `Mcp-Session-Id`. `initialize` obviously, and
+ * `server/discover`, which the harness POSTs *before* `initialize` — no session can
+ * exist yet (observed while running §6 E2).
+ */
+const SESSIONLESS_METHODS = new Set(["initialize", "server/discover"]);
+
+function mcpPort() {
+  const n = Number(process.env.AH_MCP_PORT);
+  return Number.isInteger(n) && n > 0 ? n : DEFAULT_PORT;
+}
+
+function readBody(req) {
+  return new Promise((done) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => done(body));
+  });
+}
+
+function runHttp() {
+  TRANSPORT = "http";
+  IDENTITY_METHOD = "socket-peer";
+  const port = mcpPort();
+  const sessions = new Map();
+  let replacing = false;
+  let replaceFailedAt = 0;
+
+  const newSession = (req) => {
+    const id = `ah-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const now = Date.now();
+    sessions.set(id, { session_pid: peerSessionPid(req.socket.remotePort), created: now, lastSeen: now });
+    return id;
+  };
+
+  const expire = () => {
+    const cutoff = Date.now() - SESSION_TTL_MS;
+    for (const [id, s] of sessions) if (s.lastSeen < cutoff) sessions.delete(id);
+  };
+
+  const server = createServer(async (req, res) => {
+    const json = (code, obj, headers) => {
+      res.writeHead(code, { "Content-Type": "application/json", ...(headers || {}) });
+      res.end(JSON.stringify(obj));
+    };
+
+    if (req.method === "GET" && req.url.startsWith("/health")) {
+      expire();
+      json(200, {
+        name: "ah",
+        version: PLUGIN_MANIFEST.version,
+        pid: process.pid,
+        root: SERVER_ROOT,
+        port,
+        started: STARTED_AT,
+        sessions: sessions.size,
+        node: process.version,
+        transport: "http",
+        identity: IDENTITY_METHOD,
+      });
+      return;
+    }
+    if (req.method === "GET") {
+      // No server-initiated stream: the harness asks for one, accepts the refusal and
+      // carries on over POST (verified against a probe daemon, §6 E2).
+      res.writeHead(405).end();
+      return;
+    }
+    if (req.method === "DELETE") {
+      const sid = req.headers["mcp-session-id"];
+      if (sid) sessions.delete(String(sid));
+      res.writeHead(200).end();
+      return;
+    }
+    if (req.method !== "POST") {
+      res.writeHead(405).end();
+      return;
+    }
+
+    const raw = await readBody(req);
+    let parsed;
+    try {
+      parsed = JSON.parse(raw || "null");
+    } catch {
+      json(400, { jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } });
+      return;
+    }
+    const batch = Array.isArray(parsed) ? parsed : [parsed];
+    if (!batch.length || !batch.every(isValidRequestShape)) {
+      json(400, { jsonrpc: "2.0", id: null, error: { code: -32600, message: "invalid request" } });
+      return;
+    }
+
+    expire();
+    const sidHeader = req.headers["mcp-session-id"] ? String(req.headers["mcp-session-id"]) : null;
+    const initializing = batch.some((m) => m.method === "initialize");
+    // Gated per message, not per batch (spec 0047 §12 F6). A batch is only as exempt as
+    // its least exempt member: `[initialize, tools/list]` with no session id must be
+    // refused whole, or the initialize would smuggle the tools/list past the gate.
+    const needsSession = batch.filter((m) => !SESSIONLESS_METHODS.has(m.method));
+    let session = null;
+    let issuedSid = null;
+
+    if (needsSession.length) {
+      if (!sidHeader) {
+        json(400, { jsonrpc: "2.0", id: batch[0].id ?? null, error: { code: -32600, message: `Mcp-Session-Id header is required for ${needsSession.map((m) => m.method).join(", ")}` } });
+        return;
+      }
+      session = sessions.get(sidHeader);
+      if (!session) {
+        json(404, { jsonrpc: "2.0", id: batch[0].id ?? null, error: { code: -32001, message: "unknown or expired Mcp-Session-Id" } });
+        return;
+      }
+      session.lastSeen = Date.now();
+    }
+    if (initializing) {
+      issuedSid = newSession(req);
+      if (!session) session = sessions.get(issuedSid);
+    }
+
+    const sessionPid = session ? session.session_pid : null;
+    const responses = [];
+    for (const msg of batch) {
+      if (isNotification(msg)) continue;
+      const out = await dispatch(msg.method, msg.params, sessionPid);
+      responses.push(out.error ? { jsonrpc: "2.0", id: msg.id, error: out.error } : { jsonrpc: "2.0", id: msg.id, result: out.result });
+    }
+    if (!responses.length) {
+      res.writeHead(202).end();
+    } else {
+      json(200, Array.isArray(parsed) ? responses : responses[0], issuedSid ? { "Mcp-Session-Id": issuedSid } : undefined);
+    }
+
+    if (replacing) return;
+    if (replaceFailedAt && Date.now() - replaceFailedAt < REPLACE_RETRY_MS) return;
+    const next = replacementRoot();
+    if (!next) return;
+    replacing = true;
+    // Order per spec 0047 §4.3 as amended by the Orchestrator r2.1 ruling (F5′): CLOSE
+    // before spawning. §4.3's original "spawn first, then close" is a bind race — the
+    // child inherits a port its own parent still holds, takes EADDRINUSE, and exits 0
+    // per the bind-is-lock rule; the parent then closes and the port is dead with no
+    // daemon on it. Closing first costs a sub-second window the harness's retry covers.
+    res.on("finish", () => {
+      server.close(async () => {
+        const relisten = () => {
+          replaceFailedAt = Date.now();
+          replacing = false;
+          server.listen(port, "127.0.0.1", () => logEvent("relisten", { port }));
+        };
+        try {
+          spawnDaemon(next);
+        } catch (err) {
+          logEvent("replace-failed", { to: next, err: err && err.message ? err.message : String(err) });
+          relisten();
+          return;
+        }
+        // Hand over only once the replacement actually answers AS the new root: a child
+        // that died on startup must not take the port down with it.
+        const deadline = Date.now() + REPLACE_HEALTH_TIMEOUT_MS;
+        while (Date.now() < deadline) {
+          try {
+            const res2 = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(250) });
+            const health = await res2.json();
+            if (health && realOrNull(health.root) === next) {
+              logEvent("replace", { from: SERVER_ROOT, to: next });
+              process.exit(0);
+            }
+          } catch {
+            // Not up yet, or up but not answering /health — keep polling until the deadline.
+          }
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        logEvent("replace-failed", { to: next, err: "no health in 3s" });
+        relisten();
+      });
+    });
+  });
+
+  onShutdown = () => {
+    server.close(() => process.exit(0));
+    // A hung connection must not keep the process alive past the signal.
+    setTimeout(() => process.exit(0), 1000).unref();
+  };
+
+  server.on("error", (err) => {
+    // The bind IS the lock (§4.3): a second starter loses the race, says so in the
+    // log and leaves quietly. Nothing on stdout — a SessionStart hook's stdout is
+    // model context.
+    logEvent("bind-error", { port, code: err && err.code ? err.code : null, message: err && err.message ? err.message : String(err) });
+    process.exit(0);
+  });
+
+  server.listen(port, "127.0.0.1", () => logStart({ port }));
+}
+
+// ---------------------------------------------------------------------------
+// --stop (spec 0047 §4.3)
+// ---------------------------------------------------------------------------
+async function runStop() {
+  const port = mcpPort();
+  let health;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) });
+    health = await res.json();
+  } catch {
+    process.stdout.write(`ah MCP daemon: nothing answering on 127.0.0.1:${port}\n`);
+    return 0;
+  }
+  // Logged BEFORE the signal, by the stopping process, so --diag can tell an operator
+  // stop (stop -> signal SIGTERM -> exit) from an external kill (bare signal -> exit).
+  logEvent("stop", { target_pid: health.pid, port });
+  try {
+    process.kill(health.pid, "SIGTERM");
+  } catch (err) {
+    process.stdout.write(`ah MCP daemon: pid ${health.pid} could not be signalled (${err && err.code ? err.code : err})\n`);
+    return 1;
+  }
+  process.stdout.write(`ah MCP daemon: SIGTERM sent to pid ${health.pid} (v${health.version}, port ${port})\n`);
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// --diag (spec 0047 §3.4). Reads what already exists; starts no server.
+//
+// The classification rules ARE spec 0047 §1's table, as data, so the fixtures in
+// tests/fixtures/mcp-logs/ pin one row each.
+// ---------------------------------------------------------------------------
+/**
+ * One row of spec 0047 §1's transport-aware table each, in order; first match wins.
+ * The transport matters because the harness owns a stdio child and does not own the
+ * daemon: under http it never writes `Sending SIGINT`, and any close line is just the
+ * harness closing its own client.
+ */
+export const DIAG_RULES = [
+  {
+    shape: "C\u2032",
+    // `connected` is load-bearing: a start failure also says ENOENT ("spawn node
+    // ENOENT"), and §1 distinguishes the two purely by whether the handshake ever
+    // completed. The signal is node's own "Cannot find module", not a spawn error —
+    // spawning `process.execPath` succeeds even when the script is gone.
+    when: (f) => f.connected && f.moduleMissing,
+    remedy: "plugin files moved under a running server — restart the session",
+  },
+  {
+    shape: "A",
+    when: (f) => !f.connected,
+    remedy: "never completed the handshake — check `exec`/`node` in the lifecycle log, then `claude --debug=mcp`",
+  },
+  {
+    shape: "C",
+    // stdio only: the http registration is a constant URL, so the harness has no
+    // config change to drop the server over.
+    when: (f) => f.transport !== "http" && f.sigint,
+    remedy: "the harness dropped this server (config changed / version bump) — `/reload-plugins`",
+  },
+  {
+    shape: "B",
+    // Two different observations of the same thing. stdio: the child closed with no
+    // SIGINT, so nobody asked it to. http: the daemon stopped answering after the
+    // handshake — a post-connect connection error, or the harness starting over.
+    // Under-sensitive by construction (§1: no real http death captured yet, E8).
+    when: (f) => f.connected && (f.transport === "http" ? f.postConnectError : f.closed && !f.sigint),
+    remedy: "died mid-session — check the lifecycle log for `uncaught`/`signal` on that pid",
+  },
+  {
+    shape: "C",
+    // §1's "also C" arm (the 0.67.0-under-0.71.0 case, §0): a session STILL OPEN while
+    // answering as an older release than the one installed — the harness never picked
+    // the new registration up. Ordered after B and C′ on purpose: a log that has already
+    // closed, or whose calls are failing, is telling you something more specific, and
+    // every historical log names an older version simply by being old.
+    when: (f) => f.transport !== "http" && f.staleVersion && !f.closed,
+    remedy: "serving an older version than the one installed — `/reload-plugins`",
+  },
+  { shape: "ok", when: () => true, remedy: "" },
+];
+
+/** Is `a` an older release than `b`? Used only for §1's stale-`serverVersion` arm. */
+function olderVersion(a, b) {
+  const pa = String(a).split(".").map(Number);
+  const pb = String(b).split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const x = pa[i] || 0;
+    const y = pb[i] || 0;
+    if (x !== y) return x < y;
+  }
+  return false;
+}
+
+export function classifyHarnessLog(lines) {
+  const facts = { connected: false, sigint: false, closed: false, cleanClose: false, enoent: false, moduleMissing: false, postConnectError: false, staleVersion: false, version: null, calls: 0, lastError: null, start: null, sessionId: null, transport: null };
+  for (const entry of lines) {
+    if (!entry || typeof entry !== "object") continue;
+    const text = String(entry.debug ?? entry.error ?? "");
+    if (!facts.start && entry.timestamp) facts.start = entry.timestamp;
+    if (entry.sessionId) facts.sessionId = entry.sessionId;
+    // A file that never connected is classified by the registration in force (§1), which
+    // the harness names before it tries: "Initializing HTTP transport to ...".
+    if (!facts.transport && text.includes("Initializing HTTP transport")) facts.transport = "http";
+    if (text.includes("Successfully connected")) {
+      facts.connected = true;
+      const t = text.match(/transport:\s*([a-z]+)/);
+      if (t) facts.transport = t[1];
+    }
+    // Order matters, not mere presence: the harness's own cold-start retry writes a
+    // ConnectionRefused and a second "Starting connection" BEFORE the handshake on
+    // every hook-started daemon (§6 E3, the `http-ok` fixture). Only a failure after
+    // the handshake says the daemon went away.
+    if (facts.connected && (/ConnectionRefused|ECONNRESET|fetch failed|Connection failed/.test(text) || text.includes("Starting connection"))) {
+      facts.postConnectError = true;
+    }
+    if (text.includes("Sending SIGINT")) facts.sigint = true;
+    if (text.includes("connection closed") || text.includes("process exited")) {
+      facts.closed = true;
+      if (text.includes("(cleanly)") || text.includes("exited cleanly")) facts.cleanClose = true;
+    }
+    if (text.includes("ENOENT")) facts.enoent = true;
+    if (text.includes("Cannot find module") || text.includes("ERR_MODULE_NOT_FOUND")) facts.moduleMissing = true;
+    if (text.startsWith("Calling MCP tool:")) facts.calls += 1;
+    if (entry.error || text.includes("failed after")) facts.lastError = text.split("\n")[0].slice(0, 120);
+    const v = text.match(/"version":"([^"]+)"/);
+    if (v) facts.version = v[1];
+  }
+  facts.staleVersion = !!facts.version && olderVersion(facts.version, PLUGIN_MANIFEST.version);
+  const rule = DIAG_RULES.find((r) => r.when(facts));
+  return { ...facts, shape: rule.shape, remedy: rule.remedy };
+}
+
+function harnessLogDir(cwd) {
+  const slug = resolve(cwd).replace(/\//g, "-");
+  const base =
+    process.platform === "darwin"
+      ? join(homedir(), "Library", "Caches", "claude-cli-nodejs")
+      : join(homedir(), ".cache", "claude-cli-nodejs"); // Linux: assumed, spec 0047 §6 E7
+  return join(base, slug, "mcp-logs-plugin-ah-ah");
+}
+
+function readJsonl(path) {
+  const out = [];
+  let raw;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return out;
+  }
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    try {
+      out.push(JSON.parse(t));
+    } catch {
+      // A torn last line in a log being written is expected; skip it.
+    }
+  }
+  return out;
+}
+
+async function runDiag(argv) {
+  const cwdArg = argv.includes("--cwd") ? argv[argv.indexOf("--cwd") + 1] : process.cwd();
+  const asJson = argv.includes("--json");
+  const dir = harnessLogDir(cwdArg);
+  const report = { cwd: resolve(cwdArg), harness_log_dir: dir, servers: [], lifecycle: { path: LOG_PATH, starts: [], exits: [], problems: [], stops: [] }, health: null };
+
+  let files = [];
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort().reverse();
+  } catch {
+    report.harness_logs = `no harness logs for ${report.cwd}`;
+  }
+  for (const f of files) {
+    report.servers.push({ file: f, ...classifyHarnessLog(readJsonl(join(dir, f))) });
+  }
+
+  // `--stop` records its intent (with the pid it is about to signal) before sending the
+  // signal, so a SIGTERM the operator asked for is distinguishable from one it did not
+  // (§1's B row: a `signal` NOT preceded by a `stop` is evidence, §4.3).
+  const stopRequests = new Set();
+  for (const entry of readJsonl(LOG_PATH)) {
+    if (entry.event === "start") report.lifecycle.starts.push(entry);
+    else if (entry.event === "exit") report.lifecycle.exits.push(entry);
+    else if (entry.event === "stop") stopRequests.add(entry.target_pid);
+    else if (entry.event === "signal") {
+      report.lifecycle.stops.push({ ts: entry.ts, pid: entry.pid, signal: entry.signal, origin: stopRequests.has(entry.pid) ? "operator" : "external" });
+    }
+    if (["uncaught", "unhandled", "exec-error", "bind-error", "replace-failed"].includes(entry.event)) report.lifecycle.problems.push(entry);
+  }
+  for (const st of report.lifecycle.stops) {
+    if (st.origin === "external") report.lifecycle.problems.push({ ts: st.ts, event: "signal", message: `${st.signal} pid ${st.pid} — external (no \`--stop\` requested it)` });
+  }
+  if (!report.lifecycle.starts.length && !report.lifecycle.problems.length) {
+    report.lifecycle.note = `no lifecycle log at ${LOG_PATH} (nothing has run since 0.72.0, or AGENT_HIERARCHY_DIR points elsewhere)`;
+  }
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${mcpPort()}/health`, { signal: AbortSignal.timeout(1000) });
+    report.health = await res.json();
+  } catch {
+    report.health = { answering: false, port: mcpPort() };
+  }
+
+  if (asJson) {
+    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    return 0;
+  }
+
+  const L = (t) => process.stdout.write(t + "\n");
+  L(`ah MCP diagnosis — cwd ${report.cwd}`);
+  L(`harness logs: ${report.harness_log_dir}`);
+  if (report.harness_logs) L(`  ${report.harness_logs}`);
+  for (const s of report.servers) {
+    const lc = report.lifecycle.starts.find((st) => s.start && Math.abs(Date.parse(st.ts) - Date.parse(s.start)) < 60000);
+    L(
+      `  ${s.shape.padEnd(3)} ${s.start || "?"}  v${s.version || "?"}  ${s.transport || "?"}  calls=${s.calls}` +
+        `  session=${(s.sessionId || "?").slice(0, 8)}${lc ? `  lifecycle-pid=${lc.pid}` : ""}`,
+    );
+    if (s.lastError) L(`        last error: ${s.lastError}`);
+    if (s.remedy) L(`        remedy: ${s.remedy}`);
+  }
+  L(`lifecycle log: ${report.lifecycle.path}`);
+  if (report.lifecycle.note) L(`  ${report.lifecycle.note}`);
+  else L(`  ${report.lifecycle.starts.length} start(s), ${report.lifecycle.exits.length} exit(s), ${report.lifecycle.problems.length} problem event(s)`);
+  for (const p of report.lifecycle.problems.slice(-5)) L(`  ${p.ts} ${p.event} ${p.message || p.code || ""}`);
+  for (const st of report.lifecycle.stops.slice(-5)) L(`  ${st.ts} ${st.signal} pid ${st.pid} — ${st.origin === "operator" ? "operator stop (--stop)" : "external stop"}`);
+  L(
+    report.health && report.health.answering === false
+      ? `daemon: nothing answering on 127.0.0.1:${report.health.port}`
+      : `daemon: v${report.health.version} pid ${report.health.pid} sessions ${report.health.sessions} identity ${report.health.identity} root ${report.health.root}`,
+  );
+  return 0;
+}
+
+// Only run a transport when launched as the server process, not when this module
 // is imported (e.g. by tests exercising TOOLS/mapExecResult/callTool directly).
 const isMain = process.argv[1] && resolveIsMain();
 function resolveIsMain() {
+  let self;
   try {
-    return fileURLToPath(import.meta.url) === process.argv[1];
+    self = fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+  const argv = process.argv[1];
+  if (self === argv) return true;
+  // Compare real paths too. `import.meta.url` is already resolved, but argv[1] is
+  // whatever the caller typed — and the SessionStart hook spawns us by
+  // $CLAUDE_PLUGIN_ROOT, which nothing realpaths. Any symlink anywhere in that path
+  // (a /var -> /private/var sandbox, a symlinked plugin cache) made the two differ,
+  // and because success here is silent the result was a daemon that ran nothing and
+  // said nothing at all.
+  try {
+    return realpathSync(self) === realpathSync(argv);
   } catch {
     return false;
   }
 }
 
 if (isMain) {
-  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
-
-  rl.on("line", (line) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    let msg;
-    try {
-      msg = JSON.parse(trimmed);
-    } catch {
-      send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } });
-      return;
-    }
-    if (!isValidRequestShape(msg)) {
-      const id = msg && typeof msg === "object" && "id" in msg ? msg.id : null;
-      send({ jsonrpc: "2.0", id, error: { code: -32600, message: "invalid request" } });
-      return;
-    }
-    if (isNotification(msg)) {
-      // Unknown/unhandled notifications (e.g. notifications/initialized) are
-      // silently ignored — no response — per spec 0013 §6.1 item 3.
-      return;
-    }
-    // Fire-and-forget per line: do not await here, so a slow tools/call never
-    // blocks the read loop from starting the next concurrent call (§6.1 item 5).
-    handleRequest(msg).catch((err) => {
-      sendError(msg.id, -32603, err && err.message ? err.message : String(err));
+  const argv = process.argv.slice(2);
+  if (argv.includes("--diag")) {
+    process.exit(await runDiag(argv));
+  } else if (argv.includes("--stop")) {
+    process.exit(await runStop());
+  } else if (argv.includes("--http")) {
+    installProcessHandlers();
+    runHttp();
+  } else {
+    installProcessHandlers();
+    logStart();
+    const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+    rl.on("line", (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      let msg;
+      try {
+        msg = JSON.parse(trimmed);
+      } catch {
+        send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } });
+        return;
+      }
+      if (!isValidRequestShape(msg)) {
+        const id = msg && typeof msg === "object" && "id" in msg ? msg.id : null;
+        send({ jsonrpc: "2.0", id, error: { code: -32600, message: "invalid request" } });
+        return;
+      }
+      if (isNotification(msg)) {
+        // Unknown/unhandled notifications (e.g. notifications/initialized) are
+        // silently ignored — no response — per spec 0013 §6.1 item 3.
+        return;
+      }
+      // Fire-and-forget per line: do not await here, so a slow tools/call never
+      // blocks the read loop from starting the next concurrent call (§6.1 item 5).
+      handleRequest(msg).catch((err) => {
+        sendError(msg.id, -32603, err && err.message ? err.message : String(err));
+      });
     });
-  });
+    rl.on("close", () => {
+      logEvent("stdin-end", {});
+      process.exit(0);
+    });
+  }
 }

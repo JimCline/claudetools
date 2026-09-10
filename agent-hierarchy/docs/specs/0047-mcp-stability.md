@@ -1,6 +1,13 @@
 # 0047 — A stable `ah` MCP server: diagnose first, then move the transport to a local HTTP daemon
 
-Status: **r1, design.** Brief `20260909-162045-y0fj`. Ships as
+Status: **r2, amended after implementation** (brief `20260909-201437-1jd1`;
+Implementor report `20260909-193547-15ua`). r2 changes: §0 E6 misread
+corrected; §1 table is transport-aware (D2); §3.2 `exec-error` trigger
+widened + log-dir citation fixed (D1, M); §4.2 `server/discover` + batch
+gate (I2); §4.3 self-replace rule restated (I1), first-install reload
+sentence dropped (I3), `--stop` logs; §4.4 method 1 struck (E1 failed),
+ambiguity rule; §6 results recorded; §12 lists the Implementor's
+follow-up edits. r1 brief `20260909-162045-y0fj`. Ships as
 agent-hierarchy **0.72.0** (after 0046's 0.71.0; whichever lands second
 takes the next free minor — `.claude-plugin/plugin.json` and root
 `.claude-plugin/marketplace.json` `ah` entry bump together). Written
@@ -56,10 +63,18 @@ Facts (Engram + reads this round; all `file:line` in `agent-hierarchy/`):
   `Tool 'x' failed after 0s` (these are **tool-level** CLI exit codes, not
   crashes) → `Sending SIGINT to MCP server process` → `MCP server process
   exited cleanly`. One sampled server lived 2026-09-08 00:42 → 09-09 18:42
-  (42 h, v0.66.0), was SIGINT'd by the harness, and **four** new servers
-  were spawned 13 s later within 80 ms for the same `sessionId`
-  (`…-917Z`, `-922Z`, `-968Z`, `-997Z`), one connecting at 0.70.0 in 291 ms.
-  So the reload path *works* here; what fails is unmeasured.
+  (42 h, v0.66.0), was SIGINT'd by the harness, and four new log files
+  appeared 13 s later within 80 ms (`…-917Z`, `-922Z`, `-968Z`, `-997Z`).
+  **r2 correction (E6):** those four files carry four *different*
+  `sessionId`s — four concurrent claude sessions each spawning its own
+  server, not four servers for one session. r1's "same `sessionId`" was
+  a misread. Separately, a live check during implementation found one
+  `ah` stdio server (pid 40784) at **v0.67.0**, 29 h old and four
+  releases behind the installed 0.71.0, still serving a session whose
+  tool list showed pre-0046 names — shape C caught in the act: the
+  harness keeps the old process until a reload/restart. E5 over all 43
+  logs here: 30 × C, 13 × ok, 0 × A/B/C′ — every disconnect on this
+  machine is the post-update shape the constant URL removes.
 - Precedent in this environment: the engram plugin is `{type:"http",
   url:"http://127.0.0.1:7433/"}` with a SessionStart `ensure-server.sh`
   that idempotently starts the daemon (silent on success, exit 0 always,
@@ -76,12 +91,49 @@ Facts (Engram + reads this round; all `file:line` in `agent-hierarchy/`):
 The user cannot say which shape they hit. Three shapes, distinguishable
 from data that already exists plus one lifecycle log this spec adds.
 
-| shape | harness jsonl (`mcp-logs-plugin-ah-ah/`) | server lifecycle log (new, §3.2) | likely cause |
-|---|---|---|---|
-| **A — fails at start** | file has `Starting connection` and **no** `Successfully connected`; an error/timeout line; `/mcp` shows failed from the first prompt | no `start` line at all (never ran) **or** `start` then `exit` before `initialize` | 0024 B1 `command:"node"` PATH-resolved on that machine; B2 throw before handshake (guarded since 0.50.1); node too old |
-| **B — dies mid-session** | `Successfully connected`, tool calls, then a transport-closed / exited line **without** a preceding `Sending SIGINT` | `start` … `uncaught` / `signal` / `stdin-end` / `exit` with a reason and a stack | a handler throw; stdin EOF; external kill (pane close, OOM) |
-| **C — post-update / reload drop** | `Sending SIGINT` + `exited cleanly`, then new file(s) `Starting connection` within seconds — reconnect either succeeds (nothing to fix) or fails (→ shape A on the new version) | `exit {signal:SIGINT}` then a new `start` with the new `version` | documented: config path changed → harness drops the server; `/reload-plugins` required |
-| **C′ — files moved under a running server** | connected fine; later **every** tool call fails with `spawn … ENOENT` on `hooks/*.mjs` | `execCli` error lines naming the missing path | the old version dir removed after an update while the old server still runs |
+**r2 (D2): the table is transport-aware.** The transport is read from the
+file's `Successfully connected (transport: stdio|http)` line (a file
+that never connected is classified by the registration in force: `A`).
+The reason: under §4's daemon the harness owns no process, so it never
+writes `Sending SIGINT`, and *any* close line in an http file is the
+harness closing its own client — normal, never evidence. r1's B rule
+("closed without a preceding SIGINT") therefore classified every healthy
+http session as B; the Implementor's interim "close not marked
+`(cleanly)`" rule is replaced by the rows below.
+
+| shape | stdio: harness jsonl | http: harness jsonl | lifecycle log (§3.2) | likely cause |
+|---|---|---|---|---|
+| **A — fails at start** | `Starting connection`, **no** `Successfully connected`, an error/timeout line | same; the error is `ConnectionRefused` × 3 (nothing on the port) | stdio: no `start` (never ran) **or** `start` → `exit` before `initialize`. http: no daemon `start` since the last `exit`/`EADDRINUSE`, or hook spawn failure | stdio: 0024 B1 `command:"node"` PATH-resolved; throw before handshake; node too old. http: ensure hook did not run / spawn failed / daemon exited (§3.2 `exit` says why) |
+| **B — dies mid-session** | `Successfully connected`, tool calls, then a transport-closed / exited line **without** a preceding `Sending SIGINT` | `Successfully connected`, then a connection error (`ConnectionRefused` / `ECONNRESET` / `fetch failed` / `Connection failed`) or a retry `Starting connection` **later in the same file** | daemon pid serving that window has `uncaught` / `unhandled` / `signal` (not preceded by `stop`, §4.3) / `exit` without `replace` | a handler throw; stdin EOF (stdio); external kill; OOM |
+| **C — post-update / reload drop** | `Sending SIGINT` + `exited cleanly`, then new file(s) `Starting connection` within seconds — reconnect either succeeds (nothing to fix) or fails (→ A on the new version). **Also C:** a file still serving a `serverVersion` older than the installed one (the 0.67.0-under-0.71.0 case, §0) | does not occur — URL is constant. A `replace` in the lifecycle log with the harness reconnecting is **ok** | stdio: `exit {signal:SIGINT}` then a new `start` with the new `version`. http: `replace {from,to}` → new `start` | documented: config path changed → harness drops the server; `/reload-plugins` required (stdio only) |
+| **C′ — files moved under a running server** | connected fine; later **every** tool call fails with `exit=1 … Cannot find module …/hooks/<x>.mjs` (r2: spawn of `process.execPath` succeeds; it is node that fails — not `spawn ENOENT`) | same text, at most one request wide (self-replace, §4.3) | `exec-error` lines (§3.2, widened trigger) naming the missing module | the old version dir removed after an update while the old server still runs |
+| **ok** | connected; SIGINT'd by the harness or still running | connected; any or no close line | — | — |
+
+**r2.1 (Orchestrator rulings on the Implementor's two readings of this
+table, both ACCEPTED):**
+
+1. The "**Also C**" stale-`serverVersion` arm is evaluated **after** B and
+   C′, and only for a file with **no close line**. "Still serving" means
+   the session has not closed; unordered and unqualified the arm swallows
+   C′ and B (both are old-version logs) and every historical file, which
+   names an older version merely by being old. Consequence recorded: on
+   the Implementor's machine `--diag` now reports 43 × C where E5
+   recorded 30 C / 13 ok — the 13 were open sessions on an older version,
+   which this table calls C.
+2. The http-B "connection error … later in the same file" is **strictly
+   after the handshake**. A presence test fails on real data: the harness's
+   own cold-start retry writes a `ConnectionRefused` and a second
+   `Starting connection` *before* `Successfully connected` on every
+   hook-started daemon (E3), so presence alone classifies every healthy
+   http session as B. This is why the `http-ok` fixture must be a real
+   capture.
+
+The http-B row is **under-sensitive by construction**: no real
+mid-session daemon death has been captured yet (E8), the `http-down`
+fixture is synthesized, and the harness's exact error strings on a
+dropped http connection are only partly known. A daemon death is also
+independently visible in the lifecycle log, which `--diag` prints
+regardless of classification — so the user is never left with nothing.
 
 Where to look, in order (goes into `docs/troubleshooting.md`, §5):
 
@@ -169,9 +221,14 @@ Files: `mcp/server.mjs`, `docs/troubleshooting.md`, `docs/mcp-tools.md:69`,
 
 ### 3.2 Lifecycle log
 
-One append-only file, **`~/.claude/hierarchy/mcp-server.log`** (the
-plugin's existing global dir, `lib-config.mjs:366`; honour
-`AGENT_HIERARCHY_DIR` the same way the hooks do), one JSON object per line,
+One append-only file, **`~/.claude/hierarchy/mcp-server.log`**. r2 (M):
+this is deliberately **not** `hierarchyDir(cwd)` — that resolves per cwd
+(git root first, `lib-config.mjs:334-366`; `:366` is only its no-git
+fallback `~/.claude/hierarchy/<basename(cwd)>`) and the server, stdio or
+daemon, is cwd-stateless. The log lives in the *parent* of that fallback,
+`~/.claude/hierarchy/`, with `AGENT_HIERARCHY_DIR` (`:361`) replacing
+`~/.claude/hierarchy` when set — one file per user, whatever cwd the
+harness or the daemon's clients use. One JSON object per line,
 written with the same append primitive the hooks use for `peers.jsonl`.
 Events, each with `ts`, `pid`, `transport` (`stdio`|`http`), `version`:
 
@@ -182,8 +239,24 @@ Events, each with `ts`, `pid`, `transport` (`stdio`|`http`), `version`:
   `SIGTERM`, `SIGHUP` — logged, then default behaviour), `uncaught` /
   `unhandled` (message + stack, then exit 1 — a hung server is worse than
   a dead one), `exit` (`code`).
-- `exec-error` — `execCli`'s `child.on("error")` (`:447`): the script
-  path and `err.code` (this is how shape C′ becomes visible).
+- `exec-error` — **r2 (D1), trigger widened.** Fires on **either**
+  (i) `execCli`'s `child.on("error")` (`:447`) — spawn itself failed,
+  e.g. `process.execPath` removed by a node upgrade under a running
+  daemon (`err.code`, script path); **or** (ii) a non-zero exit whose
+  stderr matches `ERR_MODULE_NOT_FOUND` / `Cannot find module` — the
+  shape C′ actually produces (measured: with `hooks/` deleted the spawn
+  succeeds and node exits 1 with `Cannot find module …/hooks/roster.mjs`;
+  `child.on("error")` never fires). Fields: `script`, `code`
+  (`err.code` for (i), `"MODULE_NOT_FOUND"` for (ii)), `missing` (the
+  path in node's message when it can be extracted, else the script
+  path). Kept rather than dropped because (i) is a real, distinct failure
+  the harness log cannot show, and (ii) makes C′ visible in the one log
+  that is not per-cwd. Every occurrence is logged; the 1 MiB cap bounds it.
+- `stop` — written by `--stop` (a separate process appending to the same
+  file) **before** it signals: `{target_pid}`. Lets `--diag` tell an
+  operator stop (`stop` → `signal SIGTERM` → `exit`) from an external
+  kill (`signal SIGTERM` with no `stop` within 5 s before it).
+- `identity-ambiguous` — §4.4.
 - **Not** per-tool-call lines (the harness jsonl already has them).
 
 Size cap: at `start`, if the file exceeds 1 MiB rename it to `.1`
@@ -207,8 +280,8 @@ started. It reads (i) the harness log dir for the cwd — darwin
 `-Users-jimcline-git-repos-claudetools`); Linux path is assumed
 `~/.cache/claude-cli-nodejs/…` (E7) — (ii) the lifecycle log, (iii) after
 §4, `GET /health`. It prints, newest first, one line per harness log file:
-its start time, the shape from §1's table (`ok` when connected and
-SIGINT'd or still running), version served, transport, tool-call count,
+its start time, the shape from §1's table (per transport — r2 D2),
+version served, transport, tool-call count,
 last error text (truncated), and the matching lifecycle `start`/`exit`
 pair when `pid`/time correlate. Unknown or missing inputs are reported
 as such, exit 0 always. Classification rules are exactly §1's table —
@@ -245,9 +318,10 @@ the default (engram is 7433, sfx-gen 8756; no other local listener is
 known). `AH_MCP_PORT` is honoured identically by the daemon, the ensure
 hook, `--diag` and `--stop`, so a dev session can run a checkout's daemon
 on another port (`AH_MCP_PORT=7435 claude --plugin-dir …`) without
-touching the installed one. With §4.4's header variant the block also
-carries `"headers": {"X-Ah-Session-Pid": "${CLAUDE_PID}"}` — only if E1
-confirms the expansion.
+touching the installed one. **No `headers` block** — E1 failed (§6):
+the harness does not populate `CLAUDE_PID` for manifest expansion, and
+when the launching shell happens to export it the value is the *parent*
+session's pid, not the connecting one's.
 
 ### 4.2 Transport contract (Streamable HTTP, server side)
 
@@ -263,8 +337,17 @@ stands). Endpoints:
   must carry it (`400` if missing, `404` if unknown/expired) — the docs
   say the harness expects session ids; do not run stateless (E2 checks a
   stateless server is *not* required).
-- `GET /` → `405` (no server-initiated stream). `DELETE /` with a session
-  id → `200`, session dropped.
+- **r2 (I2, blessed):** the harness POSTs **`server/discover` before
+  `initialize`** (observed, undocumented). It cannot carry a session id.
+  The sessionless exemption is exactly two methods — `initialize` and
+  `server/discover` — and `server/discover` is answered with an empty
+  result object. Nothing else is exempt. Session gate on a batch: every
+  message in the batch is gated individually; if any message needs a
+  session id the batch has not supplied, the whole request is `400` —
+  an exempt method cannot smuggle a non-exempt one through.
+- `GET /` → `405` (no server-initiated stream; the harness also probes
+  `GET /` with `Accept: text/event-stream` and tolerates the 405 —
+  observed). `DELETE /` with a session id → `200`, session dropped.
 - `GET /health` → `200` `{name:"ah", version, pid, root, port, started,
   sessions:<count>, node}` — consumed by the ensure hook, `--diag`,
   `--stop`, and the tests. Unauthenticated, localhost only, like every
@@ -295,26 +378,47 @@ stands). Endpoints:
   stdout only when the spawn itself fails (so the model can tell the user
   the daemon could not start and the CLI fallback applies). The bind
   **is** the lock: a second starter's daemon gets `EADDRINUSE`, logs it,
-  exits 0 — no pidfile. Ordering vs the harness's connect is E3; the
-  harness's 3 startup retries and 30 s timeout cover a hook that runs a
-  few hundred ms after the connect attempt; if E3 says connect can *win*
-  by seconds, the mitigation is documenting one `/reload-plugins` on the
-  very first session after install — no worse than today.
-- **Self-replacement on update:** on each request (cheap: one `stat`),
+  exits 0 — no pidfile. Ordering vs the harness's connect: **measured
+  (E3)** — on a cold machine the connect attempt wins by ~120 ms, fails
+  `ConnectionRefused`, and the harness's own retry connects 1.6 s later,
+  unattended. **r2 (I3): no first-install `/reload-plugins` sentence
+  anywhere** — docs state the measured fact instead ("first session
+  after install connects on the harness's retry, ~2 s").
+- **Self-replacement on update.** On each request (cheap: one `stat`),
   compare `installed_plugins.json`'s current `ah@*` `installPath` against
-  the daemon's `root`. On mismatch: answer the in-flight request, stop
-  accepting, close the listener, spawn the replacement from the new
-  `installPath` exactly as the hook would, log `replace {from, to}`, exit
-  0. The harness sees a connection drop and retries (1 s first) — the
-  replacement is listening well inside that. A daemon started from a
-  root that is **not** in `installed_plugins.json` (a `--plugin-dir`
-  checkout) never self-replaces. Whether the harness refreshes
-  `tools/list` on reconnect is E4 — if not, renamed tools still need a
+  the daemon's `root`. **r2 (I1, blessed and restated):** replace iff
+  `installPath ≠ root` **and** `dirname(installPath) === dirname(root)`
+  — i.e. both are version dirs under the same marketplace cache dir
+  (`…/cache/<marketplace>/ah/`). r1's "root not in the JSON never
+  replaces" cannot be read literally: after an update the daemon's own
+  root is the *previous* install path, which is exactly what is no longer
+  listed. The sibling-dir rule admits a genuine version bump and
+  excludes every `--plugin-dir` checkout; a marketplace rename or a
+  cache relocation also does not self-replace (session restart, today's
+  baseline — acceptable, note in the doc). **Order on mismatch (r2.1, Orchestrator
+  ruling — replaces r2's spawn-first order, which was a bind race: the
+  child inherits a port its own parent still holds, takes `EADDRINUSE`
+  and exits 0 per the bind-is-lock rule, after which the parent closes
+  and the port is dead):** answer the in-flight request →
+  `server.close()` (stop accepting; in-flight drain) →
+  `spawnDaemon(next)` → poll `GET /health` on the port every 100 ms up
+  to 3 s → health answers with `root === next` → log
+  `replace {from, to}` → exit 0. No answer in 3 s, or the spawn throws
+  (e.g. `execPath` gone) → log `replace-failed {to, err | "no health in
+  3s"}` → `server.listen(port)` again, `replacing = false`, and **keep
+  serving** the old code — a stale daemon beats a dead port; the next
+  SessionStart hook will not fix it either (same `execPath`), so
+  `--diag` must print `replace-failed` prominently. The
+  harness sees a connection drop and retries (1 s first) — the
+  replacement is listening well inside that. Whether the harness
+  refreshes `tools/list` on reconnect is E4 (still unmeasured — needs an
+  installed 0.72.0 and a live bump) — if not, renamed tools still need a
   session restart (no worse than today), and the doc says so.
-- **Stop:** `node mcp/server.mjs --stop` — `GET /health` → `pid` →
-  `SIGTERM`; the daemon's `SIGTERM` handler closes the listener and exits
-  0. Also reachable as `roster.mjs`? No — the daemon is not a roster
-  concern; one flag on the server is the whole CLI.
+- **Stop:** `node mcp/server.mjs --stop` — `GET /health` → `pid` → append
+  `stop {target_pid}` to the §3.2 log → `SIGTERM`; the daemon's `SIGTERM`
+  handler closes the listener and exits 0. Also reachable as
+  `roster.mjs`? No — the daemon is not a roster concern; one flag on the
+  server is the whole CLI.
 - **Logs:** daemon stdout/stderr are the §3.2 file (`start` line carries
   `transport:"http"`, `port`).
 - **Reboot:** nothing persists; the next session's hook starts it.
@@ -325,16 +429,22 @@ The daemon has no session parent; `process.ppid` is meaningless. The
 value seven tools pass as `--orchestrator-pid` must come from the
 connection:
 
-1. **Header, if E1 confirms** `${CLAUDE_PID}` expands in the manifest's
-   `headers`: the harness sends `X-Ah-Session-Pid` on every request; the
-   daemon reads it at `initialize`, binds it to the `Mcp-Session-Id`, and
-   uses it as that session's `SESSION_PID`. Zero code beyond a header read.
-2. **Fallback — socket peer lookup:** at `initialize`, resolve the
-   client's ephemeral port (`req.socket.remotePort`) to its owning pid —
-   darwin `lsof -nP -iTCP:<port> -sTCP:ESTABLISHED -Fp`, Linux
+1. ~~Header `${CLAUDE_PID}`~~ — **struck in r2: E1 failed.** The
+   harness does not populate `CLAUDE_PID` for manifest expansion (literal
+   `${CLAUDE_PID}` arrives when the env lacks it; the launching shell's
+   *parent* pid arrives when it has it). Not built; no `headers` block.
+2. **Socket peer lookup — the shipped mechanism (E1b passed on darwin):**
+   at `initialize`, resolve the client's ephemeral port
+   (`req.socket.remotePort`) to its owning pid — darwin
+   `lsof -nP -iTCP:<port> -sTCP:ESTABLISHED -Fp`, Linux
    `ss -tnpH 'sport = :<port>'` — once per MCP session, cached on the
-   session; failure → `session_pid: null` (today's behaviour when
-   reparented). Ugly, ~20 lines, needs no harness cooperation.
+   session, the daemon's own pid filtered out; failure → `session_pid:
+   null` (today's behaviour when reparented). **More than one non-self
+   candidate** (a forked client sharing the socket): log
+   `identity-ambiguous {pids, chosen}` and take the **smallest** pid —
+   the ancestor in practice (ponytail ceiling: pid wrap; upgrade path is
+   walking ppid chains to pick the candidate that is not a descendant of
+   another). Unmeasured on the work machine (E1b there is still open).
 3. `orchestrator_pid` param override — unchanged, still wins.
 
 The `start` log line and `/health` report which method is in use. The
@@ -352,9 +462,9 @@ unchanged. Not tested beyond §7.1's stdio suite staying green.
 
 ### 4.6 The fork this phase leaves open
 
-If E1 fails **and** the peer-socket lookup proves unreliable on the work
-machine (E1b), identity degrades to `orchestrator_pid`-or-null for the
-seven tools — `team_create`/`adopt`/`spawn_*` would record a null
+E1 has failed (r2). If the peer-socket lookup **also** proves unreliable
+on the work machine (E1b there), identity degrades to
+`orchestrator_pid`-or-null for the seven tools — `team_create`/`adopt`/`spawn_*` would record a null
 orchestrator and `team_reap` would see every team as orphaned. That is
 the one outcome that should send this back to the Architect (or the
 Ultra-Advisor: it is a public-interface question — should those tools
@@ -367,33 +477,38 @@ No change to `agents/*.md` or `skills/agent-team|agent-roster/SKILL.md`
 "try MCP first, fall back to CLI, say so once" — still correct and
 transport-independent. Only the docs in §3.5 and §4.5 change.
 
-## 6. NEEDS-EVIDENCE (Implementor runs; results decide as stated)
+## 6. NEEDS-EVIDENCE — results as of r2
 
-- **E1** — does `"headers": {"X-Ah-Session-Pid": "${CLAUDE_PID}"}` in the
-  plugin manifest reach the daemon with the harness's pid? Probe: a
-  `--plugin-dir` plugin whose http server logs request headers. Yes →
-  §4.4 method 1; no / empty → method 2 (**E1b**: `lsof` variant returns
-  the harness pid on darwin; run once on the work machine too).
-- **E2** — the harness accepts a plain `application/json` POST response
-  and a server-issued `Mcp-Session-Id` (the engram daemon already does
-  both and works here — expected yes; confirm with the same probe).
-- **E3** — SessionStart hook vs MCP connect ordering on a cold machine
-  (daemon not running): lifecycle `start` ts vs harness jsonl `Starting
-  connection` ts. Connect first by > 30 s → document one reload on first
-  install; otherwise nothing.
-- **E4** — after the daemon self-replaces with a version whose
-  `tools/list` differs, does the reconnected session see the new list?
-  Decides the §4.3 doc sentence only.
-- **E5** — phase-1 `--diag` output from the user's next real
-  disconnect, both machines: which of A/B/C/C′. Decides nothing in this
-  spec (phase 2 covers all four) but is the evidence the user asked for
-  and closes 0024's open question.
-- **E6** — the four simultaneous spawns per session seen 2026-09-09
-  18:43:01: are four server processes alive concurrently (`pgrep -fl
-  mcp/server.mjs` in a fresh session)? Harmless on stdio; under HTTP they
-  are four sessions on one daemon. Record only.
-- **E7** — Linux harness log dir for `--diag` (`~/.cache/claude-cli-nodejs/`
-  assumed).
+- **E1** — `${CLAUDE_PID}` in manifest `headers`: **NO.** Literal string
+  when unset in the launching env; the *parent* session's pid when set.
+  → §4.4 method 1 struck.
+- **E1b** — socket peer lookup: **YES on darwin** (`lsof` returned daemon
+  pid + connecting `claude` pid; end-to-end test asserts `team.json`'s
+  `orchestrator.pid` = the client's pid, ≠ the daemon's). **Work machine:
+  still open** — run `tests/test-mcp-http.sh` there once 0.72.0 is
+  installed; failure → §4.6.
+- **E2** — plain JSON + server-issued `Mcp-Session-Id`: **YES**, probe and
+  real harness (`Successfully connected (transport: http) in 78ms`).
+  Bonus facts: `server/discover` before `initialize`; `GET /` SSE probe
+  tolerates 405 (§4.2).
+- **E3** — cold-machine ordering: **connect wins by ~120 ms; harness retry
+  connects 1.6 s later**, unattended. → first-install reload sentence
+  dropped (§4.3).
+- **E4** — `tools/list` refresh after self-replace: **NOT MEASURED**
+  (needs an installed 0.72.0 + a live bump). Open; decides one doc
+  sentence. Orchestrator: measure on the first real bump after 0.72.0
+  installs.
+- **E5** — 43 harness logs, this machine: **30 × C, 13 × ok, 0 × A/B/C′.**
+  0024's open question closed for this machine; work machine unmeasured.
+- **E6** — four files = **four sessionIds** (four concurrent sessions,
+  one server each), not four servers per session. §0 corrected.
+- **E7** — Linux log dir: **unverified**; implemented as assumed with a
+  call-site comment.
+- **E8 (new, r2)** — a real captured http mid-session daemon death
+  (harness jsonl + lifecycle log) to replace the synthesized `http-down`
+  fixture and confirm the harness's error strings in §1's http-B row.
+  Until then B-http is under-sensitive (§1). Capture: `kill -9` the
+  daemon during a live session, save both logs.
 
 ## 7. Verification — tests that fail without the change
 
@@ -411,11 +526,21 @@ Existing suites use `HOME` redirection + `spawn(process.execPath,
    gated on the env var; absent it the name is an unknown tool.)
 3. `exec-error`: point the server at a missing `hooks/` (copy the
    `mcp/` dir alone) → a `tools/call` yields the existing `isError`
-   result **and** an `exec-error` line naming the path.
-4. `--diag` on `tests/fixtures/mcp-logs/{ok,fail-start,mid-session,
-   reload}.jsonl` (hand-written from the real entry shapes in §0) →
-   exactly one classification per file, matching the fixture name;
-   missing dir → "no harness logs for <cwd>", exit 0.
+   result **and** an `exec-error` line with `code:"MODULE_NOT_FOUND"`
+   naming the missing module (r2: trigger (ii) in §3.2 — the r1
+   wording assumed spawn ENOENT, which cannot happen with `execPath`).
+4. `--diag` on `tests/fixtures/mcp-logs/*.jsonl` → exactly one
+   classification per file, matching the fixture name; missing dir →
+   "no harness logs for <cwd>", exit 0. r2 fixture set: stdio
+   `{ok,fail-start,mid-session,reload,files-moved}` as shipped, plus
+   **`http-ok`** (a real file from the E2 run — a healthy http session
+   with its close line; must classify `ok`), **`http-fail-start`**
+   (`ConnectionRefused` × 3, never connected → `A`), **`http-down`**
+   (connected, then a connection error later in the file → `B`;
+   synthesized — header comment says so and names E8). Also a
+   lifecycle-log fixture pair proving `stop → signal SIGTERM → exit` is
+   reported as an operator stop and a bare `signal SIGTERM → exit` as
+   external.
 5. Cap: a 1 MiB + 1 byte log is renamed to `.1` on `start`.
 
 ### 7.2 Phase 2 (`tests/test-mcp-http.sh` new; `test-mcp-server.sh` test 13)
@@ -430,17 +555,20 @@ Existing suites use `HOME` redirection + `spawn(process.execPath,
    unknown → `404`; `DELETE` → `200` then the id is `404`; `/health`
    reports the checkout's version, `transport:"http"`; five concurrent
    sessions each get distinct ids and all succeed.
-3. Identity: (header variant) a request carrying `X-Ah-Session-Pid:
-   <shell pid>` → `team_create` `dry_run` reports that pid as
-   orchestrator; (socket variant) the same without the header → the
-   test's own pid. Whichever E1 selects is asserted; the other is skipped
-   with a printed reason, not silently.
+3. Identity (socket variant only — r2): a client with no
+   `orchestrator_pid` → `team.json`'s `orchestrator.pid` equals the
+   client process's pid and not the daemon's (as shipped). Header
+   variant: gone, not "skipped".
 4. Self-replacement: `HOME`-redirected `installed_plugins.json` pointing
    `installPath` at copy A of the checkout; start the daemon from A; edit
-   the JSON to copy B (plugin.json version bumped in B); one request →
-   within 2 s `/health` on the **same port** reports B's version and a
-   new pid; the log has `replace`. A daemon started from a root absent
-   from the JSON never replaces.
+   the JSON to copy B (**B a sibling dir of A**, plugin.json version
+   bumped in B); one request → within 2 s `/health` on the **same port**
+   reports B's version and a new pid; the log has `replace`. A daemon
+   started from a root **outside** the JSON's `dirname(installPath)`
+   never replaces. r2 adds: JSON repointed at a sibling path that does
+   not exist (or whose `mcp/server.mjs` is missing) → `replace-failed`
+   logged, old daemon still answers `/health` with its old version and
+   pid.
 5. Ensure hook (cwd-injection + `HOME` redirect, the pattern in
    `memory/testing-claudetools-hook-plugins.md`): daemon absent → after
    the hook, `/health` answers within 2 s and the hook printed nothing;
@@ -504,12 +632,25 @@ plist; a supervisor wrapper on stdio; changing 0018's override param.
   plus the override; the tests assert the harness pid, not merely a pid.
 - A changed `mcpServers` shape may re-prompt approval once per
   workspace (keyed by name); one-time, documented.
-- First session on a cold machine may connect before the hook starts the
-  daemon (E3) — bounded by the harness's retries; at worst one reload on
-  first install, which is today's baseline.
+- First session on a cold machine connects before the hook starts the
+  daemon (E3, measured) — the harness's retry absorbs it in 1.6 s; no
+  user action.
 - Old version dir removed while the daemon runs old code (C′): the
   self-replace check runs on every request, so the window is one
-  request; `exec-error` logging makes it visible if it ever bites.
+  request; `exec-error` (trigger (ii)) makes it visible if it ever bites.
+- A node upgrade that removes the daemon's `process.execPath`: every
+  tool call logs `exec-error` (trigger (i)) and self-replace logs
+  `replace-failed`; the fix is `--stop` + a new session (the hook
+  spawns with the new node). `--diag` must say exactly that when it sees
+  `replace-failed`.
+- Test cleanup must never sweep processes by command line
+  (`pkill -f "mcp/server.mjs --http"` would kill the user's live daemon
+  once 0.72.0 is installed) — port-scoped kills over test-claimed ports
+  only. Reviewer's first check.
+- `resolveIsMain()` compares a real path with `process.argv[1]` as given:
+  invoking the server through a symlinked path (macOS `/var` →
+  `/private/var`) silently runs nothing. Pre-existing, out of scope here;
+  tests `pwd -P` their sandboxes. Worth its own one-line fix later.
 - `--plugin-dir` dev sessions talk to whatever daemon owns port 7434;
   without `AH_MCP_PORT` a dev checkout is silently testing the installed
   daemon. `--diag` prints `root`, and the doc says to set the port.
@@ -519,7 +660,66 @@ plist; a supervisor wrapper on stdio; changing 0018's override param.
 
 High on phase 1 (pure additive, mirrors 0.50.1's guard pattern). High on
 the transport (engram's identical registration works in this
-environment daily; the server is already cwd-stateless). Medium on
-identity until E1/E1b — the fallback is known to work in principle but
-is untested on the work machine. Recommend Ultra-Advisor **only** on the
-§4.6 outcome (both identity mechanisms fail); otherwise no escalation.
+environment daily; the server is already cwd-stateless; the real harness
+connected first try). Medium-high on identity: the socket lookup is
+proven end to end on darwin, untested on the work machine. Medium on
+`--diag`'s http-B row (no real sample, E8). Recommend Ultra-Advisor
+**only** on the §4.6 outcome (socket lookup fails on the work machine);
+otherwise no escalation.
+
+## 12. r2 — Implementor follow-up edits (exact)
+
+No new files. All in `agent-hierarchy/`.
+
+- **F1** `mcp/server.mjs` `execCli`: add §3.2 trigger (ii) — non-zero
+  exit with stderr matching `ERR_MODULE_NOT_FOUND|Cannot find module` →
+  `exec-error {script, code:"MODULE_NOT_FOUND", missing}`. Remove the
+  "reported defect" comment. `tests/test-mcp-server.sh` §7.1.3 asserts
+  the line.
+- **F2** `DIAG_RULES`: replace the interim `(cleanly)` rule with §1's
+  transport-aware rows; add the fixtures named in §7.1.4 (`http-ok` real,
+  `http-fail-start`, `http-down` synthesized + header comment naming
+  E8); `docs/troubleshooting.md` table gains the stdio/http split and
+  the E3/E5 facts as written in §4.3/§0.
+- **F3** `--stop`: append `stop {target_pid}` to the lifecycle log before
+  `SIGTERM`; `--diag` reports `stop → signal SIGTERM → exit` as an
+  operator stop, bare `signal SIGTERM → exit` as external. Fixture pair
+  per §7.1.4.
+- **F4** `peerSessionPid`: >1 non-self candidate → log
+  `identity-ambiguous {pids, chosen}`, choose the smallest pid. One unit
+  case with a stubbed `lsof` output.
+- **F5′** (replaces F5; ruling recorded as "Orchestrator r2.1") —
+  self-replace ordering per §4.3 as amended: answer the in-flight
+  request → `server.close()` (stop accepting; in-flight drain) →
+  `spawnDaemon(next)` → poll `GET /health` on the port every 100 ms up
+  to 3 s → health answers with `root === next` → log
+  `replace {from, to}` → exit 0. No answer in 3 s, or spawn throws →
+  log `replace-failed {to, err | "no health in 3s"}` →
+  `server.listen(port)` again, `replacing = false`, keep serving the old
+  code; `--diag` prints the `replace-failed` remedy (§10). **r2.1: after a
+  `replace-failed`, do not attempt a self-replace again for 5 minutes**
+  (`REPLACE_RETRY_MS`, an in-memory timestamp on the daemon; `--diag`
+  unchanged) — otherwise a permanently broken `next` root costs one doomed
+  child per request. Test: a broken `next` root → exactly one spawn
+  attempt across N requests inside the window. r2's
+  spawn-before-close is a bind race — the child gets `EADDRINUSE` from
+  its own parent and exits per the bind-is-lock rule, then the parent
+  closes → dead port. Test §7.2.4: (a) happy path = a new pid serving on
+  the same port; (b) `next` pointing at a root whose `server.mjs` exits
+  immediately → the old daemon still answers `/health` after 4 s, with a
+  `replace-failed` line logged.
+- **F6** `runHttp` session gate: per-message gating on a batch; any
+  ungated non-exempt message → whole request `400`. One test: batch of
+  `[initialize, tools/list]` without a session id → `400`.
+- **F7** docs: wherever the Implementor wrote the r1 "one
+  `/reload-plugins` on first install" sentence (`docs/mcp-tools.md`,
+  `docs/troubleshooting.md`), replace with the measured E3 sentence in
+  §4.3. Add the §4.3 note that a marketplace rename / cache relocation
+  needs a session restart.
+- **F8** `replacementRoot()`'s comment: keep; it now matches §4.3
+  verbatim, so drop any "interpretation" wording.
+
+Not follow-ups (already correct as shipped): `server/discover` handling
+(I2 blessed), sibling-dir self-replace rule (I1 blessed), no `headers`
+block (E1), `AGENT_HIERARCHY_DIR` handling at the log path (only the
+citation was wrong — fixed in §3.2, no code change).

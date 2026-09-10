@@ -1,0 +1,12 @@
+# Synthesized (spec 0047 §6 E8): the daemon was healthy, served a call, and then went
+# away mid-session (killed / crashed), so the NEXT request fails with ConnectionRefused.
+# Shape B on the http transport: the harness never owns the daemon, so there is no
+# "Sending SIGINT" and no "process exited" — a post-connect connection error is the
+# only signal available.
+{"debug":"Initializing HTTP transport to http://127.0.0.1:7434/","timestamp":"2026-09-09T21:20:00.100Z","sessionId":"bbbbbbbb-0000-0000-0000-000000000002","cwd":"/repo"}
+{"debug":"Starting connection with timeout of 30000ms","timestamp":"2026-09-09T21:20:00.101Z","sessionId":"bbbbbbbb-0000-0000-0000-000000000002","cwd":"/repo"}
+{"debug":"Successfully connected (transport: http) in 61ms","timestamp":"2026-09-09T21:20:00.162Z","sessionId":"bbbbbbbb-0000-0000-0000-000000000002","cwd":"/repo"}
+{"debug":"Connection established with capabilities: {\"hasTools\":true,\"serverVersion\":{\"name\":\"ah\",\"version\":\"0.72.0\"}}","timestamp":"2026-09-09T21:20:00.163Z","sessionId":"bbbbbbbb-0000-0000-0000-000000000002","cwd":"/repo"}
+{"debug":"Calling MCP tool: roster_show","timestamp":"2026-09-09T21:20:05.000Z","sessionId":"bbbbbbbb-0000-0000-0000-000000000002","cwd":"/repo"}
+{"debug":"HTTP Connection failed after 19ms: Unable to connect. Is the computer able to access the url? (code: ConnectionRefused, errno: none)","timestamp":"2026-09-09T21:21:00.000Z","sessionId":"bbbbbbbb-0000-0000-0000-000000000002","cwd":"/repo"}
+{"error":"Connection failed (ConnectionRefused): Unable to connect. Is the computer able to access the url?","timestamp":"2026-09-09T21:21:00.001Z","sessionId":"bbbbbbbb-0000-0000-0000-000000000002","cwd":"/repo"}

@@ -384,7 +384,7 @@ directory itself is the file list. At a glance:
 ```
 agents/          one contract per role (frontmatter pins model + tool denies)
 hooks/           hooks and the libraries they share
-mcp/             the MCP server — see docs/mcp-tools.md
+mcp/             the MCP server (a localhost HTTP daemon) — see docs/mcp-tools.md
 commands/        the /hierarchy and /agent-roster commands
 skills/          the agent-roster skill
 docs/specs/      per-feature design records

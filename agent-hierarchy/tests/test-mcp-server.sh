@@ -373,10 +373,14 @@ function deepEqual(a, b) {
   return ak.every((k) => deepEqual(a[k], b[k]));
 }
 function assertEntry(srv) {
-  if (!srv) return { present: false, cmdOk: false, argsOk: false };
-  const cmdOk = !String(srv.command).includes("${CLAUDE_PLUGIN_ROOT}");
-  const argsOk = Array.isArray(srv.args) && srv.args.some((a) => String(a).includes("${CLAUDE_PLUGIN_ROOT}"));
-  return { present: true, cmdOk, argsOk };
+  if (!srv) return { present: false, typeOk: false, urlOk: false, noSpawn: false };
+  // Spec 0047 §7.2.1: the registration is a constant URL now. command/args and
+  // ${CLAUDE_PLUGIN_ROOT} must be GONE — their absence is the point, because a
+  // version-pathed command line is what made the harness drop the server on update.
+  const typeOk = srv.type === "http";
+  const urlOk = srv.url === "http://127.0.0.1:${AH_MCP_PORT:-7434}/";
+  const noSpawn = srv.command === undefined && srv.args === undefined && !JSON.stringify(srv).includes("CLAUDE_PLUGIN_ROOT");
+  return { present: true, typeOk, urlOk, noSpawn };
 }
 const pluginJson = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
 const pluginSrv = pluginJson.mcpServers && pluginJson.mcpServers.ah;
@@ -393,16 +397,20 @@ fs.writeFileSync(process.argv[3], JSON.stringify(out));
 
 check "plugin.json mcpServers.ah is present" \
   'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/test10-13.json\",\"utf8\")); process.exit(d.plugin.present?0:1)"'
-check "plugin.json mcpServers.ah: \${CLAUDE_PLUGIN_ROOT} not in command" \
-  'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/test10-13.json\",\"utf8\")); process.exit(d.plugin.cmdOk?0:1)"'
-check "plugin.json mcpServers.ah: \${CLAUDE_PLUGIN_ROOT} in args" \
-  'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/test10-13.json\",\"utf8\")); process.exit(d.plugin.argsOk?0:1)"'
+check "plugin.json mcpServers.ah: type is http" \
+  'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/test10-13.json\",\"utf8\")); process.exit(d.plugin.typeOk?0:1)"'
+check "plugin.json mcpServers.ah: url is the constant 127.0.0.1:${AH_MCP_PORT:-7434}" \
+  'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/test10-13.json\",\"utf8\")); process.exit(d.plugin.urlOk?0:1)"'
+check "plugin.json mcpServers.ah: no command/args/\${CLAUDE_PLUGIN_ROOT}" \
+  'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/test10-13.json\",\"utf8\")); process.exit(d.plugin.noSpawn?0:1)"'
 check "marketplace.json ah entry's mcpServers.ah is present" \
   'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/test10-13.json\",\"utf8\")); process.exit(d.marketplace.present?0:1)"'
-check "marketplace.json mcpServers.ah: \${CLAUDE_PLUGIN_ROOT} not in command" \
-  'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/test10-13.json\",\"utf8\")); process.exit(d.marketplace.cmdOk?0:1)"'
-check "marketplace.json mcpServers.ah: \${CLAUDE_PLUGIN_ROOT} in args" \
-  'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/test10-13.json\",\"utf8\")); process.exit(d.marketplace.argsOk?0:1)"'
+check "marketplace.json mcpServers.ah: type is http" \
+  'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/test10-13.json\",\"utf8\")); process.exit(d.marketplace.typeOk?0:1)"'
+check "marketplace.json mcpServers.ah: url is the constant 127.0.0.1:${AH_MCP_PORT:-7434}" \
+  'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/test10-13.json\",\"utf8\")); process.exit(d.marketplace.urlOk?0:1)"'
+check "marketplace.json mcpServers.ah: no command/args/\${CLAUDE_PLUGIN_ROOT}" \
+  'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/test10-13.json\",\"utf8\")); process.exit(d.marketplace.noSpawn?0:1)"'
 check "plugin.json and marketplace.json mcpServers.ah blocks are deep-equal" \
   'node -e "const d=JSON.parse(require(\"fs\").readFileSync(\"$TMP/test10-13.json\",\"utf8\")); process.exit(d.equal?0:1)"'
 
@@ -713,6 +721,180 @@ mkdir -p "$REPO_F"
 SPAWN_ONE_MEMBER="$(env -u HERDR_ENV PATH="$BIN_CLAUDE_ONLY:$NODE_DIR" SERVER_PATH="$SERVER" TEST_REPO="$REPO_F" node "$TMP/spawn-one-member.mjs" 2>&1)"
 check "team_spawn_one via MCP: member param passes through to --member and disambiguates same-role members" \
   '[ "$SPAWN_ONE_MEMBER" = "PASS" ]'
+
+# ---------------------------------------------------------------------------
+# Spec 0047 §7.1 — phase 1: lifecycle log, process handlers, --diag.
+# Every case here fails on 0.71.0, where none of this exists.
+# ---------------------------------------------------------------------------
+LIFE_DIR="$TMP/lifecycle"
+mkdir -p "$LIFE_DIR"
+LIFE_LOG="$LIFE_DIR/mcp-server.log"
+
+# §7.1.1 — a full stdio session leaves start -> stdin-end -> exit, in that order.
+cat > "$TMP/lifecycle-client.mjs" <<'JSEOF'
+import { spawn } from "node:child_process";
+const child = spawn(process.execPath, [process.env.SERVER_PATH], { stdio: ["pipe", "pipe", "pipe"] });
+child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) + "\n");
+let out = "";
+child.stdout.on("data", (d) => (out += d));
+await new Promise((r) => setTimeout(r, 400));
+child.stdin.end();
+await new Promise((r) => child.on("close", r));
+console.log(out.trim().split("\n").length);
+JSEOF
+SERVER_PATH="$SERVER" AGENT_HIERARCHY_DIR="$LIFE_DIR" node "$TMP/lifecycle-client.mjs" > /dev/null 2>&1
+
+check "lifecycle log: written at \$AGENT_HIERARCHY_DIR/mcp-server.log" '[ -s "$LIFE_LOG" ]'
+check "lifecycle log: a start event with version, exec, root and transport stdio" \
+  'node -e "
+    const l=require(\"fs\").readFileSync(\"$LIFE_LOG\",\"utf8\").trim().split(\"\n\").map(JSON.parse);
+    const s=l.find(e=>e.event===\"start\");
+    process.exit(s && s.transport===\"stdio\" && s.version && s.exec && s.root && s.node ? 0 : 1);
+  "'
+check "lifecycle log: start records session_pid as the parent (spec 0018 identity survives)" \
+  'node -e "
+    const l=require(\"fs\").readFileSync(\"$LIFE_LOG\",\"utf8\").trim().split(\"\n\").map(JSON.parse);
+    const s=l.find(e=>e.event===\"start\");
+    process.exit(Number.isInteger(s.session_pid) && s.session_pid===s.ppid ? 0 : 1);
+  "'
+check "lifecycle log: closing stdin logs stdin-end then exit, in that order" \
+  'node -e "
+    const l=require(\"fs\").readFileSync(\"$LIFE_LOG\",\"utf8\").trim().split(\"\n\").map(JSON.parse);
+    const ev=l.map(e=>e.event);
+    process.exit(ev.indexOf(\"start\")<ev.indexOf(\"stdin-end\") && ev.indexOf(\"stdin-end\")<ev.indexOf(\"exit\") ? 0 : 1);
+  "'
+
+# §7.1.2 — crash path. The knob is env-gated: without it the name is an unknown tool.
+CRASH_DIR="$TMP/crash"; mkdir -p "$CRASH_DIR"
+cat > "$TMP/crash-client.mjs" <<'JSEOF'
+import { spawn } from "node:child_process";
+const child = spawn(process.execPath, [process.env.SERVER_PATH], { stdio: ["pipe", "pipe", "pipe"] });
+let out = "";
+child.stdout.on("data", (d) => (out += d));
+child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "__test_crash", arguments: { cwd: "/tmp" } } }) + "\n");
+// Without the knob the server answers "unknown tool" and stays up, so close stdin:
+// the exit code then distinguishes a crash (1) from an orderly stdin-end shutdown (0).
+setTimeout(() => child.stdin.end(), 300);
+const code = await new Promise((r) => {
+  child.on("close", r);
+  setTimeout(() => { child.kill("SIGKILL"); r("timeout"); }, 5000);
+});
+// Every stdout line must still be valid JSON-RPC: a crash may not corrupt the protocol.
+const clean = out.trim().split("\n").filter(Boolean).every((l) => { try { JSON.parse(l); return true; } catch { return false; } });
+console.log(JSON.stringify({ code, clean }));
+JSEOF
+CRASH_OUT="$(SERVER_PATH="$SERVER" AGENT_HIERARCHY_DIR="$CRASH_DIR" AH_MCP_TEST_CRASH=1 node "$TMP/crash-client.mjs" 2>/dev/null)"
+check "crash path: an escaping handler throw exits 1" \
+  '[ "$(echo "$CRASH_OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>console.log(JSON.parse(s).code))")" = "1" ]'
+check "crash path: stdout stays valid JSON-RPC through the crash" \
+  '[ "$(echo "$CRASH_OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>console.log(JSON.parse(s).clean))")" = "true" ]'
+check "crash path: an uncaught event with a stack is logged" \
+  'node -e "
+    const l=require(\"fs\").readFileSync(\"$CRASH_DIR/mcp-server.log\",\"utf8\").trim().split(\"\n\").map(JSON.parse);
+    const u=l.find(e=>e.event===\"uncaught\");
+    process.exit(u && /AH_MCP_TEST_CRASH/.test(u.message) && u.stack ? 0 : 1);
+  "'
+NOKNOB_DIR="$TMP/noknob"; mkdir -p "$NOKNOB_DIR"
+NOKNOB="$(SERVER_PATH="$SERVER" AGENT_HIERARCHY_DIR="$NOKNOB_DIR" node "$TMP/crash-client.mjs" 2>/dev/null)"
+check "crash path: without AH_MCP_TEST_CRASH the name is just an unknown tool (exit 0)" \
+  '[ "$(echo "$NOKNOB" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>console.log(JSON.parse(s).code))")" = "0" ]'
+
+# §7.1.3 — a server whose hooks/ is missing (shape C': the old version dir deleted
+# under a running server) still degrades to an isError tool result rather than dying.
+# The `exec-error` lifecycle line is asserted below off trigger (ii): the spawned
+# executable is process.execPath, which always exists, so the OS spawn succeeds and it
+# is node that exits 1 with "Cannot find module" — a `child.on("error")` handler can
+# never see this shape.
+ORPHAN="$(mkdir -p "$TMP/orphan-install" && cd "$TMP/orphan-install" && pwd -P)"
+mkdir -p "$ORPHAN/mcp" "$ORPHAN/.claude-plugin"
+cp "$SERVER" "$ORPHAN/mcp/server.mjs"
+cp "$PLUGIN_JSON" "$ORPHAN/.claude-plugin/plugin.json"
+EXECERR_DIR="$TMP/execerr"; mkdir -p "$EXECERR_DIR"
+cat > "$TMP/execerr-client.mjs" <<'JSEOF'
+import { spawn } from "node:child_process";
+const child = spawn(process.execPath, [process.env.SERVER_PATH], { stdio: ["pipe", "pipe", "pipe"] });
+let out = "";
+// The close listener goes on BEFORE the request: the server may exit before this
+// script gets to await it, and a listener attached afterwards would never fire.
+let closed = false;
+let err = "";
+child.on("close", () => (closed = true));
+child.stderr.on("data", (d) => (err += d));
+child.stdout.on("data", (d) => (out += d));
+child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "roster_show", arguments: { cwd: process.env.TEST_REPO } } }) + "\n");
+for (let i = 0; i < 60 && !out.includes("\n") && !closed; i += 1) await new Promise((r) => setTimeout(r, 50));
+if (!closed) child.stdin.end();
+for (let i = 0; i < 40 && !closed; i += 1) await new Promise((r) => setTimeout(r, 50));
+child.kill();
+const msg = out.trim().split("\n").flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } }).find((m) => m.id === 1);
+console.log(JSON.stringify({ isError: Boolean(msg && msg.result && msg.result.isError) }));
+JSEOF
+EXECERR_OUT="$(SERVER_PATH="$ORPHAN/mcp/server.mjs" TEST_REPO="$REPO_A" AGENT_HIERARCHY_DIR="$EXECERR_DIR" node "$TMP/execerr-client.mjs" 2>/dev/null)"
+check "C-prime: a missing hooks/ still yields an isError tool result (mapping unchanged)" \
+  '[ "$(echo "$EXECERR_OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>console.log(JSON.parse(s).isError))")" = "true" ]'
+check "exec-error: the lifecycle log records MODULE_NOT_FOUND and the missing module" \
+  'node -e "
+     const l=require(\"fs\").readFileSync(\"$EXECERR_DIR/mcp-server.log\",\"utf8\").trim().split(\"\n\").map(JSON.parse);
+     const e=l.find(x=>x.event===\"exec-error\");
+     process.exit(e && e.code===\"MODULE_NOT_FOUND\" && String(e.missing).endsWith(\"hooks/roster.mjs\") ? 0 : 1);
+   "'
+
+# D1 — the server must run when reached through a symlinked path: the SessionStart hook
+# spawns it by an un-realpathed $CLAUDE_PLUGIN_ROOT, and a silent no-op is the failure
+# mode (isMain false -> no transport, no output, exit 0).
+ln -s "$ORPHAN" "$TMP/orphan-link"
+check "isMain: the server still runs when invoked through a symlinked root (D1)" \
+  'AGENT_HIERARCHY_DIR="$EXECERR_DIR" node "$TMP/orphan-link/mcp/server.mjs" --diag --cwd "$TMP/no-such-cwd" 2>&1 | grep -q "no harness logs"'
+
+# §7.1.4 — --diag classification: one fixture per row of spec 0047 §1's table.
+FIXTURES="$REPO_ROOT/tests/fixtures/mcp-logs"
+check "--diag fixtures: one file per shape exists, both transports" \
+  '[ -f "$FIXTURES/ok.jsonl" ] && [ -f "$FIXTURES/fail-start.jsonl" ] && [ -f "$FIXTURES/mid-session.jsonl" ] && [ -f "$FIXTURES/reload.jsonl" ] && [ -f "$FIXTURES/files-moved.jsonl" ] && [ -f "$FIXTURES/http-ok.jsonl" ] && [ -f "$FIXTURES/http-fail-start.jsonl" ] && [ -f "$FIXTURES/http-down.jsonl" ]'
+cat > "$TMP/classify.mjs" <<'JSEOF'
+import { readFileSync } from "node:fs";
+const { classifyHarnessLog } = await import(process.env.SERVER_PATH);
+// http-ok is a REAL harness file: it carries a pre-handshake ConnectionRefused from
+// the harness's own cold-start retry, so a transport-blind rule reads it as B.
+const want = { ok: "ok", "fail-start": "A", "mid-session": "B", reload: "C", "files-moved": "C′", "http-ok": "ok", "http-fail-start": "A", "http-down": "B" };
+const bad = [];
+for (const [name, shape] of Object.entries(want)) {
+  // Fixture header comments are not JSON; readJsonl skips unparseable lines too.
+  const lines = readFileSync(`${process.env.FIXTURES}/${name}.jsonl`, "utf8").trim().split("\n").flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+  const got = classifyHarnessLog(lines).shape;
+  if (got !== shape) bad.push(`${name}: want ${shape} got ${got}`);
+}
+console.log(bad.length ? "BAD " + bad.join("; ") : "OK");
+JSEOF
+CLASSIFY="$(SERVER_PATH="$SERVER" FIXTURES="$FIXTURES" node "$TMP/classify.mjs" 2>&1)"
+check "--diag: each fixture classifies as its own shape (0047 §1 table)" '[ "$CLASSIFY" = "OK" ]'
+check "--diag: exits 0 and says so when a cwd has no harness logs" \
+  'OUT="$(AGENT_HIERARCHY_DIR="$LIFE_DIR" node "$SERVER" --diag --cwd "$TMP/no-such-cwd" 2>&1)" && echo "$OUT" | grep -q "no harness logs"'
+# §7.1.4 (F3) — operator stop vs external kill, from the lifecycle fixture pair.
+for origin in operator external; do
+  STOP_DIR="$TMP/stop-$origin"; mkdir -p "$STOP_DIR"
+  cp "$FIXTURES/lifecycle-$origin-stop.jsonl" "$STOP_DIR/mcp-server.log"
+  check "--diag: a SIGTERM $( [ "$origin" = operator ] && echo "preceded by a \`stop\`" || echo "with no \`stop\`" ) reads as an $origin stop" \
+    'AGENT_HIERARCHY_DIR="$STOP_DIR" node "$SERVER" --diag --cwd "$TMP/no-such-cwd" --json | node -e "
+       let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{
+         const j=JSON.parse(s);
+         const st=(j.lifecycle.stops||[]).find(x=>x.signal===\"SIGTERM\");
+         process.exit(st && st.origin===\"'"$origin"'\" ? 0 : 1);
+       })"'
+done
+
+check "--diag: --json emits parseable JSON and starts no server" \
+  'AGENT_HIERARCHY_DIR="$LIFE_DIR" node "$SERVER" --diag --cwd "$TMP/no-such-cwd" --json | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const j=JSON.parse(s); process.exit(j.lifecycle && j.servers ? 0 : 1)})"'
+
+# §7.1.5 — size cap: one generation, rolled at start.
+CAP_DIR="$TMP/cap"; mkdir -p "$CAP_DIR"
+node -e 'require("fs").writeFileSync(process.argv[1], "x".repeat(1024*1024+1))' "$CAP_DIR/mcp-server.log"
+SERVER_PATH="$SERVER" AGENT_HIERARCHY_DIR="$CAP_DIR" node "$TMP/lifecycle-client.mjs" > /dev/null 2>&1
+check "log cap: an oversized log is rolled to .1 at start" '[ -f "$CAP_DIR/mcp-server.log.1" ]'
+check "log cap: the fresh log is small and starts with a start event" \
+  '[ "$(node -e "
+     const l=require(\"fs\").readFileSync(\"$CAP_DIR/mcp-server.log\",\"utf8\").trim().split(\"\n\").map(JSON.parse);
+     console.log(l[0].event);
+   ")" = "start" ]'
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"

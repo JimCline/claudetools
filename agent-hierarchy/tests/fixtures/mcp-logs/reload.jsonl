@@ -1,0 +1,7 @@
+{"debug":"Starting connection with timeout of 30000ms","timestamp":"2026-09-08T00:42:04.970Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000004","cwd":"/repo"}
+{"debug":"Successfully connected (transport: stdio) in 210ms","timestamp":"2026-09-08T00:42:05.180Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000004","cwd":"/repo"}
+{"debug":"Connection established with capabilities: {\"hasTools\":true,\"serverVersion\":{\"name\":\"ah\",\"version\":\"0.66.0\"}}","timestamp":"2026-09-08T00:42:05.181Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000004","cwd":"/repo"}
+{"debug":"Calling MCP tool: msg_new","timestamp":"2026-09-08T01:00:00.000Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000004","cwd":"/repo"}
+{"debug":"Tool 'msg_new' completed successfully in 25ms","timestamp":"2026-09-08T01:00:00.025Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000004","cwd":"/repo"}
+{"debug":"Sending SIGINT to MCP server process","timestamp":"2026-09-09T18:42:48.000Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000004","cwd":"/repo"}
+{"debug":"MCP server process exited cleanly","timestamp":"2026-09-09T18:42:48.100Z","sessionId":"aaaaaaaa-0000-0000-0000-000000000004","cwd":"/repo"}
