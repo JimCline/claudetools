@@ -44,7 +44,7 @@
  * nothing.
  */
 
-import { cliRootLine, isSubagent, readHookInput, resolveConfig } from "./lib-config.mjs";
+import { cliRootLine, isSubagent, logHookError, readHookInput, resolveConfig } from "./lib-config.mjs";
 import { extractMsgToken } from "./lib-hier.mjs";
 import { matchedTeamIntentPhrase } from "./lib-team-intent.mjs";
 import { appendPeerRecord, appendTurnMarker, extractPendingRecord, parseWrapper, pendingFor } from "./lib-peer.mjs";
@@ -99,7 +99,8 @@ try {
       })
     );
   }
-} catch {
+} catch (err) {
+  logHookError("userpromptsubmit-peer-tracking.mjs", err);
   // fail open: a tracking failure must never affect the prompt it observed
 }
 process.exit(0);

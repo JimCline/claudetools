@@ -41,6 +41,20 @@ OUT=$(env -u CLAUDE_PID HOME="$FAKEHOME" node "$H/roster.mjs" spawn-one architec
 check "spawn-one: dead --orchestrator-pid -> exit 2" '[ "$RC" -eq 2 ]'
 check "spawn-one: dead --orchestrator-pid -> no team.json written" '[ ! -e "$TEAM_FILE" ]'
 
+# ---- every CLI write site resolves its own pid the same way: CLAUDE_PID, or an explicit
+# --orchestrator-pid. With neither, refusing is the only safe answer — the shell that runs these
+# verbs is a transient Bash-tool subprocess whose pid is dead before the next sweep.
+rm -f "$TEAM_FILE"
+run create --commit --transport tmux --roster-level repo --verified '["myrepo-architect"]'
+check "create --commit: CLAUDE_PID unset, no flag -> exit non-zero" '[ "$RC" -ne 0 ]'
+check "create --commit: CLAUDE_PID unset -> message names CLAUDE_PID" 'echo "$OUT" | grep -q "CLAUDE_PID"'
+check "create --commit: CLAUDE_PID unset -> no team.json written" '[ ! -e "$TEAM_FILE" ]'
+
+run checkin
+check "checkin: CLAUDE_PID unset, no flag -> exit non-zero" '[ "$RC" -ne 0 ]'
+check "checkin: CLAUDE_PID unset -> message names CLAUDE_PID" 'echo "$OUT" | grep -q "CLAUDE_PID"'
+check "checkin: CLAUDE_PID unset -> no team.json written" '[ ! -e "$TEAM_FILE" ]'
+
 # ---- spec 0018 §5: `adopt` recovery verb
 # Orphaned (null-owner) team, hand-written directly — post-0018 no CLI path can ever
 # produce this shape again, but it is exactly what a pre-fix commit left behind.

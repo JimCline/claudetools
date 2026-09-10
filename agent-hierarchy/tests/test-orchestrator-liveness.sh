@@ -182,6 +182,29 @@ check "T30: the record's session_id is not the recipient target's name" \
   'case "$DISPATCH_LINE" in *"\"session_id\":\"recipient-peer\""*) false;; *) true;; esac'
 rm -f "$REQ30_PATH"
 
+# ---- Stop payloads shaped like a top-level `--agent` session: Claude Code sets `agent_type` on
+# Stop there, alongside `stop_hook_active` and `last_assistant_message`. `ah:orchestrator` is still
+# the Orchestrator and owes its dispatches; a subordinate role session is exempt by contract, and a
+# subagent (agent_id set) is exempt too. All three shapes are indistinguishable without the fields.
+agent_stop() { # <session id> <agent_type> [agent_id]
+  OUT=$(node -e 'const [sid, cwd, type, aid] = process.argv.slice(1);
+    const o = { session_id: sid, cwd, agent_type: type, stop_hook_active: false, last_assistant_message: "Done." };
+    if (aid) o.agent_id = aid;
+    process.stdout.write(JSON.stringify(o));' "$1" "$PROJ" "$2" "$3" \
+    | HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HIER_DIR" node "$H/stop-orchestrator-liveness.mjs" 2>&1); RC=$?
+}
+
+write_request "20260101-000000-ag01" architect agent-shaped "$OLD" small
+mark_dispatch "20260101-000000-ag01" architect s-agent
+agent_stop s-agent "ah:orchestrator"
+check "--agent-shaped Stop (ah:orchestrator): outstanding dispatch still blocks" 'is_block'
+check "--agent-shaped Stop (ah:orchestrator): block names the request id" 'case "$OUT" in *20260101-000000-ag01*) true;; *) false;; esac'
+agent_stop s-agent "ah:architect"
+check "--agent-shaped Stop (subordinate role): allows — a role session is not the Orchestrator" '[ -z "$OUT" ]'
+agent_stop s-agent "ah:orchestrator" "sub-1"
+check "--agent-shaped Stop with agent_id (subagent): allows" '[ -z "$OUT" ]'
+rm -f "$HIER_DIR"/msgs/20260101-000000-ag01--*
+
 echo "----"
 echo "SUMMARY: $PASS passed, $FAIL failed"
 [ $FAIL -eq 0 ]

@@ -95,7 +95,7 @@ root marketplace.json to 0.29.0.
 - Deny (`permissionDecision:"deny"`) with reason:
   ```
   ah: role dispatches carry their brief as a message file, not inline prose.
-  1. node "$CLAUDE_PLUGIN_ROOT/hooks/msg.mjs" new --to <role> --from orchestrator --slug <slug> [--parent <id>] [--reason context|second-opinion|parallel]
+  1. node <AH_ROOT>/hooks/msg.mjs new --to <role> --from orchestrator --slug <slug> [--parent <id>] [--reason context|second-opinion|parallel]
   2. Fill every section (bullets, no prose; keep every constraint verbatim; [0] tldr indexes the rest).
   3. Re-issue this exact dispatch with first line: [hierarchy-msg <path>] then ≤3 TL;DR lines. Peer briefs keep the [hierarchy-peer-brief ...] sentinel too.
   Reason this call was denied: <missing token | path not found | wrong to: (file says X, dispatch is Y) | not a request file>.
@@ -139,7 +139,7 @@ root marketplace.json to 0.29.0.
     "Prefer peer agents, fall back to subagents (Recommended)" — reuse a live peer when one is free; spawn only when none is.
     "Peer agents only" — never spawn a roster subagent; wait or tell the user when no peer is free.
     "Subagents only" — ignore peers entirely this session.
-  Record it: node "$CLAUDE_PLUGIN_ROOT/hooks/msg.mjs" route <prefer-peers|peers|subagents> --session <session_id>
+  Record it: node <AH_ROOT>/hooks/msg.mjs route <prefer-peers|peers|subagents> --session <session_id>
   (the deny text must interpolate the real session id; `route` requires it — see [4])
   Then re-issue this exact dispatch. Say in one line what you recorded.
   ```

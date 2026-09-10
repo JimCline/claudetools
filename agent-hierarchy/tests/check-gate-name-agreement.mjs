@@ -98,4 +98,16 @@ if (allowRules.length !== 1 || allowRules[0].matcher !== "Bash") {
   console.log("PASS pretooluse-ah-cli.mjs: wired on matcher Bash");
 }
 
+// SubagentStart is the only channel that reaches an Agent-tool subagent, so an unwired or
+// narrowly-matched entry leaves every subagent without the absolute CLI paths.
+const subStart = (HOOKS_JSON.hooks.SubagentStart || []).filter((r) =>
+  (r.hooks || []).some((h) => typeof h.command === "string" && h.command.includes("hooks/subagentstart-cli-root.mjs"))
+);
+if (subStart.length !== 1 || subStart[0].matcher !== "*") {
+  console.log(`FAIL subagentstart-cli-root.mjs: expected exactly one SubagentStart rule on matcher "*", found ${JSON.stringify(subStart.map((r) => r.matcher))}`);
+  fail = true;
+} else {
+  console.log('PASS subagentstart-cli-root.mjs: wired on SubagentStart matcher "*"');
+}
+
 process.exit(fail ? 1 : 0);

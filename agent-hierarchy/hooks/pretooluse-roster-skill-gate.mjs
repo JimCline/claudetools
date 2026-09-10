@@ -28,8 +28,9 @@
  * crashing hook must never make roster operations unusable.
  */
 
-import { isSubagent, readHookInput } from "./lib-config.mjs";
-import { appendGate, hasGate, hierarchyDir } from "./lib-hier.mjs";
+import { isSubagent, logHookError, readHookInput, ROSTER_CLI } from "./lib-config.mjs";
+import { appendGate, hierarchyDir, readGates } from "./lib-hier.mjs";
+import { dirname, join } from "node:path";
 import { parseAhCommand } from "./lib-ah-cli.mjs";
 
 const VERBS = ["create", "spawn-one", "spawn-ad-hoc", "adopt", "move", "dismiss", "disband", "untrack"];
@@ -52,8 +53,20 @@ const DENY_REASON = [
   "ah: BLOCKED — this command did not run.",
   "Team lifecycle operations (create/spawn-one/spawn-ad-hoc/adopt/move/dismiss/disband/untrack on `hooks/roster.mjs`) are owned by the `ah:agent-team` skill, which encodes the roster levels, spawn layout, the team file check-in registry, and relocation rules that a raw CLI call skips. The `ah:agent-roster` skill covers the other half — editing the roster TEMPLATE (init/add/edit/remove/layout/alias) — and does not stand up or tear down anything.",
   'Invoke it: Skill with skill: "ah:agent-team". The skill may resolve this request differently than the command you were about to run — follow the skill, do not resume the original command by reflex.',
+  `If Skill reports it is already loaded but its body is not in your context, Read ${join(dirname(dirname(ROSTER_CLI)), "skills", "agent-team", "SKILL.md")} instead.`,
   "Re-running the same command will proceed after that — this gate is one-shot per session.",
 ].join(" ");
+
+/**
+ * A session is un-denied when it has no gate record at all, or when its most recent one is a reset.
+ * Compaction drops the skill body out of context while the old deny record still says the session
+ * was told once, which would leave the agent with neither the body nor a way back to it.
+ */
+function alreadyDenied(dir, sessionId) {
+  const mine = readGates(dir).filter((r) => r && r.type === "roster-skill-gate" && r.session_id === sessionId);
+  const last = mine[mine.length - 1];
+  return !!last && last.reset !== true;
+}
 
 try {
   const input = await readHookInput();
@@ -67,10 +80,11 @@ try {
   const sessionId = typeof input.session_id === "string" && input.session_id ? input.session_id : "__nosession__";
   const dir = hierarchyDir(cwd);
 
-  if (hasGate(dir, (r) => r.type === "roster-skill-gate" && r.session_id === sessionId)) process.exit(0);
+  if (alreadyDenied(dir, sessionId)) process.exit(0);
 
   appendGate(dir, { type: "roster-skill-gate", session_id: sessionId });
   deny(DENY_REASON);
-} catch {
+} catch (err) {
+  logHookError("pretooluse-roster-skill-gate.mjs", err);
   process.exit(0);
 }

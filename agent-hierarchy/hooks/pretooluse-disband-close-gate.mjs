@@ -18,7 +18,7 @@
  * enrichment failed.
  */
 
-import { readHookInput } from "./lib-config.mjs";
+import { logHookError, readHookInput } from "./lib-config.mjs";
 import { hierarchyDir } from "./lib-hier.mjs";
 import { readTeam } from "./lib-roster.mjs";
 import { isCloseCommand, parseAhCommand } from "./lib-ah-cli.mjs";
@@ -63,7 +63,8 @@ try {
       ? `ah: close the live session(s) of team member(s) ${names}? This is destructive and cannot be undone from here.`
       : "ah: close the live sessions of this Team? This is destructive and cannot be undone from here."
   );
-} catch {
+} catch (err) {
+  logHookError("pretooluse-disband-close-gate.mjs", err);
   // Once the command is known to be a close command, any later throw still fails closed with the
   // generic prompt rather than letting a destructive call through unprompted (0016 §4.5.1,
   // 0020 §4.1). Before that point the hook cannot know the call is ah's at all — the matcher is

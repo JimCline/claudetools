@@ -328,6 +328,38 @@ export function createMessage(dir, opts) {
   return { id: fields.id, path, fields, divergent };
 }
 
+/**
+ * Where the response to `reqPath` will land, and the frontmatter it needs — the same derivation
+ * `createMessage` uses, so a role without Bash can Write the file by hand and land it in exactly
+ * the place the requester reads. Returns null when the path is not a readable request file.
+ */
+export function responsePlan(reqPath) {
+  if (!reqPath || !isAbsolute(reqPath)) return null;
+  const meta = parseMsgFilename(reqPath);
+  if (!meta || meta.type !== "request") return null;
+  const parsed = existsSync(reqPath) ? readMsgFile(reqPath) : null;
+  const rf = parsed && parsed.fm ? parsed.fm : {};
+  const fields = {
+    id: meta.id,
+    type: "response",
+    to: rf.from || "orchestrator",
+    from: rf.to || meta.to,
+    slug: meta.slug,
+    parent: rf.parent || null,
+    reason: null,
+    eta: null,
+    to_name: rf.from_name || null,
+    from_name: rf.to_name || null,
+    team: rf.team || null,
+  };
+  return { path: join(dirname(reqPath), msgFilename(fields)), fields };
+}
+
+/** The frontmatter block a hand-written response needs, `created` filled at call time. */
+export function responseFrontmatter(fields, now = new Date()) {
+  return frontmatterText({ ...fields, created: localIso(now) });
+}
+
 /** Pair requests with responses by id: `[{id, request, response, meta}]`, newest id first. */
 export function listExchanges(dir) {
   const byId = new Map();

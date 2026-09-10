@@ -43,7 +43,7 @@ level's `roster` block is used in its entirety — a member defined only at a
 losing level does not appear. To inspect the roster run `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs show --cwd <abs cwd>`; never read `.claude/agent-hierarchy.json` directly — it misses the worktree/main-checkout and global fallback resolution that `show` implements. With no
 `--level`/`level` argument it always prints the resolved (winning) roster;
 with one, it prints that level's raw file and says if it's shadowed.
-The ah CLI is the only interface: every roster/team/message operation is a Bash call to `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs <verb> … --cwd <abs cwd>` or `node ${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs <verb> … --cwd <abs cwd>`. That placeholder reaches you resolved; if it is still literal, ask the Orchestrator for the root rather than guess. Verb reference: `agent-hierarchy/docs/cli-tools.md`. Output is always JSON; a non-zero exit says why on stdout/stderr.
+The ah CLI is the only interface: every roster/team/message operation is a Bash call to `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs <verb> … --cwd <abs cwd>` or `node ${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs <verb> … --cwd <abs cwd>`. That placeholder reaches you resolved; if it is still literal, the `ah CLI root` line in your context is authoritative — when two disagree, the newest wins. Verb reference: `agent-hierarchy/docs/cli-tools.md`. Output is always JSON; a non-zero exit says why on stdout/stderr.
 
 Member names are **derived, never stored**: the first member of a role at the
 winning level is `<team-prefix>-<role>` (e.g. `claudetools-architect`) — the
@@ -58,7 +58,8 @@ from the roster.
 ## Command surface
 
 Every verb below runs as `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs <verb> … --cwd <abs cwd>`
-through the Bash tool — `${CLAUDE_PLUGIN_ROOT}` from this session's `ah CLI root:` line.
+through the Bash tool — `${CLAUDE_PLUGIN_ROOT}` from this session's `ah CLI root` line, which is
+authoritative when it and the placeholder disagree; with two such lines, the newest wins.
 `docs/cli-tools.md` is the single source of truth for the full verb/flag surface;
 the bullets below are this skill's operational notes on top of it.
 

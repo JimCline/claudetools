@@ -15,7 +15,7 @@
  * and `msgs:"off"` in agent-hierarchy.json. Any internal error allows.
  */
 
-import { hierarchyRoleOf, isSubagent, MSG_CLI, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolveHierarchyRole, resolvedPeerTargets, teamPrefix } from "./lib-config.mjs";
+import { hierarchyRoleOf, isSubagent, logHookError, MSG_CLI, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolvedPeerTargets, resolveHierarchyRole, teamPrefix } from "./lib-config.mjs";
 import { hierarchyDir, validateRequestToken } from "./lib-hier.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
 
@@ -88,6 +88,7 @@ try {
   const check = validateRequestToken(text, dir, role);
   if (check.ok) decide(null);
   decide("deny", denyReason(role, check.why));
-} catch {
+} catch (err) {
+  logHookError("pretooluse-msg-gate.mjs", err);
   decide(null);
 }

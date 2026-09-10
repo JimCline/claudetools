@@ -72,6 +72,22 @@ no(`node /opt/ah/0.7?.0/hooks/roster.mjs show --cwd /repo`); // glob: ?
 no(`node /opt/ah/[a]/hooks/roster.mjs show --cwd /repo`); // glob: [ ]
 no(`node /opt/ah/{a,b}/hooks/roster.mjs show --cwd /repo`); // brace expansion
 no(`node ~/ah/hooks/roster.mjs show --cwd /repo`);        // tilde expansion
+// ...and in ARGUMENT tokens, not only the script path: bash expands `--cl{o..o}se` to `--close`
+// before node runs, so a parse that reads the literal would hand the allow hook a command whose
+// real verb the close gate never sees.
+no(`node ${R} dismiss bob --cl{o..o}se --confirm --cwd /repo`); // brace expansion to --close
+no(`node ${R} dismiss bob --clos? --confirm --cwd /repo`);      // glob to --close
+no(`node ${R} dismiss bob --clos[e] --confirm --cwd /repo`);    // bracket glob to --close
+no(`node ${R} show --cwd ~/repo`);                              // tilde in an argument
+no(`node ${R} show --cwd /re*po`);                              // glob in an argument
+// Quoting one PART of a token does not shelter the rest: the shell expands the unquoted half just
+// the same, and an empty quote next to it is what a whole-token check reads as "this token is
+// quoted, skip it".
+no(`node ${R} dismiss bob --cl{o..o}s\x27\x27e --confirm --cwd /repo`); // brace beside an empty quote
+no(`node ${R} dismiss bob \x27\x27{dismiss,--close} --confirm --cwd /repo`); // empty quote then a brace list
+no(`node ${R} dismiss bob --close{,}\x27\x27 --confirm --cwd /repo`);  // brace before a trailing empty quote
+no(`node hooks/roster.mjs show --cwd /repo`);                   // relative script path
+no(`node ./hooks/roster.mjs show --cwd /repo`);                 // dot-relative script path
 ok(`node \x27/opt/ah/*/hooks/roster.mjs\x27 show --cwd /repo`, { script: "roster" }); // quoted: nothing expands, literal path stands
 no(`node ${R} show --cwd /repo\nrm -rf /`);
 no(`node ${R} show > /tmp/out`);
@@ -190,7 +206,7 @@ ROOT_LINE=$(printf '{"source":"startup","cwd":"%s","session_id":"root-line","age
   | HOME="$FAKEHOME" node "$PLUGIN/hooks/sessionstart.mjs" 2>&1)
 OUT="$ROOT_LINE"
 check "§2.1: SessionStart injects an 'ah CLI root:' line naming the absolute root and both scripts" \
-  'echo "$ROOT_LINE" | grep -q "ah CLI root: $PLUGIN" && echo "$ROOT_LINE" | grep -q "$PLUGIN/hooks/roster.mjs" && echo "$ROOT_LINE" | grep -q "$PLUGIN/hooks/msg.mjs"'
+  'echo "$ROOT_LINE" | grep -qE "ah CLI root \(v[^)]+\): $PLUGIN" && echo "$ROOT_LINE" | grep -q "$PLUGIN/hooks/roster.mjs" && echo "$ROOT_LINE" | grep -q "$PLUGIN/hooks/msg.mjs"'
 
 echo
 echo "passed: $PASS  failed: $FAIL"

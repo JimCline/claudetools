@@ -106,6 +106,16 @@ for script in roster msg; do
   check "$script.mjs with no verb prints usage and exits 0" '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "'"$script"'.mjs"'
 done
 
+# One root-locating recipe, in this file. A cache glob can never be it: several versions coexist
+# under the cache dir, so the newest directory there is not necessarily the one in use.
+GLOBS=$(grep -rn 'ls -t ~/.claude/plugins/cache' "$PLUGIN/docs" "$PLUGIN/commands" "$PLUGIN/agents" "$PLUGIN/skills" "$PLUGIN/hooks" "$PLUGIN/README.md" 2>/dev/null | grep -v '/docs/specs/' | grep -v '/docs/retired/' || true)
+check "no cache-glob root recipe survives outside specs" '[ -z "$GLOBS" ]'
+
+# $CLAUDE_PLUGIN_ROOT unbraced is the shell-expanded form, and the Bash tool's env leaves it EMPTY:
+# anything printing it as part of a runnable command hands the reader a broken command.
+UNBRACED=$(grep -rn '[$]CLAUDE_PLUGIN_ROOT' "$PLUGIN/docs" "$PLUGIN/commands" "$PLUGIN/agents" "$PLUGIN/skills" "$PLUGIN/README.md" 2>/dev/null | grep -v '/docs/specs/' | grep -v '/docs/retired/' | grep -v '{CLAUDE_PLUGIN_ROOT' || true)
+check "no unbraced \$CLAUDE_PLUGIN_ROOT in docs, commands, agents or skills" '[ -z "$UNBRACED" ]'
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

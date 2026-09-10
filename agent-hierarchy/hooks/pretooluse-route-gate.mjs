@@ -82,7 +82,7 @@
  * independent.
  */
 
-import { hierarchyRoleOf, isSubagent, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolvedPeerTargets, roleFromName, ROLE_LABELS, teamPrefix, tierOf } from "./lib-config.mjs";
+import { hierarchyRoleOf, isSubagent, logHookError, MSG_CLI, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolvedPeerTargets, ROLE_LABELS, ROSTER_CLI, roleFromName, teamPrefix, tierOf } from "./lib-config.mjs";
 import {
   appendGate,
   describeInstance,
@@ -127,7 +127,7 @@ function askReason(ros, sessionId) {
     '  "Peer agents only (Recommended)" — never spawn a roster subagent; when no live peer exists for a role, ask before falling back to a subagent for that role.',
     '  "Prefer peer agents, fall back to subagents" — reuse a live peer when one is free; spawn without asking when none is.',
     '  "Subagents only" — ignore peers entirely this session.',
-    `Record it: node "$CLAUDE_PLUGIN_ROOT/hooks/msg.mjs" route <peers|prefer-peers|subagents> --session ${sessionId}`,
+    `Record it: node ${MSG_CLI} route <peers|prefer-peers|subagents> --session ${sessionId}`,
     "Then re-issue this exact dispatch. Say in one line what you recorded.",
     'Need live peers that do not exist yet? That is the `ah:agent-team` skill\'s job, not a raw roster MCP call.',
   ].join("\n");
@@ -162,7 +162,7 @@ function peerFallbackAskReason(role, resolved, dir, sessionId, cwd) {
       `ah: route is peers this session, but no live instance of ${ROLE_LABELS[role]} exists to route to.`,
       `A roster entry for ${ROLE_LABELS[role]} exists at ${resolved.rosterLevel} level (name: ${member.name}).`,
       "Ask the user with AskUserQuestion, exactly these options in this order:",
-      `  "Stand up the real ${ROLE_LABELS[role]} peer (Recommended)" — node "$CLAUDE_PLUGIN_ROOT/hooks/roster.mjs" spawn-one ${role} --cwd ${cwd}`,
+      `  "Stand up the real ${ROLE_LABELS[role]} peer (Recommended)" — node ${ROSTER_CLI} spawn-one ${role} --cwd ${cwd}`,
       "     Then SendMessage the peer instead of re-issuing this dispatch.",
       '  "Spawn a one-off subagent instead" — re-issue this exact dispatch.',
       `  "Neither — I'll start it myself" — do not dispatch; say you are blocked on ${ROLE_LABELS[role]}.`,
@@ -182,7 +182,7 @@ function onMissingFor(resolved, role) {
 function onMissingAutoReason(role, cwd) {
   return [
     `ah: no live ${ROLE_LABELS[role]} peer, and its on-missing policy is "auto".`,
-    `Run: node "$CLAUDE_PLUGIN_ROOT/hooks/roster.mjs" spawn-one ${role} --cwd ${cwd}`,
+    `Run: node ${ROSTER_CLI} spawn-one ${role} --cwd ${cwd}`,
     "Then SendMessage the peer instead of re-issuing this dispatch. Do not ask the user — this is configured.",
   ].join("\n");
 }
@@ -206,7 +206,7 @@ function globalScopeAnswer(dir, sessionId, scope) {
 function globalScopeReaskReason(scope, sessionId, scopeBPending) {
   const what = scope === "roster" ? "the global roster" : "user-scope role configuration";
   const note = scopeBPending ? " Note: a second question about user-scope role configuration (scope B) is also pending for this dispatch." : "";
-  return `ah: you were already asked about ${what} this session and did not record an answer. Run node "$CLAUDE_PLUGIN_ROOT/hooks/msg.mjs" global-scope ${scope} <allow|deny> --session ${sessionId}, then re-issue.${note}`;
+  return `ah: you were already asked about ${what} this session and did not record an answer. Run node ${MSG_CLI} global-scope ${scope} <allow|deny> --session ${sessionId}, then re-issue.${note}`;
 }
 
 function globalRosterAskReason(resolved, sessionId, scopeBPending) {
@@ -216,8 +216,8 @@ function globalRosterAskReason(resolved, sessionId, scopeBPending) {
     "Ask the user with AskUserQuestion, exactly these options in this order:",
     '  "Create a roster for this repo (Recommended)" — run the /agent-roster skill\'s Init then Add flow for this repo, then re-issue.',
     '  "Use the global roster for this session" — records allow; no further prompting for this scope.',
-    `  "Subagents only this session" — node "$CLAUDE_PLUGIN_ROOT/hooks/msg.mjs" route subagents --session ${sessionId}`,
-    `Record the answer: node "$CLAUDE_PLUGIN_ROOT/hooks/msg.mjs" global-scope roster <allow|deny> --session ${sessionId}`,
+    `  "Subagents only this session" — node ${MSG_CLI} route subagents --session ${sessionId}`,
+    `Record the answer: node ${MSG_CLI} global-scope roster <allow|deny> --session ${sessionId}`,
     "Then re-issue this exact dispatch. Say in one line what you recorded.",
   ];
   if (scopeBPending) lines.push("Note: a second question about user-scope role configuration (scope B) is also pending for this dispatch.");
@@ -236,7 +236,7 @@ function globalConfigAskReason(role, resolved, sessionId) {
     '  "Use the user-scope settings for this session (Recommended)" — records allow.',
     '  "Set this role for this repo instead" — run the /agent-roster skill\'s Add/Edit flow at repo level, then re-issue.',
     `  "Stop — I'll decide later" — do not dispatch; say you are blocked on ${ROLE_LABELS[role]}.`,
-    `Record the answer: node "$CLAUDE_PLUGIN_ROOT/hooks/msg.mjs" global-scope config <allow|deny> --session ${sessionId}`,
+    `Record the answer: node ${MSG_CLI} global-scope config <allow|deny> --session ${sessionId}`,
     "Then re-issue this exact dispatch. Say in one line what you recorded.",
   ];
   return lines.join("\n");
@@ -423,6 +423,7 @@ try {
   }
 
   decide(null);
-} catch {
+} catch (err) {
+  logHookError("pretooluse-route-gate.mjs", err);
   decide(null);
 }

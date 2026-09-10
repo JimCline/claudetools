@@ -43,13 +43,17 @@ import {
   buildRoleSessionNotice,
   cliRootLine,
   hierarchyRoleOf,
+  HOOK_ERROR_LOG,
   isSubagent,
   isTopLevelAgentSession,
+  logHookError,
   readHookInput,
+  recentHookErrors,
   resolveConfig,
+  ROSTER_CLI,
   teamPrefix,
 } from "./lib-config.mjs";
-import { appendRosterRecord, buildStateBlock, cacheSessionModel, effectiveRoute, ensureHierarchyDir, realCwd, sessionModel, sweep, SWEEP_DAYS } from "./lib-hier.mjs";
+import { appendGate, appendRosterRecord, buildStateBlock, cacheSessionModel, effectiveRoute, ensureHierarchyDir, realCwd, sessionModel, sweep, SWEEP_DAYS } from "./lib-hier.mjs";
 import { clearTeam, herdrOnPath, readTeam, resolveSessionTeam, teamIsLive } from "./lib-roster.mjs";
 import { writeSessionRole } from "./lib-session-role.mjs";
 
@@ -77,126 +81,153 @@ function sweepStaleTeam(dir, team = null) {
   return `cleared stale team ${t.team_id}`;
 }
 
-const input = await readHookInput();
+try {
+  const input = await readHookInput();
 
-let context = null;
+  let context = null;
 
-if (!isSubagent(input)) {
-  const role = isTopLevelAgentSession(input) ? hierarchyRoleOf(input.agent_type) : null;
-  const cwd = input.cwd || process.cwd();
+  if (!isSubagent(input)) {
+    const role = isTopLevelAgentSession(input) ? hierarchyRoleOf(input.agent_type) : null;
+    const cwd = input.cwd || process.cwd();
 
-  if (role) {
-    context = buildRoleSessionNotice(role, input.agent_type);
-    // Spec 0028 §3.3: the persisted half of resolveHierarchyRole's fallback —
-    // non-enforcing (§3.7), best-effort like the roster record beside it.
-    try {
-      writeSessionRole(input.session_id || null, role);
-    } catch {
-      // best-effort — the role notice still goes out
-    }
-    let misplaced = false;
-    let expectedRoot = null;
-    let teamId = null;
-    try {
-      const dir = ensureHierarchyDir(cwd);
-      // Spec 0036 §3.2 (F4/F6): SessionStart has no --team and no known peer name, only role.
-      // Spec 0044 §1.6 chose channel (b), attribute at READ time: this hook fires while the
-      // orchestrator is still launching, BEFORE its `writeTeam` lands, so there is usually no
-      // member row to match this session's pane against yet and nothing here can know the team
-      // reliably. Matching the pane against the member rows is therefore done by the readers
-      // (`roster teams`, `checkin`), which run after the write. What stays here is §3.2's role
-      // scan — the fallback — recorded best-effort and safe-refusing to no `team` field at all
-      // when it is ambiguous. A session that resolves to no team is a legitimate non-peer
-      // session, not a mismatch: detection skips entirely, silently, same reasoning as an
-      // absent expected_root.
-      const resolved = resolveSessionTeam(dir, role);
-      const team = resolved && resolved.team;
-      expectedRoot = (team && team.expected_root) || null;
-      teamId = team && team.team_id;
-      misplaced = Boolean(expectedRoot) && realCwd(cwd) !== expectedRoot;
-      const rec = {
-        status: "up",
-        role,
-        session_id: input.session_id || null,
-        pid: process.ppid,
-        ppid: process.ppid,
-        cwd,
-        pane_id: process.env.HERDR_PANE_ID || null,
-        tab_id: process.env.HERDR_TAB_ID || null,
-        workspace_id: process.env.HERDR_WORKSPACE_ID || null,
-      };
-      // §3.2/§3.3: the row gains `team` when a team resolved — NEVER `name` (rosterKey is
-      // name||session_id; adding name here would repartition it and, worse, merge with
-      // posttooluse-roster.mjs's differently-keyed seen/briefed rows — see the 0036-f4-f6 spec).
-      if (resolved) rec.team = resolved.teamName;
-      // Spec 0036 §3.1: absent expected_root means no expectation recorded — never write these,
-      // so a pre-0036 team is never read as a mismatch.
-      if (expectedRoot) {
-        rec.expected_root = expectedRoot;
-        rec.misplaced = misplaced;
-      }
-      appendRosterRecord(dir, rec);
-    } catch {
-      // roster is best-effort; the notice still goes out
-    }
-    // Spec 0036 §3.2: a nudge, not a gate — the peer is registered either way (above), and this
-    // is advisory text appended to the notice, never a refusal to work.
-    if (misplaced) {
-      context +=
-        "\n\n" +
-        `Misplaced: this session is at \`${cwd}\`; team \`${teamId}\` expects \`${expectedRoot}\`.\n` +
-        `Run \`EnterWorktree\` with \`path=${expectedRoot}\`, then run ` +
-        "`roster.mjs checkin` to re-register. **`cd` will not work** — a shell `cd` does " +
-        "not move this session's `input.cwd`; only `EnterWorktree` does.\n" +
-        "If `EnterWorktree` is refused or denied, report to the orchestrator for respawn.";
-    }
-  } else {
-    const resolved = resolveConfig(cwd, { sessionId: input.session_id || null });
-    if (!resolved.configured) context = buildNudge(resolved);
-    else if (resolved.enabled) {
-      let dir = null;
-      let model = null;
-      let route = null;
-      let state = null;
-      let teamSweepNote = null;
+    // Compaction drops the skill body out of context while the one-shot gate record still says this
+    // session was shown it once. A reset record puts the gate back within reach. Unconditional on
+    // config, because the gate it re-arms is unconditional too.
+    if (input.source === "compact" && input.session_id) {
       try {
-        dir = ensureHierarchyDir(cwd);
-        model = sessionModel(input, dir);
-        if (input.model && input.session_id) cacheSessionModel(dir, input.session_id, input.model);
-        if (input.source === "startup") sweep(dir, SWEEP_DAYS);
-        // Stale-team safety net (spec 0001 §5.3): only a plain top-level session can
-        // legitimately observe a DIFFERENT session's abandoned team — never the
-        // Orchestrator's own session before it has written the registry, and never a
-        // `--agent <role>` member session (excluded above by the `role` branch, but
-        // guarded again here per the spec's exact condition).
-        if (!isTopLevelAgentSession(input)) teamSweepNote = sweepStaleTeam(dir, resolved.team);
-        route = effectiveRoute(dir, resolved, input.session_id || null);
-        state = buildStateBlock(dir, resolved, teamPrefix(resolved.cwd, resolved.team), model, input.session_id || null, route);
+        appendGate(ensureHierarchyDir(cwd), { type: "roster-skill-gate", session_id: input.session_id, reset: true });
       } catch {
-        // state block is best-effort; the directive still goes out
+        // the gate stays one-shot; never let this cost the injection
       }
-      context = buildDirective(resolved, input.session_id, { hierDir: dir, model, route });
-      if (teamSweepNote) context += "\n\n" + teamSweepNote;
-      if (state) context += "\n\n" + state;
-      const herdrNote = herdrWarning();
-      if (herdrNote) context += "\n\n" + herdrNote;
+    }
+
+    if (role) {
+      context = buildRoleSessionNotice(role, input.agent_type);
+      // Spec 0028 §3.3: the persisted half of resolveHierarchyRole's fallback —
+      // non-enforcing (§3.7), best-effort like the roster record beside it.
+      try {
+        writeSessionRole(input.session_id || null, role);
+      } catch {
+        // best-effort — the role notice still goes out
+      }
+      let misplaced = false;
+      let expectedRoot = null;
+      let teamId = null;
+      try {
+        const dir = ensureHierarchyDir(cwd);
+        // Spec 0036 §3.2 (F4/F6): SessionStart has no --team and no known peer name, only role.
+        // Spec 0044 §1.6 chose channel (b), attribute at READ time: this hook fires while the
+        // orchestrator is still launching, BEFORE its `writeTeam` lands, so there is usually no
+        // member row to match this session's pane against yet and nothing here can know the team
+        // reliably. Matching the pane against the member rows is therefore done by the readers
+        // (`roster teams`, `checkin`), which run after the write. What stays here is §3.2's role
+        // scan — the fallback — recorded best-effort and safe-refusing to no `team` field at all
+        // when it is ambiguous. A session that resolves to no team is a legitimate non-peer
+        // session, not a mismatch: detection skips entirely, silently, same reasoning as an
+        // absent expected_root.
+        const resolved = resolveSessionTeam(dir, role);
+        const team = resolved && resolved.team;
+        expectedRoot = (team && team.expected_root) || null;
+        teamId = team && team.team_id;
+        misplaced = Boolean(expectedRoot) && realCwd(cwd) !== expectedRoot;
+        const rec = {
+          status: "up",
+          role,
+          session_id: input.session_id || null,
+          pid: process.ppid,
+          ppid: process.ppid,
+          cwd,
+          pane_id: process.env.HERDR_PANE_ID || null,
+          tab_id: process.env.HERDR_TAB_ID || null,
+          workspace_id: process.env.HERDR_WORKSPACE_ID || null,
+        };
+        // §3.2/§3.3: the row gains `team` when a team resolved — NEVER `name` (rosterKey is
+        // name||session_id; adding name here would repartition it and, worse, merge with
+        // posttooluse-roster.mjs's differently-keyed seen/briefed rows — see the 0036-f4-f6 spec).
+        if (resolved) rec.team = resolved.teamName;
+        // Spec 0036 §3.1: absent expected_root means no expectation recorded — never write these,
+        // so a pre-0036 team is never read as a mismatch.
+        if (expectedRoot) {
+          rec.expected_root = expectedRoot;
+          rec.misplaced = misplaced;
+        }
+        appendRosterRecord(dir, rec);
+      } catch {
+        // roster is best-effort; the notice still goes out
+      }
+      // Spec 0036 §3.2: a nudge, not a gate — the peer is registered either way (above), and this
+      // is advisory text appended to the notice, never a refusal to work.
+      if (misplaced) {
+        context +=
+          "\n\n" +
+          `Misplaced: this session is at \`${cwd}\`; team \`${teamId}\` expects \`${expectedRoot}\`.\n` +
+          `Run \`EnterWorktree\` with \`path=${expectedRoot}\`, then run ` +
+          "`roster.mjs checkin` to re-register. **`cd` will not work** — a shell `cd` does " +
+          "not move this session's `input.cwd`; only `EnterWorktree` does.\n" +
+          "If `EnterWorktree` is refused or denied, report to the orchestrator for respawn.";
+      }
+    } else {
+      const resolved = resolveConfig(cwd, { sessionId: input.session_id || null });
+      if (!resolved.configured) context = buildNudge(resolved);
+      else if (resolved.enabled) {
+        let dir = null;
+        let model = null;
+        let route = null;
+        let state = null;
+        let teamSweepNote = null;
+        try {
+          dir = ensureHierarchyDir(cwd);
+          model = sessionModel(input, dir);
+          if (input.model && input.session_id) cacheSessionModel(dir, input.session_id, input.model);
+          if (input.source === "startup") sweep(dir, SWEEP_DAYS);
+          // Stale-team safety net (spec 0001 §5.3): only a plain top-level session can
+          // legitimately observe a DIFFERENT session's abandoned team — never the
+          // Orchestrator's own session before it has written the registry, and never a
+          // `--agent <role>` member session (excluded above by the `role` branch, but
+          // guarded again here per the spec's exact condition).
+          if (!isTopLevelAgentSession(input)) teamSweepNote = sweepStaleTeam(dir, resolved.team);
+          route = effectiveRoute(dir, resolved, input.session_id || null);
+          state = buildStateBlock(dir, resolved, teamPrefix(resolved.cwd, resolved.team), model, input.session_id || null, route);
+        } catch {
+          // state block is best-effort; the directive still goes out
+        }
+        context = buildDirective(resolved, input.session_id, { hierDir: dir, model, route });
+        if (teamSweepNote) context += "\n\n" + teamSweepNote;
+        if (state) context += "\n\n" + state;
+        const herdrNote = herdrWarning();
+        if (herdrNote) context += "\n\n" + herdrNote;
+      }
     }
   }
-}
 
-// Spec 0048 §2.1: hooks own the path to the ah CLIs — they are the only participants that know
-// `CLAUDE_PLUGIN_ROOT`, and since 0.73.0 the CLIs are the whole interface. Every session this hook
-// injects into learns the absolute root here; subagents (which get nothing, by design) learn it
-// from the hook messages that name the full command.
-if (context) {
-  context += `\n\n${cliRootLine()}`;
+  // Spec 0048 §2.1: hooks own the path to the ah CLIs — they are the only participants that know
+  // `CLAUDE_PLUGIN_ROOT`, and since 0.73.0 the CLIs are the whole interface. Every session this hook
+  // injects into learns the absolute root here; subagents (which get nothing, by design) learn it
+  // from the hook messages that name the full command.
+  if (context) {
+    context += `\n\n${cliRootLine()}`;
+    // A hook that throws is invisible: Claude Code reports it only under --debug. One line, only
+    // when there is something to say, is what makes the log discoverable at all.
+    try {
+      const errs = recentHookErrors(24);
+      if (errs.length) {
+        context += `\n\nah: ${errs.length} agent-hierarchy hook error(s) logged in the last 24 h — \`node ${ROSTER_CLI} doctor --cwd <abs cwd>\` for the last few, full log at ${HOOK_ERROR_LOG}.`;
+      }
+    } catch {
+      // the log is a diagnostic; never let reading it break the injection it rides on
+    }
 
-  process.stdout.write(
-    JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "SessionStart",
-        additionalContext: context,
-      },
-    })
-  );
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "SessionStart",
+          additionalContext: context,
+        },
+      })
+    );
+  }
+} catch (err) {
+  // Injection is advisory, so exit 1 costs the session nothing but makes the failure visible.
+  logHookError("sessionstart.mjs", err);
+  process.exit(1);
 }

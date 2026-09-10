@@ -27,7 +27,7 @@
  * `appendDispatchRecord` in lib-peer.mjs for why that independence matters.
  */
 
-import { isSubagent, readHookInput } from "./lib-config.mjs";
+import { isSubagent, logHookError, readHookInput } from "./lib-config.mjs";
 import { extractMsgToken, hasResponseToken, parseMsgFilename } from "./lib-hier.mjs";
 import { appendDispatchRecord, appendPeerRecord, pendingFor, targetSatisfiesRecord } from "./lib-peer.mjs";
 
@@ -63,7 +63,8 @@ try {
       }
     }
   }
-} catch {
+} catch (err) {
+  logHookError("posttooluse-peer-resolve.mjs", err);
   // fail open: a resolver failure must never affect the SendMessage it observed
 }
 process.exit(0);

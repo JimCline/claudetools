@@ -30,7 +30,16 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { hierarchyDir, peerName, readHookInput, resolveConfig, resolveHierarchyRole, resolvedPeerTargets, teamPrefix } from "./lib-config.mjs";
+import {
+  hierarchyDir,
+  logHookError,
+  peerName,
+  readHookInput,
+  resolveConfig,
+  resolvedPeerTargets,
+  resolveHierarchyRole,
+  teamPrefix,
+} from "./lib-config.mjs";
 import { getDecision, isGatedPeerTarget, isGatedSubagentType, NO_SESSION_KEY, normalizeSessionId } from "./lib-gate.mjs";
 import { listTeamNames } from "./lib-roster.mjs";
 
@@ -91,62 +100,68 @@ function eachTimeReason(model) {
   return `Ultra-Advisor escalation (model "${model}") — the escalation apex and the most expensive tier in the hierarchy. The user chose to be asked before each escalation.`;
 }
 
-const input = await readHookInput();
+try {
+  const input = await readHookInput();
 
-const toolName = input.tool_name;
-const isDispatch = toolName === "Agent" || toolName === "Task";
-const isSend = toolName === "SendMessage";
-if (!isDispatch && !isSend) decide(null);
+  const toolName = input.tool_name;
+  const isDispatch = toolName === "Agent" || toolName === "Task";
+  const isSend = toolName === "SendMessage";
+  if (!isDispatch && !isSend) decide(null);
 
-// Spec 0028 §3.2 primary fix: this gate is Orchestrator-only. A caller
-// positively attributed (§3.7) as a subordinate hierarchy role is not the
-// Orchestrator, so the gate must not fire for it — an unidentified caller
-// still falls through to the checks below, same as today.
-{
-  const { role: callerRole, direct: callerDirect } = resolveHierarchyRole(input);
-  if (callerDirect && callerRole) decide(null);
-}
+  // Spec 0028 §3.2 primary fix: this gate is Orchestrator-only. A caller
+  // positively attributed (§3.7) as a subordinate hierarchy role is not the
+  // Orchestrator, so the gate must not fire for it — an unidentified caller
+  // still falls through to the checks below, same as today.
+  {
+    const { role: callerRole, direct: callerDirect } = resolveHierarchyRole(input);
+    if (callerDirect && callerRole) decide(null);
+  }
 
-const toolInput = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
-const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
-const sessionId = normalizeSessionId(input.session_id);
+  const toolInput = input.tool_input && typeof input.tool_input === "object" ? input.tool_input : {};
+  const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
+  const sessionId = normalizeSessionId(input.session_id);
 
-// Team scope must be resolved before repoBasename/teamPrefix — spec 0011
-// §9.1 requires every team-scoped prefix call to pass the resolved team, not
-// just the cwd — which costs the config read the fast path below used to
-// skip for non-gated tool calls.
-const resolved = resolveConfig(cwd, { sessionId: sessionId !== NO_SESSION_KEY ? sessionId : undefined });
-if (!resolved.enabled) decide(null);
-const repoBasename = teamPrefix(cwd, resolved.team);
+  // Team scope must be resolved before repoBasename/teamPrefix — spec 0011
+  // §9.1 requires every team-scoped prefix call to pass the resolved team, not
+  // just the cwd — which costs the config read the fast path below used to
+  // skip for non-gated tool calls.
+  const resolved = resolveConfig(cwd, { sessionId: sessionId !== NO_SESSION_KEY ? sessionId : undefined });
+  if (!resolved.enabled) decide(null);
+  const repoBasename = teamPrefix(cwd, resolved.team);
 
-// spec 0011 §9.5, predicate (ii): a session that could not resolve its own
-// team cannot compute the one correct prefix, so when named teams exist it
-// tests every team's prefix instead of silently testing only the default
-// one — 0009's escalation gate is a per-session consent control, and a name
-// that cannot be right must not stand in for one that could be. When
-// `resolved.team` resolves, or no named teams exist, this is a single-
-// element array identical to today's `repoBasename`.
-const teamNames = resolved.team === null ? listTeamNames(hierarchyDir(cwd)) : [];
-const gatedPrefixes = teamNames.length > 0 ? [repoBasename, ...teamNames.map((team) => teamPrefix(cwd, team))] : [repoBasename];
+  // spec 0011 §9.5, predicate (ii): a session that could not resolve its own
+  // team cannot compute the one correct prefix, so when named teams exist it
+  // tests every team's prefix instead of silently testing only the default
+  // one — 0009's escalation gate is a per-session consent control, and a name
+  // that cannot be right must not stand in for one that could be. When
+  // `resolved.team` resolves, or no named teams exist, this is a single-
+  // element array identical to today's `repoBasename`.
+  const teamNames = resolved.team === null ? listTeamNames(hierarchyDir(cwd)) : [];
+  const gatedPrefixes = teamNames.length > 0 ? [repoBasename, ...teamNames.map((team) => teamPrefix(cwd, team))] : [repoBasename];
 
-let gated = isDispatch
-  ? isGatedSubagentType(toolInput.subagent_type)
-  : gatedPrefixes.some((prefix) => isGatedPeerTarget(toolInput.to, peerName(prefix, "ultra-advisor"))) ||
-    resolvedPeerTargets("ultra-advisor", resolved.roles["ultra-advisor"], repoBasename).some((name) => isGatedPeerTarget(toolInput.to, name));
-if (!gated) decide(null);
+  let gated = isDispatch
+    ? isGatedSubagentType(toolInput.subagent_type)
+    : gatedPrefixes.some((prefix) => isGatedPeerTarget(toolInput.to, peerName(prefix, "ultra-advisor"))) ||
+      resolvedPeerTargets("ultra-advisor", resolved.roles["ultra-advisor"], repoBasename).some((name) => isGatedPeerTarget(toolInput.to, name));
+  if (!gated) decide(null);
 
-const model = resolved.roles["ultra-advisor"].model;
+  const model = resolved.roles["ultra-advisor"].model;
 
-switch (getDecision(sessionId)) {
-  case "session":
-    decide(null);
-    break;
-  case "each":
-    decide("ask", eachTimeReason(model));
-    break;
-  case "off":
-    decide("deny", blockedReason(sessionId));
-    break;
-  default:
-    decide("deny", firstUseReason(sessionId, model));
+  switch (getDecision(sessionId)) {
+    case "session":
+      decide(null);
+      break;
+    case "each":
+      decide("ask", eachTimeReason(model));
+      break;
+    case "off":
+      decide("deny", blockedReason(sessionId));
+      break;
+    default:
+      decide("deny", firstUseReason(sessionId, model));
+  }
+} catch (err) {
+  // A gate that cannot decide must not block; exit 1 is non-blocking and leaves a trace.
+  logHookError("pretooluse-ultra-gate.mjs", err);
+  process.exit(1);
 }

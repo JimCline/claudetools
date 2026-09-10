@@ -15,7 +15,7 @@
  * readGateState/setDecision.
  */
 
-import { readHookInput, resolveHierarchyRole, ROLE_LABELS } from "./lib-config.mjs";
+import { logHookError, readHookInput, resolveHierarchyRole, ROLE_LABELS } from "./lib-config.mjs";
 
 function decide(decision, reason) {
   if (decision) {
@@ -63,6 +63,7 @@ try {
   if (!direct || !role) decide(null);
 
   decide("deny", denyReason(role, toolName));
-} catch {
+} catch (err) {
+  logHookError("pretooluse-conduit-gate.mjs", err);
   decide(null);
 }

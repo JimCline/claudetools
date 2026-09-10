@@ -23,7 +23,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { hierarchyRoleOf, MSG_CLI, readHookInput, resolveConfig } from "./lib-config.mjs";
+import { hierarchyRoleOf, logHookError, MSG_CLI, readHookInput, resolveConfig } from "./lib-config.mjs";
 import { appendGate, extractMsgToken, hasGate, hasResponseToken, hierarchyDir, parseMsgFilename, readMsgFile } from "./lib-hier.mjs";
 
 const NUDGED_ROLES = ["architect", "implementor", "reviewer", "ultra-advisor"];
@@ -140,6 +140,7 @@ try {
   block(
     `ah: your brief was a message file (${requestPath}); write your response file — node "${MSG_CLI}" new --type response --id ${meta.id} --req ${requestPath} --to ${from} --from ${role}; fill every section (bullets, no prose; [1] status first bullet done|partial|blocked) — and return exactly: [hierarchy-msg <response path>] + the [1] status bullet.`
   );
-} catch {
+} catch (err) {
+  logHookError("subagentstop-msg-nudge.mjs", err);
   allow();
 }

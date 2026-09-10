@@ -18,7 +18,7 @@ a live team (spec 0044 §1.3). To add a member to the RUNNING team, including
 one that diverges from the roster or a role the roster does not define, use
 `spawn-ad-hoc` below.
 
-If a roster already exists (check it: To inspect the roster run `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs show --cwd <abs cwd>`; never read `.claude/agent-hierarchy.json` directly — it misses the worktree/main-checkout and global fallback resolution that `show` implements.) and you just need a live Team
+If a roster already exists (inspect it with `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs show --cwd <abs cwd>` — never read `.claude/agent-hierarchy.json` directly, which misses the worktree/main-checkout and global fallback resolution `show` implements) and you just need a live Team
 — including at a worktree, which usually inherits the repo's existing roster —
 go straight to § Create. You do NOT need to add/edit/remove roster members
 first.
@@ -35,7 +35,8 @@ drifted — say so rather than silently picking one.
 ## Command surface
 
 Every verb below runs as `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs <verb> … --cwd <abs cwd>`
-through the Bash tool — `${CLAUDE_PLUGIN_ROOT}` from this session's `ah CLI root:` line, the
+through the Bash tool — `${CLAUDE_PLUGIN_ROOT}` from this session's `ah CLI root` line (which is
+authoritative when the two disagree; with two such lines, the newest wins), the
 cwd the absolute repo path. The plugin's own PreToolUse hook allows those calls
 without a permission prompt; a `--close` call still prompts, by design. Output is
 always JSON. Full verb/flag reference: `docs/cli-tools.md`.
@@ -62,7 +63,7 @@ happens when a bare `create` collides with someone else's live Team.
   to get one is the mistake spec 0044 exists to prevent. See § spawn-ad-hoc.
 - `dismiss <name> [--plan | --close --confirm --plan-token <tok>] [--also-config]` — **CLOSES ONE MEMBER'S SESSION**
   and drops its row: the inverse of `spawn-one`, and what "dismiss the architect" / "remove that
-  member" / "kick the reviewer" mean. the plan form (no `--close`) is read-only and returns a `close_token`;
+  member" / "kick the reviewer" mean. The plan form (no `--close`) is read-only and returns a `close_token`;
   `--close` needs `--confirm` and that token, and the harness asks the user once.
   `<name>` accepts anything the user can see for a live session — the derived member name, a
   `pane_id`, a `session_id` or a unique 8+ character prefix of one, the `role@sid8` form
@@ -71,7 +72,7 @@ happens when a bare `create` collides with someone else's live Team.
   territory: an explicit, never-inferred opt-in. To forget a record WITHOUT closing anything, that
   is `untrack`, never `dismiss`. See § dismiss.
 - `disband [--plan | --close --confirm --plan-token <tok>]` — **CLOSES EVERY MEMBER'S SESSION** and drops the team
-  record: what "disband the team" / "close the team" / "tear down the team" mean. the plan form (no `--close`) is
+  record: what "disband the team" / "close the team" / "tear down the team" mean. The plan form (no `--close`) is
   read-only and returns the close list plus a `close_token`; `--close` needs `--confirm`
   and that token, and the harness asks the user once. The close list is `team.json`'s members
   **plus any live peer attributed to this team** with no row of its own (spec 0046 §2.2). To drop
@@ -361,11 +362,11 @@ skill path.
    `ref` from `ListAgents` — do not recompute the rest by hand. Run
    `roster.mjs create --commit --transport <t> --roster-level <L> --verified
    '<json>'` (add `--partial` if any peer-routed member never checked in). The
-   orchestrator pid it records is supplied automatically — via `roster.mjs create`
-   (spec 0018), the server derives it from its own process tree; on the Bash CLI path it
-   comes from the `CLAUDE_PID` env var (the same source `sessionstart.mjs` uses for peer
-   liveness records). `--orchestrator-pid <pid>` / `orchestrator_pid` is an override, not
-   a requirement, on either path — pass it only to supply an identity neither source has.
+   orchestrator pid it records comes from the `CLAUDE_PID` env var, the same
+   source `sessionstart.mjs` uses for peer liveness records, so it is supplied
+   automatically. `--orchestrator-pid <pid>` overrides it — pass it only to
+   supply an identity `CLAUDE_PID` does not carry; with neither, the verb
+   refuses rather than guessing.
    On a full success, report the Team id and every member. **On partial
    success — the default per spec 0001 §13 — commit anyway with `--partial`,
    and tell the user exactly which member(s) never checked in and that the
@@ -455,7 +456,7 @@ herdr pane id, so a tmux peer surfaces with `command: null`.
 
 Never skip the plan call or its confirmation step — folding plan → confirm →
 close into fewer calls is exactly what would close sessions before a declined
-prompt could be honored. the plan form (no `--close`) never closes anything; only
+prompt could be honored. The plan form (no `--close`) never closes anything; only
 `--close` does, and only it carries the always-ask permission gate.
 
 **Want the bookkeeping cleared without closing anything?** That is
@@ -470,7 +471,7 @@ unaffected by which flag is the default here.
 
 **Recovering an orphaned Team (spec 0018 §5).** A Team whose `orchestrator.pid`
 is `null` (a team hit by the pre-0018 identity bug) reads as dead and is on the same
-sweep clock — it must be re-owned via `roster.mjs adopt` /
+sweep clock — it must be re-owned via
 `roster.mjs adopt --orchestrator-pid <pid>` **before the next SessionStart**,
 or the sweep deletes it (members, refs, `transport_id`s — everything) before
 `adopt` gets a chance to run. `adopt` refuses to touch a Team whose recorded
@@ -599,12 +600,12 @@ Anything else — "dismiss", "remove", "drop", "kick", "close", "disband", "tear
 down", "get rid of" — means `dismiss`/`disband`, which CLOSE the session. When
 the user's words are genuinely ambiguous, ask; do not pick.
 
-1. `roster.mjs untrack` the plan form (no `--close`) (or `roster.mjs untrack <name>`) — read-only:
-   reports what would be forgotten and each target's liveness.
+1. Bare `roster.mjs untrack <name>|--all` (or with `--plan`) is read-only:
+   it reports what would be forgotten and each target's liveness.
 2. `--commit` removes the record. A target that is live, or whose liveness
-   cannot be determined, is REFUSED unless `keep_sessions: true` — the refusal
-   names both remedies (`dismiss` to close it, or `--keep-sessions` to leave it
-   running untracked) and says the record cannot be recovered.
+   cannot be determined, is REFUSED unless `--keep-sessions` is passed — the
+   refusal names both remedies (`dismiss` to close it, or `--keep-sessions` to
+   leave it running untracked) and says the record cannot be recovered.
 
 `--all` forgets the whole team file instead of one member. Untracking
 something already gone succeeds with `already_untracked: true`, so a retry is

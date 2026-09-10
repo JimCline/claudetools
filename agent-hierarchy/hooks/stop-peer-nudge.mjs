@@ -37,8 +37,8 @@
  * contract governs.
  */
 
-import { isSubagent, MSG_CLI, readHookInput } from "./lib-config.mjs";
-import { parseMsgFilename } from "./lib-hier.mjs";
+import { isSubagent, logHookError, MSG_CLI, readHookInput } from "./lib-config.mjs";
+import { parseMsgFilename, responsePlan } from "./lib-hier.mjs";
 import { appendPeerRecord, appendTurnMarker, latestTurnMarker, MAX_NUDGES, pendingFor } from "./lib-peer.mjs";
 
 function allow() {
@@ -63,6 +63,9 @@ function owedLine(rec, isFinal) {
     const meta = parseMsgFilename(rec.msg);
     const id = meta ? meta.id : "<id>";
     line += ` — your reply must carry [hierarchy-msg <response path>] — write it with node "${MSG_CLI}" new --type response --id ${id} --req ${rec.msg}`;
+    // A role whose contract denies Bash cannot run that command, and the path is derivable here.
+    const plan = responsePlan(rec.msg);
+    if (plan) line += ` The response path is ${plan.path}. No Bash? Write that file yourself with frontmatter \`id,type: response,to,from,slug,parent,reason,eta,to_name,from_name,team,created\` and the \`## [0] tldr\` / \`## [1] status\` … sections.`;
   }
   if (isFinal) line += " THIS IS THE LAST ATTEMPT — stopping without sending your report now will be recorded as an unmet obligation.";
   return line;
@@ -115,7 +118,8 @@ try {
       ? owedLine(toNudge[0], toNudge[0].nudges >= MAX_NUDGES)
       : ["You have more than one unsent peer report:", ...toNudge.map((rec) => `- ${owedLine(rec, rec.nudges >= MAX_NUDGES)}`)].join("\n");
   block(reason);
-} catch {
+} catch (err) {
+  logHookError("stop-peer-nudge.mjs", err);
   // fail open: never trap a session over a tracking failure
   allow();
 }

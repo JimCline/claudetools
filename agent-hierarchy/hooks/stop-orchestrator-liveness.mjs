@@ -33,7 +33,7 @@
  * block, and this hook staying silent on the rest costs nothing.)
  */
 
-import { hierarchyDir, isSubagent, readHookInput, resolveConfig, resolveHierarchyRole } from "./lib-config.mjs";
+import { hierarchyDir, isSubagent, logHookError, readHookInput, resolveConfig, resolveHierarchyRole } from "./lib-config.mjs";
 import { appendGate, exchangeAgeSec, openExchanges, readGates, readMsgFile } from "./lib-hier.mjs";
 import { dispatchRecordsFor, MAX_NUDGES, pendingFor } from "./lib-peer.mjs";
 
@@ -131,6 +131,7 @@ try {
   if (toBlockOn.length === 0) allow(); // every outstanding id already spent its nudges — escape hatch, §4.4's rationale extended here
 
   block(checkInReason(toBlockOn));
-} catch {
+} catch (err) {
+  logHookError("stop-orchestrator-liveness.mjs", err);
   allow();
 }

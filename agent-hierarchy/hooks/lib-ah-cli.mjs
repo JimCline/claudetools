@@ -11,8 +11,9 @@
  * Accepted shape (spec 0048 §2.1/§2.2):
  *   node <abs>/hooks/roster.mjs <verb> [args…]
  *   node <abs>/hooks/msg.mjs    <verb> [args…]
- * exactly one simple command — no `;  & | < > ( ) ` $ \ newline` outside single quotes, so no
- * compound command, no redirection, no substitution and no shell expansion can ride along. JSON
+ * exactly one simple command — no `;  & | < > ( ) ` $ \ newline` outside single quotes, and no
+ * `{ } * ? [ ] ~` in any UNQUOTED token, so no compound command, no redirection, no substitution
+ * and no brace/glob/tilde expansion can ride along: what is parsed is what runs. JSON
  * arguments travel single-quoted. A double-quoted argument may not contain `$`, a backtick or a
  * backslash; the metacharacter ban applies to it too, which is stricter than §2.2's token rule
  * and deliberately so — a quoted `;` has no use in the documented forms and the stricter reading
@@ -54,9 +55,11 @@ export const MSG_BOOL_FLAGS = new Set(["plain", "json", "open", "closed", "all"]
 
 const SCRIPTS = { "roster.mjs": "roster", "msg.mjs": "msg" };
 const META = new Set([";", "&", "|", "<", ">", "(", ")", "`", "$", "\\", "\n", "\r"]);
-// A bare script token must also be free of glob/expansion characters: the shell expands `* ? [ ] { } ~`
-// before node ever sees the path, so the literal we parse and the file that runs can differ.
-const BARE_OK = /^[^\s'"`$\\;&|<>()*?[\]{}~]+$/;
+// The shell expands `{ } * ? [ ] ~` before node ever sees the command, so any of them outside quotes
+// makes the text parsed here and the command executed two different things. Checked one CHARACTER at
+// a time in the unquoted branch: a token-level check misses a token that mixes quoting, where an
+// adjacent empty quote (`--cl{o..o}s''e`) hides the unquoted part from the whole-token test.
+const EXPAND = new Set(["{", "}", "*", "?", "[", "]", "~"]);
 
 /**
  * Split a command string into tokens under the grammar above.
@@ -100,7 +103,7 @@ function tokenize(command) {
       i = end;
       continue;
     }
-    if (META.has(c)) return null;
+    if (META.has(c) || EXPAND.has(c)) return null;
     add(c, false);
   }
   push();
@@ -120,10 +123,10 @@ export function parseAhCommand(command) {
   const scriptTok = tokens[1];
   if (scriptTok.quoted === "mixed") return null;
   const scriptPath = scriptTok.text;
+  if (!scriptPath.startsWith("/")) return null;
   const script = SCRIPTS[basename(scriptPath)];
   if (!script) return null;
   if (basename(dirname(scriptPath)) !== "hooks") return null;
-  if (scriptTok.quoted === "none" && !BARE_OK.test(scriptPath)) return null;
 
   const bools = script === "roster" ? ROSTER_BOOL_FLAGS : MSG_BOOL_FLAGS;
   const argv = tokens.slice(2).map((t) => t.text);

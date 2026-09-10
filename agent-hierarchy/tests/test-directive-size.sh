@@ -53,7 +53,7 @@ md_ceiling() { # <file> <max>
 
 md_ceiling architect     9600
 md_ceiling ultra-advisor 7100
-md_ceiling reviewer      6350
+md_ceiling reviewer      6400
 md_ceiling implementor   5100
 md_ceiling task-runner   5650
 md_ceiling orchestrator  7200

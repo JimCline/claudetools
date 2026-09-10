@@ -26,7 +26,7 @@
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { readHookInput } from "./lib-config.mjs";
+import { logHookError, readHookInput } from "./lib-config.mjs";
 import { isCloseCommand, parseAhCommand, scriptUnderRoot } from "./lib-ah-cli.mjs";
 
 const OWN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -49,6 +49,7 @@ try {
       },
     })
   );
-} catch {
+} catch (err) {
+  logHookError("pretooluse-ah-cli.mjs", err);
   process.exit(0);
 }

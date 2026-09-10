@@ -21,17 +21,20 @@ of them covers every case:
    one source of truth for both:
 
    ```
-   ah CLI root: <AH_ROOT> — roster: `node <AH_ROOT>/hooks/roster.mjs <verb> --cwd <abs cwd>`, messages: `node <AH_ROOT>/hooks/msg.mjs <verb> --cwd <abs cwd>` (verbs: agent-hierarchy/docs/cli-tools.md)
+   ah CLI root (v<version>): <AH_ROOT> — roster: `node <AH_ROOT>/hooks/roster.mjs <verb> --cwd <abs cwd>`, messages: `node <AH_ROOT>/hooks/msg.mjs <verb> --cwd <abs cwd>` (verbs: agent-hierarchy/docs/cli-tools.md)
    ```
 
    SessionStart alone is not enough: `/reload-plugins` fires no SessionStart, so a session that
    updates mid-flight would never hear the new root. UserPromptSubmit repeats the line on every
    prompt, which covers that and survives compaction. Both use the same classification — nothing
-   for subagents, nothing when the hierarchy is configured-and-disabled.
-3. **Hook messages** that tell a role to run something spell the absolute command. Subagents get no
-   SessionStart or UserPromptSubmit injection by design; this is their channel.
+   for subagents, nothing when the hierarchy is configured-and-disabled. The `(v…)` token is the
+   plugin version that emitted the line: when two root lines in one context disagree, the most
+   recent one wins.
+3. **SubagentStart injects the same line into an Agent-tool subagent** — the only event that fires
+   there, and it carries the line only inside its `hookSpecificOutput` envelope.
+4. **Hook messages** that tell a role to run something spell the absolute command.
 
-If all three somehow failed you, resolve the root — do not guess it, and never glob the cache dir
+If all four somehow failed you, resolve the root — do not guess it, and never glob the cache dir
 (several versions coexist there):
 
 ```
@@ -134,6 +137,7 @@ read the fresh root line, or resolve it with the recipe above.
 | dismiss one member | plan: `node <R>/hooks/roster.mjs dismiss <name> [--plan] [--team <t>]` · close: `… dismiss <name> --close --confirm --plan-token <tok> [--also-config] [--level <L>] [--allow-global] [--team <t>]` |
 | untrack (close nothing) | `node <R>/hooks/roster.mjs untrack <name>\|--all [--plan\|--commit] [--keep-sessions] [--also-config] [--level <L>] [--team <t>]` |
 | re-register this session | `node <R>/hooks/roster.mjs checkin [--team <t>] [--orchestrator-pid <pid>]` |
+| self-check this install | `node <R>/hooks/roster.mjs doctor [--check]` — read-only JSON, one row per thing that can be wrong; `--check` exits 1 on any red row |
 | split decision (tests) | `node <R>/hooks/roster.mjs next-split --mode <m> --pane-count <N> --self <pane id> --created '<json>' --geometry '<json>'` |
 | route preference | `node <R>/hooks/msg.mjs route peers\|subagents\|prefer-peers --session <id>` |
 | global-scope answer | `node <R>/hooks/msg.mjs global-scope roster\|config allow\|deny --session <id>` |

@@ -11,7 +11,7 @@
  * writes nothing. Fail-open.
  */
 
-import { hierarchyRoleOf, isSubagent, isTopLevelAgentSession, readHookInput } from "./lib-config.mjs";
+import { hierarchyRoleOf, isSubagent, isTopLevelAgentSession, logHookError, readHookInput } from "./lib-config.mjs";
 import { appendRosterRecord, hierarchyDir, upRecordFor } from "./lib-hier.mjs";
 
 try {
@@ -27,7 +27,8 @@ try {
       appendRosterRecord(dir, { status: "down", role, session_id: sessionId || null, pid: up ? up.pid : process.ppid, cwd });
     }
   }
-} catch {
+} catch (err) {
+  logHookError("sessionend-roster.mjs", err);
   // fail open
 }
 process.exit(0);

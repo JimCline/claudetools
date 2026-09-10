@@ -70,11 +70,17 @@ Resolution rules you must respect in everything below:
   session agent itself.
 
 The resolved table is printed by the plugin's own resolver, so it can never
-drift from what the hook injects. Run it with Bash from the repo you care about:
+drift from what the hook injects. Run it with Bash from the repo you care about,
+using the absolute root from this session's `ah CLI root` line:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT:-}/hooks/lib-config.mjs" 2>/dev/null || node "$(ls -t ~/.claude/plugins/cache/*/agent-hierarchy/*/hooks/lib-config.mjs 2>/dev/null | head -1)"
+node <AH_ROOT>/hooks/roster.mjs doctor --cwd <abs cwd>
 ```
+
+`doctor` is read-only and reports the resolved config alongside version,
+install path, identity, runtime dir, team, peers, hook errors and hook syntax.
+If no root line is in context, resolve the root with the one recipe in
+[docs/cli-tools.md](../docs/cli-tools.md).
 
 Pick the ONE case matching the argument:
 

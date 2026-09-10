@@ -50,6 +50,30 @@ for verb in $VERBS; do
   check "self-clears on retry: roster.mjs $verb" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
 done
 
+# ---- 2b: the deny text carries the absolute SKILL.md path, because Skill answering
+# "already loaded" after a compaction leaves Read as the only way to the body.
+hook "node $ROSTER create --plan --cwd $PROJ" "denytext-1"
+check "deny text names the absolute skills/agent-team/SKILL.md path" \
+  'echo "$OUT" | grep -q "$PLUGIN/skills/agent-team/SKILL.md"'
+
+# ---- 2c: SessionStart on `compact` re-arms the one-shot — deny, retry proceeds, compact, deny again
+SESS="compact-rearm"
+CMD="node $ROSTER create --plan --cwd $PROJ"
+hook "$CMD" "$SESS"
+check "re-arm: first call in a fresh session denies" 'is_deny'
+hook "$CMD" "$SESS"
+check "re-arm: retry proceeds before any compaction" '[ -z "$OUT" ]'
+OUT=$(printf '{"source":"compact","cwd":"%s","session_id":"%s"}' "$PROJ" "$SESS" \
+  | HOME="$FAKEHOME" node "$PLUGIN/hooks/sessionstart.mjs" > /dev/null 2>&1; echo done)
+hook "$CMD" "$SESS"
+check "re-arm: the same session denies again after a compact SessionStart" 'is_deny'
+hook "$CMD" "$SESS"
+check "re-arm: and self-clears again on the next retry" '[ -z "$OUT" ]'
+OUT=$(printf '{"source":"resume","cwd":"%s","session_id":"%s"}' "$PROJ" "$SESS" \
+  | HOME="$FAKEHOME" node "$PLUGIN/hooks/sessionstart.mjs" > /dev/null 2>&1; echo done)
+hook "$CMD" "$SESS"
+check "re-arm: a non-compact SessionStart does NOT re-arm the gate" '[ -z "$OUT" ]'
+
 # ---- 3: explicitly-not-gated verbs produce no output at all
 for verb in show teams history reap resync layout-splits init add edit remove layout alias checkin; do
   hook "node $ROSTER $verb --cwd $PROJ" "notgated-$verb"

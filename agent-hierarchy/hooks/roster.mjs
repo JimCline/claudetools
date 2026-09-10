@@ -55,6 +55,9 @@
  *   roster.mjs create  --from <id|alias> [--team <T>] [--plan|--commit|--spawn] [--cwd <path>]
  *   roster.mjs adopt   --orchestrator-pid <pid> [--team <T>] [--cwd <path>]
  *   roster.mjs checkin [--team <T>] [--cwd <path>] [--orchestrator-pid <pid>]
+ *   roster.mjs doctor [--cwd <path>] [--check]
+ *                       Read-only self-check: one JSON object, one row per thing that can be
+ *                       wrong. `--check` exits 1 when any row is red. Writes nothing, ever.
  *                       (spec 0036 §3.3: re-registers the current session with its current cwd;
  *                       exits non-zero when still misplaced relative to the team's expected_root.
  *                       Resolves the session pid the same way as create --commit/teams — process.ppid
@@ -88,14 +91,15 @@
  * memory only (no write) — see docs/specs/0008-roster-relocate.md.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-import { CONFIG_VERSION, findGitRoot, hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, suggestTeamAlias, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
-import { appendRosterRecord, latestRoster, livePeerSlots, newId, localIso, NO_TEAM_SCOPE, pidAlive, realCwd, recordLiveness, synthesizedPeerName } from "./lib-hier.mjs";
+import { CONFIG_VERSION, findGitRoot, hierarchyDir, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, suggestTeamAlias, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
+import { ageSecOf, appendRosterRecord, fmtAge, latestRoster, livePeerSlots, peersPath, readJsonl, newId, localIso, NO_TEAM_SCOPE, pidAlive, realCwd, recordLiveness, synthesizedPeerName } from "./lib-hier.mjs";
 import { attributeSessionTeam, clearTeam, defaultTeamScope, fingerprint, herdrOnPath, historyEntryIsActive, KIND_DEFAULT, kindFieldErrors, listTeamNames, memberArgs, normalizeMembers, readHistory, readTeam, resolveKind, resolveTeamByPane, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
 
 const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config", "no-spawn", "allow-roster-edit"]);
@@ -153,6 +157,164 @@ function out(obj) {
 function partial(obj) {
   process.stdout.write(JSON.stringify(obj, null, 2) + "\n");
   process.exit(3);
+}
+
+
+const OWN_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+
+/**
+ * One doctor row. `fn` may throw or hit missing/garbage files — the row degrades to `warn` with the
+ * message instead, because a self-check that dies on the first surprise is the one thing it must
+ * never do.
+ */
+function row(name, fn) {
+  try {
+    const r = fn();
+    return { name, status: r.status, detail: r.detail };
+  } catch (err) {
+    return { name, status: "warn", detail: `check failed: ${err && err.message ? err.message : String(err)}` };
+  }
+}
+
+/** The installPath the plugin manager records for this plugin, or null when nothing readable says. */
+function recordedInstallPath() {
+  const raw = JSON.parse(readFileSync(join(homedir(), ".claude", "plugins", "installed_plugins.json"), "utf8"));
+  const plugins = raw && typeof raw === "object" ? raw.plugins || {} : {};
+  const key = Object.keys(plugins).find((k) => /^(ah|agent-hierarchy)@/.test(k));
+  if (!key) return null;
+  // The value is an ARRAY of install records, one per marketplace that supplies the plugin.
+  const first = [].concat(plugins[key])[0];
+  return first && typeof first.installPath === "string" ? first.installPath : null;
+}
+
+function gitPorcelain(dir) {
+  return execFileSync("git", ["status", "--porcelain"], { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+}
+
+/** Read-only state report: rows a human or an agent can read in one pass. Writes nothing. */
+function doctorReport(cwd) {
+  const rows = [];
+
+  rows.push(row("version", () => ({
+    status: "ok",
+    detail: `ah ${pluginVersion()} at ${OWN_ROOT}, node ${process.version}`,
+  })));
+
+  rows.push(row("install", () => {
+    let recorded = null;
+    try {
+      recorded = recordedInstallPath();
+    } catch (err) {
+      const cached = OWN_ROOT.includes(join(".claude", "plugins", "cache"));
+      return cached
+        ? { status: "warn", detail: `installed_plugins.json unreadable (${err.message}) while running from the plugin cache` }
+        : { status: "ok", detail: `installed_plugins.json unreadable (${err.message}); running from a local checkout at ${OWN_ROOT}` };
+    }
+    if (!recorded) return { status: "warn", detail: `no ah@…/agent-hierarchy@… install record found; own root ${OWN_ROOT}` };
+    if (realCwd(recorded) === realCwd(OWN_ROOT)) return { status: "ok", detail: `installed path matches own root: ${OWN_ROOT}` };
+    return { status: "warn", detail: `stale root in use — installed at ${recorded}, running from ${OWN_ROOT}; take the most recent \`ah CLI root\` line` };
+  }));
+
+  rows.push(row("identity", () => {
+    const raw = process.env.CLAUDE_PID;
+    if (!raw) return { status: "red", detail: "CLAUDE_PID unset — every write verb must be given --orchestrator-pid <pid>" };
+    const pid = Number(raw);
+    if (!Number.isInteger(pid)) return { status: "red", detail: `CLAUDE_PID is not an integer: ${JSON.stringify(raw)}` };
+    return pidAlive(pid)
+      ? { status: "ok", detail: `CLAUDE_PID ${pid}, alive` }
+      : { status: "red", detail: `CLAUDE_PID ${pid} names no live process` };
+  }));
+
+  rows.push(row("runtime-dir", () => {
+    const dir = hierarchyDir(cwd);
+    const gitRoot = findGitRoot(cwd);
+    // A worktree's `.git` is a FILE pointing at the real git dir; state resolution differs there.
+    let worktree = false;
+    try {
+      worktree = !!gitRoot && statSync(join(gitRoot, ".git")).isFile();
+    } catch {
+      worktree = false;
+    }
+    const note = worktree ? " (cwd is a git worktree: .git is a file)" : "";
+    if (!existsSync(dir)) return { status: "ok", detail: `${dir} does not exist yet — created on first write${note}` };
+    try {
+      accessSync(dir, fsConstants.W_OK);
+    } catch {
+      return { status: "red", detail: `${dir} exists but is not writable${note}` };
+    }
+    return { status: "ok", detail: `${dir} exists and is writable${note}` };
+  }));
+
+  rows.push(row("config", () => {
+    const resolved = resolveConfig(cwd);
+    const detail = statusReport(cwd).split("\n").slice(0, 4).join(" | ");
+    if (!resolved.configured) return { status: "warn", detail: `not configured — ${detail}` };
+    return { status: resolved.enabled ? "ok" : "warn", detail };
+  }));
+
+  rows.push(row("team", () => {
+    const dir = hierarchyDir(cwd);
+    const team = readTeam(dir, teamFile);
+    if (!team) return { status: "ok", detail: `no team file at ${teamPath(dir, teamFile)}` };
+    const pid = team.orchestrator && team.orchestrator.pid;
+    const alive = Number.isInteger(pid) && pidAlive(pid);
+    const age = team.created_at ? `${fmtAge(ageSecOf(team.created_at))} ago` : "unknown age";
+    const live = teamIsLive(team);
+    return {
+      status: live ? "ok" : "warn",
+      detail: `team_id ${team.team_id || "?"} , orchestrator pid ${pid ?? "none"} ${alive ? "alive" : "dead"}, created ${age}, live=${live}`,
+    };
+  }));
+
+  rows.push(row("peers", () => {
+    const recs = readJsonl(peersPath(hierarchyDir(cwd)));
+    if (!recs.length) return { status: "ok", detail: "no peers.jsonl records" };
+    const byStatus = {};
+    let live = 0;
+    let dead = 0;
+    for (const r of latestRoster(hierarchyDir(cwd))) {
+      byStatus[r.status || "?"] = (byStatus[r.status || "?"] || 0) + 1;
+      if (Number.isInteger(r.pid) && pidAlive(r.pid)) live++;
+      else dead++;
+    }
+    const counts = Object.entries(byStatus).map(([k, v]) => `${k}=${v}`).join(" ");
+    return { status: "ok", detail: `${recs.length} records; latest-per-slot: ${counts}; ${live} live pid(s), ${dead} dead` };
+  }));
+
+  rows.push(row("hook-errors", () => {
+    const recent = recentHookErrors(24);
+    if (!recent.length) return { status: "ok", detail: `no hook errors in the last 24 h (${HOOK_ERROR_LOG})` };
+    const last = recent.slice(-5).map((e) => `${e.ts} ${e.hook}: ${e.message}`);
+    return { status: "warn", detail: `${recent.length} hook error(s) in 24 h — last ${last.length}: ${last.join(" || ")}` };
+  }));
+
+  rows.push(row("hooks-syntax", () => {
+    const hooksDir = join(OWN_ROOT, "hooks");
+    const broken = [];
+    for (const f of readdirSync(hooksDir).filter((f) => f.endsWith(".mjs"))) {
+      try {
+        execFileSync(process.execPath, ["--check", join(hooksDir, f)], { stdio: ["ignore", "ignore", "pipe"] });
+      } catch {
+        broken.push(f);
+      }
+    }
+    return broken.length
+      ? { status: "red", detail: `node --check fails: ${broken.join(", ")} — every hook in this root is dead until fixed` }
+      : { status: "ok", detail: "every hooks/*.mjs parses" };
+  }));
+
+  rows.push(row("marketplace", () => {
+    if (!existsSync(join(OWN_ROOT, "..", ".git"))) {
+      return { status: "ok", detail: "own root is not inside a git checkout — nothing to be dirty" };
+    }
+    const clone = dirname(OWN_ROOT);
+    const dirty = gitPorcelain(clone).split("\n").filter(Boolean).length;
+    return dirty
+      ? { status: "warn", detail: `${clone} has ${dirty} uncommitted change(s) — hooks run from this tree, so an unfinished edit is live` }
+      : { status: "ok", detail: `${clone} is clean` };
+  }));
+
+  return { cwd, rows, red: rows.filter((r) => r.status === "red").map((r) => r.name) };
 }
 
 const all = parseArgs(process.argv.slice(2));
@@ -3094,13 +3256,13 @@ try {
         if (!CHECKIN_FLAGS.has(key)) fail(`checkin: unrecognized flag --${key} (use --team, --cwd, or --orchestrator-pid)`);
       }
       const dir = hierarchyDir(cwd);
-      // roster.mjs runs as a transient Bash-tool subprocess (see :1381's identical warning at
-      // create --commit) — process.ppid here is that shell, not the session SessionStart wrote
-      // pid: process.ppid FOR (the session itself). Resolve the session pid the same way
-      // teams/create --commit already do, falling back to process.ppid only if both are unset.
-      let myPid = typeof opts["orchestrator-pid"] === "string" ? Number(opts["orchestrator-pid"]) : NaN;
-      if (!Number.isInteger(myPid)) myPid = Number(process.env.CLAUDE_PID);
-      if (!Number.isInteger(myPid)) myPid = process.ppid;
+      // roster.mjs runs as a transient Bash-tool subprocess, so process.ppid here is that shell,
+      // not the session pid the hooks recorded. A record written under the shell's pid is dead the
+      // moment the command returns, and the next SessionStart sweeps the team as stale.
+      const myPid = ownOrchestratorPid();
+      if (!Number.isInteger(myPid)) {
+        fail("checkin: cannot resolve this session's pid — CLAUDE_PID is unset; pass --orchestrator-pid <pid>");
+      }
       const existing = latestRoster(dir).find((r) => r.pid === myPid);
       if (!existing) fail(`checkin: no existing roster record for pid ${myPid} — SessionStart must run before checkin`);
       // Spec 0036 §3.2/§3.3 (F4/F6): the same shared resolver sessionstart.mjs uses — an explicit
@@ -3189,8 +3351,15 @@ try {
       break;
     }
 
+    case "doctor": {
+      const report = doctorReport(cwd);
+      out(report);
+      if (opts.check === true && report.red.length) process.exit(1);
+      break;
+    }
+
     default:
-      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one|spawn-ad-hoc|adopt|untrack|teams|reap|history|checkin [--commit] [--level global|repo|repo-user] [--team <name>] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
+      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one|spawn-ad-hoc|adopt|untrack|teams|reap|history|checkin|doctor [--commit] [--level global|repo|repo-user] [--team <name>] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
   }
 } catch (err) {
   fail(err && err.message ? err.message : String(err));

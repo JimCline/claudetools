@@ -85,7 +85,7 @@ Your contract:
   pool); fill it: bullets, no prose, status first. Final message =
   `[hierarchy-msg <response path>]` + ONE status bullet, nothing else — the
   file carries the report.
-- The ah CLI is the only interface: every roster/team/message operation is a Bash call to `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs <verb> … --cwd <abs cwd>` or `node ${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs <verb> … --cwd <abs cwd>`. That placeholder reaches you resolved; if it is still literal, ask the Orchestrator for the root rather than guess. Verb reference: `agent-hierarchy/docs/cli-tools.md`.
+- The ah CLI is the only interface: every roster/team/message operation is a Bash call to `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs <verb> … --cwd <abs cwd>` or `node ${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs <verb> … --cwd <abs cwd>`. That placeholder reaches you resolved; if it is still literal, the `ah CLI root` line in your context is authoritative — when two disagree, the newest wins. Verb reference: `agent-hierarchy/docs/cli-tools.md`.
 
 Report back: a one-line verdict (PASS / PASS WITH NITS / CHANGES REQUIRED),
 then each finding as `severity | impl-defect|spec-defect | file:line | what's

@@ -29,6 +29,7 @@
  * is earning its keep. Never blocks, never throws — a broken collector must
  * not interfere with a finishing subagent.
  */
+import { logHookError } from "./lib-config.mjs";
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -72,7 +73,8 @@ try {
   mkdirSync(dirname(USAGE_FILE), { recursive: true });
   appendFileSync(USAGE_FILE, JSON.stringify(rec) + "\n"); // O_APPEND: concurrent stops just queue
   pruneUsageFile();
-} catch {
+} catch (err) {
+  logHookError("subagentstop-usage.mjs", err);
   // fall through to a clean exit — never break a finishing subagent
 }
 process.exit(0);

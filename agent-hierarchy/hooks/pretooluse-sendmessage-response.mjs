@@ -33,8 +33,8 @@
  * Fails open on every error path, exactly like the rest of this plugin.
  */
 
-import { isSubagent, MSG_CLI, readHookInput, resolveConfig, resolveHierarchyRole } from "./lib-config.mjs";
-import { appendGate, extractMsgToken, hasGate, hierarchyDir, parseMsgFilename, readMsgFile, validateResponseToken } from "./lib-hier.mjs";
+import { isSubagent, logHookError, MSG_CLI, readHookInput, resolveConfig, resolveHierarchyRole } from "./lib-config.mjs";
+import { appendGate, extractMsgToken, hasGate, hierarchyDir, parseMsgFilename, readMsgFile, responsePlan, validateResponseToken } from "./lib-hier.mjs";
 import { pendingFor } from "./lib-peer.mjs";
 
 const GATED_ROLES = ["architect", "implementor"];
@@ -86,6 +86,9 @@ function denyReason(qualifying, role) {
     const id = meta ? meta.id : "<id>";
     const from = requesterOf(rec);
     lines.push(`- ${id} (from ${from}): node "${MSG_CLI}" new --type response --id ${id} --to ${from} --from ${role} --req ${rec.msg}`);
+    // A role whose contract denies Bash cannot run that command, and the path is derivable here.
+    const plan = responsePlan(rec.msg);
+    if (plan) lines.push(`  Response path: ${plan.path} — No Bash? Write that file yourself with frontmatter \`id,type: response,to,from,slug,parent,reason,eta,to_name,from_name,team,created\` and the \`## [0] tldr\` / \`## [1] status\` … sections.`);
   }
   lines.push(
     "Then send: [hierarchy-msg <response path>] as the first line, followed by the [1] status bullet.",
@@ -159,6 +162,7 @@ try {
 
   appendGate(dir, { type: "send-nudge", id: requestId, session_id: sessionId });
   decide("deny", denyReason(qualifying, callerRole));
-} catch {
+} catch (err) {
+  logHookError("pretooluse-sendmessage-response.mjs", err);
   decide(null);
 }

@@ -130,8 +130,8 @@ check "quoted (unanchored) sentinel -> null (not a tasking)" '[ "$OUT" = null ]'
 # =====================================================================
 reset_state
 ups s1 "$WELLFORMED"
-check "well-formed prompt: hook exits clean, emitting only the ah CLI root line (0.73.1)" \
-  '[ -z "$OUT" ] || { echo "$OUT" | grep -q "ah CLI root:" && [ "$(echo "$OUT" | grep -c "hookSpecificOutput")" -eq 1 ]; }'
+check "well-formed prompt: hook exits clean, emitting only the ah CLI root line" \
+  '[ -z "$OUT" ] || { echo "$OUT" | grep -q "ah CLI root" && [ "$(echo "$OUT" | grep -c "hookSpecificOutput")" -eq 1 ]; }'
 check "well-formed prompt: pending record appended" '[ -f "$STATE_FILE" ] && grep -q "\"status\":\"pending\"" "$STATE_FILE"'
 check "well-formed prompt: record carries this session id" 'grep -q "\"session_id\":\"s1\"" "$STATE_FILE"'
 
@@ -317,6 +317,58 @@ stop s19
 check "lifecycle: second ping, cap reached -> waived" '[ -z "$OUT" ]'
 eval_peer "P.pendingFor('s19').length"
 check "lifecycle: obligation waived, no longer pending" '[ "$OUT" = 0 ]'
+
+# =====================================================================
+# A brief delivered as a message file: the nudge must carry the DERIVED response
+# path, because a role whose contract denies Bash cannot run the msg.mjs command.
+# =====================================================================
+# node's path.join is what the hook uses to derive the reply path, and it collapses the double
+# slash a TMPDIR with a trailing slash leaves behind — derive the fixture path the same way.
+REQ_DIR=$(node -e 'process.stdout.write(require("path").join(process.argv[1], ".claude", "hierarchy", "msgs"))' "$PROJ")
+mkdir -p "$REQ_DIR"
+REQ_ID="20260101-120000-ab12"
+REQ_PATH="$REQ_DIR/$REQ_ID--implementor--file-brief--request.md"
+cat > "$REQ_PATH" <<EOF
+---
+id: $REQ_ID
+type: request
+to: implementor
+from: orchestrator
+slug: file-brief
+parent: null
+reason: null
+eta: small
+to_name: null
+from_name: orchestrator-x
+team: null
+created: 2026-01-01T12:00:00-05:00
+---
+
+## [1] goal
+- do the thing
+EOF
+EXPECTED_RESPONSE="$REQ_DIR/$REQ_ID--orchestrator--file-brief--response.md"
+FILE_BRIEF='<cross-session-message from="uds:/tmp/cc-socks/12345.sock" from-name="orchestrator-x" from-mode="prompting">
+[hierarchy-peer-brief reply-to="sender" task="file-brief"] [hierarchy-msg '"$REQ_PATH"']
+Do the thing and report.
+</cross-session-message>'
+
+reset_state
+ups s-filebrief "$FILE_BRIEF"
+stop s-filebrief
+check "file brief: Stop blocks" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
+check "file brief: nudge names the derived response path" 'printf "%s" "$OUT" | grep -qF "$EXPECTED_RESPONSE"'
+check "file brief: nudge gives the hand-write fallback for a Bash-less role" \
+  'printf "%s" "$OUT" | grep -q "No Bash?" && printf "%s" "$OUT" | grep -q "type: response"'
+
+# A Stop payload shaped like a `--agent` session: agent_type is set on Stop for a top-level
+# --agent session, and it must not be mistaken for a subagent (which is keyed on agent_id).
+reset_state
+ups s-agentstop "$FILE_BRIEF"
+OUT=$(node -e 'process.stdout.write(JSON.stringify({session_id:"s-agentstop",stop_hook_active:false,agent_type:"ah:architect",last_assistant_message:"I have finished the analysis."}))' \
+  | HOME="$FAKEHOME" node "$STOP" 2>&1); RC=$?
+check "--agent-shaped Stop payload: still blocks on an unanswered brief" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
+check "--agent-shaped Stop payload: nudge still carries the response path" 'printf "%s" "$OUT" | grep -qF "$EXPECTED_RESPONSE"'
 
 echo "----"
 echo "SUMMARY: $PASS passed, $FAIL failed"

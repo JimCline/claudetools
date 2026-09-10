@@ -25,7 +25,7 @@
  * the current working directory — that is what `/hierarchy status` uses.
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,10 +46,75 @@ export const MSG_CLI = join(dirname(fileURLToPath(import.meta.url)), "msg.mjs");
 /** Absolute path to the roster CLI, same resolution as GATE_CLI/MSG_CLI. */
 export const ROSTER_CLI = join(dirname(fileURLToPath(import.meta.url)), "roster.mjs");
 
+let lastHookInput = null;
+
+/** Where hook failures are recorded. Global, not per-repo: resolving a repo can itself be what threw. */
+export const HOOK_ERROR_LOG = join(homedir(), ".claude", "hierarchy", "hook-errors.jsonl");
+const HOOK_ERROR_CAP = 1024 * 1024;
+
+/**
+ * Append one line about a hook failure. Hooks decide nothing on this path and keep whatever
+ * fail-open behaviour they had; without it a crashed hook and a hook that chose to stay silent look
+ * identical, and Claude Code surfaces neither outside `--debug`.
+ *
+ * @param {string} hook basename of the entrypoint.
+ * @param {unknown} err the thrown value.
+ * @param {{session_id?: string, hook_event_name?: string}} [input] the parsed payload, when there is one.
+ */
+export function logHookError(hook, err, input = lastHookInput) {
+  try {
+    const line = {
+      ts: new Date().toISOString(),
+      hook,
+      event: input && typeof input.hook_event_name === "string" ? input.hook_event_name : null,
+      session_id: input && typeof input.session_id === "string" ? input.session_id : null,
+      message: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error && err.stack ? err.stack.split("\n").slice(1, 4).map((f) => f.trim()) : [],
+    };
+    mkdirSync(dirname(HOOK_ERROR_LOG), { recursive: true });
+    try {
+      if (statSync(HOOK_ERROR_LOG).size > HOOK_ERROR_CAP) renameSync(HOOK_ERROR_LOG, `${HOOK_ERROR_LOG}.1`);
+    } catch {}
+    appendFileSync(HOOK_ERROR_LOG, `${JSON.stringify(line)}\n`, "utf8");
+  } catch {
+    // The logger is the last link in the chain: if it throws, there is nowhere left to report to.
+  }
+}
+
+/** Entries from the last `hours`, newest last. Unreadable or absent log reads as empty. */
+export function recentHookErrors(hours = 24) {
+  try {
+    const cutoff = Date.now() - hours * 3600 * 1000;
+    return readFileSync(HOOK_ERROR_LOG, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter((e) => e && Date.parse(e.ts) >= cutoff);
+  } catch {
+    return [];
+  }
+}
+
+let cachedVersion;
+
+/** This plugin's version, or "?" when plugin.json cannot be read. Two roots in one context are told apart by it. */
+export function pluginVersion() {
+  if (cachedVersion === undefined) {
+    try {
+      cachedVersion = JSON.parse(
+        readFileSync(join(dirname(dirname(ROSTER_CLI)), ".claude-plugin", "plugin.json"), "utf8")
+      ).version || "?";
+    } catch {
+      cachedVersion = "?";
+    }
+  }
+  return cachedVersion;
+}
+
 /** The `ah CLI root:` line appended to every SessionStart injection (spec 0048 §2.1): the absolute CLI paths, which only a hook can resolve. */
 export function cliRootLine() {
   return (
-    `ah CLI root: ${dirname(dirname(ROSTER_CLI))} — roster: \`node ${ROSTER_CLI} <verb> --cwd <abs cwd>\`, ` +
+    `ah CLI root (v${pluginVersion()}): ${dirname(dirname(ROSTER_CLI))} — roster: \`node ${ROSTER_CLI} <verb> --cwd <abs cwd>\`, ` +
     `messages: \`node ${MSG_CLI} <verb> --cwd <abs cwd>\` (verbs: agent-hierarchy/docs/cli-tools.md)`
   );
 }
@@ -272,8 +337,15 @@ export async function readHookInput() {
   const raw = Buffer.concat(chunks).toString("utf8").trim();
   if (!raw) return {};
   try {
-    return JSON.parse(raw);
-  } catch {
+    lastHookInput = JSON.parse(raw);
+    return lastHookInput;
+  } catch (err) {
+    // Empty stdin is ordinary; stdin that arrived and would not parse is not, and the {} it
+    // degrades to is indistinguishable from a plain main session.
+    // 40 bytes is enough to recognise the shape; a longer prefix starts capturing the session id
+    // and the transcript path a real payload carries.
+    err.message = `${err.message} — unparseable payload, ${raw.length} bytes: ${raw.slice(0, 40)}`;
+    logHookError("readHookInput", err, {});
     return {};
   }
 }

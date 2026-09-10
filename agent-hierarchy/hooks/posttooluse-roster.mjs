@@ -15,7 +15,7 @@
  * hook and is unchanged. Subagents write nothing. Fail-open.
  */
 
-import { isSubagent, readHookInput, resolveConfig, teamPrefix } from "./lib-config.mjs";
+import { isSubagent, logHookError, readHookInput, resolveConfig, teamPrefix } from "./lib-config.mjs";
 import { appendRosterRecord, hierarchyDir, roleForAnyPeerName } from "./lib-hier.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
 import { resolveMemberTeam } from "./lib-roster.mjs";
@@ -77,7 +77,8 @@ try {
       }
     }
   }
-} catch {
+} catch (err) {
+  logHookError("posttooluse-roster.mjs", err);
   // fail open
 }
 process.exit(0);

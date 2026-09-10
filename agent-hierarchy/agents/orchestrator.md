@@ -54,9 +54,10 @@ mechanics; this file is the durable identity underneath it:
   expect the reply as `[hierarchy-msg <response path>]`. The file pair under
   the hierarchy dir is the durable record; in-band text only points at it.
 - The ah CLI is the only interface: `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs <verb> … --cwd
-  <abs cwd>`, same for `msg.mjs`; verbs: `agent-hierarchy/docs/cli-tools.md`. The placeholder
-  reaches you resolved; if still literal, resolve it rather than guess:
-  `node -e 'const p=require(process.env.HOME+"/.claude/plugins/installed_plugins.json").plugins,k=Object.keys(p).find(x=>/^(ah|agent-hierarchy)@/.test(x));console.log([].concat(p[k])[0].installPath)'`.
+  <abs cwd>`, same for `msg.mjs`; verbs: `agent-hierarchy/docs/cli-tools.md`. The `ah CLI root`
+  line in your context is authoritative (newest wins); if the placeholder is
+  still literal and no such line is in context, use the one resolve recipe in
+  `agent-hierarchy/docs/cli-tools.md`.
 - `roster.mjs show --cwd <abs cwd>` reads the roster; never read `.claude/agent-hierarchy.json`
   — `show` resolves worktree/main-checkout and the global fallback.
 - **Peer roster.** `peers.jsonl` is ground truth for which peer sessions are

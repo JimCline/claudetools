@@ -41,15 +41,21 @@ ROOT_LINE=$(node --input-type=module -e "
   process.stdout.write(cliRootLine());
 ")
 check "cliRootLine() opens with the root marker and names both CLIs" \
-  '[ -n "$ROOT_LINE" ] && case "$ROOT_LINE" in "ah CLI root: "*) true;; *) false;; esac &&
+  '[ -n "$ROOT_LINE" ] && echo "$ROOT_LINE" | grep -qE "^ah CLI root \(v[^)]+\): " &&
    echo "$ROOT_LINE" | grep -q "/hooks/roster.mjs" && echo "$ROOT_LINE" | grep -q "/hooks/msg.mjs"'
 check "cliRootLine() spells the absolute roster.mjs and msg.mjs paths" \
   'echo "$ROOT_LINE" | grep -q "$PLUGIN/hooks/roster.mjs" && echo "$ROOT_LINE" | grep -q "$PLUGIN/hooks/msg.mjs"'
 
+# Two root lines in one context after a mid-session update name two different plugin directories;
+# the version token is what tells a role which of them it is looking at.
+PJ_VERSION=$(node -e 'process.stdout.write(require(process.argv[1]).version)' "$PLUGIN/.claude-plugin/plugin.json")
+check "cliRootLine() carries the plugin.json version as a (vX.Y.Z) token" \
+  '[ -n "$PJ_VERSION" ] && echo "$ROOT_LINE" | grep -qF "ah CLI root (v$PJ_VERSION):"'
+
 # ---- 1: an ordinary prompt in a main session carries the line, verbatim from cliRootLine()
 ups "please fix the bug in the login form"
 check "main session, unconfigured cwd: emits the root line" \
-  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "ah CLI root:"'
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "ah CLI root (v"'
 check "main session: additionalContext contains cliRootLine() byte-for-byte" \
   'node -e "
      const out = JSON.parse(process.argv[1]);
@@ -77,12 +83,12 @@ cat > "$PROJ/.claude/agent-hierarchy.json" <<EOF
 EOF
 ups "please fix the bug in the login form"
 check "hierarchy configured and enabled: emits the root line" \
-  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "ah CLI root:"'
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "ah CLI root (v"'
 
 # ---- 5: the pre-existing team-intent nudge still fires, and now shares the write
 ups "let's spawn the team for this repo"
 check "team-intent prompt: nudge AND root line in one stdout object" \
-  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "ah:agent-team" && echo "$OUT" | grep -q "ah CLI root:" && [ "$(echo "$OUT" | grep -c "hookSpecificOutput")" -eq 1 ]'
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "ah:agent-team" && echo "$OUT" | grep -q "ah CLI root (v" && [ "$(echo "$OUT" | grep -c "hookSpecificOutput")" -eq 1 ]'
 
 # ---- 6: malformed input still fails open
 OUT=$(printf 'not json at all' | HOME="$FAKEHOME" node "$HOOK" 2>&1); RC=$?
@@ -92,8 +98,8 @@ check "malformed input: RC 0, no throw" '[ "$RC" -eq 0 ]'
 # restates the line instead of calling cliRootLine(), that is the drift this catches.
 check "both hooks call cliRootLine() rather than restating the line" \
   'grep -q "cliRootLine()" "$PLUGIN/hooks/sessionstart.mjs" && grep -q "cliRootLine()" "$HOOK" &&
-   grep -q "ah CLI root:" "$PLUGIN/hooks/lib-config.mjs" &&
-   ! grep -q "ah CLI root:" "$PLUGIN/hooks/sessionstart.mjs" && ! grep -q "ah CLI root:" "$HOOK"'
+   grep -q "ah CLI root" "$PLUGIN/hooks/lib-config.mjs" &&
+   ! grep -q "ah CLI root" "$PLUGIN/hooks/sessionstart.mjs" && ! grep -q "ah CLI root" "$HOOK"'
 
 # ---- 8: no `<AH_ROOT>` placeholder survives in text the harness substitutes into (agents/, skills/)
 check "agents/ and skills/ use \${CLAUDE_PLUGIN_ROOT}, never the <AH_ROOT> placeholder" \
@@ -103,7 +109,9 @@ check "agents/ and skills/ use \${CLAUDE_PLUGIN_ROOT}, never the <AH_ROOT> place
 # the resolve-it-yourself recipe, or a reader has a placeholder and no way to expand it.
 check "docs/cli-tools.md keeps <AH_ROOT> and carries the installed_plugins.json fallback recipe" \
   'grep -q "<AH_ROOT>" "$PLUGIN/docs/cli-tools.md" && grep -q "installed_plugins.json" "$PLUGIN/docs/cli-tools.md"'
-check "orchestrator.md carries the fallback recipe" 'grep -q "installed_plugins.json" "$PLUGIN/agents/orchestrator.md"'
+# One recipe, in docs/cli-tools.md: a second copy is a second thing to drift.
+check "orchestrator.md points at cli-tools.md rather than carrying its own recipe" \
+  '! grep -q "installed_plugins.json" "$PLUGIN/agents/orchestrator.md" && grep -q "docs/cli-tools.md" "$PLUGIN/agents/orchestrator.md"'
 
 echo
 echo "passed: $PASS  failed: $FAIL"
