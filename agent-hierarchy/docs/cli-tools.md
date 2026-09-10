@@ -11,16 +11,35 @@ There is no MCP server as of 0.73.0 (spec 0048; it was removed because the daemo
 "down" — `/reload-plugins` fires no SessionStart, so an in-session update left the tools
 disconnected). A CLI call either runs or prints node's own error.
 
-`<AH_ROOT>` is the plugin's installed root. Hooks publish it: every session the SessionStart hook
-injects into gets a line reading
+`<AH_ROOT>` is the plugin's installed root. Three independent channels publish it, because no one
+of them covers every case:
+
+1. **The skill and agent files name it directly.** `${CLAUDE_PLUGIN_ROOT}` is substituted at load
+   time in `skills/*/SKILL.md` and `agents/*.md` as well as `commands/`, so a role's own contract
+   arrives carrying the absolute path.
+2. **SessionStart and UserPromptSubmit inject a root line** — `lib-config.mjs`'s `cliRootLine()`,
+   one source of truth for both:
+
+   ```
+   ah CLI root: <AH_ROOT> — roster: `node <AH_ROOT>/hooks/roster.mjs <verb> --cwd <abs cwd>`, messages: `node <AH_ROOT>/hooks/msg.mjs <verb> --cwd <abs cwd>` (verbs: agent-hierarchy/docs/cli-tools.md)
+   ```
+
+   SessionStart alone is not enough: `/reload-plugins` fires no SessionStart, so a session that
+   updates mid-flight would never hear the new root. UserPromptSubmit repeats the line on every
+   prompt, which covers that and survives compaction. Both use the same classification — nothing
+   for subagents, nothing when the hierarchy is configured-and-disabled.
+3. **Hook messages** that tell a role to run something spell the absolute command. Subagents get no
+   SessionStart or UserPromptSubmit injection by design; this is their channel.
+
+If all three somehow failed you, resolve the root — do not guess it, and never glob the cache dir
+(several versions coexist there):
 
 ```
-ah CLI root: <AH_ROOT> — roster: `node <AH_ROOT>/hooks/roster.mjs <verb> --cwd <abs cwd>`, messages: `node <AH_ROOT>/hooks/msg.mjs <verb> --cwd <abs cwd>` (verbs: agent-hierarchy/docs/cli-tools.md)
+node -e 'const p=require(process.env.HOME+"/.claude/plugins/installed_plugins.json").plugins,k=Object.keys(p).find(x=>/^(ah|agent-hierarchy)@/.test(x));console.log([].concat(p[k])[0].installPath)'
 ```
 
-and every hook message that tells a role to run something spells the absolute command. Subagents
-get no SessionStart injection by design; the hook messages are their channel. Never guess the
-path — if no root line is in context, ask the Orchestrator for it.
+The key is `ah@<marketplace>` (or `agent-hierarchy@<marketplace>`) and its value is an **array** of
+install records — hence `[].concat(p[k])[0]`.
 
 ## Invocation rules
 
@@ -75,10 +94,12 @@ resolution that `show` implements.
 
 ## After an update, mid-session
 
-Your context still holds the old `<AH_ROOT>`. Old and new version dirs coexist under the plugin
-cache, so the old CLI keeps running — stale code, still working. If the old dir is gone, node says
-`Cannot find module …/hooks/roster.mjs`; start a new session and use the `ah CLI root:` line it
-prints.
+`/reload-plugins` fires no SessionStart, so nothing re-announces the root at update time — but the
+UserPromptSubmit hook re-states the `ah CLI root:` line on your next prompt, and after a reload that
+line comes from the NEW version dir. Take the most recent one in context. Until then the old CLI
+keeps running from the old version dir (they coexist under the cache) — stale code, still working.
+If the old dir is gone, node says `Cannot find module …/hooks/roster.mjs`; send another prompt and
+read the fresh root line, or resolve it with the recipe above.
 
 ## Verbs
 

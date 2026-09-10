@@ -44,14 +44,14 @@
  * nothing.
  */
 
-import { isSubagent, readHookInput } from "./lib-config.mjs";
+import { cliRootLine, isSubagent, readHookInput, resolveConfig } from "./lib-config.mjs";
 import { extractMsgToken } from "./lib-hier.mjs";
 import { matchedTeamIntentPhrase } from "./lib-team-intent.mjs";
 import { appendPeerRecord, appendTurnMarker, extractPendingRecord, parseWrapper, pendingFor } from "./lib-peer.mjs";
 
 try {
   const input = await readHookInput();
-  let nudge = null;
+  const parts = [];
   if (!isSubagent(input)) {
     const sessionId = typeof input.session_id === "string" ? input.session_id : "";
     const prompt = typeof input.prompt === "string" ? input.prompt : "";
@@ -80,15 +80,21 @@ try {
     }
 
     if (prompt && matchedTeamIntentPhrase(prompt)) {
-      nudge = 'ah: standing up, reshaping, or tearing down a live Team goes through the `ah:agent-team` skill.';
+      parts.push('ah: standing up, reshaping, or tearing down a live Team goes through the `ah:agent-team` skill.');
     }
+
+    // `/reload-plugins` fires no SessionStart, so a session that updates mid-flight never hears the
+    // root line that hook injected — and the CLI paths are the whole interface since 0.73.0. Every
+    // prompt re-states it, on the same classification SessionStart uses.
+    const resolved = resolveConfig(typeof input.cwd === "string" ? input.cwd : process.cwd());
+    if (!resolved.configured || resolved.enabled) parts.push(cliRootLine());
   }
-  if (nudge) {
+  if (parts.length) {
     process.stdout.write(
       JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "UserPromptSubmit",
-          additionalContext: nudge,
+          additionalContext: parts.join("\n\n"),
         },
       })
     );

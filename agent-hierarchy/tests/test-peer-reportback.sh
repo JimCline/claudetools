@@ -130,7 +130,8 @@ check "quoted (unanchored) sentinel -> null (not a tasking)" '[ "$OUT" = null ]'
 # =====================================================================
 reset_state
 ups s1 "$WELLFORMED"
-check "well-formed prompt: hook exits clean" '[ -z "$OUT" ]'
+check "well-formed prompt: hook exits clean, emitting only the ah CLI root line (0.73.1)" \
+  '[ -z "$OUT" ] || { echo "$OUT" | grep -q "ah CLI root:" && [ "$(echo "$OUT" | grep -c "hookSpecificOutput")" -eq 1 ]; }'
 check "well-formed prompt: pending record appended" '[ -f "$STATE_FILE" ] && grep -q "\"status\":\"pending\"" "$STATE_FILE"'
 check "well-formed prompt: record carries this session id" 'grep -q "\"session_id\":\"s1\"" "$STATE_FILE"'
 

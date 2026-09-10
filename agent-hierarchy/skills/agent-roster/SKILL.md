@@ -6,7 +6,7 @@ description: Define, edit, or inspect the agent-hierarchy ROSTER — the templat
 # agent-roster
 
 The roster is a `roster` block in the existing `agent-hierarchy.json` config,
-at one of three levels (§ Levels below). `<AH_ROOT>/hooks/roster.mjs` does all the file I/O and
+at one of three levels (§ Levels below). `${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs` does all the file I/O and
 validation; this skill is the interactive prose surface that drives it — do
 not hand-edit the JSON, and do not duplicate its validation here.
 
@@ -40,10 +40,10 @@ drifted — say so rather than silently picking one.
 
 Resolution is **whole-level replace**, not a per-key merge: the winning
 level's `roster` block is used in its entirety — a member defined only at a
-losing level does not appear. To inspect the roster run `node <AH_ROOT>/hooks/roster.mjs show --cwd <abs cwd>`; never read `.claude/agent-hierarchy.json` directly — it misses the worktree/main-checkout and global fallback resolution that `show` implements. With no
+losing level does not appear. To inspect the roster run `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs show --cwd <abs cwd>`; never read `.claude/agent-hierarchy.json` directly — it misses the worktree/main-checkout and global fallback resolution that `show` implements. With no
 `--level`/`level` argument it always prints the resolved (winning) roster;
 with one, it prints that level's raw file and says if it's shadowed.
-The ah CLI is the only interface: every roster/team/message operation is a Bash call to `node <AH_ROOT>/hooks/roster.mjs <verb> … --cwd <abs cwd>` or `node <AH_ROOT>/hooks/msg.mjs <verb> … --cwd <abs cwd>`. `<AH_ROOT>` is on this session's `ah CLI root:` line, or in the hook message that sent you here — never guess a path; if no root line is in your context, ask the Orchestrator for it. Verb reference: `agent-hierarchy/docs/cli-tools.md`. Output is always JSON; a non-zero exit says why on stdout/stderr.
+The ah CLI is the only interface: every roster/team/message operation is a Bash call to `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs <verb> … --cwd <abs cwd>` or `node ${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs <verb> … --cwd <abs cwd>`. That placeholder reaches you resolved; if it is still literal, ask the Orchestrator for the root rather than guess. Verb reference: `agent-hierarchy/docs/cli-tools.md`. Output is always JSON; a non-zero exit says why on stdout/stderr.
 
 Member names are **derived, never stored**: the first member of a role at the
 winning level is `<team-prefix>-<role>` (e.g. `claudetools-architect`) — the
@@ -57,12 +57,12 @@ from the roster.
 
 ## Command surface
 
-Every verb below runs as `node <AH_ROOT>/hooks/roster.mjs <verb> … --cwd <abs cwd>`
-through the Bash tool — `<AH_ROOT>` from this session's `ah CLI root:` line.
+Every verb below runs as `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs <verb> … --cwd <abs cwd>`
+through the Bash tool — `${CLAUDE_PLUGIN_ROOT}` from this session's `ah CLI root:` line.
 `docs/cli-tools.md` is the single source of truth for the full verb/flag surface;
 the bullets below are this skill's operational notes on top of it.
 
-All CLI subcommands run via `node "<AH_ROOT>/hooks/roster.mjs" <cmd> ...`
+All CLI subcommands run via `node "${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs" <cmd> ...`
 with `--cwd "$(pwd)"` (or the relevant repo path). Level may be given as
 `--level <L>` or as the first bare word: `roster.mjs add repo --role architect`
 ≡ `--level repo`.

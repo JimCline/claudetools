@@ -97,7 +97,8 @@ check "§1.5: team-intent phrase injects a line naming the skill" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "ah:agent-team" && [ "$(echo "$OUT" | grep -c "ah:agent-team")" -eq 1 ]'
 
 prompt_hook "please fix the bug in the login form"
-check "§1.5: unrelated prompt injects nothing" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
+check "§1.5: unrelated prompt injects no NUDGE (only the 0.73.1 ah CLI root line)" \
+  '[ "$RC" -eq 0 ] && ! echo "$OUT" | grep -q "ah:agent-team"'
 
 # phrase list matches SKILL.md's frontmatter description exactly (one source of truth)
 PHRASE_CHECK=$(node -e '

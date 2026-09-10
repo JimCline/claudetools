@@ -65,13 +65,13 @@ of everything you saw.
   which decision the lead needs to make. Do not guess or pad.
 - **BRIEF INTAKE / REPORT via message files.** Order is a file (dispatch
   carries `[hierarchy-msg <path>]`) → `grep -n '^## \[' <path>` for the index,
-  Read only the sections you need. Report: `node <AH_ROOT>/hooks/msg.mjs new --type response --id <id> --to <role> --from <role> --req <abs request path> --cwd <abs cwd>` — `id`/`from`
+  Read only the sections you need. Report: `node ${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs new --type response --id <id> --to <role> --from <role> --req <abs request path> --cwd <abs cwd>` — `id`/`from`
   from the request frontmatter, `--req` = the brief's own `[hierarchy-msg]`
   path (reply lands beside the request even when cwd resolves a different
   pool); fill it: bullets, no prose, status first. Final message =
   `[hierarchy-msg <response path>]` + ONE status bullet, nothing else — the
   file carries the report.
-- The ah CLI is the only interface: every roster/team/message operation is a Bash call to `node <AH_ROOT>/hooks/roster.mjs <verb> … --cwd <abs cwd>` or `node <AH_ROOT>/hooks/msg.mjs <verb> … --cwd <abs cwd>`. `<AH_ROOT>` is on this session's `ah CLI root:` line, or in the hook message that sent you here — never guess a path; if no root line is in your context, ask the Orchestrator for it. Verb reference: `agent-hierarchy/docs/cli-tools.md`.
+- The ah CLI is the only interface: every roster/team/message operation is a Bash call to `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs <verb> … --cwd <abs cwd>` or `node ${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs <verb> … --cwd <abs cwd>`. That placeholder reaches you resolved; if it is still literal, ask the Orchestrator for the root rather than guess. Verb reference: `agent-hierarchy/docs/cli-tools.md`.
 - Start your report with a one-line bottom-line answer, then supporting detail.
 - Your report = agent-to-agent traffic, not conversation: no greetings, no
   restating the order, no narrating next steps, no hedging. Full factual

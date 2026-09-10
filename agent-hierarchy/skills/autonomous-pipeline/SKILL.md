@@ -32,7 +32,7 @@ standing check-in contract in `agents/orchestrator.md` governs everything
 from there — thresholds, nudge counts, when to tell the user. This skill
 adds nothing to it and does not restate it.
 
-The ah CLI is the only interface: every roster/team/message operation is a Bash call to `node <AH_ROOT>/hooks/roster.mjs <verb> … --cwd <abs cwd>` or `node <AH_ROOT>/hooks/msg.mjs <verb> … --cwd <abs cwd>`. `<AH_ROOT>` is on this session's `ah CLI root:` line, or in the hook message that sent you here — never guess a path; if no root line is in your context, ask the Orchestrator for it. Verb reference: `agent-hierarchy/docs/cli-tools.md`. Output is always JSON; a non-zero exit says why on stdout/stderr.
+The ah CLI is the only interface: every roster/team/message operation is a Bash call to `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs <verb> … --cwd <abs cwd>` or `node ${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs <verb> … --cwd <abs cwd>`. That placeholder reaches you resolved; if it is still literal, ask the Orchestrator for the root rather than guess. Verb reference: `agent-hierarchy/docs/cli-tools.md`. Output is always JSON; a non-zero exit says why on stdout/stderr.
 
 **One gap the standing contract leaves open, and this skill closes it:**
 after the liveness Stop hook's nudge budget (`MAX_NUDGES`, 2 per

@@ -49,12 +49,16 @@ mechanics; this file is the durable identity underneath it:
   over sentences, `file:line` over prose, lists over paragraphs. Applies to
   what you send them; replies to the user stay in normal prose.
 - **Message files.** Every role dispatch rides a request file: create it with
-  `node <AH_ROOT>/hooks/msg.mjs new --to <role> --from <role> --slug <s> --cwd
+  `node ${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs new --to <role> --from <role> --slug <s> --cwd
   <abs cwd>`, put `[hierarchy-msg <path>]` in the dispatch or brief,
   expect the reply as `[hierarchy-msg <response path>]`. The file pair under
   the hierarchy dir is the durable record; in-band text only points at it.
-- The ah CLI is the only interface: every operation is a Bash call to `node <AH_ROOT>/hooks/roster.mjs <verb> … --cwd <abs cwd>` or `node <AH_ROOT>/hooks/msg.mjs <verb> … --cwd <abs cwd>`. `<AH_ROOT>` is on this session's `ah CLI root:` line, or in the hook message that sent you here — never guess a path, and pass it on to every role you dispatch. Verb reference: `agent-hierarchy/docs/cli-tools.md`.
-- To inspect the roster run `node <AH_ROOT>/hooks/roster.mjs show --cwd <abs cwd>`; never read `.claude/agent-hierarchy.json` directly — it misses the worktree/main-checkout and global fallback resolution that `show` implements.
+- The ah CLI is the only interface: `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs <verb> … --cwd
+  <abs cwd>`, same for `msg.mjs`; verbs: `agent-hierarchy/docs/cli-tools.md`. The placeholder
+  reaches you resolved; if still literal, resolve it rather than guess:
+  `node -e 'const p=require(process.env.HOME+"/.claude/plugins/installed_plugins.json").plugins,k=Object.keys(p).find(x=>/^(ah|agent-hierarchy)@/.test(x));console.log([].concat(p[k])[0].installPath)'`.
+- `roster.mjs show --cwd <abs cwd>` reads the roster; never read `.claude/agent-hierarchy.json`
+  — `show` resolves worktree/main-checkout and the global fallback.
 - **Peer roster.** `peers.jsonl` is ground truth for which peer sessions are
   up; after compaction trust the injected HIERARCHY STATE block over your own
   memory. A gate will stop you once if you spawn a subagent past a live peer.

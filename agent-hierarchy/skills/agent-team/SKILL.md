@@ -18,7 +18,7 @@ a live team (spec 0044 §1.3). To add a member to the RUNNING team, including
 one that diverges from the roster or a role the roster does not define, use
 `spawn-ad-hoc` below.
 
-If a roster already exists (check it: To inspect the roster run `node <AH_ROOT>/hooks/roster.mjs show --cwd <abs cwd>`; never read `.claude/agent-hierarchy.json` directly — it misses the worktree/main-checkout and global fallback resolution that `show` implements.) and you just need a live Team
+If a roster already exists (check it: To inspect the roster run `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs show --cwd <abs cwd>`; never read `.claude/agent-hierarchy.json` directly — it misses the worktree/main-checkout and global fallback resolution that `show` implements.) and you just need a live Team
 — including at a worktree, which usually inherits the repo's existing roster —
 go straight to § Create. You do NOT need to add/edit/remove roster members
 first.
@@ -34,8 +34,8 @@ drifted — say so rather than silently picking one.
 
 ## Command surface
 
-Every verb below runs as `node <AH_ROOT>/hooks/roster.mjs <verb> … --cwd <abs cwd>`
-through the Bash tool — `<AH_ROOT>` from this session's `ah CLI root:` line, the
+Every verb below runs as `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs <verb> … --cwd <abs cwd>`
+through the Bash tool — `${CLAUDE_PLUGIN_ROOT}` from this session's `ah CLI root:` line, the
 cwd the absolute repo path. The plugin's own PreToolUse hook allows those calls
 without a permission prompt; a `--close` call still prompts, by design. Output is
 always JSON. Full verb/flag reference: `docs/cli-tools.md`.
