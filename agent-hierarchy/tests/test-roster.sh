@@ -137,6 +137,14 @@ check "ultra gate: SendMessage to a non-listed name passes" '[ -z "$OUT" ]'
 # directive lists both names
 eval_hier "C.buildDirective(resolved, 's').includes('peer \"ua-one\" / \"ua-two\" via SendMessage')"
 check "directive role line lists every array peer" '[ "$OUT" = true ]'
+# the injection names both spawn verbs, so an Orchestrator need not go read the docs
+eval_hier "C.buildDirective(resolved, 's').includes('spawn-one <role> [--member <n>]')"
+check "directive names spawn-one" '[ "$OUT" = true ]'
+eval_hier "C.buildDirective(resolved, 's').includes('spawn-ad-hoc <role> [--kind pi|codex|claude] [--route peer|pane]')"
+check "directive names spawn-ad-hoc with --kind and --route" '[ "$OUT" = true ]'
+OUT=$(HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node "$H/roster.mjs" show --cwd "$PROJ" 2>&1)
+check "show with no roster: roster null plus a spawn-ad-hoc hint" \
+  'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const o=JSON.parse(s);process.exit(o.roster===null&&/spawn-ad-hoc <role>/.test(o.hint)?0:1)})"'
 
 # ---- 6: msg.mjs roster output
 cat > "$PROJ/.claude/agent-hierarchy.json" <<EOF

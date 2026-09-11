@@ -34,8 +34,8 @@ directive_bytes() { # <handoffs>
   " 2>&1)
 }
 
-AUTO_MAX=14300
-CONFIRM_MAX=16200
+AUTO_MAX=14600
+CONFIRM_MAX=16500
 
 directive_bytes auto
 check "buildDirective(auto) <= $AUTO_MAX B (got $OUT)" '[ "$OUT" -le "$AUTO_MAX" ] 2>/dev/null'
@@ -56,7 +56,7 @@ md_ceiling ultra-advisor 7100
 md_ceiling reviewer      6400
 md_ceiling implementor   5100
 md_ceiling task-runner   5650
-md_ceiling orchestrator  7200
+md_ceiling orchestrator  7350
 
 echo "----"
 echo "SUMMARY: $PASS passed, $FAIL failed"

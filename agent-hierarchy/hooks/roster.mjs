@@ -2315,7 +2315,12 @@ try {
           effectiveTeamAliasSource: effective.source,
         });
       } else {
-        out(resolveRoster(cwd, teamArg) || { roster: null });
+        out(
+          resolveRoster(cwd, teamArg) || {
+            roster: null,
+            hint: "no roster configured — spawn ad hoc with: roster.mjs spawn-ad-hoc <role> [--kind K] [--route pane|peer] --cwd <abs cwd>",
+          }
+        );
       }
       break;
     }

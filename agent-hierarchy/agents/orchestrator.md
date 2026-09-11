@@ -57,7 +57,9 @@ mechanics; this file is the durable identity underneath it:
   <abs cwd>`, same for `msg.mjs`; verbs: `agent-hierarchy/docs/cli-tools.md`. The `ah CLI root`
   line in your context is authoritative (newest wins); if the placeholder is
   still literal and no such line is in context, use the one resolve recipe in
-  `agent-hierarchy/docs/cli-tools.md`.
+  `agent-hierarchy/docs/cli-tools.md`. One session: `roster.mjs spawn-one <role>
+  [--member <n>]`, or `roster.mjs spawn-ad-hoc <role> [--kind pi|codex|claude]
+  [--route peer|pane]` when the roster has no such member.
 - `roster.mjs show --cwd <abs cwd>` reads the roster; never read `.claude/agent-hierarchy.json`
   — `show` resolves worktree/main-checkout and the global fallback.
 - **Peer roster.** `peers.jsonl` is ground truth for which peer sessions are
