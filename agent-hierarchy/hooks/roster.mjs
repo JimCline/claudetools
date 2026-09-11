@@ -964,11 +964,28 @@ function herdrAgentState(name) {
  * 0025 §12.3) is read from either `cwd` or `foreground_cwd` — the true key is unconfirmed and
  * this repo consumed neither before now, so both are read as cheap insurance.
  */
+let herdrTopologyCache = null;
+
 function queryHerdrTopology() {
+  if (herdrTopologyCache) return herdrTopologyCache;
   const result = herdrCall(["agent", "list"]);
   const agents = result && result.result && Array.isArray(result.result.agents) ? result.result.agents : null;
   if (!agents) throw new Error("herdr agent list produced unexpected shape (missing .result.agents)");
-  return agents.map((a) => ({ name: a.name || null, pane_id: a.pane_id, tab_id: a.tab_id, workspace_id: a.workspace_id, cwd: a.cwd || a.foreground_cwd || null }));
+  // Cached for the life of the process: several readers (resync, the dismiss name forms, the
+  // live-registry herdr arm) want the same snapshot, and one command must cost one exec.
+  herdrTopologyCache = agents.map((a) => ({
+    name: a.name || null,
+    // The pane title roster itself sets with `herdr pane rename`. An agent registered through
+    // `herdr agent start` reports `name`; one herdr detected in a pane on its own reports only
+    // the title, so both are carried and the reader decides which it trusts.
+    title: (a.terminal_title_stripped && String(a.terminal_title_stripped)) || null,
+    session_id: (a.agent_session && typeof a.agent_session.value === "string" && a.agent_session.value) || null,
+    pane_id: a.pane_id,
+    tab_id: a.tab_id,
+    workspace_id: a.workspace_id,
+    cwd: a.cwd || a.foreground_cwd || null,
+  }));
+  return herdrTopologyCache;
 }
 
 /** Spec 0008 §5.3: name first (durable across workspace moves), pane id second, else no match. */
@@ -1803,11 +1820,123 @@ function dedupPeers(members) {
   return out;
 }
 
+/** Roles a hierarchy session name can carry: the roster roles plus `orchestrator`, which owns a
+    pane of its own even though it is never a roster member. */
+const HIERARCHY_NAME_ROLES = [...ROLES, "orchestrator"];
+
+/**
+ * Split `<prefix>-<role>` / `<prefix>-<role>-<n>` into its parts, or null when the name is not one
+ * a hierarchy session carries. Parsed from the RIGHT: a prefix may itself contain hyphens, so only
+ * a trailing ordinal and the role token can be stripped, and what remains is the whole prefix.
+ */
+function hierarchyNameParts(name) {
+  if (typeof name !== "string" || !name) return null;
+  const ordinal = name.match(/-(\d+)$/);
+  const base = ordinal ? name.slice(0, -ordinal[0].length) : name;
+  const role = HIERARCHY_NAME_ROLES.find((r) => base.endsWith(`-${r}`));
+  if (!role) return null;
+  const prefix = base.slice(0, -(role.length + 1));
+  return prefix ? { prefix, role } : null;
+}
+
+/** The naming prefix a scope's sessions were dispatched under: a named team's own name, else the
+    prefix this command would spawn with (`--team` > alias > repo basename). */
+function scopePrefix(scope) {
+  return typeof scope === "string" && scope ? scope : teamPrefix(cwd, teamArg);
+}
+
+/** `herdr agent list` as a reportable outcome instead of a throw: an absent or unanswering herdr
+    contributes no agents and fails nothing, and the caller reports why. */
+function herdrArmQuery() {
+  if (!herdrOnPath()) return { ok: false, reason: "herdr not on PATH", agents: [] };
+  try {
+    return { ok: true, reason: null, agents: queryHerdrTopology() };
+  } catch (err) {
+    return { ok: false, reason: err.message, agents: [] };
+  }
+}
+
+/** A team riding tmux or terminal has no herdr topology that could describe it, and asking herdr
+    about one would be an exec for an answer that cannot apply. With no team file at all there is
+    no transport to contradict: herdr is the only registry a loose peer can be in. */
+function herdrArmApplies(dir, scope) {
+  if (scope === NO_TEAM_SCOPE) return true;
+  const team = readTeam(dir, typeof scope === "string" && scope ? scope : null);
+  return !team || team.transport === "herdr";
+}
+
+/**
+ * The live herdr panes whose names say they belong to this scope's hierarchy, in `livePeerSlots`
+ * shape. The name is the agent's registered `name` when it has one and its pane title otherwise,
+ * and a registered name that does not match is never overridden by a title that would.
+ * Being listed by herdr IS the liveness signal — closing a pane needs nothing but its id,
+ * so a per-agent status query would buy nothing the close path uses. The pane running this command
+ * is never included. A pane reporting a cwd in another checkout is excluded; one reporting no cwd
+ * is kept, since a name match under this scope's own prefix is already repo-specific.
+ */
+function herdrArmMatches(dir, scope) {
+  const q = herdrArmApplies(dir, scope) ? herdrArmQuery() : { ok: false, reason: "team transport is not herdr", agents: [] };
+  const prefix = scopePrefix(scope);
+  const selfPane = process.env.HERDR_PANE_ID || null;
+  const myRoot = findGitRoot(realCwd(cwd)) || null;
+  const matched = [];
+  for (const a of q.agents) {
+    const key = a.name || a.title;
+    const parts = hierarchyNameParts(key);
+    if (!parts || parts.prefix !== prefix) continue;
+    if (selfPane && a.pane_id === selfPane) continue;
+    // Fail closed when this command has no git root to compare against: an agent that reports a
+    // cwd is then unverifiable, not assumed local. One that reports none is unchanged.
+    if (a.cwd && (!myRoot || (findGitRoot(realCwd(a.cwd)) || null) !== myRoot)) continue;
+    matched.push({ name: key, role: parts.role, pid: null, pane_id: a.pane_id, session_id: a.session_id || null, cwd: a.cwd || null, live: true, how: `herdr agent list (${a.name ? "name" : "title"})`, source: "herdr" });
+  }
+  return { ...q, prefix, matched };
+}
+
+/** Registry wins: an agent a team.json row or a peers.jsonl row already names — by pane id, by
+    name, or by session id — is that row, and the richer row is the one the close set carries.
+    Only rows that are not known-dead count: a stale `up` record whose pid is gone describes a
+    session that ended, and letting it suppress a live pane would hide the pane from the close set
+    entirely. A team.json row carries no liveness of its own and always counts. */
+function herdrArmSlots(dir, scope, known) {
+  const ids = new Set();
+  const names = new Set();
+  const sessions = new Set();
+  for (const k of known.filter((k) => k.live !== false)) {
+    if (k.pane_id) ids.add(k.pane_id);
+    if (k.transport_id) ids.add(k.transport_id);
+    if (k.name) names.add(k.name);
+    if (k.session_id) sessions.add(k.session_id);
+  }
+  return herdrArmMatches(dir, scope).matched.filter((s) => !ids.has(s.pane_id) && !names.has(s.name) && !(s.session_id && sessions.has(s.session_id)));
+}
+
+/** The live registry for a scope: peers.jsonl rows plus the herdr-topology arm. Every reader of
+    the fallback/extras/untracked lists goes through here, so the arm reaches all of them at once
+    and none of them carries per-site herdr logic. */
+function liveRegistrySlots(dir, scope, known = []) {
+  const peers = livePeerSlots(dir, scope);
+  return [...peers, ...herdrArmSlots(dir, scope, [...peers, ...known])];
+}
+
+/** Which sources a disband/dismiss/teams answer consulted and what each yielded — so an empty
+    answer can name the prefix it searched under, the one thing a user can check at a glance. */
+function sourcesField(dir, scope, team) {
+  const arm = herdrArmMatches(dir, scope);
+  return {
+    team: { file: team ? teamPath(dir, teamFile) : null, members: team && Array.isArray(team.members) ? team.members.length : 0 },
+    peers: { live: livePeerSlots(dir, scope).filter((s) => s.live).length },
+    herdr: arm.ok
+      ? { ok: true, agents: arm.agents.length, matched: arm.matched.length, prefix: arm.prefix }
+      : { ok: false, reason: arm.reason, prefix: arm.prefix },
+  };
+}
+
 /** Spec 0040 §1.2: the live peer records for the current team, shaped like team.json members so
     closableMembers/closeToken/closeMemberPane apply verbatim. Records store the herdr pane id
     from checkin (HERDR_PANE_ID); a record without one has no transport_id and is listed but
     never closable. `source: "peers"` marks the row as coming from the registry, not team.json. */
-function peerFallbackMembers(dir, scope) {
+function peerFallbackMembers(dir, scope, known = []) {
   // Spec 0046 §2.2 (replaces the 0044 `teamArg` rule, which WAS GitHub #4): the scope is the
   // identity of the team being operated on — `teamFile` (null for the default team), or
   // NO_TEAM_SCOPE in the no-team.json branch — never the `--team` FLAG. Passing `teamArg || null`
@@ -1815,16 +1944,16 @@ function peerFallbackMembers(dir, scope) {
   // leaving the close set empty while the sessions were plainly live. The old comment's fear (a
   // derived scope filters untagged peers out) holds only when the derived team is NAMED, and
   // there excluding default-team peers is the correct isolation.
-  return livePeerSlots(dir, scope)
+  return liveRegistrySlots(dir, scope, known)
     .filter((s) => s.live)
-    .map((s) => ({ role: s.role, name: s.name, route: "peer", transport_id: s.pane_id, session_id: s.session_id || null, live: s.live, how: s.how, source: "peers" }));
+    .map((s) => ({ role: s.role, name: s.name, route: "peer", transport_id: s.pane_id, session_id: s.session_id || null, live: s.live, how: s.how, source: s.source || "peers" }));
 }
 
 /** Spec 0040 §1.4a: registry peers not named in team.json — a record matching a member's name IS
     that member, never an extra. */
 function peerExtras(dir, team, scope) {
   const named = new Set(team.members.map((m) => m.name));
-  return dedupPeers(peerFallbackMembers(dir, scope).filter((m) => !named.has(m.name)));
+  return dedupPeers(peerFallbackMembers(dir, scope, team.members).filter((m) => !named.has(m.name)));
 }
 
 /** Spec 0046 §2.5: live peers attributed to `scope` that no team.json row names — the orphans
@@ -1840,13 +1969,13 @@ function trackedNames(dir, rows) {
 }
 
 function untrackedLive(dir, scope, tracked) {
-  return livePeerSlots(dir, scope)
+  return liveRegistrySlots(dir, scope)
     .filter((s) => s.live && !tracked.has(s.name))
-    .map((s) => ({ name: s.name, role: s.role, pane_id: s.pane_id, session_id: s.session_id, pid: s.pid, cwd: s.cwd }));
+    .map((s) => ({ name: s.name, role: s.role, pane_id: s.pane_id, session_id: s.session_id, pid: s.pid, cwd: s.cwd, ...(s.source === "herdr" ? { source: "herdr" } : {}) }));
 }
 
 function peerFallbackPlanEntry(m) {
-  return { role: m.role, name: m.name, route: m.route, transport: "herdr", transport_id: m.transport_id, command: m.transport_id ? `herdr pane close ${m.transport_id}` : null, live: m.live, how: m.how, source: "peers" };
+  return { role: m.role, name: m.name, route: m.route, transport: "herdr", transport_id: m.transport_id, command: m.transport_id ? `herdr pane close ${m.transport_id}` : null, live: m.live, how: m.how, source: m.source || "peers" };
 }
 
 /** Close one member of a (possibly mixed, spec 0040 §1.4a) close set: team rows use the team's
@@ -1854,18 +1983,18 @@ function peerFallbackPlanEntry(m) {
 function closeOne(m, teamTransport) {
   const row = { name: m.name, transport_id: m.transport_id };
   try {
-    closeMemberPane(m.source === "peers" ? "herdr" : teamTransport, m.transport_id);
+    closeMemberPane(m.source ? "herdr" : teamTransport, m.transport_id);
     Object.assign(row, { closed: true, error: null });
   } catch (err) {
     Object.assign(row, { closed: false, error: err.message });
   }
-  if (m.source === "peers") row.source = "peers";
+  if (m.source) row.source = m.source;
   return row;
 }
 
 /** Shared token/confirm/allow-global gate for every --close variant (spec 0016 §4.5, 0040 §1.3). */
 function gateClose(verb, scope, closable) {
-  const closeList = closable.map((m) => ({ name: m.name, transport_id: m.transport_id, ...(m.source === "peers" ? { source: "peers" } : {}) }));
+  const closeList = closable.map((m) => ({ name: m.name, transport_id: m.transport_id, ...(m.source ? { source: m.source } : {}) }));
   if (opts.confirm !== true) {
     fail(`${verb} --close: --confirm is required to close ${verb === "dismiss" ? "a live session" : "live sessions"}. Close list: ${JSON.stringify(closeList)}`);
   }
@@ -2676,12 +2805,12 @@ try {
           // over one id and a close set over two — the token never matches its own plan.
           const closable = closableMembers(dedupPeers(peerFallbackMembers(dir, NO_TEAM_SCOPE)));
           if (closable.length === 0) {
-            out({ closed: false, reason: "no active team and no live peers" });
+            out({ closed: false, reason: "no active team and no live peers", sources: sourcesField(dir, NO_TEAM_SCOPE, null) });
             break;
           }
           gateClose("disband", "no-team", closable);
           const results = closable.map((m) => closeOne(m, null));
-          out({ closed: results.every((r) => r.closed), source: "peers", results });
+          out({ closed: results.every((r) => r.closed), source: "peers", results, sources: sourcesField(dir, NO_TEAM_SCOPE, null) });
           break;
         }
         let healedMembers = team.members;
@@ -2694,7 +2823,7 @@ try {
         const closable = closableMembers([...healedMembers, ...peerExtras(dir, team, teamFile)]);
         gateClose("disband", team.team_id, closable);
         const results = closable.map((m) => closeOne(m, team.transport));
-        out({ closed: results.every((r) => r.closed), results });
+        out({ closed: results.every((r) => r.closed), results, sources: sourcesField(dir, teamFile, team) });
         break;
       }
 
@@ -2710,10 +2839,10 @@ try {
         const fallback = dedupPeers(peerFallbackMembers(dir, NO_TEAM_SCOPE));
         const closable = closableMembers(fallback);
         if (closable.length === 0) {
-          out({ disbanded: false, reason: "no active team and no live peers" });
+          out({ disbanded: false, reason: "no active team and no live peers", sources: sourcesField(dir, NO_TEAM_SCOPE, null) });
           break;
         }
-        out({ close: fallback.map(peerFallbackPlanEntry), close_token: closeToken("no-team", closable), source: "peers" });
+        out({ close: fallback.map(peerFallbackPlanEntry), close_token: closeToken("no-team", closable), source: "peers", sources: sourcesField(dir, NO_TEAM_SCOPE, null) });
         break;
       }
       let healedMembers = team.members;
@@ -2743,7 +2872,7 @@ try {
       // token hashes the union — with none present, output and token are exactly the team-only ones.
       const extras = peerExtras(dir, team, teamFile);
       for (const m of extras) close.push(peerFallbackPlanEntry(m));
-      const disbandOut = { close, close_token: closeToken(team.team_id, closableMembers([...healedMembers, ...extras])) };
+      const disbandOut = { close, close_token: closeToken(team.team_id, closableMembers([...healedMembers, ...extras])), sources: sourcesField(dir, teamFile, team) };
       if (resyncSummary) disbandOut.resync = resyncSummary;
       out(disbandOut);
       break;
@@ -2775,11 +2904,12 @@ try {
       const target = team ? team.members.find((m) => m.name === name) : null;
       // Spec 0040 §1.4b + 0046 §2.4: a name absent from team.json (or no team.json at all) is
       // resolved against the live registry by every identifier the user can see.
-      const fallback = target ? [] : dedupPeers(peerFallbackMembers(dir, team ? teamFile : NO_TEAM_SCOPE));
+      const dismissScope = team ? teamFile : NO_TEAM_SCOPE;
+      const fallback = target ? [] : dedupPeers(peerFallbackMembers(dir, dismissScope, team && Array.isArray(team.members) ? team.members : []));
       const fbTarget = target ? null : resolvePeerTarget(fallback, name, team ? team.transport : null);
       if (!team && !fbTarget) {
         if (closableMembers(fallback).length === 0) {
-          out({ dismissed: false, reason: "no active team and no live peers" });
+          out({ dismissed: false, reason: "no active team and no live peers", sources: sourcesField(dir, NO_TEAM_SCOPE, null) });
           break;
         }
         fail(
@@ -2810,10 +2940,10 @@ try {
           if (closable.length === 0) fail(`dismiss --close: ${name} has no addressable pane (live peer record without a pane_id)`);
           gateClose("dismiss", scope, closable);
           const results = closable.map((m) => closeOne(m, null));
-          out({ closed: results.every((r) => r.closed), source: "peers", results });
+          out({ closed: results.every((r) => r.closed), source: "peers", results, sources: sourcesField(dir, dismissScope, team) });
           break;
         }
-        out({ member: peerFallbackPlanEntry(fbTarget), live: fbTarget.live, close_token: closeToken(scope, closable), source: "peers" });
+        out({ member: peerFallbackPlanEntry(fbTarget), live: fbTarget.live, close_token: closeToken(scope, closable), source: "peers", sources: sourcesField(dir, dismissScope, team) });
         break;
       }
 
@@ -2858,7 +2988,7 @@ try {
         const allClosed = results.every((r) => r.closed);
         // §2.1 bookkeeping: the row goes only when the close actually succeeded. A failed close
         // that still dropped the record is exactly the orphan GitHub #4 was about.
-        const dismissClose = { closed: allClosed, results, untracked: false };
+        const dismissClose = { closed: allClosed, results, untracked: false, sources: sourcesField(dir, teamFile, team) };
         if (allClosed) {
           writeTeam(dir, { ...team, members: team.members.filter((m) => m.name !== name) }, teamFile);
           dismissClose.untracked = true;
@@ -2894,6 +3024,7 @@ try {
           return st.indeterminate ? { live: null, live_unknown: st.why } : { live: st.live };
         })(),
         close_token: closeToken(team.team_id, closableMembers([healedTarget])),
+        sources: sourcesField(dir, teamFile, team),
         team_id: team.team_id,
         remaining: team.members.filter((m) => m.name !== name).map((m) => m.name),
       });
@@ -3243,7 +3374,7 @@ try {
       }
       // Spec 0046 §2.5: a briefed peer's row carries its team.json member NAME, so the top-level
       // list must exclude every tracked name in the whole hierarchy dir, not just one team's.
-      out({ teams: rows, untracked_live: untrackedLive(dir, NO_TEAM_SCOPE, trackedNames(dir, rows)) });
+      out({ teams: rows, untracked_live: untrackedLive(dir, NO_TEAM_SCOPE, trackedNames(dir, rows)), sources: sourcesField(dir, NO_TEAM_SCOPE, null) });
       break;
     }
 

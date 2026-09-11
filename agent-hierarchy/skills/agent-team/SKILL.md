@@ -102,6 +102,8 @@ happens when a bare `create` collides with someone else's live Team.
   attributed to that team with no `team.json` row, plus a top-level `untracked_live` for peers
   attributed to no team at all (spec 0046 §2.5). An `untracked_live` entry is closed with
   `dismiss <pane_id | role@sid8>` or `disband` — nothing else lists it.
+  `untracked_live` also lists herdr agents named by convention that have no
+  registry row at all, marked `source: "herdr"`.
 - `history [--json]` — recent team-history entries, the input to
   `create --from`. See § Create.
 - `checkin [--team <T>] [--cwd <path>]` — re-registers the *current*
@@ -437,6 +439,10 @@ herdr pane id, so a tmux peer surfaces with `command: null`.
    lands *between* this query and step 3's actual closes is still possible —
    nothing inside `roster.mjs` can close that window, it's bounded by how
    long your step-2 confirmation takes.
+   If the plan comes back empty — `disbanded: false` with
+   `reason: "no active team and no live peers"`, or an empty `close` array —
+   you are not done: work through § Plan came back empty below, including its
+   `ListAgents` pass, before you report anything.
 2. Prompt the user once: "this will close N live sessions — proceed?",
    naming the members. Stop here if they decline. This conversational
    confirmation is still required and is not replaced by step 3's harness
@@ -477,6 +483,55 @@ or the sweep deletes it (members, refs, `transport_id`s — everything) before
 `adopt` gets a chance to run. `adopt` refuses to touch a Team whose recorded
 owner is alive and different — it is recovery for an orphan, not a way to
 steal a live Team.
+
+### Plan came back empty — search before you say so
+
+Applies to both `disband` and `dismiss`. **Trigger:** the plan returned
+`disbanded: false` / `dismissed: false` with
+`reason: "no active team and no live peers"`, or an empty `close` array, or
+`dismiss` failed with "no member named". The sessions are very likely up under
+a name this scope does not cover. Do not stop here and do not report yet. Work
+all three sources, in this order, before the single confirmation.
+
+1. **Other team files.** `node <root>/hooks/roster.mjs teams --cwd <abs cwd>`.
+   If a team lists live members, or an `untracked_live` row whose name fits
+   `<prefix>-<role>[-<n>]`, re-run the plan against it: `--team <that team>`
+   for `disband`, or that row's `pane_id` / `role@sid8` for `dismiss`. This is
+   what "disband the team" means when the peers are tracked under an alias.
+2. **The CLI's own herdr answer.** Read `sources.herdr` in the plan output:
+   `{ok: true, agents, matched, prefix}`, or `{ok: false, reason, prefix}` when
+   herdr could not be asked. Note the reason for your report. Do **not** run
+   `herdr agent list` yourself — same PATH, same answer, and the CLI already
+   queried it.
+3. **`ListAgents`.** Call it once and take the rows whose name is
+   `<P>-<role>` or `<P>-<role>-<n>` for the `P` in `sources.herdr.prefix`.
+   A matching row that is not already in the plan's `close` set (match by
+   name) is a **ListAgents-only** session: reachable by `SendMessage`, not by a
+   pane close. `route: pane` members never appear there, and a peer started
+   outside herdr appears *only* there.
+
+Then **one** confirmation, listing every entry you found with its source
+(`team` / `peers` / `herdr` / `ListAgents-only`) and the pane or address that
+will be acted on — the same single conversational confirmation, independent of
+the harness gate.
+
+On approval: pane rows go through the normal
+`--close --confirm --plan-token` step. Each ListAgents-only row gets one
+`SendMessage` instead:
+`[hierarchy-disband] <team or prefix>: disbanded by the orchestrator — stop work, send no further reports, and end your session if you can.`
+Report those as **notified, not closed**. Never drop them silently.
+
+Only once all three sources came back empty, report it in these terms:
+
+> Nothing to disband. Searched with prefix `<P>`: team files in
+> `<hierarchy dir>` (N teams, 0 live members), peers.jsonl (0 live),
+> herdr agent list (`ok`: M agents, none named `<P>-*` | `unavailable:
+> <reason>`), ListAgents (K sessions, none named `<P>-*`). If the sessions
+> were started under another name or from another checkout, say which and I
+> will retry with `--team <name>`.
+
+Naming `P` is the point: a prefix mismatch — an alias where the basename was
+expected, or another checkout — is the one thing the user can spot instantly.
 
 ## `resync` / `move`
 
@@ -567,6 +622,9 @@ identifier fails and lists every candidate rather than guessing.
    read-only, resyncs that one member in memory for herdr, and returns
    `member`/`live`/`close_token`/`remaining`. `live` reads the check-in
    registry; a stale-registry member can still report a non-null `command`.
+   If it fails with "no member named", or reports
+   `reason: "no active team and no live peers"`, work through § Plan came back
+   empty — including its `ListAgents` pass — before reporting anything.
 2. If `live` is true and the session should actually close, prompt the user,
    then call `roster.mjs dismiss <name> --close` with `--confirm` and the `close_token`
    from step 1 — same always-ask harness gate as `roster.mjs disband --close`. This

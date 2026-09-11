@@ -117,11 +117,11 @@ check "T2: no team.json was created" '[ ! -e "$TEAM_FILE" ]'
 # ---- T4: no team.json, no records
 fresh
 run disband
-check "T4: plan no-op with extended reason" '[ "$RC" -eq 0 ] && [ "$(jq_ "o.disbanded===false && Object.keys(o).length===2 && o.reason")" = "no active team and no live peers" ]'
+check "T4: plan no-op with extended reason" '[ "$RC" -eq 0 ] && [ "$(jq_ "o.disbanded===false && Object.keys(o).length===3 && o.reason")" = "no active team and no live peers" ]'
 run disband --close --confirm --plan-token x
-check "T4: --close no-op with extended reason" '[ "$RC" -eq 0 ] && [ "$(jq_ "o.closed===false && Object.keys(o).length===2 && o.reason")" = "no active team and no live peers" ]'
+check "T4: --close no-op with extended reason" '[ "$RC" -eq 0 ] && [ "$(jq_ "o.closed===false && Object.keys(o).length===3 && o.reason")" = "no active team and no live peers" ]'
 run dismiss myrepo-architect
-check "T4: dismiss no-op with extended reason" '[ "$RC" -eq 0 ] && [ "$(jq_ "o.dismissed===false && Object.keys(o).length===2 && o.reason")" = "no active team and no live peers" ]'
+check "T4: dismiss no-op with extended reason" '[ "$RC" -eq 0 ] && [ "$(jq_ "o.dismissed===false && Object.keys(o).length===3 && o.reason")" = "no active team and no live peers" ]'
 
 # ---- T5: --commit / --keep-sessions byte-identical no-ops without team.json, even with live records
 seed_peer myrepo-architect architect up $$ pA
@@ -217,7 +217,7 @@ check "T9: close touches only the live pane" '[ "$RC" -eq 0 ] && [ "$(closes)" =
 fresh
 seed_peer myrepo-architect architect up $$
 run disband
-check "T9b: only a no-pane record -> zero closable -> no-op" '[ "$(jq_ "o.disbanded===false && Object.keys(o).length===2 && o.reason")" = "no active team and no live peers" ]'
+check "T9b: only a no-pane record -> zero closable -> no-op" '[ "$(jq_ "o.disbanded===false && Object.keys(o).length===3 && o.reason")" = "no active team and no live peers" ]'
 seed_peer myrepo-reviewer reviewer up $$ pC
 run disband
 check "T9b: no-pane record listed with command:null beside the closable one" \
