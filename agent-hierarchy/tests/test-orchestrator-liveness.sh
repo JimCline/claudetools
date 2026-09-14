@@ -205,6 +205,42 @@ agent_stop s-agent "ah:orchestrator" "sub-1"
 check "--agent-shaped Stop with agent_id (subagent): allows" '[ -z "$OUT" ]'
 rm -f "$HIER_DIR"/msgs/20260101-000000-ag01--*
 
+# ---- T20: check-ins recur on an interval rather than stopping after a fixed
+#      count. Both halves are falsifiable against the old two-nudges-ever cap:
+#      it blocked on the immediate re-check (T20b) and went permanently silent
+#      from the third (T20d).
+GATES="$HIER_DIR/gates.jsonl"
+# Backdate every liveness-nudge for one request, simulating an elapsed interval.
+age_nudges() {
+  [ -f "$GATES" ] || return 0
+  node -e '
+    const fs = require("fs"), [p, id] = process.argv.slice(1);
+    const out = fs.readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => {
+      let r; try { r = JSON.parse(l); } catch { return l; }
+      if (r.type === "liveness-nudge" && r.request_id === id) r.ts = "2020-01-01T00:00:00.000Z";
+      return JSON.stringify(r);
+    });
+    fs.writeFileSync(p, out.join("\n") + "\n");' "$GATES" "$1"
+}
+
+write_request "20260101-000000-t20a" architect t20 "$OLD" small
+mark_dispatch "20260101-000000-t20a" architect s20
+liveness_hook s20
+check "T20a: first check-in blocks" 'is_block'
+liveness_hook s20
+check "T20b: falsifiable — immediate re-check allows, the interval has not elapsed" 'is_empty'
+age_nudges "20260101-000000-t20a"
+liveness_hook s20
+check "T20c: a full interval later, it asks again" 'is_block'
+age_nudges "20260101-000000-t20a"
+liveness_hook s20
+check "T20d: falsifiable — still asking past the old two-nudge cap" 'is_block'
+age_nudges "20260101-000000-t20a"
+write_response "20260101-000000-t20a" architect t20
+liveness_hook s20
+check "T20e: closing the exchange is what ends the check-ins" 'is_empty'
+rm -f "$HIER_DIR"/msgs/20260101-000000-t20a--*
+
 echo "----"
 echo "SUMMARY: $PASS passed, $FAIL failed"
 [ $FAIL -eq 0 ]

@@ -23,19 +23,17 @@
  * §5.5: mutually exclusive with `stop-peer-nudge.mjs` by role — a session
  * that itself OWES a report takes precedence over one that is OWED one;
  * this hook cedes whenever the session has ANY pending peer obligation,
- * regardless of turn-marker state. (An armed-marker precondition check was
- * tried first but is racy: stop-peer-nudge.mjs disarms the marker as a side
- * effect of its own block, so whichever of the two Stop hooks runs second
- * would see a disarmed marker even on a turn peer-nudge legitimately just
- * blocked — order-dependent on hooks.json's array order, which nothing here
- * can rely on holding. Ceding on `pendingFor().length > 0` alone has no such
- * dependency: it is a superset of the cases where peer-nudge would actually
- * block, and this hook staying silent on the rest costs nothing.)
+ * regardless of turn-marker state. An armed-marker precondition check was
+ * tried first and rejected as order-dependent on hooks.json's array order,
+ * which nothing here can rely on holding. Ceding on `pendingFor().length > 0`
+ * alone has no such dependency: it is a superset of the cases where peer-nudge
+ * would actually block, and this hook staying silent on the rest costs
+ * nothing.
  */
 
 import { hierarchyDir, isSubagent, logHookError, readHookInput, resolveConfig, resolveHierarchyRole } from "./lib-config.mjs";
 import { appendGate, exchangeAgeSec, openExchanges, readGates, readMsgFile } from "./lib-hier.mjs";
-import { dispatchRecordsFor, MAX_NUDGES, pendingFor } from "./lib-peer.mjs";
+import { dispatchRecordsFor, pendingFor } from "./lib-peer.mjs";
 
 function allow() {
   process.exit(0);
@@ -77,6 +75,34 @@ function outstandingDispatches(dir, resolved, sessionId, now) {
   return out;
 }
 
+/**
+ * A dispatch is due for a check-in when it has never been nudged, or when the
+ * last nudge for it is a full eta threshold old.
+ *
+ * This replaces a flat two-nudges-ever cap. That cap meant an Orchestrator
+ * stopped being asked about a dispatch after the second check-in no matter how
+ * long the peer had been silent — a peer that died on minute three was never
+ * mentioned again, which is the opposite of what a liveness check is for. The
+ * interval keeps asking for as long as the exchange stays open, while spacing
+ * the asks so an Orchestrator mid-conversation is not blocked every turn: one
+ * threshold apart means small dispatches are re-checked every 5 minutes, large
+ * ones every 20.
+ *
+ * An unparseable or absent `ts` counts as due — nudging one extra time is the
+ * harmless direction.
+ */
+function dueForNudge(gates, sessionId, item, now) {
+  let lastTs = 0;
+  for (const r of gates) {
+    if (r.type !== "liveness-nudge" || r.session_id !== sessionId || r.request_id !== item.id) continue;
+    const t = Date.parse(r.ts);
+    if (!Number.isFinite(t)) return true;
+    if (t > lastTs) lastTs = t;
+  }
+  if (lastTs === 0) return true;
+  return now - lastTs >= thresholdFor(item.eta) * 1000;
+}
+
 function fmtAge(sec) {
   if (sec < 3600) return `${Math.floor(sec / 60)}m`;
   if (sec < 86400) return `${Math.floor(sec / 3600)}h`;
@@ -89,7 +115,7 @@ function checkInReason(items) {
     ...items.map((it) => `- ${it.role} "${it.to_name}", request ${it.id}, sent ${fmtAge(it.ageSec)} ago (${it.path})`),
     "For each: call ListAgents to confirm the peer session is still alive, then SendMessage it a short status query.",
     "If it answers, work continues — nothing more to do here. If it is gone or silent after checking, that is a fact you (the conduit) should surface to the user.",
-    "If you deliberately parked this dispatch, you may stop — this is the last check before it is no longer blocked.",
+    "You will be asked again about anything still open after another eta interval. To stop being asked, close the exchange: get the response, or park the dispatch by telling the user it is abandoned and writing its response file yourself.",
   ];
   return lines.join("\n");
 }
@@ -121,14 +147,14 @@ try {
   const outstanding = outstandingDispatches(dir, resolved, sessionId, now);
   if (outstanding.length === 0) allow();
 
+  const gates = readGates(dir);
   const toBlockOn = [];
   for (const item of outstanding) {
-    const count = readGates(dir).filter((r) => r.type === "liveness-nudge" && r.session_id === sessionId && r.request_id === item.id).length;
-    if (count >= MAX_NUDGES) continue;
+    if (!dueForNudge(gates, sessionId, item, now)) continue;
     appendGate(dir, { type: "liveness-nudge", session_id: sessionId, request_id: item.id });
     toBlockOn.push(item);
   }
-  if (toBlockOn.length === 0) allow(); // every outstanding id already spent its nudges — escape hatch, §4.4's rationale extended here
+  if (toBlockOn.length === 0) allow(); // nothing outstanding is due for a check-in yet
 
   block(checkInReason(toBlockOn));
 } catch (err) {
