@@ -203,53 +203,64 @@ stop s10
 check "1st stop, armed by the brief turn: blocks (regression)" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
 check "block reason names the task"      'printf "%s" "$OUT" | grep -q "spec-review"'
 check "block reason names the from_name" 'printf "%s" "$OUT" | grep -q "orchestrator-x"'
-check "block reason gives the reply instruction" 'printf "%s" "$OUT" | grep -q "SendMessage it now with to:"'
+check "block reason gives the reply instruction" 'printf "%s" "$OUT" | grep -q "Call SendMessage now with to:"'
+check "block reason says the file is not the delivery" 'printf "%s" "$OUT" | grep -q "not delivery"'
 check "block reason names the from address" 'printf "%s" "$OUT" | grep -q "uds:/tmp/cc-socks/12345.sock"'
 eval_peer "P.latestTurnMarker('s10').status"
-check "armed outcome (block) disarms the marker" '[ "$OUT" = disarmed ]'
+check "blocking does NOT spend the marker" '[ "$OUT" = armed ]'
 
-# ---- disarm is consumed: a second consecutive Stop, with no new peer-delivered
-#      turn in between, allows and does NOT touch the nudge count
-stop s10
-check "2nd consecutive stop, no new arm: allows (disarm consumed)" '[ -z "$OUT" ]'
+# ---- the re-stop after a block (stop_hook_active) must keep enforcing on an
+#      armed turn, or MAX_NUDGES is unreachable and one block is the whole
+#      budget — the strand this contract exists to prevent.
+stop s10 true
+check "re-stop on an armed turn: still blocks (nudge #2)" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
 eval_peer "P.pendingFor('s10')[0].nudges"
-check "2nd consecutive stop: nudge count unchanged" '[ "$OUT" = 1 ]'
+check "re-stop consumed a nudge: count now 2" '[ "$OUT" = 2 ]'
 
-# ---- a typed prompt (no wrapper) never arms, even with a pending obligation,
-#      so its Stop allows without touching the nudge count either
-ups s10 "a perfectly ordinary typed prompt, not wrapped at all"
+# ---- cap reached: waived, marker released, stop allowed
+stop s10 true
+check "cap reached: waived, allowed (no output)" '[ -z "$OUT" ]'
 eval_peer "P.latestTurnMarker('s10').status"
-check "typed prompt: does not arm (still disarmed)" '[ "$OUT" = disarmed ]'
-stop s10
-check "typed-prompt turn with pending obligation: Stop allows" '[ -z "$OUT" ]'
-eval_peer "P.pendingFor('s10')[0].nudges"
-check "typed-prompt turn: nudge count unchanged" '[ "$OUT" = 1 ]'
-
-# ---- a wrapped non-brief message (a "ping") with a pending obligation re-arms
-ups s10 "$NO_SENTINEL"
-eval_peer "P.latestTurnMarker('s10').status"
-check "ping (wrapped, no sentinel) with pending obligation arms" '[ "$OUT" = armed ]'
-stop s10
-check "ping-armed turn: Stop nudges again (nudge #2)" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
-eval_peer "P.pendingFor('s10')[0].nudges"
-check "nudge count now 2" '[ "$OUT" = 2 ]'
-
-# ---- a second ping re-arms once more; the cap is reached and it is waived
-ups s10 "$NO_SENTINEL"
-stop s10
-check "3rd armed stop: waived, allowed (no output)" '[ -z "$OUT" ]'
+check "waiving releases the marker" '[ "$OUT" = disarmed ]'
 eval_peer "P.pendingFor('s10').length"
 check "waived obligation no longer counts as pending" '[ "$OUT" = 0 ]'
 
 stop s10
-check "4th stop: nothing pending, allow" '[ -z "$OUT" ]'
+check "stop after waive: nothing pending, allow" '[ -z "$OUT" ]'
+
+# ---- a typed prompt (no wrapper) never ARMS, but the report is still owed, so
+#      its Stop reminds once — free, without touching the nudge count.
+reset_state
+ups s10b "$WELLFORMED"
+stop s10b
+check "brief turn: blocks (nudge #1)" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
+ups s10b "a perfectly ordinary typed prompt, not wrapped at all"
+eval_peer "P.latestTurnMarker('s10b').status"
+check "typed prompt: does not arm" '[ "$OUT" = disarmed ]'
+stop s10b
+check "typed-prompt turn with pending obligation: Stop still reminds" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
+eval_peer "P.pendingFor('s10b')[0].nudges"
+check "typed-prompt turn: nudge count unchanged (reminder is free)" '[ "$OUT" = 1 ]'
+stop s10b true
+check "typed-prompt re-stop: allows, one reminder per user turn" '[ -z "$OUT" ]'
+eval_peer "P.pendingFor('s10b')[0].nudges"
+check "typed-prompt re-stop: still no nudge consumed" '[ "$OUT" = 1 ]'
+
+# ---- a wrapped non-brief message (a "ping") with a pending obligation re-arms
+ups s10b "$NO_SENTINEL"
+eval_peer "P.latestTurnMarker('s10b').status"
+check "ping (wrapped, no sentinel) with pending obligation arms" '[ "$OUT" = armed ]'
+stop s10b
+check "ping-armed turn: Stop nudges again (nudge #2)" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
+eval_peer "P.pendingFor('s10b')[0].nudges"
+check "nudge count now 2" '[ "$OUT" = 2 ]'
 
 reset_state
 ups s11 "$WELLFORMED"
 stop s11 true
-check "stop_hook_active:true always allows, even with pending obligations" '[ -z "$OUT" ]'
+check "stop_hook_active on an armed turn: enforces, does not free-pass" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
 eval_peer "P.latestTurnMarker('s11').status"
-check "stop_hook_active: disarms the marker too" '[ "$OUT" = disarmed ]'
+check "stop_hook_active: marker survives the block" '[ "$OUT" = armed ]'
 
 reset_state
 ups s12 "$WELLFORMED"
@@ -306,7 +317,9 @@ check "lifecycle: brief turn nudges (#1)" 'printf "%s" "$OUT" | grep -q "\"decis
 ups s19 "chatting about something unrelated"
 ups s19 "another unrelated typed message"
 stop s19
-check "lifecycle: user turns free, no nudge consumed" '[ -z "$OUT" ]'
+check "lifecycle: user turn still reminds" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
+eval_peer "P.pendingFor('s19')[0].nudges"
+check "lifecycle: user turns free, no nudge consumed" '[ "$OUT" = 1 ]'
 
 ups s19 "$NO_SENTINEL"
 stop s19
@@ -359,7 +372,7 @@ stop s-filebrief
 check "file brief: Stop blocks" 'printf "%s" "$OUT" | grep -q "\"decision\":\"block\""'
 check "file brief: nudge names the derived response path" 'printf "%s" "$OUT" | grep -qF "$EXPECTED_RESPONSE"'
 check "file brief: nudge gives the hand-write fallback for a Bash-less role" \
-  'printf "%s" "$OUT" | grep -q "No Bash?" && printf "%s" "$OUT" | grep -q "type: response"'
+  'printf "%s" "$OUT" | grep -q "no Bash?" && printf "%s" "$OUT" | grep -q "type: response"'
 
 # A Stop payload shaped like a `--agent` session: agent_type is set on Stop for a top-level
 # --agent session, and it must not be mistaken for a subagent (which is keyed on agent_id).

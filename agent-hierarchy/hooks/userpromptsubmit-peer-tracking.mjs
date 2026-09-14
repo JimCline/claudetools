@@ -74,8 +74,16 @@ try {
         });
       }
 
-      if (parseWrapper(prompt) && pendingFor(sessionId).length > 0) {
-        appendTurnMarker(sessionId, "armed");
+      // The marker says whether the turn now starting is peer-driven, so this
+      // hook owns BOTH edges: a wrapped delivery arms, a typed prompt disarms.
+      // The Stop hook used to disarm as a side effect of blocking, which made
+      // the marker a one-shot enforcement token instead of a description of
+      // the turn; it no longer does, so a typed prompt that left the marker
+      // armed would charge the user's own turns against the nudge budget.
+      // Still gated on having a pending obligation, which is what keeps state
+      // growth bounded to active-obligation windows.
+      if (pendingFor(sessionId).length > 0) {
+        appendTurnMarker(sessionId, parseWrapper(prompt) ? "armed" : "disarmed");
       }
     }
 
