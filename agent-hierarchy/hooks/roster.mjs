@@ -40,7 +40,10 @@
  *                       <name> --new-tab [--workspace <id>]
  *                       <name> --new-workspace
  *                       [--dry-run] [--cwd <path>]
- *   roster.mjs spawn-one <role> [--member <name>] [--cwd <path>] [--dry-run] [--allow-global] [--orchestrator-pid <pid>]
+ *   roster.mjs spawn-one <role> [--member <name>] [--team <T>] [--cwd <path>] [--dry-run]
+ *                       [--allow-global] [--orchestrator-pid <pid>]
+ *                       (--team names the team to join; an unknown name creates that scope —
+ *                        no separate create step, and nothing to ask about.)
  *   roster.mjs spawn-ad-hoc <role> [--model M] [--effort E] [--route peer|pane] [--kind K]
  *                       [--args '<json>'] [--auto-mode A] [--on-missing ...] [--team T]
  *                       [--dry-run] [--allow-global] [--orchestrator-pid <pid>] [--cwd <path>]
@@ -325,13 +328,31 @@ const cwd = typeof opts.cwd === "string" ? opts.cwd : process.cwd();
  * Spec 0048 §2.6: `--help`, or no verb at all, prints this file's own usage block on stdout and
  * exits 0 — the CLIs are the whole interface now, so discovering them must not look like an error.
  */
-function printUsage() {
+function printUsage(verb) {
   const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
   const block = /^\/\*\*\n([\s\S]*?)\n \*\//m.exec(src);
-  process.stdout.write((block ? block[1].replace(/^ \* ?/gm, "") : "roster.mjs") + "\n");
+  const text = block ? block[1].replace(/^ \* ?/gm, "") : "roster.mjs";
+  // A verb's entry is its `roster.mjs <verb>` line plus the indented continuations under it, so
+  // asking about one verb costs three lines instead of the whole 60-line block.
+  if (verb) {
+    const lines = text.split("\n");
+    const picked = [];
+    let taking = false;
+    for (const l of lines) {
+      const m = /^ {2}roster\.mjs (\S+)/.exec(l);
+      if (m) taking = m[1] === verb;
+      else if (taking && !/^ {4,}/.test(l)) taking = false;
+      if (taking) picked.push(l);
+    }
+    if (picked.length) {
+      process.stdout.write(picked.join("\n") + "\n");
+      process.exit(0);
+    }
+  }
+  process.stdout.write(text + "\n");
   process.exit(0);
 }
-if (opts.help === true || cmd === undefined) printUsage();
+if (opts.help === true || cmd === undefined) printUsage(cmd);
 
 
 /** `--team <name>` (spec 0011 §5.1), validated once with the same validator 0010's alias uses. */

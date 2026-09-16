@@ -202,6 +202,19 @@ fs.writeFileSync(process.argv[1], JSON.stringify(data, null, 2));
 run show --level repo
 check "add/edit: a stray per-member layout field is ignored, not rejected" '[ "$RC" -eq 0 ]'
 
+# `--help` after a verb prints only that verb's entry, so asking about one verb
+# does not mean reading the whole usage block.
+run spawn-one --help
+check "help: spawn-one --help prints only the spawn-one entry" \
+  'echo "$OUT" | grep -q "roster.mjs spawn-one" && ! echo "$OUT" | grep -q "roster.mjs disband" && [ "$RC" -eq 0 ]'
+check "help: the spawn-one entry advertises --team" 'echo "$OUT" | grep -q -- "--team"'
+run nosuchverb --help
+check "help: an unknown verb falls back to the full usage block" \
+  'echo "$OUT" | grep -q "roster.mjs disband" && [ "$RC" -eq 0 ]'
+run --help
+check "help: bare --help still prints the full usage block" \
+  'echo "$OUT" | grep -q "roster.mjs disband" && [ "$RC" -eq 0 ]'
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

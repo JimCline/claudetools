@@ -51,7 +51,7 @@ A pre-0044 `team.json` keeps working, unmigrated. See § Create for what
 happens when a bare `create` collides with someone else's live Team.
 
 - `create [--plan | --commit ... | --spawn --mode <m>]` — see § Create.
-- `spawn-one <role> [--member <name>] [--cwd <path>] [--dry-run] [--allow-global]` — stands up ONE missing or dead
+- `spawn-one <role> [--member <name>] [--team <T>] [--cwd <path>] [--dry-run] [--allow-global]` — stands up ONE missing or dead
   peer FROM THE ROSTER and persists it into the team file, without touching any other member. Prefer this over
   Create when a Team already exists and only one role needs (re)starting — Create refuses to run
   against a live Team. The direct match for "spawn the architect" / "spawn just the reviewer"
@@ -568,7 +568,7 @@ so once a Team exists and one role has died — or was never launched — there
 is no supported way to stand up just that role. `spawn-one` closes that one
 gap; it is not a lighter-weight alternative to Create for a full team.
 
-- **`roster.mjs spawn-one <role> [--member <name>] [--cwd <path>] [--dry-run] [--allow-global]`**
+- **`roster.mjs spawn-one <role> [--member <name>] [--team <T>] [--cwd <path>] [--dry-run] [--allow-global]`**
   — resolves the roster, finds `<role>`'s member, and:
   - bare `spawn-one <role>` picks the first member of that role that is not
     live; `--member <name>` targets one specific same-role instance by its
@@ -580,6 +580,13 @@ gap; it is not a lighter-weight alternative to Create for a full team.
     member is preserved, only this role's record is replaced or appended.
   - `--dry-run` prints the resolved member, layout mode, and launch command;
     executes and writes nothing.
+  - `--team <T>` names the team to join. A name that matches no existing team
+    creates that scope as part of the same call — there is no separate create
+    step and nothing to ask the user about. The AskUserQuestion mandates above
+    (layout, first-team name, second-team collision) are `create`'s, and none
+    of them apply here: a user who named a team has already answered the only
+    question, so `spawn-one <role> --team <what they said>` is the whole
+    command.
 
   Prefer `spawn-one` over Create whenever a Team already (partially) exists —
   Create's whole-team flow is the `/agent-roster` skill's job for building a
