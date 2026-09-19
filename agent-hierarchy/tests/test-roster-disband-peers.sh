@@ -181,7 +181,8 @@ check "T7: --close closes BOTH team member and extra" \
   '[ "$RC" -eq 0 ] && [ "$(closes)" = "2" ] && grep -q "\"PANE1\"" "$INVOKED_LOG" && grep -q "\"pX\"" "$INVOKED_LOG"'
 check "T7: close results label the extra row only" \
   '[ "$(jq_ "o.results.find(r=>r.name===\"myrepo-implementor-2\").source")" = "peers" ] && [ "$(jq_ "o.results.find(r=>r.name===\"myrepo-architect\").source===undefined")" = "true" ] && [ "$(jq_ "o.source===undefined")" = "true" ]'
-check "T7: team.json still present" '[ -e "$TEAM_FILE" ]'
+check "T7: every team row closed -> team file removed" '[ ! -e "$TEAM_FILE" ]'
+write_team
 : > "$INVOKED_LOG"
 run dismiss myrepo-implementor-2
 check "T7: dismiss <extra> falls back per-member with the team-scoped single token" \

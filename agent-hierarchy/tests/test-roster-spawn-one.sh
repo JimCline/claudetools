@@ -554,6 +554,18 @@ check "10a: test-roster-create-spawn.sh passes unmodified" '[ "$CS_RC" -eq 0 ]'
 DB_OUT=$(bash "$PLUGIN/tests/test-roster-disband.sh" 2>&1); DB_RC=$?
 check "10b: test-roster-disband.sh passes unmodified" '[ "$DB_RC" -eq 0 ]'
 
+# Two user-named teams in one repo: each name is its members' prefix, and no alias is stored.
+reset_state; init_geometry 180 42
+rm -rf "$BARE/.claude"
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --team alpha
+ALPHA_RC=$RC
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --team beta
+check "two --team names in one repo -> members alpha-reviewer and beta-reviewer, one record each" \
+  '[ "$ALPHA_RC" -eq 0 ] && [ "$RC" -eq 0 ] && grep -q "\"name\": \"alpha-reviewer\"" "$BARE/.claude/hierarchy/teams/alpha.json" && grep -q "\"name\": \"beta-reviewer\"" "$BARE/.claude/hierarchy/teams/beta.json"'
+check "two --team names in one repo -> no teamAlias written to any level file" \
+  '! grep -qs teamAlias "$BARE/.claude/agent-hierarchy.json" "$BARE/.claude/agent-hierarchy.local.json" "$EMPTYHOME/.claude/agent-hierarchy.json"'
+rm -rf "$BARE/.claude"
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

@@ -43,6 +43,10 @@ When the request names (or clearly implies) ONE role, skip everything below:
   SendMessage to the reported name.
 - A subagent may spawn and brief a peer, but the reply is delivered to its
   parent session, never to the subagent — so the subagent must not wait for it.
+- When the user names the team, pass that name as `--team <name>`; it is the
+  member-name prefix. Do not run `alias --set` and do not ask a PEER NAME
+  CONFIRMATION for it. If the name fails validation, the CLI's error names a
+  legal suggestion; offer that to the user.
 - A repo whose name is refused as a team prefix needs one
   `roster.mjs alias --level repo --set <suggested>`, which the refusal prints.
 - The formal path (the rest of this skill) applies only when no single role is
@@ -124,6 +128,16 @@ happens when a bare `create` collides with someone else's live Team.
   `create --from`. See § Create.
 - `checkin [--team <T>] [--cwd <path>]` — re-registers the *current*
   session's cwd. Spec 0036 §3.3. See § Relocation.
+- `whoami [--team <T>] [--cwd <path>]` — read-only, for a **peer**: which
+  team member this session's pane is, its team file, and its orchestrator's
+  `pid` / `live` / `send_to`. Writes nothing. `reason` says why a lookup came
+  back empty: `no-pane-id`, `no-team`, `not-a-member`, or `ambiguous` (with
+  `candidates`; re-run with `--team`). Reply precedence: the brief's
+  `reply-to` — or the orchestrator's session name from `ListAgents` — is
+  authoritative (the contract is `docs/comms-protocol.md`); `send_to` is a
+  derived, best-effort fallback for when that is lost (after compaction, or
+  with no pending brief), and is `null` whenever the orchestrator is not
+  provably reachable.
 - `layout-splits --mode <m> --pane-count <n> [--self <id>] [--cwd <p>] [--next|--apply …]` — performs
   the herdr layout phase. Used by § Create phase 3a. Not a user-facing command.
 - `next-split --mode <m> --pane-count <n> --self <id> --created <json> --geometry <json>` — the pure
@@ -202,6 +216,14 @@ skill path.
    and `launch` command lists for the detected transport, plus how to thread
    the target id from one to the other). If it errors because no roster
    resolves, hand off to § Init.
+
+   **The user named the team.** When the user names the team, pass that name
+   as `--team <name>`; it is the member-name prefix (`<name>-<role>[-N]`).
+   Do not run `alias --set` and do not ask a PEER NAME CONFIRMATION for it —
+   skip the naming confirmation below too. If the name fails validation, the
+   CLI's error names a legal suggestion; offer that to the user. The same
+   holds for `spawn-one` and `spawn-ad-hoc`. `alias --set` is the repo default
+   for the *unnamed* team only.
 
    **First-create naming confirmation (spec 0011 §5.3.1-§5.3.3, amendment
    (c)).** Before the very first `create` in a fresh repo (no existing
@@ -464,7 +486,8 @@ herdr pane id, so a tmux peer surfaces with `command: null`.
    confirmation is still required and is not replaced by step 3's harness
    prompt below — the two are independent layers, both intended.
 3. Call `roster.mjs disband --close` with `--confirm` and the `close_token`
-   from step 1. The harness will *also* prompt the user interactively for
+   from step 1 — the plan's `next` field is that exact command, flags and
+   all; copy it rather than assembling one. The harness will *also* prompt the user interactively for
    `roster.mjs disband --close` — every time, unconditionally — before it runs; that
    prompt is enforced by the plugin itself and cannot be satisfied by this
    session on its own. Report, per member, whether its session actually
@@ -472,9 +495,15 @@ herdr pane id, so a tmux peer surfaces with `command: null`.
    failed close is reported, not fatal. If the token is stale (the topology
    changed since step 1), it refuses — go back to step 1, plan again, and
    redo steps 2–3 with the fresh token.
-   `--close` removes the team file itself once the closes have run. If some
-   closes failed, the file is rewritten minus the ones that closed and the
-   output reports `partial: true` — re-plan and close the remainder.
+   `--close` also reconciles the team file, from a fresh read of it — run no
+   bookkeeping command afterward. A row goes when its close succeeded, or when
+   it had no pane to close and holds no live session (a subagent row, a dead
+   paneless member). A row stays, listed in `kept` with a `why`: `close-failed`,
+   `live` or `indeterminate` (no pane to close, but its session is or may be
+   there), or `added` (it appeared while the closes ran). Nothing kept → the
+   file is removed (`team_removed: true`); otherwise it is rewritten with only
+   the kept rows. `pruned` names what went. Anything in `kept` → re-plan and
+   close the remainder.
 
 Never skip the plan call or its confirmation step — folding plan → confirm →
 close into fewer calls is exactly what would close sessions before a declined
@@ -653,8 +682,7 @@ identifier fails and lists every candidate rather than guessing.
    empty — including its `ListAgents` pass — before reporting anything.
 2. If `live` is true and the session should actually close, prompt the user,
    then call `roster.mjs dismiss <name> --close` with `--confirm` and the `close_token`
-   from step 1 — same always-ask harness gate as `roster.mjs disband --close`. This
-   never touches `team.json`.
+   from step 1 (the plan's `next` field is that exact command — copy it) — same always-ask harness gate as `roster.mjs disband --close`.
    On a successful close the `team.json` row is removed too (`untracked: true`);
    if the close failed, the row stays, because a live session with no record is
    exactly the orphan spec 0046 exists to prevent. A member that is already

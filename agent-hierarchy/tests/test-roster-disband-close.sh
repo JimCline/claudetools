@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent-hierarchy — roster.mjs `disband --close` (spec 0016 §4.5): the destructive close step,
 # gated by --confirm + --plan-token (bound to a close_token the plan call reports), building argv
-# directly (never /bin/sh) for herdr/tmux. Never removes team.json — --commit stays separate.
+# directly (never /bin/sh) for herdr/tmux, then reconciling team.json against what closed.
 # HOME-redirected; real state untouched.
 # Usage: bash tests/test-roster-disband-close.sh   (exits 0 iff all cases pass)
 
@@ -21,6 +21,9 @@ check() {
   local name=$1; shift
   if eval "$@"; then PASS=$((PASS+1)); echo "PASS: $name"; else FAIL=$((FAIL+1)); echo "FAIL: $name (RC=$RC OUT=${OUT:0:400})"; fi
 }
+
+# stdin: one JSON object, bound to `o`; $1: a JS expression over it. Exit 0 iff truthy.
+jsq() { TEAM_FILE="$TEAM_FILE" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let o;try{o=JSON.parse(s)}catch{process.exit(1)}process.exit(eval(process.argv[1])?0:1)})' "$1"; }
 
 # ---- fake herdr: `agent list` from $FAKE_HERDR_STATE; `pane close <id>` logs and succeeds unless
 # $FAKE_HERDR_CLOSE_FAIL_ID matches, in which case it exits 1. Every invocation is logged verbatim
@@ -105,7 +108,9 @@ check "--close: exit 0, both peer members closed" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const o=JSON.parse(s);process.exit(o.results.length===2&&o.results.every(r=>r.closed===true)?0:1)})"'
 check "--close: the metacharacter-laden transport_id reached herdr as one argv element, not shell-expanded" \
   'grep -qF "PANE;rm -rf /tmp/pwned" "$INVOKED_LOG" && [ ! -e "/tmp/pwned" ]'
-check "--close: team.json left in place (not removed)" '[ -e "$TEAM_FILE" ]'
+check "--close: every row closed or sessionless -> team.json removed" '[ ! -e "$TEAM_FILE" ]'
+check "--close: reports team_removed, the pruned rows (null name shown as its role) and nothing kept" \
+  'echo "$OUT" | jsq "o.team_removed===true&&o.team_file===process.env.TEAM_FILE&&o.kept.length===0&&JSON.stringify(o.pruned)===JSON.stringify([\"myrepo-architect\",\"myrepo-implementor\",\"reviewer\"])"'
 check "--close: untrack --all --commit --keep-sessions still removes it afterward" \
   'run untrack --all --commit --keep-sessions; echo "$OUT" | grep -q "\"removed\""; [ ! -e "$TEAM_FILE" ]'
 
@@ -116,6 +121,9 @@ TOKEN2=$(echo "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("en
 FAKE_HERDR_CLOSE_FAIL_ID="PANE1" run disband --close --confirm --plan-token "$TOKEN2"
 check "--close: a per-member close failure is reported, call still succeeds overall" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const o=JSON.parse(s);const failed=o.results.find(r=>r.transport_id===\"PANE1\");const ok=o.results.find(r=>r.transport_id!==\"PANE1\");process.exit(failed&&failed.closed===false&&failed.error&&ok&&ok.closed===true?0:1)})"'
+check "--close: the failed close is the one row kept, with its reason; the file is not removed" \
+  'echo "$OUT" | jsq "o.team_removed===false&&o.kept.length===1&&o.kept[0].name===\"myrepo-architect\"&&o.kept[0].why===\"close-failed\"&&o.pruned.length===2" &&
+   jsq "o.team_id===\"t1\"&&o.transport===\"herdr\"&&o.members.length===1&&o.members[0].name===\"myrepo-architect\"&&o.members[0].transport_id===\"PANE1\"" < "$TEAM_FILE"'
 run untrack --all --commit --keep-sessions
 
 # ---- --close --commit / --close --keep-sessions: mutually exclusive
@@ -159,6 +167,73 @@ write_team
 : > "$INVOKED_LOG"
 run untrack --all --commit --keep-sessions
 check "untrack --all --commit --keep-sessions: never invokes pane close" '! grep -q "\"close\"" "$INVOKED_LOG"'
+
+# ---- the plan hands back the whole close command; the token is still a hash of team_id plus the
+# sorted closable pane ids and nothing else
+write_team
+run disband
+NEXT=$(echo "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).next||""))')
+PLAN_TOKEN=$(echo "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).close_token))')
+WANT_TOKEN=$(node -e 'console.log(require("crypto").createHash("sha256").update(JSON.stringify({team_id:"t1",ids:["PANE1","PANE;rm -rf /tmp/pwned"]})).digest("hex").slice(0,16))')
+check "disband (plan): close_token is the hash of team_id + sorted closable pane ids only" '[ "$PLAN_TOKEN" = "$WANT_TOKEN" ]'
+check "disband (plan): next is an absolute-path close command carrying the token and --cwd, no --allow-global" \
+  'case "$NEXT" in "node $H/roster.mjs disband --close --confirm --plan-token $PLAN_TOKEN --cwd $PROJ") true;; *) false;; esac'
+: > "$INVOKED_LOG"
+OUT=$(eval "HOME=\"\$FAKEHOME\" PATH=\"\$SANDBOX/bin:\$NODE_DIR\" FAKE_HERDR_STATE=\"\$SANDBOX/agents.json\" FAKE_HERDR_INVOKED_LOG=\"\$INVOKED_LOG\" $NEXT" 2>&1); RC=$?
+check "disband (plan): next runs verbatim -> exit 0, both panes closed, team.json removed" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | jsq "o.closed===true&&o.results.length===2&&o.team_removed===true" && [ ! -e "$TEAM_FILE" ]'
+
+mkdir -p "$FAKEHOME/.claude"
+cat > "$FAKEHOME/.claude/agent-hierarchy.json" <<'EOF'
+{"version":1,"enabled":true,"roster":{"route":"peer","members":[{"role":"architect","model":"opus"}]}}
+EOF
+write_team
+run disband
+check "disband (plan): next carries --allow-global exactly when the roster resolves at global level" \
+  'echo "$OUT" | jsq "/ --allow-global$/.test(o.next)"'
+rm -f "$FAKEHOME/.claude/agent-hierarchy.json" "$TEAM_FILE"
+
+# ---- a row with no pane to close survives only while its session is provably or possibly there
+mkdir -p "$(dirname "$TEAM_FILE")"
+cat > "$TEAM_FILE" <<'EOF'
+{
+  "version": 1, "team_id": "t2", "created": "2026-01-01T00:00:00Z",
+  "roster_level": "repo", "transport": "herdr",
+  "orchestrator": { "session_id": null, "pid": null },
+  "members": [
+    {"role": "architect", "name": "myrepo-architect", "route": "peer", "transport_id": "PANE1"},
+    {"role": "implementor", "name": "myrepo-implementor", "route": "peer", "transport_id": null},
+    {"role": "reviewer", "name": "myrepo-reviewer", "route": "peer", "transport_id": null}
+  ],
+  "partial": false
+}
+EOF
+node -e 'const fs=require("fs");const[f,p]=process.argv.slice(1);
+  fs.appendFileSync(f,JSON.stringify({type:"peer",status:"up",name:"myrepo-implementor",role:"implementor",pid:Number(p),ts:new Date().toISOString()})+"\n");' \
+  "$PROJ/.claude/hierarchy/peers.jsonl" "$$"
+run disband
+TOKEN4=$(echo "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).close_token))')
+run disband --close --confirm --plan-token "$TOKEN4"
+check "--close: paneless live member kept as live, paneless dead member pruned, closed member pruned" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | jsq "o.team_removed===false&&o.kept.length===1&&o.kept[0].name===\"myrepo-implementor\"&&o.kept[0].why===\"live\"&&JSON.stringify(o.pruned)===JSON.stringify([\"myrepo-architect\",\"myrepo-reviewer\"])" &&
+   jsq "o.team_id===\"t2\"&&o.members.length===1&&o.members[0].name===\"myrepo-implementor\"" < "$TEAM_FILE"'
+rm -f "$PROJ/.claude/hierarchy/peers.jsonl" "$TEAM_FILE"
+
+# ---- a team file that exists but cannot be parsed is reported, and never written or removed
+BAD_FILE="$PROJ/.claude/hierarchy/teams/myrepo.json"
+mkdir -p "$(dirname "$BAD_FILE")"
+printf 'not json {{{' > "$BAD_FILE"
+GARBAGE_SUM=$(cksum < "$BAD_FILE")
+run disband
+check "disband (plan): unparseable team file -> team_file_unreadable names it" \
+  'echo "$OUT" | TEAM_FILE="$BAD_FILE" jsq "o.team_file_unreadable===process.env.TEAM_FILE"'
+run disband --close --confirm --plan-token x
+check "--close: unparseable team file -> team_file_unreadable names it" \
+  'echo "$OUT" | TEAM_FILE="$BAD_FILE" jsq "o.team_file_unreadable===process.env.TEAM_FILE"'
+check "unparseable team file: bytes unchanged after plan and close" '[ "$(cksum < "$BAD_FILE")" = "$GARBAGE_SUM" ]'
+rm -f "$BAD_FILE"
+run disband
+check "disband (plan): a merely absent team file is not reported unreadable" 'echo "$OUT" | jsq "!(\"team_file_unreadable\" in o)"'
 
 echo
 echo "passed: $PASS  failed: $FAIL"

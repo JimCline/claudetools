@@ -84,7 +84,7 @@ hook "$CMD" "$SESS"
 check "re-arm: a non-compact SessionStart does NOT re-arm the gate" '[ -z "$OUT" ]'
 
 # ---- 3: explicitly-not-gated verbs produce no output at all
-for verb in show teams history reap resync layout-splits init add edit remove layout alias checkin; do
+for verb in show teams history reap resync layout-splits init add edit remove layout alias checkin whoami; do
   hook "node $ROSTER $verb --cwd $PROJ" "notgated-$verb"
   check "not gated, no output: roster.mjs $verb" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
 done

@@ -58,6 +58,9 @@
  *   roster.mjs create  --from <id|alias> [--team <T>] [--plan|--commit|--spawn] [--cwd <path>]
  *   roster.mjs adopt   --orchestrator-pid <pid> [--team <T>] [--cwd <path>]
  *   roster.mjs checkin [--team <T>] [--cwd <path>] [--orchestrator-pid <pid>]
+ *   roster.mjs whoami  [--team <T>] [--cwd <path>]
+ *                       Read-only: which team member this session's pane is, and its
+ *                       orchestrator's pid / liveness / best-effort reply address.
  *   roster.mjs doctor [--cwd <path>] [--check]
  *                       Read-only self-check: one JSON object, one row per thing that can be
  *                       wrong. `--check` exits 1 when any row is red. Writes nothing, ever.
@@ -126,6 +129,7 @@ const ALIAS_FLAGS = new Set(["level", "set", "clear", "cwd", "team", "allow-rost
 const ADOPT_FLAGS = new Set(["orchestrator-pid", "team", "cwd"]);
 const REAP_FLAGS = new Set(["commit", "cwd"]);
 const CHECKIN_FLAGS = new Set(["cwd", "team", "orchestrator-pid"]);
+const WHOAMI_FLAGS = new Set(["cwd", "team"]);
 
 function parseArgs(argv) {
   const opts = { _: [] };
@@ -1325,6 +1329,12 @@ function ownOrchestratorPid() {
   return typeof opts["orchestrator-pid"] === "string" ? Number(opts["orchestrator-pid"]) : Number(process.env.CLAUDE_PID);
 }
 
+/** The pane this session sits in: the transport's own env first, then what SessionStart
+    recorded for it (`record` is the session's peers.jsonl row, or null). */
+function sessionPaneId(record) {
+  return process.env.HERDR_PANE_ID || (record && record.pane_id) || process.env.TMUX_PANE || null;
+}
+
 /**
  * Spec 0044 §1.11: the team already at the RESOLVED scope is consulted before `create` writes.
  * Ownership, not liveness, is the line — refusing every live team would break 0015's supported
@@ -2027,6 +2037,64 @@ function gateClose(verb, scope, closable) {
   }
   const preResolved = resolveRoster(cwd, teamArg);
   if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
+}
+
+const shellWord = (s) => (/^[A-Za-z0-9_\/.:@%+=-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
+
+/** The exact `--close` command a plan's caller runs after the user says yes, so the agent copies
+    one string instead of assembling flags. Carries `--allow-global` only when `gateClose` would
+    refuse without it. */
+function closeCommand(verb, name, token) {
+  const words = ["node", fileURLToPath(import.meta.url), verb];
+  if (name != null) words.push(name);
+  words.push("--close", "--confirm", "--plan-token", token);
+  if (typeof opts.team === "string") words.push("--team", opts.team);
+  if (typeof opts.cwd === "string") words.push("--cwd", opts.cwd);
+  const resolved = resolveRoster(cwd, teamArg);
+  if (resolved && resolved.level === "global") words.push("--allow-global");
+  return words.map(shellWord).join(" ");
+}
+
+/** The team file's path when it exists but `readTeam` could not parse it, else null. A missing
+    file and a corrupt one both read as "no team"; only the corrupt one must never be treated as
+    absent by a path that could go on to delete or rewrite it. */
+function unreadableTeamFile(dir) {
+  const path = teamPath(dir, teamFile);
+  return existsSync(path) ? path : null;
+}
+
+/** After a whole-team close: decide, row by row over a FRESH read of the team file, what stays.
+    A closed session's row goes; a row whose session may still exist stays, with the reason.
+    `snapshot` is the record the close plan was validated against — a named row absent from it
+    was added while the closes ran and is never touched. */
+function reconcileAfterClose(dir, snapshot, results) {
+  const path = teamPath(dir, teamFile);
+  const fresh = readTeam(dir, teamFile);
+  if (!fresh || !Array.isArray(fresh.members)) return { pruned: [], kept: [], team_removed: false, team_file: existsSync(path) ? path : null };
+  const snapshotNames = new Set(snapshot.members.map((m) => m.name).filter((n) => n != null));
+  const resultFor = (m) => results.find((r) => (m.name != null ? r.name === m.name : r.name == null && r.transport_id != null && r.transport_id === m.transport_id));
+  const pruned = [];
+  const kept = [];
+  const keptRows = [];
+  for (const m of fresh.members) {
+    const label = m.name != null ? m.name : m.role;
+    const r = resultFor(m);
+    let why = null;
+    if (m.name != null && !snapshotNames.has(m.name)) why = "added";
+    else if (r && !r.closed) why = "close-failed";
+    else if (!r && m.name != null) {
+      const st = memberLiveness(dir, m);
+      if (st.live) why = "live";
+      else if (st.indeterminate) why = "indeterminate";
+    }
+    if (why) {
+      kept.push({ name: label, why });
+      keptRows.push(m);
+    } else pruned.push(label);
+  }
+  if (keptRows.length === 0) clearTeam(dir, teamFile);
+  else writeTeam(dir, { ...fresh, members: keptRows }, teamFile);
+  return { pruned, kept, team_removed: keptRows.length === 0, team_file: path };
 }
 
 /** `create --spawn` (spec 0005): resolve + layout + launch + retry in one script invocation. */
@@ -2831,8 +2899,8 @@ try {
       const dir = hierarchyDir(cwd);
 
       // --close (spec 0016 §4.5): closes the live sessions the preceding plan call named, via
-      // argv built directly (never runShell's /bin/sh). Does not remove team.json — --commit
-      // remains a separate call, per §3.
+      // argv built directly (never runShell's /bin/sh), then reconciles the team file against
+      // what actually closed — no bookkeeping call follows.
       if (opts.close === true) {
         const team = readTeam(dir, teamFile);
         if (!team) {
@@ -2842,13 +2910,15 @@ try {
           // session appearing as both a nameless `up` row and a `briefed` row yields a plan token
           // over one id and a close set over two — the token never matches its own plan.
           const closable = closableMembers(dedupPeers(peerFallbackMembers(dir, NO_TEAM_SCOPE)));
+          const unreadable = unreadableTeamFile(dir);
+          const unreadableField = unreadable ? { team_file_unreadable: unreadable } : {};
           if (closable.length === 0) {
-            out({ closed: false, reason: "no active team and no live peers", sources: sourcesField(dir, NO_TEAM_SCOPE, null) });
+            out({ closed: false, reason: "no active team and no live peers", sources: sourcesField(dir, NO_TEAM_SCOPE, null), ...unreadableField });
             break;
           }
           gateClose("disband", "no-team", closable);
           const results = closable.map((m) => closeOne(m, null));
-          out({ closed: results.every((r) => r.closed), source: "peers", results, sources: sourcesField(dir, NO_TEAM_SCOPE, null) });
+          out({ closed: results.every((r) => r.closed), source: "peers", results, sources: sourcesField(dir, NO_TEAM_SCOPE, null), pruned: [], kept: [], team_removed: false, team_file: null, ...unreadableField });
           break;
         }
         let healedMembers = team.members;
@@ -2861,7 +2931,7 @@ try {
         const closable = closableMembers([...healedMembers, ...peerExtras(dir, team, teamFile)]);
         gateClose("disband", team.team_id, closable);
         const results = closable.map((m) => closeOne(m, team.transport));
-        out({ closed: results.every((r) => r.closed), results, sources: sourcesField(dir, teamFile, team) });
+        out({ closed: results.every((r) => r.closed), results, sources: sourcesField(dir, teamFile, team), ...reconcileAfterClose(dir, team, results) });
         break;
       }
 
@@ -2876,11 +2946,14 @@ try {
         // Spec 0040 §1.1/§1.5: plan over the live registry peers; `source: "peers"` says so.
         const fallback = dedupPeers(peerFallbackMembers(dir, NO_TEAM_SCOPE));
         const closable = closableMembers(fallback);
+        const unreadable = unreadableTeamFile(dir);
+        const unreadableField = unreadable ? { team_file_unreadable: unreadable } : {};
         if (closable.length === 0) {
-          out({ disbanded: false, reason: "no active team and no live peers", sources: sourcesField(dir, NO_TEAM_SCOPE, null) });
+          out({ disbanded: false, reason: "no active team and no live peers", sources: sourcesField(dir, NO_TEAM_SCOPE, null), ...unreadableField });
           break;
         }
-        out({ close: fallback.map(peerFallbackPlanEntry), close_token: closeToken("no-team", closable), source: "peers", sources: sourcesField(dir, NO_TEAM_SCOPE, null) });
+        const peersToken = closeToken("no-team", closable);
+        out({ close: fallback.map(peerFallbackPlanEntry), close_token: peersToken, next: closeCommand("disband", null, peersToken), source: "peers", sources: sourcesField(dir, NO_TEAM_SCOPE, null), ...unreadableField });
         break;
       }
       let healedMembers = team.members;
@@ -2910,7 +2983,8 @@ try {
       // token hashes the union — with none present, output and token are exactly the team-only ones.
       const extras = peerExtras(dir, team, teamFile);
       for (const m of extras) close.push(peerFallbackPlanEntry(m));
-      const disbandOut = { close, close_token: closeToken(team.team_id, closableMembers([...healedMembers, ...extras])), sources: sourcesField(dir, teamFile, team) };
+      const planToken = closeToken(team.team_id, closableMembers([...healedMembers, ...extras]));
+      const disbandOut = { close, close_token: planToken, next: closeCommand("disband", null, planToken), sources: sourcesField(dir, teamFile, team) };
       if (resyncSummary) disbandOut.resync = resyncSummary;
       out(disbandOut);
       break;
@@ -2981,7 +3055,8 @@ try {
           out({ closed: results.every((r) => r.closed), source: "peers", results, sources: sourcesField(dir, dismissScope, team) });
           break;
         }
-        out({ member: peerFallbackPlanEntry(fbTarget), live: fbTarget.live, close_token: closeToken(scope, closable), source: "peers", sources: sourcesField(dir, dismissScope, team) });
+        const peerToken = closeToken(scope, closable);
+        out({ member: peerFallbackPlanEntry(fbTarget), live: fbTarget.live, close_token: peerToken, ...(closable.length > 0 ? { next: closeCommand("dismiss", name, peerToken) } : {}), source: "peers", sources: sourcesField(dir, dismissScope, team) });
         break;
       }
 
@@ -3054,6 +3129,8 @@ try {
       // transport_id regardless of `live` — a stale-registry member still yields a close command.
       const memberOut = { role: healedTarget.role, name: healedTarget.name, route: healedTarget.route, transport: team.transport, transport_id: healedTarget.transport_id, command };
       if (team.transport === "herdr") memberOut.resync_status = healedTarget.status || "unqueried";
+      const dismissClosable = closableMembers([healedTarget]);
+      const dismissToken = closeToken(team.team_id, dismissClosable);
       out({
         member: memberOut,
         // Spec 0043 §1.6 three-valued: `null` is "could not determine", distinct from `false`.
@@ -3061,7 +3138,9 @@ try {
           const st = memberLiveness(dir, healedTarget);
           return st.indeterminate ? { live: null, live_unknown: st.why } : { live: st.live };
         })(),
-        close_token: closeToken(team.team_id, closableMembers([healedTarget])),
+        close_token: dismissToken,
+        // Nothing to close means `--close` would only refuse, so no command is offered.
+        ...(dismissClosable.length > 0 ? { next: closeCommand("dismiss", name, dismissToken) } : {}),
         sources: sourcesField(dir, teamFile, team),
         team_id: team.team_id,
         remaining: team.members.filter((m) => m.name !== name).map((m) => m.name),
@@ -3446,7 +3525,7 @@ try {
       // concurrent teams is ambiguous far more often than it used to be.
       const resolved = attributeSessionTeam(dir, existing.role, {
         explicitTeam: teamArg,
-        paneId: process.env.HERDR_PANE_ID || existing.pane_id || process.env.TMUX_PANE || null,
+        paneId: sessionPaneId(existing),
       });
       // G8: an EXPLICIT --team that resolves to nothing is a typo, not a legitimate absence —
       // 0032 §3.4b's same precedent (add --team X refuses a nonexistent container) rather than
@@ -3480,6 +3559,52 @@ try {
       appendRosterRecord(dir, rec);
       out({ checked_in: true, cwd: observed, expected_root: expectedRoot, misplaced });
       if (misplaced) process.exitCode = 1;
+      break;
+    }
+
+    case "whoami": {
+      for (const key of Object.keys(opts)) {
+        if (key === "_") continue;
+        if (!WHOAMI_FLAGS.has(key)) fail(`whoami: unrecognized flag --${key} (use --team or --cwd)`);
+      }
+      const dir = hierarchyDir(cwd);
+      const myPid = ownOrchestratorPid();
+      const paneId = sessionPaneId(Number.isInteger(myPid) ? latestRoster(dir).find((r) => r.pid === myPid) : null);
+      const empty = (reason) => ({ member: null, team: null, team_file: null, orchestrator: null, reason });
+      if (!paneId) {
+        out(empty("no-pane-id"));
+        break;
+      }
+      const records = (teamArg ? [teamArg] : [null, ...listTeamNames(dir)])
+        .map((teamName) => ({ teamName, team: readTeam(dir, teamName) }))
+        .filter((r) => r.team);
+      if (records.length === 0) {
+        out(empty("no-team"));
+        break;
+      }
+      const matches = records.flatMap((r) => (Array.isArray(r.team.members) ? r.team.members : []).filter((m) => m && m.transport_id === paneId).map((member) => ({ ...r, member })));
+      if (matches.length === 0) {
+        out(empty("not-a-member"));
+        break;
+      }
+      if (matches.length > 1) {
+        out({ ...empty("ambiguous"), candidates: matches.map((m) => ({ team: m.teamName, name: m.member.name ?? null })) });
+        break;
+      }
+      const { teamName, team, member } = matches[0];
+      const orch = team.orchestrator && typeof team.orchestrator === "object" ? team.orchestrator : null;
+      const pid = orch && Number.isInteger(orch.pid) ? orch.pid : null;
+      const live = pid == null ? null : pidAlive(pid);
+      // Harness-owned path: Claude Code, not this plugin, creates one socket per session pid here
+      // and may move it. Best-effort only, so the address is offered only while the file exists.
+      const socket = pid == null ? null : `/tmp/cc-socks/${pid}.sock`;
+      out({
+        member: { name: member.name ?? null, role: member.role ?? null, route: member.route ?? null },
+        team: teamName,
+        team_file: teamPath(dir, teamName),
+        orchestrator: orch ? { pid, session_id: orch.session_id ?? null, live, send_to: live && existsSync(socket) ? `uds:${socket}` : null } : null,
+        reason: null,
+      });
       break;
     }
 
@@ -3532,7 +3657,7 @@ try {
     }
 
     default:
-      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one|spawn-ad-hoc|adopt|untrack|teams|reap|history|checkin|doctor [--commit] [--level global|repo|repo-user] [--team <name>] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
+      fail(`usage: roster.mjs show|init|add|edit|remove|layout|alias|create|next-split|layout-splits|disband|resync|move|spawn-one|spawn-ad-hoc|adopt|untrack|teams|reap|history|checkin|whoami|doctor [--commit] [--level global|repo|repo-user] [--team <name>] [--cwd <path>]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
   }
 } catch (err) {
   fail(err && err.message ? err.message : String(err));

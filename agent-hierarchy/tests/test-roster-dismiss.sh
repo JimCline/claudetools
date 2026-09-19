@@ -344,6 +344,27 @@ check "20: teams/named1.json now has no members" \
   'node -e "const t=JSON.parse(require(\"fs\").readFileSync(\"$HIER_DIR/teams/named1.json\",\"utf8\"));process.exit(t.members.length===0?0:1)"'
 check "20: default team.json untouched" '[ "$(cat "$TEAM_FILE")" = "$BEFORE20" ]'
 
+# ===========================================================================
+# The plan hands back the whole close command, runnable as-is.
+# ===========================================================================
+write_team
+run dismiss myrepo-architect
+NEXT=$(echo "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).next||""))')
+NEXT_TOKEN=$(echo "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).close_token))')
+check "next: absolute-path close command naming the member, the token and --cwd" \
+  'case "$NEXT" in "node $H/roster.mjs dismiss myrepo-architect --close --confirm --plan-token $NEXT_TOKEN --cwd $PROJ") true;; *) false;; esac'
+: > "$INVOKED_LOG"
+OUT=$(eval "HOME=\"\$FAKEHOME\" PATH=\"\$SANDBOX/bin:\$NODE_DIR\" FAKE_HERDR_STATE=\"\$SANDBOX/agents.json\" FAKE_HERDR_INVOKED_LOG=\"\$INVOKED_LOG\" $NEXT" 2>&1); RC=$?
+check "next: runs verbatim -> exit 0, pane closed, row untracked" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"untracked\": true" && grep -q "\"close\"" "$INVOKED_LOG" && ! grep -q "myrepo-architect" "$TEAM_FILE"'
+
+write_team
+node -e 'const fs=require("fs");const f=process.argv[1];const t=JSON.parse(fs.readFileSync(f,"utf8"));
+  t.members.find(m=>m.name==="myrepo-task-runner").transport_id=null;fs.writeFileSync(f,JSON.stringify(t,null,2));' "$TEAM_FILE"
+run dismiss myrepo-task-runner
+check "next: a target with no pane to close gets a plan but no close command" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"close_token\"" && ! echo "$OUT" | grep -q "\"next\""'
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

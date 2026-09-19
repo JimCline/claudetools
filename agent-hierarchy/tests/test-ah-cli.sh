@@ -40,6 +40,7 @@ const no = (cmd) => { if (parseAhCommand(cmd)) bad.push(`accepted but must be re
 // every documented shape parses
 ok(`node ${R} show --cwd /repo`, { script: "roster", verb: "show", flags: {"cwd": "/repo"} });
 ok(`node ${R} teams --cwd /repo`, { script: "roster", verb: "teams" });
+ok(`node ${R} whoami --team alpha --cwd /repo`, { script: "roster", verb: "whoami", positional: [], flags: {"team": "alpha", "cwd": "/repo"} });
 ok(`node ${R} dismiss bob --close --confirm --plan-token t9 --cwd /repo`,
    { script: "roster", verb: "dismiss", positional: ["bob"], flags: {"close": true, "confirm": true, "plan-token": "t9", "cwd": "/repo"} });
 ok(`node ${R} disband --close --confirm --plan-token t9 --allow-global --cwd /repo`, { verb: "disband", flags: {"close": true, "confirm": true, "plan-token": "t9", "allow-global": true, "cwd": "/repo"} });
@@ -136,6 +137,8 @@ allow_hook "node $INST/A/hooks/roster.mjs show --cwd /repo"
 check "T2: recognised command under the hook's own root → allow" '[ "$RC" -eq 0 ] && is_allow'
 allow_hook "node $INST/B/hooks/roster.mjs show --cwd /repo"
 check "T2: same command under a SIBLING install dir → allow (post-bump root)" '[ "$RC" -eq 0 ] && is_allow'
+allow_hook "node $INST/A/hooks/roster.mjs whoami --team alpha --cwd /repo"
+check "T2: whoami is allowed" '[ "$RC" -eq 0 ] && is_allow'
 allow_hook "node $INST/A/hooks/msg.mjs list --open --cwd /repo"
 check "T2: msg.mjs is allowed too" '[ "$RC" -eq 0 ] && is_allow'
 allow_hook "node $SANDBOX/outside/hooks/roster.mjs show --cwd /repo"
