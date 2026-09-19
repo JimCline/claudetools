@@ -52,6 +52,12 @@ EXPECTED='- Architect — peer name not yet confirmed for this repo (see PEER NA
 check "no dispatch/peer keys -> directive line points at PEER NAME CONFIRMATION" 'printf "%s" "$OUT" | grep -qF -- "$EXPECTED"'
 check "no dispatch/peer keys -> directive includes the PEER NAME CONFIRMATION section" 'printf "%s" "$OUT" | grep -q "^PEER NAME CONFIRMATION"'
 check "no dispatch/peer keys -> repo-basename convention shown in the confirmation guidance" 'printf "%s" "$OUT" | grep -qF "proj-<role>"'
+# A name a spawn verb just reported is already in the team file; asking anyone to confirm it is
+# ceremony, so the paragraph exempts it up front.
+check "confirmation paragraph exempts a name a spawn verb reported this session" \
+  'printf "%s" "$OUT" | grep "^PEER NAME CONFIRMATION" | grep -qF "Skip if \`spawn-one\`/\`spawn-ad-hoc\` reported the name this session."'
+check "item 13 no longer routes spawning one member through the skill" \
+  '! printf "%s" "$OUT" | grep -qF "spawn or dismiss one member" && printf "%s" "$OUT" | grep -qF "dismiss one member, disband"'
 
 # ---- 1b. once EVERY peer-eligible role's peer name is explicitly
 #          confirmed/recorded (peer is a literal string, not "auto"), the

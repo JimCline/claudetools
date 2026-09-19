@@ -34,7 +34,7 @@ const GATES = [
     hook: "pretooluse-roster-skill-gate.mjs",
     source: "pretooluse-roster-skill-gate.mjs",
     constName: "VERBS",
-    expect: ["create", "spawn-one", "spawn-ad-hoc", "adopt", "move", "dismiss", "disband", "untrack"],
+    expect: ["create", "adopt", "move", "dismiss", "disband", "untrack"],
     spec: "0048 §2.4.3",
   },
 ];

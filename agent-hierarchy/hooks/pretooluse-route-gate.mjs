@@ -97,7 +97,7 @@ import {
   sessionModel,
   upRecordFor,
 } from "./lib-hier.mjs";
-import { ON_MISSING_DEFAULT, resolveMemberTeam, teamMemberByName } from "./lib-roster.mjs";
+import { listTeamNames, ON_MISSING_DEFAULT, readTeam, resolveMemberTeam, teamMemberByName } from "./lib-roster.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
 
 const TIER_ROLES = ["architect", "ultra-advisor"];
@@ -292,6 +292,11 @@ try {
 
   let role = null;
   let text = "";
+  // A send to a member already recorded in one of this repo's team files settles the routing
+  // question by itself: the teammate exists, was spawned here, and is addressed by name, so
+  // neither the global-scope confirms nor the route ask has anything left to decide.
+  const EXEMPT_ROSTER_LEVELS = [null, "repo", "repo-user"]; // an absent key is undefined, so it is not matched by the null here
+  let toTeamMember = false;
   if (isDispatch) {
     role = hierarchyRoleOf(toolInput.subagent_type);
     text = typeof toolInput.prompt === "string" ? toolInput.prompt : "";
@@ -305,6 +310,14 @@ try {
     const membership = to ? resolveMemberTeam(dir, to) : { found: false, team: null };
     const teamMember = membership.found ? teamMemberByName(dir, to, membership.team) : null;
     role = teamMember ? teamMember.role : null;
+    if (teamMember) {
+      // The team records decide, not the member: EVERY record holding this name must carry a
+      // level known to borrow nothing from the global roster, so the answer never depends on
+      // which record a scan reaches first. An absent key, "global", or anything unrecognised
+      // fails closed and keeps every confirm.
+      const holders = [null, ...listTeamNames(dir)].map((t) => readTeam(dir, t)).filter((t) => t && Array.isArray(t.members) && t.members.some((m) => m && m.name === to));
+      toTeamMember = holders.length > 0 && holders.every((t) => EXEMPT_ROSTER_LEVELS.includes(t.roster_level));
+    }
     if (!role) role = PEER_ELIGIBLE_ROLES.find((r) => resolvedPeerTargets(r, resolved.roles[r], repoBasename).includes(to)) || null;
     if (!role && to) {
       const ros = getRoster();
@@ -316,14 +329,14 @@ try {
   // ---- scope A/B: global-scope confirm gate (spec 0009 §4), evaluated before
   // routing preference — see the header comment for the two predicates.
   const scopeBWillFire = !!role && role !== "ultra-advisor" && resolved.sources[role] === "user";
-  if (role && PEER_ELIGIBLE_ROLES.includes(role)) {
+  if (!toTeamMember && role && PEER_ELIGIBLE_ROLES.includes(role)) {
     const preRoute = effectiveRoute(dir, resolved, sessionId).value;
     const scopeAApplies = resolved.rosterLevel === "global" && !(isDispatch && preRoute === "subagents");
     if (scopeAApplies) {
       enforceGlobalScope(dir, sessionId, "roster", () => globalRosterAskReason(resolved, sessionId, scopeBWillFire), () => globalRosterDenyReason(sessionId), scopeBWillFire);
     }
   }
-  if (scopeBWillFire) {
+  if (scopeBWillFire && !toTeamMember) {
     enforceGlobalScope(dir, sessionId, "config", () => globalConfigAskReason(role, resolved, sessionId), () => globalConfigDenyReason(role));
   }
 
@@ -331,7 +344,7 @@ try {
   if (role && PEER_ELIGIBLE_ROLES.includes(role)) {
     const configRoute = resolved.route;
     const routeInfo = effectiveRoute(dir, resolved, sessionId);
-    if (routeInfo.source !== "session" && !configRoute && !isSubordinateSession) {
+    if (routeInfo.source !== "session" && !configRoute && !isSubordinateSession && !toTeamMember) {
       if (!hasGate(dir, (r) => r.type === "route-ask" && r.session_id === sessionId)) {
         appendGate(dir, { type: "route-ask", session_id: sessionId });
         decide("deny", askReason(getRoster(), sessionId));

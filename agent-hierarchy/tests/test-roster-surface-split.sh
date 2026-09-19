@@ -84,13 +84,19 @@ gate() { # <bash command string> <session_id>
     "$2" "$PROJ" "$1" | HOME="$FAKEHOME" node "$GATE" 2>&1); RC=$?
 }
 i=0
-for verb in create spawn-one spawn-ad-hoc adopt move dismiss disband untrack; do
+for verb in create adopt move dismiss disband untrack; do
   i=$((i+1)); rm -rf "$HIER/gates.jsonl"
   gate "node $H/roster.mjs $verb --cwd $PROJ" "sess-$i"
   check "8: roster.mjs $verb is gated" \
     'echo "$OUT" | grep -q "\"permissionDecision\":\"deny\""'
   check "8: ...and the denial routes to the agent-team skill, not the roster one" \
     'echo "$OUT" | grep -q "ah:agent-team"'
+done
+# Spawning one role-specified member is a direct call, not a skill-owned lifecycle op.
+for verb in spawn-one spawn-ad-hoc; do
+  rm -rf "$HIER/gates.jsonl"
+  gate "node $H/roster.mjs $verb reviewer --cwd $PROJ" "sess-spawn-$verb"
+  check "8: roster.mjs $verb is NOT gated" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
 done
 # hooks.json's matcher is load-bearing in parallel with the JS verb set — a gate the matcher
 # never selects for is silently ungated, whatever its body says (0042 §1.6, 0048 §2.4.5).

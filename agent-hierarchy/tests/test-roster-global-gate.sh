@@ -248,6 +248,93 @@ check "malformed gates.jsonl: never crashes -- exit 0, no stack trace, well-form
   '[ $RC -eq 0 ] && { [ -z "$OUT" ] || echo "$OUT" | grep -q "hookSpecificOutput"; }'
 
 # ---- every hooks/*.mjs still parses
+# ================= A brief to a member of this repo's team file =================
+# The teammate was spawned here and is addressed by name, so neither global-scope confirm nor the
+# route ask has anything left to decide. An explicit `subagents` route is still honoured.
+
+BRIEF="[hierarchy-peer-brief reply-to=\"me\" task=\"x\"]
+do it"
+mkdir -p "$HD/teams"
+cat > "$HD/teams/myrepo.json" <<EOF
+{"version":1,"team_id":"t-member-send","created":"2020-01-01T00:00:00+00:00","roster_level":null,"transport":"herdr","orchestrator":{"session_id":null,"pid":$$},"members":[{"role":"reviewer","name":"myrepo-reviewer","route":"peer","transport_id":"p1"}],"partial":true}
+EOF
+echo '{ "version": 1, "enabled": true }' > "$GLOBAL_CFG"
+echo '{ "version": 1, "enabled": true }' > "$REPO_CFG"
+
+gate "$(PROJ="$PROJ" send_payload sTM1 myrepo-reviewer "$BRIEF")"
+check "TM1: no route recorded, brief to a team-file member -> not denied" 'allowed'
+check "TM1: and no route-ask record is left to suppress a later Agent-dispatch ask" \
+  '! gates_for sTM1 | grep -q "\"type\":\"route-ask\""'
+
+gate "$(PROJ="$PROJ" send_payload sTM2 myrepo-architect "$BRIEF")"
+check "TM2 (control): a peer-eligible name in no team file still gets the route ask" \
+  'denied && gates_for sTM2 | grep -q "\"type\":\"route-ask\""'
+
+set_route sTM3 subagents
+gate "$(PROJ="$PROJ" send_payload sTM3 myrepo-reviewer "$BRIEF")"
+check "TM3: session route subagents -> a brief to a team member is still denied" \
+  'denied && gates_for sTM3 | grep -q "\"type\":\"route-deny\""'
+gate "$(PROJ="$PROJ" send_payload sTM3 myrepo-reviewer "$BRIEF")"
+check "TM3: ...once — the retry proceeds" 'allowed'
+
+cat > "$GLOBAL_CFG" <<'EOF'
+{ "version": 1, "enabled": true, "roster": { "route": "peer", "members": [
+  {"role": "reviewer", "name": "g-reviewer", "model": "opus"}
+] }, "roles": { "reviewer": { "model": "opus" } } }
+EOF
+gate "$(PROJ="$PROJ" send_payload sTM4 myrepo-reviewer "$BRIEF")"
+check "TM4: global roster + user-level role config, never answered -> team-member brief not denied" 'allowed'
+check "TM4: and neither global-scope ask was recorded" \
+  '! gates_for sTM4 | grep -q "\"type\":\"global-scope-ask\""'
+gate "$(PROJ="$PROJ" send_payload sTM5 myrepo-architect "$BRIEF")"
+check "TM5 (control): under the same global roster a non-member brief still hits the scope-A confirm" \
+  'denied && gates_for sTM5 | grep -q "\"scope\":\"roster\""'
+
+# The exemption is decided by the member's TEAM RECORD: only a team built from this repo's roster
+# (or from none — an explicit null) is exempt; one stood up from the GLOBAL roster keeps every
+# confirm, and so does a record with no level at all or a level nobody recognises.
+team_with_level() { # <team> <roster_level json fragment, or empty for a missing field>
+  printf '{"version":1,"team_id":"t-%s","created":"2020-01-01T00:00:00+00:00",%s"transport":"herdr","orchestrator":{"session_id":null,"pid":%s},"members":[{"role":"reviewer","name":"%s-reviewer","route":"peer","transport_id":"p1"}],"partial":true}\n' \
+    "$1" "$2" "$$" "$1" > "$HD/teams/$1.json"
+}
+team_with_level repoteam '"roster_level":"repo",'
+team_with_level oldteam ''
+team_with_level globteam '"roster_level":"global",'
+team_with_level oddteam '"roster_level":"somewhere-else",'
+
+gate "$(PROJ="$PROJ" send_payload sTM6 repoteam-reviewer "$BRIEF")"
+check "TM6: member of a roster_level repo team -> not denied, no route-ask record" \
+  'allowed && ! gates_for sTM6 | grep -q "\"type\":\"route-ask\""'
+gate "$(PROJ="$PROJ" send_payload sTM7 oldteam-reviewer "$BRIEF")"
+check "TM7: a team record with NO roster_level key is not exempt (absent is not null) -> scope-A confirm denies" \
+  'denied && gates_for sTM7 | grep "\"type\":\"global-scope-ask\"" | grep -q "\"scope\":\"roster\""'
+gate "$(PROJ="$PROJ" send_payload sTM8 globteam-reviewer "$BRIEF")"
+check "TM8: member of a roster_level global team -> scope-A confirm still denies, and records it" \
+  'denied && gates_for sTM8 | grep "\"type\":\"global-scope-ask\"" | grep -q "\"scope\":\"roster\""'
+gate "$(PROJ="$PROJ" send_payload sTM9 oddteam-reviewer "$BRIEF")"
+check "TM9: an unrecognised roster_level fails closed to the same confirm" \
+  'denied && gates_for sTM9 | grep -q "\"scope\":\"roster\""'
+
+# One name held by two team records — the legacy team.json and a named team. Every holder must be
+# exempt; which record a scan reaches first must not matter, so the levels are tried both ways.
+two_holders() { # <legacy level json> <other level json>
+  rm -f "$HD/team.json" "$HD/teams/"*.json
+  printf '{"version":1,"team_id":"t-legacy","roster_level":%s,"transport":"herdr","orchestrator":{"session_id":null,"pid":%s},"members":[{"role":"reviewer","name":"myrepo-reviewer","route":"peer"}]}\n' "$1" "$$" > "$HD/team.json"
+  printf '{"version":1,"team_id":"t-other","roster_level":%s,"transport":"herdr","orchestrator":{"session_id":null,"pid":%s},"members":[{"role":"reviewer","name":"myrepo-reviewer","route":"peer"}]}\n' "$2" "$$" > "$HD/teams/other.json"
+}
+two_holders null '"global"'
+gate "$(PROJ="$PROJ" send_payload sTM10 myrepo-reviewer "$BRIEF")"
+check "TM10: name held by a null record AND a global record -> denied with a scope roster record" \
+  'denied && gates_for sTM10 | grep -q "\"scope\":\"roster\""'
+two_holders '"global"' null
+gate "$(PROJ="$PROJ" send_payload sTM11 myrepo-reviewer "$BRIEF")"
+check "TM11: the same two levels swapped between the files -> still denied" \
+  'denied && gates_for sTM11 | grep -q "\"scope\":\"roster\""'
+two_holders null null
+gate "$(PROJ="$PROJ" send_payload sTM12 myrepo-reviewer "$BRIEF")"
+check "TM12: both holders null -> allowed, no route-ask record" \
+  'allowed && ! gates_for sTM12 | grep -q "\"type\":\"route-ask\""'
+
 SYNTAX_BAD=$(cd "$H" && for f in *.mjs; do node --check "$f" >/dev/null 2>&1 || echo "$f"; done)
 check "every hooks/*.mjs passes node --check" '[ -z "$SYNTAX_BAD" ]'
 

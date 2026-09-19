@@ -2114,11 +2114,15 @@ function allTeamRows(dir, myPid) {
 async function spawnOneCore(role, callerLabel, adHocMember = null) {
   resolveWritableTeamScope(hierarchyDir(cwd));
   if (!PEER_ELIGIBLE_ROLES.includes(role)) fail(`${callerLabel}: role must be one of ${PEER_ELIGIBLE_ROLES.join(", ")}, got ${JSON.stringify(role)}`);
-  const resolved = resolveRoster(cwd, teamArg);
-  // Spec 0044 §1.4 point 2: an ad hoc member need not exist in the roster, and need not have a
-  // roster to exist in. The roster is still read when there IS one — for the level gate and the
-  // layout mode — but its absence is only fatal on the roster-sourced paths.
-  if (!resolved && !adHocMember) fail(`no roster configured for ${cwd}; run the /agent-roster skill's Init flow`);
+  const found = resolveRoster(cwd, teamArg);
+  // An ad hoc member takes nothing from a roster but its route and layout mode, so a roster that
+  // resolves at global level — possibly another project's — is not read at all on that path;
+  // with nothing borrowed from it there is nothing for --allow-global to confirm.
+  const resolved = adHocMember && found && found.level === "global" ? null : found;
+  // An ad hoc member need not exist in the roster, and need not have a
+  // roster to exist in. A repo-level roster is still read when there IS one — for the layout
+  // mode — but its absence is only fatal on the roster-sourced paths.
+  if (!resolved && !adHocMember) fail(`no roster configured for ${cwd}; run \`spawn-ad-hoc ${role}\` instead (it needs no roster), or run the /agent-roster skill's Init flow to define one`);
   if (resolved) requireAllowGlobal(resolved.level, resolved.path);
   const candidates = adHocMember ? [adHocMember] : resolved.members.filter((m) => m.role === role);
   if (candidates.length === 0) {
@@ -2183,6 +2187,12 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
     fail(`${callerLabel}: cannot determine whether the existing record ${existing.name} (kind ${resolveKind(member)}) is still live — ${existingState.why}. Refusing to spawn; fix Herdr and retry.`);
   }
   const liveRecord = existingState && existingState.live ? existing : null;
+  // An ad hoc name is derived, never chosen, so a live session already holding it belongs to
+  // someone else. Reporting it as "already live" would hand the caller that session as if it
+  // were the member just asked for.
+  if (adHocMember && (selfState.live || liveRecord)) {
+    fail(`${callerLabel}: the derived name ${member.name} is already held by a live session outside this team's record — nothing was launched or written. Free the name with \`dismiss ${member.name}\` or \`untrack ${member.name}\`, or spawn under a different prefix with --team <other>`);
+  }
   if (selfState.live || liveRecord) {
     const out_member = liveRecord || existing || { role: member.role, name: member.name };
     const state = selfState.live ? selfState : existingState;
@@ -2236,7 +2246,9 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
     // or the pane it is sitting in.
     const lr = launched.launch_result;
     const extra = lr ? [lr.likely_cause, lr.remedy].filter(Boolean) : [];
-    fail([launched.error || `${callerLabel} launch failed`, ...extra].join(" — "));
+    // The transport's own error rarely says which name was attempted, and a name taken where the
+    // liveness check cannot see it surfaces only here.
+    fail([`${callerLabel}: launching ${member.name} failed`, launched.error, ...extra].filter(Boolean).join(" — "));
   }
 
   const newRecord = { role: member.role, name: member.name, route: memberRoute, model: member.model, effort: member.effort, autoMode: member.autoMode, transport_id: launched.transport_id };
@@ -3288,9 +3300,13 @@ try {
         if (!AD_HOC_FLAGS.has(key)) fail(`spawn-ad-hoc: unrecognized flag --${key} (use --role, --model, --effort, --route, --kind, --args, --auto-mode, --on-missing, --team, --cwd, --dry-run, --allow-global, --orchestrator-pid)`);
       }
       const role = typeof opts.role === "string" ? opts.role : opts._[0];
-      if (!role) fail("spawn-ad-hoc needs a role: spawn-ad-hoc <role> [--model M] [--kind K] ...");
-      if (role === "orchestrator") fail('role "orchestrator" is not a team member — the Orchestrator is whatever session runs create');
-      if (!ROLES.includes(role)) fail(`spawn-ad-hoc: --role must be one of ${ROLES.join(", ")}, got ${JSON.stringify(role)}`);
+      // The ad hoc path takes exactly one peer-eligible role and defaults everything else; a
+      // request that cannot name one is under-specified and belongs on the skill-driven path.
+      const formalPath = "Ask the user which role they want, or for a whole team use Skill ah:agent-team (Create).";
+      if (!role) fail(`spawn-ad-hoc: under-specified — no role named (spawn-ad-hoc <role>, one of ${PEER_ELIGIBLE_ROLES.join(", ")}). ${formalPath}`);
+      if (!PEER_ELIGIBLE_ROLES.includes(role)) {
+        fail(`spawn-ad-hoc: under-specified — ${JSON.stringify(role)} is not a role spawn-ad-hoc can stand up; it spawns exactly one of ${PEER_ELIGIBLE_ROLES.join(", ")}. ${formalPath}`);
+      }
       const adHoc = memberFromFlags(role, "spawn-ad-hoc");
       // §1.4 point 1: the same validation rules, unrelaxed. An ad hoc member has no roster block
       // to inherit from, so its own route IS the effective route — defaulted to "peer", the same

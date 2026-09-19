@@ -3,6 +3,8 @@
 Status: **specified, fully closed, implemented, reviewed (PASS WITH NITS).** No open
 NEEDS-EVIDENCE items.
 
+Status note: spec 0051 §2.3 made `spawn-ad-hoc` ignore the global roster (no `--allow-global` needed there).
+
 Precedent: 0001 (roster), 0004 (layout), 0005 (`create --spawn`), 0006 (disband), 0008 (resync/move).
 
 **Amended 2026-08-23 (a)** — requirement 3's scope widened to `move`. **Superseded by (b);

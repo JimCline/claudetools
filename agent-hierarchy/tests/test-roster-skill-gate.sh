@@ -34,7 +34,16 @@ hook() {
 
 is_deny() { case "$OUT" in *'"permissionDecision":"deny"'*) return 0;; *) return 1;; esac; }
 
-VERBS="create spawn-one spawn-ad-hoc adopt move dismiss disband untrack"
+VERBS="create adopt move dismiss disband untrack"
+
+# ---- 0: spawning one role-specified member is a direct call — a fresh session is not denied and
+# the gate leaves no record behind (a record would make the NEXT gated verb skip its one deny).
+GATES_FILE="$PROJ/.claude/hierarchy/gates.jsonl"
+for verb in spawn-ad-hoc spawn-one; do
+  hook "node $ROSTER $verb reviewer --cwd $PROJ" "ungated-$verb"
+  check "not gated, no output: roster.mjs $verb reviewer" '[ "$RC" -eq 0 ] && [ -z "$OUT" ]'
+  check "not gated, no gates.jsonl record: roster.mjs $verb" '! grep -q "ungated-$verb" "$GATES_FILE" 2>/dev/null'
+done
 
 # ---- 1/2: each gated verb: clean session denies + names the skill;
 # the immediate identical retry proceeds (self-cleared).

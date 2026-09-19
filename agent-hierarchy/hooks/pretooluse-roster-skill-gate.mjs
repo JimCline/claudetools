@@ -7,12 +7,14 @@
  * gated verb set lives here alone and tests/check-gate-name-agreement.mjs
  * asserts it against hooks.json's matcher.
  *
- * Gated verbs: create, spawn-one, spawn-ad-hoc, adopt, move, dismiss,
- * disband, untrack — the team-side lifecycle verbs (spec 0046 §3.3). NOT
- * gated: the read-only verbs (show, teams, history, reap, resync,
- * layout-splits), the roster-TEMPLATE CRUD verbs, and layout / alias (spec
- * 0042 E3: only ever called internally by the skill's own flow) are
- * deliberately NOT in this set. Nor is anything in msg.mjs.
+ * Gated verbs: create, adopt, move, dismiss, disband, untrack — the
+ * team-side lifecycle verbs. NOT gated: the single-member
+ * spawn verbs (spawn-one, spawn-ad-hoc — one role-specified member is a
+ * direct call whose safety checks live in the CLI itself), the read-only
+ * verbs (show, teams, history, reap, resync, layout-splits), the
+ * roster-TEMPLATE CRUD verbs, and layout / alias (only ever
+ * called internally by the skill's own flow) are deliberately NOT in this
+ * set. Nor is anything in msg.mjs.
  *
  * One-shot per session, recorded at DENY time: the immediate identical
  * retry always proceeds, whether or not the skill was actually consulted.
@@ -33,7 +35,7 @@ import { appendGate, hierarchyDir, readGates } from "./lib-hier.mjs";
 import { dirname, join } from "node:path";
 import { parseAhCommand } from "./lib-ah-cli.mjs";
 
-const VERBS = ["create", "spawn-one", "spawn-ad-hoc", "adopt", "move", "dismiss", "disband", "untrack"];
+const VERBS = ["create", "adopt", "move", "dismiss", "disband", "untrack"];
 const GATED_VERBS = new Set(VERBS);
 
 function deny(reason) {
@@ -51,7 +53,7 @@ function deny(reason) {
 
 const DENY_REASON = [
   "ah: BLOCKED — this command did not run.",
-  "Team lifecycle operations (create/spawn-one/spawn-ad-hoc/adopt/move/dismiss/disband/untrack on `hooks/roster.mjs`) are owned by the `ah:agent-team` skill, which encodes the roster levels, spawn layout, the team file check-in registry, and relocation rules that a raw CLI call skips. The `ah:agent-roster` skill covers the other half — editing the roster TEMPLATE (init/add/edit/remove/layout/alias) — and does not stand up or tear down anything.",
+  "Team lifecycle operations (create/adopt/move/dismiss/disband/untrack on `hooks/roster.mjs`) are owned by the `ah:agent-team` skill, which encodes the roster levels, spawn layout, the team file check-in registry, and relocation rules that a raw CLI call skips. The `ah:agent-roster` skill covers the other half — editing the roster TEMPLATE (init/add/edit/remove/layout/alias) — and does not stand up or tear down anything.",
   'Invoke it: Skill with skill: "ah:agent-team". The skill may resolve this request differently than the command you were about to run — follow the skill, do not resume the original command by reflex.',
   `If Skill reports it is already loaded but its body is not in your context, Read ${join(dirname(dirname(ROSTER_CLI)), "skills", "agent-team", "SKILL.md")} instead.`,
   "Re-running the same command will proceed after that — this gate is one-shot per session.",

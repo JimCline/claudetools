@@ -32,6 +32,22 @@ Full spec: `docs/specs/0001-agent-roster.md`, with the roster/team split in
 surface; if the two disagree, the spec is authoritative and this file has
 drifted — say so rather than silently picking one.
 
+## One peer, zero ceremony
+
+When the request names (or clearly implies) ONE role, skip everything below:
+
+- `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs spawn-ad-hoc <role> --cwd <abs>`
+  works in any repo, roster or not — no skill load, no route question, no
+  `--allow-global`. It prints the derived name.
+- Brief it with `msg.mjs new --to <role> --from <your role> …`, then
+  SendMessage to the reported name.
+- A subagent may spawn and brief a peer, but the reply is delivered to its
+  parent session, never to the subagent — so the subagent must not wait for it.
+- A repo whose name is refused as a team prefix needs one
+  `roster.mjs alias --level repo --set <suggested>`, which the refusal prints.
+- The formal path (the rest of this skill) applies only when no single role is
+  named, when a whole team is wanted, or for lifecycle ops.
+
 ## Command surface
 
 Every verb below runs as `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs <verb> … --cwd <abs cwd>`
@@ -600,9 +616,12 @@ that the PreToolUse hook cannot see inside:
   `global` level (`~/.claude/agent-hierarchy.json`'s roster block, not a
   repo-scoped one); omitting it `fail()`s naming the flag. This mirrors the
   PreToolUse gate's scope-A confirmation (spec 0009 §4) for the CLI path.
+  `spawn-ad-hoc` is exempt: it never reads the global roster.
 - **The PreToolUse global-scope confirm gate** (spec 0009 §4) still applies
-  to any Agent/Task/SendMessage dispatch to the resulting peer — `--allow-global`
-  only unblocks the CLI command that stands the peer up, not later dispatch to it.
+  to any Agent/Task dispatch to the resulting peer, and to a SendMessage to
+  it unless every team record naming it has `roster_level` `null`, `repo` or
+  `repo-user` — `--allow-global` only unblocks the CLI command that stands
+  the peer up, not later dispatch to it.
 
 **Fallback ordering when the `route` is `peers` and no live peer exists for a
 role** (spec 0009 §5): the dispatch is denied with a prompt that recommends,
@@ -723,9 +742,10 @@ has genuinely failed, never as a first resort, and never against a peer
 ## `spawn-ad-hoc`
 
 `spawn-ad-hoc <role>` is `spawn-one` for a member the roster does not
-describe. Use it whenever the running team needs something the roster does not
-have — a second implementor on a different model, a codex member, a role the
-roster never defined. It reads the roster only for the team's route/layout
+describe. Use it whenever one peer is wanted and the roster (if any) has no
+live member for it — a second implementor on a different model, a codex member,
+a role the roster never defined, or a repo with no roster at all. It reads the
+repo-level roster only (never the global one), for the team's route/layout
 defaults, and writes only the team file.
 
 1. **The name is derived, not chosen.** It uses the team's own prefix and the
@@ -738,10 +758,16 @@ defaults, and writes only the team file.
    same rules `add` uses. There are no relaxed rules for ad hoc members.
 3. **The route must have a pane** (`peer`, or `pane` for a non-Claude kind).
    A `subagent` member is dispatched on demand and has nothing to launch.
-4. It launches through the same `spawn-one` machinery, so `--dry-run`,
-   `--allow-global`, the herdr-vs-terminal transport choice, and the
-   blocked-at-startup reporting all behave identically. See § spawn-one for
-   those; only the member's source differs.
+4. It launches through the same `spawn-one` machinery, so `--dry-run`, the
+   herdr-vs-terminal transport choice, and the blocked-at-startup reporting all
+   behave identically. See § spawn-one for those; only the member's source
+   differs. A roster that resolves at the global level is treated as no roster,
+   so `--allow-global` is accepted but does nothing here.
+5. **Briefing the new member skips the route question and the global-scope
+   confirms — but only when every team record naming it has `roster_level`
+   `null`, `repo` or `repo-user`.** The team record decides, not the member:
+   one that `spawn-ad-hoc` adds INTO an existing team stood up from the global
+   roster is not exempt.
 
 Report the derived name back to the user in one line — they did not choose it,
 and they need it for a later `dismiss`.

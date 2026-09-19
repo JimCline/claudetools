@@ -1,6 +1,7 @@
 # 0042 — Mechanical gate: the agent-roster skill must be consulted before standing up a Team
 
 Status: r2, ready for Implementor. Not implemented. Author: Architect.
+Status note: spec 0051 removed the spawn verbs (`spawn-one`, `spawn-ad-hoc`) from the gated set.
 r2 changes: E2/E3 resolved (dual-prefix rule §1.3), §1.6 folds in the inert
 disband-close gate, §1.4 pre-specifies both E1 branches, §1.5 ships and §1.2 is
 in scope per user decision, E4 added.

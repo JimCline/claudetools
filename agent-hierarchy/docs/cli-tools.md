@@ -132,8 +132,8 @@ read the fresh root line, or resolve it with the recipe above.
 | resync member locations | `node <R>/hooks/roster.mjs resync [--dry-run] [--team <t>] [--bind <b>]` |
 | move a member's pane | `node <R>/hooks/roster.mjs move <name> --tab <t> [--split right\|down]` · `… move <name> --new-tab [--workspace <w>]` · `… move <name> --new-workspace` · all take `[--dry-run] [--allow-global] [--team <t>]` |
 | team history | `node <R>/hooks/roster.mjs history` |
-| spawn one roster member | `node <R>/hooks/roster.mjs spawn-one <role> [--member <name>] [--dry-run] [--allow-global] [--team <t>] [--orchestrator-pid <pid>]` |
-| spawn an ad hoc member | `node <R>/hooks/roster.mjs spawn-ad-hoc <role> [--model <M>] [--effort <E>] [--kind <K>] [--route peer\|pane] [--args '<json>'] [--auto-mode <A>] [--on-missing …] [--dry-run] [--allow-global] [--team <t>] [--orchestrator-pid <pid>]` (`--role <role>` is accepted in place of the positional) |
+| spawn one roster member | `node <R>/hooks/roster.mjs spawn-one <role> [--member <name>] [--dry-run] [--allow-global] [--team <t>] [--orchestrator-pid <pid>]` — not skill-gated |
+| spawn an ad hoc member | `node <R>/hooks/roster.mjs spawn-ad-hoc <role> [--model <M>] [--effort <E>] [--kind <K>] [--route peer\|pane] [--args '<json>'] [--auto-mode <A>] [--on-missing …] [--dry-run] [--allow-global] [--team <t>] [--orchestrator-pid <pid>]` (`--role <role>` is accepted in place of the positional) — no roster needed; not skill-gated; global roster ignored (`--allow-global` accepted, no-op) |
 | dismiss one member | plan: `node <R>/hooks/roster.mjs dismiss <name> [--plan] [--team <t>]` · close: `… dismiss <name> --close --confirm --plan-token <tok> [--also-config] [--level <L>] [--allow-global] [--team <t>]`. Plans and close results carry the same `sources` block as `disband`. |
 | untrack (close nothing) | `node <R>/hooks/roster.mjs untrack <name>\|--all [--plan\|--commit] [--keep-sessions] [--also-config] [--level <L>] [--team <t>]` |
 | re-register this session | `node <R>/hooks/roster.mjs checkin [--team <t>] [--orchestrator-pid <pid>]` |

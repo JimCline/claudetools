@@ -473,6 +473,81 @@ check "A4b: does not hard-fail with the geometry-absence message" \
 check "A4c: total sized for surviving panes only — 2 panes total (p0 + the new one), not inflated by the stale seed" \
   '[ "$(node -e "console.log(Object.keys(JSON.parse(require(\"fs\").readFileSync(\"$FAKE_STATE_DIR/geometry.json\",\"utf8\")).panes).length)")" -eq 2 ]'
 
+# ==== Z — one ad hoc peer in a repo with no config at all: one call, no roster, no flags ====
+BARE="$SANDBOX/bare"
+EMPTYHOME="$SANDBOX/emptyhome"
+GLOBHOME="$SANDBOX/globhome"
+mkdir -p "$BARE" "$EMPTYHOME" "$GLOBHOME/.claude"
+(cd "$BARE" && git init -q)
+cat > "$GLOBHOME/.claude/agent-hierarchy.json" <<'EOF'
+{ "version": 1, "enabled": true, "roster": { "route": "peer", "layout": "grid", "members": [
+  {"role": "reviewer", "model": "opus"}
+] } }
+EOF
+bare() { # <home> <extra_env> <verb + args...>
+  local home=$1 extra_env=$2; shift 2
+  OUT=$(eval "env -u HERDR_ENV -u CLAUDE_PID HOME=\"$home\" HERDR_PANE_ID=p0 PATH=\"$SANDBOX/bin:$NODE_DIR\" FAKE_STATE_DIR=\"$FAKE_STATE_DIR\" $extra_env node \"$H/roster.mjs\" $* --cwd \"$BARE\" 2>&1"); RC=$?
+}
+plan_field() { echo "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s)[process.argv[1]])}catch{console.log("")}})' "$1"; }
+no_bare_state() { [ ! -e "$BARE/.claude/hierarchy/teams" ]; }
+
+reset_state; init_geometry 180 42
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --dry-run
+check "Z1: no config, empty HOME -> spawn-ad-hoc --dry-run exits 0 and names <basename>-reviewer" \
+  '[ "$RC" -eq 0 ] && [ "$(plan_field name)" = "bare-reviewer" ]'
+NO_ROSTER_MODE="$(plan_field mode)"
+check "Z1b: --dry-run wrote no team file" 'no_bare_state'
+
+bare "$GLOBHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --dry-run
+check "Z2: only a GLOBAL roster, no --allow-global -> spawn-ad-hoc still exits 0" \
+  '[ "$RC" -eq 0 ] && [ "$(plan_field name)" = "bare-reviewer" ]'
+check "Z2b: and the global roster's layout is not borrowed — same mode as with no roster at all" \
+  '[ -n "$NO_ROSTER_MODE" ] && [ "$(plan_field mode)" = "$NO_ROSTER_MODE" ]'
+bare "$GLOBHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --dry-run --allow-global
+check "Z2c: --allow-global is still accepted, and changes nothing" \
+  '[ "$RC" -eq 0 ] && [ "$(plan_field mode)" = "$NO_ROSTER_MODE" ]'
+bare "$GLOBHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-one reviewer --dry-run
+check "Z3: spawn-one under the same global roster still refuses naming --allow-global" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q -- "--allow-global"'
+
+for bad in "" task-runner orchestrator; do
+  bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc $bad
+  check "Z4: spawn-ad-hoc '${bad:-<no role>}' -> exit 2, names spawn-ad-hoc and the formal path, writes nothing" \
+    '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "spawn-ad-hoc" && echo "$OUT" | grep -q "under-specified" && echo "$OUT" | grep -q "ah:agent-team" && no_bare_state'
+done
+
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-one reviewer
+check "Z5: spawn-one with no roster -> exit 2, spawn-ad-hoc is the FIRST remedy, /agent-roster second" \
+  '[ "$RC" -eq 2 ] && [ "$(echo "$OUT" | grep -bo "spawn-ad-hoc reviewer" | head -1 | cut -d: -f1)" -lt "$(echo "$OUT" | grep -bo "/agent-roster" | head -1 | cut -d: -f1)" ]'
+
+bare "$EMPTYHOME" "HERDR_ENV=1" spawn-ad-hoc reviewer --dry-run
+check "Z6: no CLAUDE_PID and no --orchestrator-pid -> the first spawn refuses naming --orchestrator-pid" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q -- "--orchestrator-pid" && no_bare_state'
+
+# The derived name is already held by a live session the team file knows nothing about: refuse,
+# never report someone else's session back as the member just asked for.
+reset_state; init_geometry 180 42
+mkdir -p "$BARE/.claude/hierarchy"
+node -e 'const fs=require("fs");const[f,p]=process.argv.slice(1);
+  fs.appendFileSync(f,JSON.stringify({type:"peer",status:"up",name:"bare-reviewer",role:"reviewer",pid:Number(p),ts:new Date().toISOString()})+"\n");' \
+  "$BARE/.claude/hierarchy/peers.jsonl" "$$"
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer
+check "Z7: derived name live outside the team file -> exit 2 naming it and the remedies" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "bare-reviewer" && echo "$OUT" | grep -q "dismiss bare-reviewer" && echo "$OUT" | grep -q "untrack bare-reviewer" && echo "$OUT" | grep -q -- "--team"'
+check "Z7b: not the already-live success shape" '! echo "$OUT" | grep -q "already live\"" && ! echo "$OUT" | grep -q "\"spawned\""'
+check "Z7c: nothing written, nothing launched" \
+  'no_bare_state && [ "$(call_count "c.argv[0]===\"agent\" && c.argv[1]===\"start\"")" -eq 0 ]'
+rm -rf "$BARE/.claude"
+
+# A name taken where the liveness check cannot see it surfaces only as the launch failing; that
+# refusal still has to say which name was attempted, and must not leave a team record behind.
+reset_state; init_geometry 180 42
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_FAIL_ALWAYS_NAME=bare-reviewer" spawn-ad-hoc reviewer
+check "Z8: launch fails for the derived name -> non-zero exit naming the attempted name" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "bare-reviewer"'
+check "Z8b: and no team file is written" 'no_bare_state'
+rm -rf "$BARE/.claude"
+
 # ==== 10 — regression: the two extraction-adjacent suites must pass UNMODIFIED ====
 CS_OUT=$(bash "$PLUGIN/tests/test-roster-create-spawn.sh" 2>&1); CS_RC=$?
 check "10a: test-roster-create-spawn.sh passes unmodified" '[ "$CS_RC" -eq 0 ]'
