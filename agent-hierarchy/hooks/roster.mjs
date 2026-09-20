@@ -107,7 +107,7 @@ import { fileURLToPath } from "node:url";
 import { CONFIG_VERSION, findGitRoot, hierarchyDir, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, suggestTeamAlias, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
 import { ageSecOf, appendRosterRecord, fmtAge, latestRoster, livePeerSlots, peersPath, readJsonl, newId, localIso, NO_TEAM_SCOPE, pidAlive, realCwd, recordLiveness, synthesizedPeerName } from "./lib-hier.mjs";
 import { readPeerRecords } from "./lib-peer.mjs";
-import { attributeSessionTeam, clearTeam, defaultTeamScope, fingerprint, herdrOnPath, historyEntryIsActive, KIND_DEFAULT, kindFieldErrors, listTeamNames, memberArgs, normalizeMembers, readHistory, readTeam, resolveKind, resolveTeamByPane, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamFileState, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
+import { attributeSessionTeam, clearTeam, defaultTeamScope, fingerprint, herdrOnPath, historyEntryIsActive, KIND_AUTO_MODE_ARGS, KIND_DEFAULT, kindAutoModeArgs, kindFieldErrors, listTeamNames, memberArgs, normalizeMembers, readHistory, readTeam, resolveKind, resolveTeamByPane, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamFileState, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
 
 const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config", "no-spawn", "allow-roster-edit"]);
 const DISBAND_FLAGS = new Set(["kill", "plan", "close", "confirm", "plan-token", "allow-global", "cwd", "team"]);
@@ -765,7 +765,12 @@ function spawnShape(member, transport) {
   const agentFlags = isClaude
     ? [`--agent ah:${member.role}`, `--name ${member.name}`, member.model && member.model !== "inherit" ? `--model ${member.model}` : null, member.effort ? `--effort ${member.effort}` : null, member.autoMode ? `--permission-mode ${member.autoMode}` : null].filter(Boolean)
     : [];
-  const nativeArgs = isClaude ? null : memberArgs(member);
+  // A non-claude member's permission flags are its autoMode translated into that CLI's own
+  // vocabulary, placed ahead of its own args so an explicit native flag wins.
+  const nativeArgs = isClaude ? null : (() => {
+    const all = [...(kindAutoModeArgs(member) || []), ...(memberArgs(member) || [])];
+    return all.length ? all : null;
+  })();
   const claudeCmd = `claude ${agentFlags.join(" ")}`;
   if (transport === "herdr") return {
     transport,
@@ -2576,16 +2581,18 @@ try {
           // every `edit --kind codex` on an existing member would be unreachable. Cleared with a
           // notice rather than a new flag, following the on-missing route-switch precedent below:
           // clear what the switch stranded, and say so.
-          const stranded = ["model", "effort", "autoMode"].filter((k) => updated[k] !== undefined && updated[k] !== null);
+          const mapsAutoMode = Boolean(KIND_AUTO_MODE_ARGS[opts.kind]);
+          const strandable = mapsAutoMode ? ["model", "effort"] : ["model", "effort", "autoMode"];
+          const stranded = strandable.filter((k) => updated[k] !== undefined && updated[k] !== null);
           // Supplied together in one invocation is a contradiction, not a stranding — never guess
           // which the user meant (§3.2(i)'s precedent).
           const suppliedNow = [
             typeof opts.model === "string" ? "--model" : null,
             typeof opts.effort === "string" ? "--effort" : null,
-            typeof opts["auto-mode"] === "string" ? "--auto-mode" : null,
+            typeof opts["auto-mode"] === "string" && !mapsAutoMode ? "--auto-mode" : null,
           ].filter(Boolean);
           if (suppliedNow.length) {
-            fail(`edit: ${suppliedNow.join(", ")} cannot be combined with --kind ${opts.kind} — model, effort, and auto-mode are Claude CLI flags and apply only to kind claude. Pass native arguments with --args instead.`);
+            fail(`edit: ${suppliedNow.join(", ")} cannot be combined with --kind ${opts.kind} — model and effort are Claude CLI flags and apply only to kind claude. Pass native arguments with --args instead.`);
           }
           for (const k of stranded) delete updated[k];
           if (stranded.length) {

@@ -259,8 +259,14 @@ r "" add --no-spawn --role implementor --kind codex --route pane --effort high
 check "4.2b: --kind codex with --effort -> rejected, message names effort" \
   '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "effort is a Claude Code CLI flag"'
 r "" add --no-spawn --role implementor --kind codex --route pane --auto-mode acceptEdits
-check "4.2c: --kind codex with --auto-mode -> rejected, message names auto-mode" \
-  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "auto-mode is a Claude Code CLI flag"'
+check "4.2c: --kind codex with --auto-mode -> accepted (codex has a permission mapping)" '[ "$RC" -eq 0 ]'
+check "4.2c2: ...and the stored member keeps autoMode" \
+  'node -e "const m=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).roster.members.find(x=>x.kind===\"codex\");process.exit(m && m.autoMode===\"acceptEdits\"?0:1)" "$CFG"'
+reset_state; clear_hierarchy; init_geometry; init_roster
+r "" add --no-spawn --role implementor --kind codex --route pane --auto-mode nonsense
+check "4.2c3: --kind codex with an unmapped --auto-mode -> rejected" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "auto-mode"'
+reset_state; clear_hierarchy; init_geometry; init_roster
 
 # THE role-default trap: without the kind-aware ROLE_DEFAULTS guard this add is
 # rejected for a model the user never supplied, i.e. non-claude members would be
@@ -389,6 +395,21 @@ check "4.3b: ...and emits NO claude flags (--agent/--name/--model/--effort/--per
 # byte-identical claude string, so no launch string on EITHER path may carry it.
 check "4.3b2: ...and carries NO --timeout flag (spec r6 removed it)" \
   '! launch_str | grep -qF -- "--timeout"'
+
+reset_state; clear_hierarchy; init_geometry; init_roster
+r "" add --no-spawn --role implementor --kind codex --route pane --auto-mode acceptEdits
+r "HERDR_ENV=1" spawn-one implementor --dry-run
+check "4.3b3: codex auto-mode becomes codex sandbox/approval flags after --" \
+  '[ "$RC" -eq 0 ] && launch_str | grep -qE -- "[-][-] .--sandbox. .workspace-write. .--ask-for-approval. .on-request."'
+
+reset_state; clear_hierarchy; init_geometry; init_roster
+r "" add --no-spawn --role implementor --kind codex --route pane --auto-mode bypassPermissions --args '"[\"--sandbox\",\"read-only\"]"'
+r "HERDR_ENV=1" spawn-one implementor --dry-run
+check "4.3b4: ...mapped flags come first so an explicit --args flag overrides them" \
+  '[ "$RC" -eq 0 ] && launch_str | grep -qE -- "[-][-] .--dangerously-bypass-approvals-and-sandbox. .--sandbox. .read-only."'
+
+reset_state; clear_hierarchy; init_geometry; init_roster
+r "" add --no-spawn --role implementor --kind codex --route pane
 
 reset_state; clear_hierarchy; init_geometry; init_roster
 r "" add --no-spawn --role architect --model opus

@@ -44,18 +44,24 @@ then `/agent-roster add` adds a member per role. Each member has these keys:
 - `route` — `peer` (a separate live session, reached with SendMessage),
   `subagent` (spawned in-process by the Agent tool), or `pane` (driven through
   its Herdr pane). A non-claude kind **must** be `pane`.
-- `auto_mode` — the spawned session's permission mode. **`kind: claude` only.**
-  `auto` (`--permission-mode auto`) is the hands-off mode. `bypassPermissions`
-  is still accepted, but that session can get stuck at a startup confirmation
-  screen instead of coming up ready — prefer `auto`.
+- `auto_mode` — the spawned session's permission mode. `auto`
+  (`--permission-mode auto`) is the hands-off mode. `bypassPermissions` is
+  still accepted, but that session can get stuck at a startup confirmation
+  screen instead of coming up ready — prefer `auto`. For `kind: codex` the
+  mode is translated into codex's own vocabulary — a `--sandbox` policy plus
+  an `--ask-for-approval` policy, or `--dangerously-bypass-approvals-and-sandbox`
+  for `bypassPermissions` — and emitted after `--` ahead of `args`, so an
+  explicit native flag in `args` overrides it.
 - `args` — native CLI arguments passed verbatim to the agent. **Non-claude
   kinds only** — for a Claude member, `model`/`effort`/`auto_mode` are the
   validated way to set flags, and `args` would bypass that validation.
 
-`model`, `effort` and `auto_mode` are literally Claude Code CLI flags
-(`--model`, `--effort`, `--permission-mode`), which is why they are *rejected*
-rather than ignored for another kind: a setting that silently affects nothing
-is worse than one that refuses.
+`model` and `effort` are literally Claude Code CLI flags (`--model`,
+`--effort`), which is why they are *rejected* rather than ignored for another
+kind: a setting that silently affects nothing is worse than one that refuses.
+`auto_mode` is the exception — permission policy exists in the other CLI's
+vocabulary too, so it is translated for a kind that has a mapping (today:
+codex) and still rejected for one that does not.
 
 A non-claude member requires a Herdr session (`HERDR_ENV=1`) to spawn — tmux
 and terminal transports can only start `claude`. Adding one from a non-Herdr

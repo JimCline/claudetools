@@ -115,6 +115,37 @@ export function herdrOnPath() {
 // ---------------------------------------------------------------- roster member/block validation
 
 /**
+ * A Claude `--permission-mode` value expressed in the target kind's own CLI
+ * vocabulary. Codex has no permission-mode flag: it splits the same decision
+ * into a sandbox policy (what the agent may touch) and an approval policy
+ * (when it stops to ask), so each Claude mode maps to a pair. `plan` is
+ * read-only with no prompts because a plan run must not edit and must not
+ * block; `bypassPermissions` is the one mode with a single-flag equivalent.
+ */
+export const KIND_AUTO_MODE_ARGS = {
+  codex: {
+    manual: ["--sandbox", "read-only", "--ask-for-approval", "on-request"],
+    plan: ["--sandbox", "read-only", "--ask-for-approval", "never"],
+    acceptEdits: ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"],
+    auto: ["--sandbox", "workspace-write", "--ask-for-approval", "never"],
+    dontAsk: ["--sandbox", "workspace-write", "--ask-for-approval", "never"],
+    bypassPermissions: ["--dangerously-bypass-approvals-and-sandbox"],
+  },
+};
+
+/**
+ * The native flags a non-claude member's `autoMode` becomes, or null when the
+ * member has no autoMode or its kind has no mapping. Emitted before the
+ * member's own `args` so an explicit native flag overrides the mapping.
+ */
+export function kindAutoModeArgs(m) {
+  if (!m || !m.autoMode) return null;
+  const table = KIND_AUTO_MODE_ARGS[resolveKind(m)];
+  const args = table && table[m.autoMode];
+  return args ? [...args] : null;
+}
+
+/**
  * Spec 0043 §1.9: a member's `args` as an actual list, with absent and `[]`
  * treated as the same thing (the spec makes them equivalent, so nothing
  * downstream has to distinguish them).
@@ -147,10 +178,18 @@ export function kindFieldErrors(m) {
   const nonClaude = kind !== KIND_DEFAULT;
 
   if (nonClaude) {
+    const mapped = KIND_AUTO_MODE_ARGS[kind];
     for (const [key, label] of [["model", "model"], ["effort", "effort"], ["autoMode", "auto-mode"]]) {
-      if (m[key] !== undefined && m[key] !== null) {
-        errors.push(`${label} is a Claude Code CLI flag and has no meaning for kind ${JSON.stringify(kind)} — remove it (got ${JSON.stringify(m[key])})`);
+      if (m[key] === undefined || m[key] === null) continue;
+      // auto-mode survives for a kind with a permission mapping: it is the one Claude flag whose
+      // meaning exists in the other CLI's vocabulary, so it is translated rather than refused.
+      if (key === "autoMode" && mapped) {
+        // A value outside AUTO_MODE_VALUES is already reported by validateMember; saying it twice
+        // helps nobody. This fires only for a real gap in a kind's table.
+        if (!mapped[m.autoMode] && AUTO_MODE_VALUES.includes(m.autoMode)) errors.push(`auto-mode ${JSON.stringify(m.autoMode)} has no ${kind} equivalent — use one of ${Object.keys(mapped).join(", ")}`);
+        continue;
       }
+      errors.push(`${label} is a Claude Code CLI flag and has no meaning for kind ${JSON.stringify(kind)} — remove it (got ${JSON.stringify(m[key])})`);
     }
     if (m.route !== "pane") {
       errors.push(`route must be "pane" for kind ${JSON.stringify(kind)} (a non-claude agent is reached through its Herdr pane, not SendMessage or the Agent tool), got ${JSON.stringify(m.route)}`);
