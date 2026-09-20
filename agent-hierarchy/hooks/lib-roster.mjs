@@ -274,10 +274,24 @@ export function readTeam(dir, team = null) {
   if (!existsSync(path)) return null;
   try {
     const data = JSON.parse(readFileSync(path, "utf8"));
-    return data && typeof data === "object" && !Array.isArray(data) ? data : null;
+    // Every reader goes straight to `.members`, so an object without the array is no record:
+    // a truncated or hand-edited file must read as unusable rather than crash a verb mid-write.
+    return data && typeof data === "object" && !Array.isArray(data) && Array.isArray(data.members) ? data : null;
   } catch {
     return null;
   }
+}
+
+/**
+ * `readTeam` collapses "no file" and "a file that yields no record" into one null. This keeps them
+ * apart: `state` is "absent", "unusable" (the file exists but does not parse to a record) or
+ * "usable", with `path` always set and `team` the record only when usable.
+ */
+export function teamFileState(dir, team = null) {
+  const path = teamPath(dir, team);
+  if (!existsSync(path)) return { state: "absent", path, team: null };
+  const record = readTeam(dir, team);
+  return record ? { state: "usable", path, team: record } : { state: "unusable", path, team: null };
 }
 
 /** Atomic write: `<path>.tmp` then rename, for any JSON file under `dir` (team.json, team-history.json). */
@@ -385,7 +399,11 @@ export function defaultTeamScope(dir, prefix) {
   // `team.json` mask an unnamable prefix, so the caller skipped [9.1]'s refusal and then derived
   // a team name from a prefix `validateTeamAlias` rejects.
   const bad = isValidTeamAlias(prefix) ? null : { unnamable: prefix, suggested: suggestTeamAlias(prefix) };
-  if (readTeam(dir, null)) return { team: null, defaulted: true, ...bad };
+  // A legacy file that exists but yields no record still claims the scope: resolving past it
+  // would start a second team beside a record nobody can read. `unreadable` names it.
+  const legacy = teamFileState(dir, null);
+  if (legacy.state === "usable") return { team: null, defaulted: true, ...bad };
+  if (legacy.state === "unusable") return { team: null, defaulted: true, ...bad, unreadable: legacy.path };
   // The prefix becomes a path segment, so it has to clear the same validator an explicit `--team`
   // clears — a repo basename is arbitrary text and `teams/<it>.json` must not be able to escape
   // the directory. Spec 0044 [9.1]: a prefix that cannot name a file must not fall back to the

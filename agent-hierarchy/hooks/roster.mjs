@@ -106,7 +106,8 @@ import { fileURLToPath } from "node:url";
 
 import { CONFIG_VERSION, findGitRoot, hierarchyDir, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, suggestTeamAlias, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
 import { ageSecOf, appendRosterRecord, fmtAge, latestRoster, livePeerSlots, peersPath, readJsonl, newId, localIso, NO_TEAM_SCOPE, pidAlive, realCwd, recordLiveness, synthesizedPeerName } from "./lib-hier.mjs";
-import { attributeSessionTeam, clearTeam, defaultTeamScope, fingerprint, herdrOnPath, historyEntryIsActive, KIND_DEFAULT, kindFieldErrors, listTeamNames, memberArgs, normalizeMembers, readHistory, readTeam, resolveKind, resolveTeamByPane, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
+import { readPeerRecords } from "./lib-peer.mjs";
+import { attributeSessionTeam, clearTeam, defaultTeamScope, fingerprint, herdrOnPath, historyEntryIsActive, KIND_DEFAULT, kindFieldErrors, listTeamNames, memberArgs, normalizeMembers, readHistory, readTeam, resolveKind, resolveTeamByPane, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamFileState, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
 
 const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config", "no-spawn", "allow-roster-edit"]);
 const DISBAND_FLAGS = new Set(["kill", "plan", "close", "confirm", "plan-token", "allow-global", "cwd", "team"]);
@@ -389,6 +390,7 @@ let teamFileDefaulted = false;
     paths that would CREATE a team refuse, in `resolveWritableTeamScope`. */
 let teamFileUnnamable = null;
 let teamFileSuggestion = null;
+let teamFileUnreadable = null;
 function resolveTeamFileScope() {
   if (teamArg) {
     teamFile = teamArg;
@@ -400,6 +402,7 @@ function resolveTeamFileScope() {
   teamFileDefaulted = scope.defaulted;
   teamFileUnnamable = scope.unnamable || null;
   teamFileSuggestion = scope.suggested || null;
+  teamFileUnreadable = scope.unreadable || null;
 }
 
 /** Spec 0044 [9.1]: the repo cannot name its own team file, and creating the shared `team.json`
@@ -1385,6 +1388,19 @@ function refuseOrClearExistingTeam(dir) {
   clearTeam(dir, teamFile);
 }
 
+/** Settles which team file a create/spawn verb writes to, then refuses (exit 2) when that file exists but cannot be read. */
+function resolveWritableTeamScope(dir, { replacing = false, committing = false } = {}) {
+  settleWritableTeamScope(dir, { replacing, committing });
+  // A writing verb never writes over a team file it cannot read — it may still describe a running
+  // team. Checked on whichever file the scope settled on, and before anything launches, so a
+  // refusal strands no session.
+  const target = teamFileState(dir, teamFile);
+  if (target.state === "unusable") {
+    const escape = teamFileDefaulted ? "pass an explicit --team <name>" : "name a different --team";
+    fail(`the team file ${target.path} exists but cannot be read, so it will not be written over or beside — nothing was written. Repair or remove that file, or ${escape}`);
+  }
+}
+
 /**
  * The two things §1.1's invariant demands at the moment a team would be CREATED, both of which
  * §1.7's read-side leniency has to be kept away from. Only the create/spawn family calls this —
@@ -1400,8 +1416,9 @@ function refuseOrClearExistingTeam(dir) {
  * exists for. Re-point at the named path and leave the stale file for `reap`. A LIVE legacy team
  * is still written into — that team is the one §1.7 is carrying across the upgrade.
  */
-function resolveWritableTeamScope(dir, { replacing = false, committing = false } = {}) {
-  if (teamFile !== null || !teamFileDefaulted) return;
+function settleWritableTeamScope(dir, { replacing, committing }) {
+  // An unreadable legacy file keeps the scope: retargeting would start a second team beside it.
+  if (teamFile !== null || !teamFileDefaulted || teamFileUnreadable) return;
   const legacy = readTeam(dir, null);
   // Which legacy team may still be written into depends on what the caller is about to do, and
   // the two predicates are deliberately different:
@@ -2327,7 +2344,19 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
   if (launchedPane && launchedPane.tab_id != null) newRecord.tab_id = launchedPane.tab_id;
   if (launchedPane && launchedPane.workspace_id != null) newRecord.workspace_id = launchedPane.workspace_id;
 
-  let outTeam = team;
+  // The launch above takes long enough for another spawn to have written this file, so the write
+  // builds on the record as it stands now. The launched session is left running on a refusal:
+  // reporting its pane keeps it recoverable, closing it would destroy work on a late-seen race.
+  const fresh = teamFileState(dir, teamFile);
+  const orphaned = `the session just launched is still running with transport_id ${launched.transport_id} and is in no team record`;
+  if (fresh.state === "unusable" || (team && fresh.state === "absent")) {
+    fail(`${callerLabel}: ${fresh.state === "absent" ? `the team file ${fresh.path} is gone` : `the team file ${fresh.path} is no longer readable`} — it changed while ${member.name} was launching, so nothing was written; ${orphaned}`);
+  }
+  const rival = fresh.team && Array.isArray(fresh.team.members) ? fresh.team.members.find(matches) : null;
+  if (rival && (!existing || rival.transport_id !== existing.transport_id)) {
+    fail(`${callerLabel}: another spawn recorded ${rival.name != null ? rival.name : rival.role} (pane ${rival.transport_id}) in ${fresh.path} while ${member.name} was launching — its row was not overwritten; ${orphaned}`);
+  }
+  let outTeam = fresh.team;
   if (!outTeam) {
     outTeam = {
       version: 1,
@@ -3428,7 +3457,11 @@ try {
       if (!Number.isInteger(suppliedPid)) fail("adopt needs --orchestrator-pid <pid>");
       if (!pidAlive(suppliedPid)) fail(`adopt: --orchestrator-pid ${suppliedPid} is not a live process`);
       const dir = hierarchyDir(cwd);
-      const team = readTeam(dir, teamFile);
+      const adoptTarget = teamFileState(dir, teamFile);
+      if (adoptTarget.state === "unusable") {
+        fail(`adopt: the team file ${adoptTarget.path} exists but does not read as a team record, so there is nothing to adopt and it was not rewritten. Repair or remove that file`);
+      }
+      const team = adoptTarget.team;
       if (!team) fail("adopt: no team file at this scope to adopt");
       const currentPid = team.orchestrator && team.orchestrator.pid;
       if (currentPid != null && pidAlive(currentPid) && currentPid !== suppliedPid) {
@@ -3569,8 +3602,14 @@ try {
       }
       const dir = hierarchyDir(cwd);
       const myPid = ownOrchestratorPid();
-      const paneId = sessionPaneId(Number.isInteger(myPid) ? latestRoster(dir).find((r) => r.pid === myPid) : null);
-      const empty = (reason) => ({ member: null, team: null, team_file: null, orchestrator: null, reason });
+      const myRow = Number.isInteger(myPid) ? latestRoster(dir).find((r) => r.pid === myPid) : null;
+      const paneId = sessionPaneId(myRow);
+      // Observed, not verified: the last obligation row any hook filed for this session. A plain
+      // cross-session message files none, so null here is the ordinary case, not a fault.
+      const mySessionId = process.env.CLAUDE_CODE_SESSION_ID || (myRow && myRow.session_id) || null;
+      const briefRow = mySessionId ? readPeerRecords().filter((r) => r.session_id === mySessionId && r.type !== "turn" && r.type !== "dispatch").at(-1) : null;
+      const last_observed_brief = briefRow ? { from: briefRow.from ?? null, from_name: briefRow.from_name || null, reply_to: briefRow.reply_to ?? null, ts: briefRow.ts ?? null } : null;
+      const empty = (reason) => ({ member: null, team: null, team_file: null, orchestrator: null, last_observed_brief, reason });
       if (!paneId) {
         out(empty("no-pane-id"));
         break;
@@ -3597,12 +3636,16 @@ try {
       const live = pid == null ? null : pidAlive(pid);
       // Harness-owned path: Claude Code, not this plugin, creates one socket per session pid here
       // and may move it. Best-effort only, so the address is offered only while the file exists.
-      const socket = pid == null ? null : `/tmp/cc-socks/${pid}.sock`;
+      // This session's own socket sits in the same directory, so its location is followed when
+      // the harness exports it.
+      const ownSocket = process.env.CLAUDE_CODE_MESSAGING_SOCKET;
+      const socket = pid == null ? null : join(ownSocket ? dirname(ownSocket) : "/tmp/cc-socks", `${pid}.sock`);
       out({
         member: { name: member.name ?? null, role: member.role ?? null, route: member.route ?? null },
         team: teamName,
         team_file: teamPath(dir, teamName),
         orchestrator: orch ? { pid, session_id: orch.session_id ?? null, live, send_to: live && existsSync(socket) ? `uds:${socket}` : null } : null,
+        last_observed_brief,
         reason: null,
       });
       break;

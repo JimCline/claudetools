@@ -219,6 +219,27 @@ check "--close: paneless live member kept as live, paneless dead member pruned, 
    jsq "o.team_id===\"t2\"&&o.members.length===1&&o.members[0].name===\"myrepo-implementor\"" < "$TEAM_FILE"'
 rm -f "$PROJ/.claude/hierarchy/peers.jsonl" "$TEAM_FILE"
 
+# ---- untrack / dismiss run straight after a close that removed the team file
+write_team
+run disband
+TOKEN5=$(echo "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).close_token))')
+run disband --close --confirm --plan-token "$TOKEN5"
+check "--close removed the team file (precondition for the no-file cases)" '[ "$RC" -eq 0 ] && [ ! -e "$TEAM_FILE" ]'
+run untrack myrepo-architect
+check "untrack with the team file gone: exit 0, already_untracked, nothing to forget" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | jsq "o.untracked===false&&o.already_untracked===true&&o.reason===\"no team file to forget\""'
+run dismiss myrepo-architect
+check "dismiss with the team file gone and no closable peer: exit 0, dismissed false" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | jsq "o.dismissed===false&&o.reason===\"no active team and no live peers\"&&\"sources\" in o"'
+node -e 'const fs=require("fs");const[f,p]=process.argv.slice(1);
+  fs.appendFileSync(f,JSON.stringify({type:"peer",status:"up",name:"myrepo-reviewer-9",role:"reviewer",pid:Number(p),pane_id:"pLIVE",session_id:"s-live-9",ts:new Date().toISOString()})+"\n");' \
+  "$PROJ/.claude/hierarchy/peers.jsonl" "$$"
+run dismiss myrepo-architect
+check "dismiss with the team file gone and a live untracked peer: exit 2, lists the session and the accepted identifiers" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "live untracked sessions" && echo "$OUT" | grep -q "myrepo-reviewer-9" && echo "$OUT" | grep -q "pLIVE" && echo "$OUT" | grep -q "name / pane_id / session_id"'
+check "no-file untrack/dismiss created no team file" '[ ! -e "$TEAM_FILE" ]'
+rm -f "$PROJ/.claude/hierarchy/peers.jsonl"
+
 # ---- a team file that exists but cannot be parsed is reported, and never written or removed
 BAD_FILE="$PROJ/.claude/hierarchy/teams/myrepo.json"
 mkdir -p "$(dirname "$BAD_FILE")"
@@ -234,6 +255,29 @@ check "unparseable team file: bytes unchanged after plan and close" '[ "$(cksum 
 rm -f "$BAD_FILE"
 run disband
 check "disband (plan): a merely absent team file is not reported unreadable" 'echo "$OUT" | jsq "!(\"team_file_unreadable\" in o)"'
+
+# ---- valid JSON that holds no members array is no team record: reported, never thrown on, never rewritten
+mkdir -p "$(dirname "$TEAM_FILE")"
+printf '{"version":1,"team_id":"t-trunc","orchestrator":{"session_id":null,"pid":null}}' > "$TEAM_FILE"
+TRUNC_SUM=$(cksum < "$TEAM_FILE")
+no_stack() { ! echo "$OUT" | grep -qE "TypeError|^ +at "; }
+run disband --close --confirm --plan-token x
+check "members-less team file, disband --close -> team_file_unreadable names it, no stack" \
+  'echo "$OUT" | jsq "o.team_file_unreadable===process.env.TEAM_FILE" && no_stack'
+run dismiss myrepo-architect
+check "members-less team file, dismiss -> the no-team answer, exit 0, no stack" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | jsq "o.dismissed===false&&o.reason===\"no active team and no live peers\"" && no_stack'
+run untrack myrepo-architect
+check "members-less team file, untrack -> the no-team answer, exit 0, no stack" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | jsq "o.untracked===false&&o.already_untracked===true" && no_stack'
+run adopt --orchestrator-pid "$$"
+check "members-less team file, adopt -> exit 2 naming the file and the remedy, not the absent-file message, no stack" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qF "$TEAM_FILE" && echo "$OUT" | grep -qi "repair or remove" && ! echo "$OUT" | grep -q "no team file at this scope" && no_stack'
+check "members-less team file: bytes unchanged by close, dismiss, untrack and adopt" '[ "$(cksum < "$TEAM_FILE")" = "$TRUNC_SUM" ]'
+rm -f "$TEAM_FILE"
+run adopt --orchestrator-pid "$$"
+check "absent team file, adopt -> the plain no-team-file message, and none is created" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "adopt: no team file at this scope to adopt" && [ ! -e "$TEAM_FILE" ]'
 
 echo
 echo "passed: $PASS  failed: $FAIL"

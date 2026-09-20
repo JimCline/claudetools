@@ -97,7 +97,7 @@ import {
   sessionModel,
   upRecordFor,
 } from "./lib-hier.mjs";
-import { listTeamNames, ON_MISSING_DEFAULT, readTeam, resolveMemberTeam, teamMemberByName } from "./lib-roster.mjs";
+import { listTeamNames, ON_MISSING_DEFAULT, resolveMemberTeam, teamFileState, teamMemberByName } from "./lib-roster.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
 
 const TIER_ROLES = ["architect", "ultra-advisor"];
@@ -314,9 +314,11 @@ try {
       // The team records decide, not the member: EVERY record holding this name must carry a
       // level known to borrow nothing from the global roster, so the answer never depends on
       // which record a scan reaches first. An absent key, "global", or anything unrecognised
-      // fails closed and keeps every confirm.
-      const holders = [null, ...listTeamNames(dir)].map((t) => readTeam(dir, t)).filter((t) => t && Array.isArray(t.members) && t.members.some((m) => m && m.name === to));
-      toTeamMember = holders.length > 0 && holders.every((t) => EXEMPT_ROSTER_LEVELS.includes(t.roster_level));
+      // fails closed and keeps every confirm. So does a team file that exists but yields no
+      // record: it cannot be searched for the name, so it cannot be ruled out as a holder.
+      const files = [null, ...listTeamNames(dir)].map((t) => teamFileState(dir, t));
+      const holders = files.map((f) => f.team).filter((t) => t && Array.isArray(t.members) && t.members.some((m) => m && m.name === to));
+      toTeamMember = !files.some((f) => f.state === "unusable") && holders.length > 0 && holders.every((t) => EXEMPT_ROSTER_LEVELS.includes(t.roster_level));
     }
     if (!role) role = PEER_ELIGIBLE_ROLES.find((r) => resolvedPeerTargets(r, resolved.roles[r], repoBasename).includes(to)) || null;
     if (!role && to) {

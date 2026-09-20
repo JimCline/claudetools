@@ -82,6 +82,12 @@ if (args[0] === "agent" && args[1] === "start") {
     process.stderr.write("fake herdr: agent start failed (always)\n");
     finish(1);
   }
+  // Stands in for another spawn finishing inside this launch: "<src>::<dst>" copies src over
+  // dst as the agent starts, and an empty src removes dst.
+  if (process.env.FAKE_HERDR_ON_START_TEAM) {
+    const [src, dst] = process.env.FAKE_HERDR_ON_START_TEAM.split("::");
+    if (src) { fs.mkdirSync(require("path").dirname(dst), { recursive: true }); fs.copyFileSync(src, dst); } else fs.rmSync(dst, { force: true });
+  }
   console.log(JSON.stringify({ result: { pane: { pane_id: "target" }, agent: { name, ready: true } } }));
   finish(0);
 }
@@ -547,6 +553,132 @@ check "Z8: launch fails for the derived name -> non-zero exit naming the attempt
   '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "bare-reviewer"'
 check "Z8b: and no team file is written" 'no_bare_state'
 rm -rf "$BARE/.claude"
+
+# The team file changes while the agent is launching — another spawn wrote it, or it was removed
+# or damaged. The write builds on the file as it stands afterwards, and never over a rival row.
+RACE_FILE="$BARE/.claude/hierarchy/teams/race.json"
+RIVAL="$SANDBOX/rival.json"
+rival_team() { # <role> <name>
+  printf '{"version":1,"team_id":"t-rival","created":"2026-01-01T00:00:00Z","roster_level":null,"transport":"herdr","orchestrator":{"session_id":null,"pid":%s},"members":[{"role":"%s","name":"%s","route":"peer","transport_id":"pRIVAL"}],"partial":true}\n' "$$" "$1" "$2" > "$RIVAL"
+}
+launched_id() { echo "$OUT" | grep -oE 'transport_id [^ ]+' | head -1 | cut -d' ' -f2; }
+
+reset_state; init_geometry 180 42; rm -rf "$BARE/.claude"
+rival_team reviewer race-reviewer
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=$RIVAL::$RACE_FILE" spawn-ad-hoc reviewer --team race
+check "R1: the derived name is recorded by another spawn mid-launch -> exit 2 naming it and the launched transport_id" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "race-reviewer" && [ -n "$(launched_id)" ] && [ "$(launched_id)" != "pRIVAL" ]'
+check "R1b: the rival row is not overwritten" 'cmp -s "$RIVAL" "$RACE_FILE"'
+
+reset_state; init_geometry 180 42; rm -rf "$BARE/.claude"
+rival_team architect race-architect
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=$RIVAL::$RACE_FILE" spawn-ad-hoc reviewer --team race
+check "R2: a different member is recorded mid-launch, no team at the start -> joins that record, no second team minted" \
+  '[ "$RC" -eq 0 ] && node -e "const t=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));process.exit(t.team_id===\"t-rival\"&&t.created===\"2026-01-01T00:00:00Z\"&&t.members.length===2&&t.members[0].name===\"race-architect\"&&t.members[0].transport_id===\"pRIVAL\"&&t.members[1].name===\"race-reviewer\"?0:1)" "$RACE_FILE"'
+
+reset_state; init_geometry 180 42; rm -rf "$BARE/.claude"
+rival_team architect race-architect
+mkdir -p "$(dirname "$RACE_FILE")"; cp "$RIVAL" "$RACE_FILE"
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=::$RACE_FILE" spawn-ad-hoc reviewer --team race
+check "R3: the team file is removed mid-launch -> exit 2 saying it is gone, launched transport_id reported, nothing written" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "is gone" && [ -n "$(launched_id)" ] && [ ! -e "$RACE_FILE" ]'
+
+reset_state; init_geometry 180 42; rm -rf "$BARE/.claude"
+mkdir -p "$(dirname "$RACE_FILE")"; cp "$RIVAL" "$RACE_FILE"
+printf 'not json {{{' > "$SANDBOX/garbage.json"
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=$SANDBOX/garbage.json::$RACE_FILE" spawn-ad-hoc reviewer --team race
+check "R4: the team file turns unparseable mid-launch -> exit 2 saying it is no longer readable, bytes left alone" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "no longer readable" && ! echo "$OUT" | grep -q "is gone" && [ -n "$(launched_id)" ] && cmp -s "$SANDBOX/garbage.json" "$RACE_FILE"'
+rm -rf "$BARE/.claude"
+
+# A legacy team.json that cannot be read: a bare writing verb refuses rather than starting a named
+# team beside it; an explicit --team does not involve that file and goes ahead.
+LEGACY_BAD="$BARE/.claude/hierarchy/team.json"
+bad_legacy() { rm -rf "$BARE/.claude"; mkdir -p "$(dirname "$LEGACY_BAD")"; printf 'not json {{{' > "$LEGACY_BAD"; reset_state; init_geometry 180 42; }
+only_bad_legacy() { [ "$(find "$BARE/.claude/hierarchy" -type f | wc -l | tr -d ' ')" -eq 1 ] && [ "$(cat "$LEGACY_BAD")" = 'not json {{{' ]; }
+no_launch() { [ "$(call_count "c.argv[0]===\"agent\" && c.argv[1]===\"start\"")" -eq 0 ]; }
+
+bad_legacy
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer
+check "U1: unreadable legacy team.json, bare spawn-ad-hoc -> exit 2 naming the file, repair-or-remove, and --team" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qF "$LEGACY_BAD" && echo "$OUT" | grep -qi "repair or remove" && echo "$OUT" | grep -q -- "--team <name>"'
+check "U1b: nothing written, nothing launched" 'only_bad_legacy && no_launch'
+bad_legacy
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-one reviewer
+check "U2: same, bare spawn-one -> exit 2 naming the file, nothing written or launched" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qF "$LEGACY_BAD" && only_bad_legacy && no_launch'
+bad_legacy
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" create --spawn
+check "U3: same, bare create -> exit 2 naming the file, nothing written or launched" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qF "$LEGACY_BAD" && only_bad_legacy && no_launch'
+bad_legacy
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --team named
+check "U4: same, spawn-ad-hoc --team named -> succeeds, writes teams/named.json, legacy bytes untouched" \
+  '[ "$RC" -eq 0 ] && grep -q "\"name\": \"named-reviewer\"" "$BARE/.claude/hierarchy/teams/named.json" && [ "$(cat "$LEGACY_BAD")" = "not json {{{" ]'
+
+# The same rule for a named team file: the file a writing verb resolves to is never written over
+# while it cannot be read, and the refusal comes before anything is launched.
+NAMED_BAD="$BARE/.claude/hierarchy/teams/T.json"
+bad_named() { rm -rf "$BARE/.claude"; mkdir -p "$(dirname "$NAMED_BAD")"; printf 'not json {{{' > "$NAMED_BAD"; reset_state; init_geometry 180 42; }
+only_bad_named() { [ "$(find "$BARE/.claude/hierarchy" -type f | wc -l | tr -d ' ')" -eq 1 ] && [ "$(cat "$NAMED_BAD")" = 'not json {{{' ]; }
+bad_named
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --team T
+check "U5: unreadable teams/T.json, spawn-ad-hoc --team T -> exit 2 naming the path and the remedy, no --team <name> escape" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qF "$NAMED_BAD" && echo "$OUT" | grep -qi "repair or remove" && echo "$OUT" | grep -q "a different --team" && ! echo "$OUT" | grep -q -- "--team <name>"'
+check "U5b: file untouched, no session launched" 'only_bad_named && no_launch'
+bad_named
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-one reviewer --team T
+check "U6: same, spawn-one --team T -> exit 2, file untouched, nothing launched" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qF "$NAMED_BAD" && only_bad_named && no_launch'
+bad_named
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" create --spawn --team T
+check "U7: same, create --spawn --team T -> exit 2, file untouched, nothing launched" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qF "$NAMED_BAD" && only_bad_named && no_launch'
+bad_named
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" create --plan --team T
+check "U8: same, create --plan --team T -> exit 2, no plan emitted, file untouched" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qF "$NAMED_BAD" && ! echo "$OUT" | grep -q "\"members\"" && only_bad_named'
+bad_named
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" disband --team T
+check "U9: same, a read verb (disband plan --team T) -> not refused, reports the file, leaves it alone" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "team_file_unreadable" && only_bad_named'
+
+# Valid JSON is not enough: without a members array the file is no team record, and the refusal
+# has to come before the launch instead of as a crash after it. An empty array is a real team.
+shaped_named() { rm -rf "$BARE/.claude"; mkdir -p "$(dirname "$NAMED_BAD")"; printf '%s' "$1" > "$NAMED_BAD"; reset_state; init_geometry 180 42; }
+for shape in '{"version":1,"team_id":"t-trunc"}' '{"version":1,"team_id":"t-trunc","members":"x"}'; do
+  shaped_named "$shape"
+  bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --team T
+  check "U10: team file $shape -> exit 2 naming it before any launch, no stack, file untouched" \
+    '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qF "$NAMED_BAD" && ! echo "$OUT" | grep -qE "TypeError|^ +at " && no_launch && [ "$(cat "$NAMED_BAD")" = "$shape" ]'
+done
+shaped_named '{"version":1,"team_id":"t-empty","roster_level":null,"transport":"herdr","orchestrator":{"session_id":null,"pid":null},"members":[]}'
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --team T
+check "U11: an empty members array is a usable team -> the spawn joins it" \
+  '[ "$RC" -eq 0 ] && node -e "const t=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));process.exit(t.team_id===\"t-empty\"&&t.members.length===1&&t.members[0].name===\"T-reviewer\"?0:1)" "$NAMED_BAD"'
+
+reset_state; init_geometry 180 42; rm -rf "$BARE/.claude"
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=$SANDBOX/garbage.json::$RACE_FILE" spawn-ad-hoc reviewer --team race
+check "R5: no team file at the start, an unparseable one at write time -> exit 2, no new team built over it" \
+  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "no longer readable" && [ -n "$(launched_id)" ] && cmp -s "$SANDBOX/garbage.json" "$RACE_FILE"'
+rm -rf "$BARE/.claude"
+
+# The same collision through spawn-one. A roster with one member of the role matches team rows by
+# ROLE, so the rival here is a nameless row: the refusal has to name it by its role.
+SOLO="$SANDBOX/solo"
+mkdir -p "$SOLO/.claude"
+(cd "$SOLO" && git init -q)
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$SOLO" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role reviewer --model opus --cwd "$SOLO" >/dev/null
+SOLO_FILE="$SOLO/.claude/hierarchy/teams/race.json"
+printf '{"version":1,"team_id":"t-rival","created":"2026-01-01T00:00:00Z","roster_level":"repo","transport":"herdr","orchestrator":{"session_id":null,"pid":%s},"members":[{"role":"reviewer","name":null,"route":"peer","transport_id":"pRIVAL"}],"partial":true}\n' "$$" > "$RIVAL"
+reset_state; init_geometry 180 42
+OUT=$(env -u HERDR_ENV HOME="$FAKEHOME" HERDR_PANE_ID=p0 PATH="$SANDBOX/bin:$NODE_DIR" FAKE_STATE_DIR="$FAKE_STATE_DIR" CLAUDE_PID=$$ HERDR_ENV=1 FAKE_HERDR_ON_START_TEAM="$RIVAL::$SOLO_FILE" node "$H/roster.mjs" spawn-one reviewer --team race --cwd "$SOLO" 2>&1); RC=$?
+check "R6: spawn-one, a same-role row recorded mid-launch -> exit 2, launched transport_id reported, rival named by role not null" \
+  '[ "$RC" -eq 2 ] && [ -n "$(launched_id)" ] && [ "$(launched_id)" != "pRIVAL" ] && echo "$OUT" | grep -q "recorded reviewer (pane pRIVAL)" && ! echo "$OUT" | grep -q "recorded null"'
+check "R6b: the rival row is not overwritten" 'cmp -s "$RIVAL" "$SOLO_FILE"'
+check "R6c: exactly one agent was launched, and it was not closed" \
+  '[ "$(call_count "c.argv[0]===\"agent\" && c.argv[1]===\"start\"")" -eq 1 ] && [ "$(call_count "c.argv[0]===\"pane\" && c.argv[1]===\"close\"")" -eq 0 ]'
 
 # ==== 10 — regression: the two extraction-adjacent suites must pass UNMODIFIED ====
 CS_OUT=$(bash "$PLUGIN/tests/test-roster-create-spawn.sh" 2>&1); CS_RC=$?

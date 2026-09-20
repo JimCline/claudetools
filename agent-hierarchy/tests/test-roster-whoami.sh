@@ -2,7 +2,8 @@
 # agent-hierarchy — roster.mjs `whoami`: a session looks up which team member its own pane is, and
 # where its orchestrator lives. Read-only: no team write, no peers.jsonl write.
 # HOME-redirected; real state untouched. The reply-address socket lives in a directory the Claude
-# Code harness owns, so only its absence is exercised here — nothing is ever created there.
+# Code harness owns, so nothing is ever created there: the socket-present case points the session's
+# own exported socket path at a sandbox directory instead.
 # Usage: bash tests/test-roster-whoami.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,10 +24,10 @@ check() {
 }
 jsq() { HIER="$HIER" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let o;try{o=JSON.parse(s)}catch{process.exit(1)}process.exit(eval(process.argv[1])?0:1)})' "$@"; }
 
-# $1: extra env assignments (pane / pid); the caller's own pane and pid env never leak in.
+# $1: extra env assignments; the caller's own pane, pid, socket and session-id env never leak in.
 who() {
   local envs=$1; shift
-  OUT=$(env -u HERDR_PANE_ID -u TMUX_PANE -u CLAUDE_PID HOME="$FAKEHOME" $envs node "$H/roster.mjs" whoami "$@" --cwd "$PROJ" 2>&1); RC=$?
+  OUT=$(env -u HERDR_PANE_ID -u TMUX_PANE -u CLAUDE_PID -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_SESSION_ID HOME="$FAKEHOME" $envs node "$H/roster.mjs" whoami "$@" --cwd "$PROJ" 2>&1); RC=$?
 }
 
 (exit 0) & DEAD_PID=$!; wait "$DEAD_PID"
@@ -113,6 +114,61 @@ check "--team disambiguates" 'echo "$OUT" | jsq "o.reason===null&&o.member.name=
 # ---- nothing above wrote anything
 rm -f "$HIER/teams/beta.json" "$HIER/teams/gamma.json" "$HIER/team.json"
 check "team files and peers.jsonl byte-identical after every lookup" '[ "$(state_sum)" = "$BEFORE" ]'
+
+# ---- reply address: the socket directory follows this session's own exported socket path
+SOCKS="$SANDBOX/socks"
+mkdir -p "$SOCKS"
+: > "$SOCKS/$$.sock"
+who "HERDR_PANE_ID=P1 CLAUDE_CODE_MESSAGING_SOCKET=$SOCKS/424242.sock"
+check "own socket exported, orchestrator's socket beside it -> send_to names the orchestrator pid's file in that directory" \
+  'echo "$OUT" | SOCKS="$SOCKS" jsq "o.orchestrator.send_to===\"uds:\"+process.env.SOCKS+\"/\"+process.argv[2]+\".sock\"" "$$"'
+rm -f "$SOCKS/$$.sock"
+: > "$SOCKS/424242.sock"
+who "HERDR_PANE_ID=P1 CLAUDE_CODE_MESSAGING_SOCKET=$SOCKS/424242.sock"
+check "orchestrator's socket file absent (only this session's own exists) -> send_to null" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | jsq "o.orchestrator.live===true&&o.orchestrator.send_to===null"'
+who "HERDR_PANE_ID=P1"
+check "socket variable unset -> exit 0, send_to null" '[ "$RC" -eq 0 ] && echo "$OUT" | jsq "o.orchestrator.send_to===null"'
+who "HERDR_PANE_ID=P1 CLAUDE_CODE_MESSAGING_SOCKET="
+check "socket variable empty -> exit 0, send_to null" '[ "$RC" -eq 0 ] && echo "$OUT" | jsq "o.orchestrator.send_to===null"'
+
+# ---- last observed brief: read from the obligation store under the redirected HOME
+STORE="$FAKEHOME/.claude/agent-hierarchy.peer-pending.jsonl"
+row() { printf '%s\n' "$1" >> "$STORE"; }
+who "HERDR_PANE_ID=P1 CLAUDE_CODE_SESSION_ID=s-me"
+check "no store file -> last_observed_brief null, member still resolved, no store created" \
+  'echo "$OUT" | jsq "o.last_observed_brief===null&&o.reason===null&&o.member.name===\"alpha-reviewer\"" && [ ! -e "$STORE" ]'
+row '{"type":"turn","session_id":"s-me","status":"armed","ts":"2026-01-01T00:00:01Z"}'
+row '{"type":"dispatch","session_id":"s-me","request_id":"r1","to":"x","ts":"2026-01-01T00:00:02Z"}'
+who "HERDR_PANE_ID=P1 CLAUDE_CODE_SESSION_ID=s-me"
+check "only turn and dispatch rows for this session -> null" 'echo "$OUT" | jsq "o.last_observed_brief===null"'
+row '{"session_id":"s-other","from":"uds:/x/1.sock","from_name":"someone","reply_to":"someone","task":"t","status":"pending","nudges":0,"ts":"2026-01-01T00:00:03Z"}'
+who "HERDR_PANE_ID=P1 CLAUDE_CODE_SESSION_ID=s-me"
+check "obligation rows for another session only -> null" 'echo "$OUT" | jsq "o.last_observed_brief===null"'
+row '{"session_id":"s-me","from":"uds:/x/2.sock","from_name":"first-orch","reply_to":"first-orch","task":"t1","status":"pending","nudges":0,"ts":"2026-01-01T00:00:04Z"}'
+row '{"session_id":"s-me","from":"uds:/x/3.sock","from_name":"second-orch","reply_to":"uds:/x/3.sock","task":"t2","status":"resolved","nudges":0,"ts":"2026-01-01T00:00:05Z"}'
+row '{"type":"turn","session_id":"s-me","status":"disarmed","ts":"2026-01-01T00:00:06Z"}'
+who "HERDR_PANE_ID=P1 CLAUDE_CODE_SESSION_ID=s-me"
+check "several rows -> the last obligation row in file order, whatever its status, under exactly from/from_name/reply_to/ts" \
+  'echo "$OUT" | jsq "JSON.stringify(o.last_observed_brief)===JSON.stringify({from:\"uds:/x/3.sock\",from_name:\"second-orch\",reply_to:\"uds:/x/3.sock\",ts:\"2026-01-01T00:00:05Z\"})&&!(\"last_observed_brief\" in o.orchestrator)"'
+row '{"session_id":"s-me","from":"uds:/x/4.sock","from_name":"","reply_to":"uds:/x/4.sock","task":"t3","status":"pending","nudges":0,"ts":"2026-01-01T00:00:07Z"}'
+who "HERDR_PANE_ID=P1 CLAUDE_CODE_SESSION_ID=s-me"
+check "stored from_name empty -> null, not the empty string" 'echo "$OUT" | jsq "o.last_observed_brief.from===\"uds:/x/4.sock\"&&o.last_observed_brief.from_name===null"'
+who "CLAUDE_CODE_SESSION_ID=s-me"
+check "no pane id -> reason no-pane-id, the block is still filled" 'echo "$OUT" | jsq "o.reason===\"no-pane-id\"&&o.member===null&&o.last_observed_brief.from===\"uds:/x/4.sock\""'
+who "HERDR_PANE_ID=P9 CLAUDE_CODE_SESSION_ID=s-me"
+check "not a member -> the block is still filled" 'echo "$OUT" | jsq "o.reason===\"not-a-member\"&&o.last_observed_brief.from===\"uds:/x/4.sock\""'
+row '{"session_id":"s-whoami","from":"uds:/x/5.sock","from_name":"via-peers-row","reply_to":"via-peers-row","task":"t4","status":"pending","nudges":0,"ts":"2026-01-01T00:00:08Z"}'
+who "CLAUDE_PID=$$"
+check "no session id in the env -> the one on this pid's peers.jsonl row is used" 'echo "$OUT" | jsq "o.last_observed_brief.from_name===\"via-peers-row\""'
+who "CLAUDE_PID=$$ CLAUDE_CODE_SESSION_ID=s-me"
+check "the env session id outranks the peers.jsonl one" 'echo "$OUT" | jsq "o.last_observed_brief.from===\"uds:/x/4.sock\""'
+STORE_SUM=$(cksum < "$STORE")
+who "HERDR_PANE_ID=P1"
+check "session id unresolvable -> block null, reason untouched (null on a resolved member), key present" \
+  'echo "$OUT" | jsq "o.last_observed_brief===null&&(\"last_observed_brief\" in o)&&o.reason===null&&o.member.name===\"alpha-reviewer\""'
+check "the store is never written" '[ "$(cksum < "$STORE")" = "$STORE_SUM" ]'
+check "team files and peers.jsonl still byte-identical" '[ "$(state_sum)" = "$BEFORE" ]'
 
 # ---- usage error
 who "HERDR_PANE_ID=P1" --bogus x

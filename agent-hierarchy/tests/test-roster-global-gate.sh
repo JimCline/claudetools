@@ -335,6 +335,26 @@ gate "$(PROJ="$PROJ" send_payload sTM12 myrepo-reviewer "$BRIEF")"
 check "TM12: both holders null -> allowed, no route-ask record" \
   'allowed && ! gates_for sTM12 | grep -q "\"type\":\"route-ask\""'
 
+# A team file that exists but yields no record cannot be searched for the name, so it cannot be
+# ruled out as a non-exempt holder: its mere presence keeps every confirm.
+printf 'not json {{{' > "$HD/teams/broken.json"
+gate "$(PROJ="$PROJ" send_payload sTM13 myrepo-reviewer "$BRIEF")"
+check "TM13: both holders null but another named team file is unparseable -> denied with a scope roster record" \
+  'denied && gates_for sTM13 | grep -q "\"scope\":\"roster\""'
+rm -f "$HD/teams/broken.json"
+printf '[]' > "$HD/team.json"
+gate "$(PROJ="$PROJ" send_payload sTM14 myrepo-reviewer "$BRIEF")"
+check "TM14: name held by a null named record, legacy team.json holds no record -> denied" \
+  'denied && gates_for sTM14 | grep -q "\"scope\":\"roster\""'
+rm -f "$HD/team.json"
+gate "$(PROJ="$PROJ" send_payload sTM15 myrepo-reviewer "$BRIEF")"
+check "TM15 (control): the unusable file removed -> the same send is allowed again" 'allowed'
+printf '{"version":1,"team_id":"t-trunc","roster_level":null}' > "$HD/teams/trunc.json"
+gate "$(PROJ="$PROJ" send_payload sTM16 myrepo-reviewer "$BRIEF")"
+check "TM16: a team file that parses but holds no members array counts as unusable -> denied" \
+  'denied && gates_for sTM16 | grep -q "\"scope\":\"roster\""'
+rm -f "$HD/teams/trunc.json"
+
 SYNTAX_BAD=$(cd "$H" && for f in *.mjs; do node --check "$f" >/dev/null 2>&1 || echo "$f"; done)
 check "every hooks/*.mjs passes node --check" '[ -z "$SYNTAX_BAD" ]'
 

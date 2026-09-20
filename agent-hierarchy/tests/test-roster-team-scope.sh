@@ -586,5 +586,39 @@ check "8h3: ...and offering no auto-derived candidate, since the user named this
   '! echo "$OUT" | grep -q "Re-run with --team"'
 kill "$OWNER_H" 2>/dev/null; wait "$OWNER_H" 2>/dev/null
 
+# ================================================================= 7 — a legacy team.json that yields no record
+# It still claims the default scope, and is named, so a command reports it instead of quietly
+# resolving past it to a named team beside it.
+S7="$SANDBOX/scope7"
+mkdir -p "$S7/hier" "$S7/home/.claude" "$S7/repo"
+(cd "$S7/repo" && git init -q)
+scope_of() { # <prefix> -> defaultTeamScope's result as JSON
+  node --input-type=module -e 'const { defaultTeamScope } = await import(process.argv[1]); console.log(JSON.stringify(defaultTeamScope(process.argv[2], process.argv[3])));' "$PLUGIN/hooks/lib-roster.mjs" "$S7/hier" "$1"
+}
+check "7a: absent team.json, valid prefix -> scope is the prefix, exactly as before" \
+  '[ "$(scope_of myrepo)" = "{\"team\":\"myrepo\",\"defaulted\":true}" ]'
+check "7b: absent team.json, unnamable prefix -> unnamable + suggested, no unreadable" \
+  'scope_of "my repo" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const o=JSON.parse(s);process.exit(o.team===null&&o.unnamable===\"my repo\"&&typeof o.suggested===\"string\"&&!(\"unreadable\" in o)?0:1)})"'
+printf 'not json {{{' > "$S7/hier/team.json"
+check "7c: unparseable team.json, valid prefix -> scope stays the legacy file and names it" \
+  '[ "$(scope_of myrepo)" = "{\"team\":null,\"defaulted\":true,\"unreadable\":\"$S7/hier/team.json\"}" ]'
+printf '[]' > "$S7/hier/team.json"
+check "7d: team.json parsing to a non-record, unnamable prefix -> unreadable and unnamable both reported" \
+  'scope_of "my repo" | S7="$S7" node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const o=JSON.parse(s);process.exit(o.team===null&&o.unnamable===\"my repo\"&&typeof o.suggested===\"string\"&&o.unreadable===process.env.S7+\"/hier/team.json\"?0:1)})"'
+printf '{"version":1,"team_id":"t7","members":[]}' > "$S7/hier/team.json"
+check "7e: usable team.json -> legacy scope with no unreadable, exactly as before" \
+  '[ "$(scope_of myrepo)" = "{\"team\":null,\"defaulted\":true}" ]'
+
+BAD7="$S7/repo/.claude/hierarchy/team.json"
+mkdir -p "$(dirname "$BAD7")"
+printf 'not json {{{' > "$BAD7"
+SUM7=$(cksum < "$BAD7")
+OUT=$(HOME="$S7/home" PATH="$(dirname "$(command -v node)")" node "$PLUGIN/hooks/roster.mjs" disband --cwd "$S7/repo" 2>&1); RC=$?
+check "7f: disband (plan) beside an unparseable legacy team.json names it as team_file_unreadable" \
+  'echo "$OUT" | BAD7="$BAD7" node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{process.exit(JSON.parse(s).team_file_unreadable===process.env.BAD7?0:1)})"'
+OUT=$(HOME="$S7/home" PATH="$(dirname "$(command -v node)")" node "$PLUGIN/hooks/roster.mjs" disband --close --confirm --plan-token x --cwd "$S7/repo" 2>&1); RC=$?
+check "7g: disband --close names it too, and the file is neither written nor removed" \
+  'echo "$OUT" | BAD7="$BAD7" node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{process.exit(JSON.parse(s).team_file_unreadable===process.env.BAD7?0:1)})" && [ "$(cksum < "$BAD7")" = "$SUM7" ] && [ ! -e "$S7/repo/.claude/hierarchy/teams" ]'
+
 echo "---- $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
