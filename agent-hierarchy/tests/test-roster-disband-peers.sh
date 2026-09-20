@@ -33,6 +33,12 @@ if (args[0] === "agent" && args[1] === "list") {
   process.exit(0);
 }
 if (args[0] === "pane" && args[1] === "close") {
+  // A pane closes once: a repeat close of the same id within one invocation log fails the way real herdr does.
+  const log = process.env.FAKE_HERDR_INVOKED_LOG;
+  if (log && fs.readFileSync(log, "utf8").split("\n").filter((l) => l === JSON.stringify(args)).length > 1) {
+    process.stderr.write("pane_not_found\n");
+    process.exit(1);
+  }
   console.log(JSON.stringify({ id: "cli:pane:close", result: { ok: true } }));
   process.exit(0);
 }
@@ -70,6 +76,14 @@ seed_peer() { # <name> <role> <status> <pid> [pane_id] [team]
     fs.appendFileSync(f,JSON.stringify(rec)+"\n");' "$PEERS_FILE" "$1" "$2" "$3" "$4" "${5:-}" "${6:-}"
 }
 TEAMTAG="$(basename "$PROJ")"
+# A checkin row with no `name`: the registry shows it under the synthesized `role@sid8`.
+seed_nameless() { # <role> <session_id> <pid> [pane_id] [team]
+  node -e 'const fs=require("fs");const[f,r,sid,p,pane,team]=process.argv.slice(1);
+    const rec={type:"peer",status:"up",role:r,session_id:sid,pid:Number(p)||undefined,ts:new Date().toISOString()};
+    if(pane) rec.pane_id=pane;
+    if(team) rec.team=team;
+    fs.appendFileSync(f,JSON.stringify(rec)+"\n");' "$PEERS_FILE" "$1" "$2" "$3" "${4:-}" "${5:-}"
+}
 fresh() { rm -f "$TEAM_FILE" "$PEERS_FILE"; : > "$INVOKED_LOG"; }
 
 write_team() {
@@ -201,6 +215,65 @@ seed_peer myrepo-reviewer-9 reviewer up $$ pNEW "$TEAMTAG"
 run disband --close --confirm --plan-token "$OLD"
 check "T7b: token from before the new extra is refused" '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qi "re-run"'
 check "T7b: nothing unlisted ever closes" '[ "$(closes)" = "0" ]'
+
+# ---- T11: a nameless registry row on a member's own pane is that member, not an extra
+fresh
+write_team
+seed_nameless architect 47ce3168aaaabbbb $$ PANE1 "$TEAMTAG"
+run disband
+check "T11: the pane appears once in the plan, as the team row" \
+  '[ "$RC" -eq 0 ] && [ "$(jq_ "o.close.filter(c=>c.transport_id===\"PANE1\").length")" = "1" ] && [ "$(jq_ "o.close.find(c=>c.transport_id===\"PANE1\").source===undefined")" = "true" ] && [ "$(jq_ "o.close.find(c=>c.transport_id===\"PANE1\").name")" = "myrepo-architect" ]'
+check "T11: sources still reports the raw per-source yield" '[ "$(jq_ o.sources.team.members)" = "2" ] && [ "$(jq_ o.sources.peers.live)" = "1" ]'
+run disband --close --confirm --plan-token "$(jq_ o.close_token)"
+check "T11: --close attempts the pane once and succeeds" \
+  '[ "$RC" -eq 0 ] && [ "$(jq_ "o.results.filter(r=>r.transport_id===\"PANE1\").length")" = "1" ] && [ "$(jq_ o.closed)" = "true" ] && [ "$(closes)" = "1" ]'
+check "T11: no result carries pane_not_found" '[ "$(jq_ "o.results.some(r=>/pane_not_found/.test(r.error||\"\"))")" = "false" ]'
+
+# ---- T12: same, but the stored pane id is stale and only the resync heal lands it on the row's pane
+fresh
+write_team
+sed -i.bak 's/"PANE1"/"PANE_OLD"/' "$TEAM_FILE" && rm -f "$TEAM_FILE.bak"
+echo '[{"name":"myrepo-architect","pane_id":"PANE1","tab_id":"T1","workspace_id":"W1"}]' > "$SANDBOX/agents.json"
+seed_nameless architect 47ce3168aaaabbbb $$ PANE1 "$TEAMTAG"
+run disband
+check "T12: healed pane appears once in the plan, as the team row" \
+  '[ "$RC" -eq 0 ] && [ "$(jq_ "o.close.filter(c=>c.transport_id===\"PANE1\").length")" = "1" ] && [ "$(jq_ "o.close.find(c=>c.transport_id===\"PANE1\").resync_status")" = "updated" ] && [ "$(jq_ "o.close.some(c=>c.source)")" = "false" ]'
+run disband --close --confirm --plan-token "$(jq_ o.close_token)"
+check "T12: --close attempts the healed pane once and succeeds" \
+  '[ "$RC" -eq 0 ] && [ "$(jq_ "o.results.filter(r=>r.transport_id===\"PANE1\").length")" = "1" ] && [ "$(jq_ o.closed)" = "true" ] && [ "$(closes)" = "1" ]'
+echo '[]' > "$SANDBOX/agents.json"
+
+# ---- T13: a nameless row on a pane no member holds is still an extra, and still closed
+fresh
+write_team
+seed_nameless implementor 99aa77bbccddeeff $$ pFREE "$TEAMTAG"
+run disband
+check "T13: untracked pane surfaces labeled source:peers under its synthesized name" \
+  '[ "$RC" -eq 0 ] && [ "$(jq_ "o.close.length")" = "3" ] && [ "$(jq_ "o.close.find(c=>c.transport_id===\"pFREE\").source")" = "peers" ] && [ "$(jq_ "o.close.find(c=>c.transport_id===\"pFREE\").name")" = "implementor@99aa77bb" ]'
+run disband --close --confirm --plan-token "$(jq_ o.close_token)"
+check "T13: both the member pane and the untracked pane close" \
+  '[ "$RC" -eq 0 ] && [ "$(jq_ o.closed)" = "true" ] && [ "$(closes)" = "2" ] && grep -q "\"PANE1\"" "$INVOKED_LOG" && grep -q "\"pFREE\"" "$INVOKED_LOG"'
+
+# ---- T14: a paneless nameless row is listed, adds nothing to the token, and is never closed
+fresh
+write_team
+seed_nameless implementor 99aa77bbccddeeff $$ "" "$TEAMTAG"
+run disband
+check "T14: paneless row listed as an extra with transport_id null and no command" \
+  '[ "$RC" -eq 0 ] && [ "$(jq_ "o.close.find(c=>c.name===\"implementor@99aa77bb\").transport_id")" = "null" ] && [ "$(jq_ "o.close.find(c=>c.name===\"implementor@99aa77bb\").command")" = "null" ] && [ "$(jq_ "o.close.find(c=>c.name===\"implementor@99aa77bb\").source")" = "peers" ]'
+check "T14: token is the team-only token" '[ "$(jq_ o.close_token)" = "$EXPECT_TOKEN" ]'
+run disband --close --confirm --plan-token "$EXPECT_TOKEN"
+check "T14: only the member pane is closed" '[ "$RC" -eq 0 ] && [ "$(closes)" = "1" ] && grep -q "\"PANE1\"" "$INVOKED_LOG" && [ "$(jq_ "o.results.length")" = "1" ]'
+
+# ---- T15: a plan token predating a new untracked pane is refused
+fresh
+write_team
+seed_nameless architect 47ce3168aaaabbbb $$ PANE1 "$TEAMTAG"
+run disband
+OLD="$(jq_ o.close_token)"
+seed_nameless implementor 99aa77bbccddeeff $$ pLATE "$TEAMTAG"
+run disband --close --confirm --plan-token "$OLD"
+check "T15: stale token refused, exit 2, says re-run, nothing closed" '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qi "re-run" && [ "$(closes)" = "0" ]'
 
 # ---- T9: dead-pid up record and down record are not closable
 fresh

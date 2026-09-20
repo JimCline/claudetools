@@ -1997,11 +1997,25 @@ function peerFallbackMembers(dir, scope, known = []) {
     .map((s) => ({ role: s.role, name: s.name, route: "peer", transport_id: s.pane_id, session_id: s.session_id || null, live: s.live, how: s.how, source: s.source || "peers" }));
 }
 
-/** Spec 0040 §1.4a: registry peers not named in team.json — a record matching a member's name IS
-    that member, never an extra. */
-function peerExtras(dir, team, scope) {
-  const named = new Set(team.members.map((m) => m.name));
-  return dedupPeers(peerFallbackMembers(dir, scope, team.members).filter((m) => !named.has(m.name)));
+/** Live registry peers that are not already one of `members`. A pane hosts exactly one session, so
+    a peer on a member's pane IS that member whatever name the registry shows it under (a nameless
+    checkin row appears as `role@sid8`); name equality is the fallback, and the only key a paneless
+    row has. Nulls never match. `members` must be the resynced rows: the stored pane ids are the
+    ones that may have moved. The team row is the one kept — it carries no `source`, and the
+    post-close reconcile finds results by member name. */
+function peerExtras(dir, members, scope) {
+  const panes = new Set();
+  const names = new Set();
+  for (const m of members) {
+    if (!m || typeof m !== "object") continue;
+    if (m.transport_id) panes.add(m.transport_id);
+    if (m.name) names.add(m.name);
+  }
+  const isMember = (p) => {
+    const pane = p.transport_id || p.pane_id || null;
+    return (pane !== null && panes.has(pane)) || (!!p.name && names.has(p.name));
+  };
+  return dedupPeers(peerFallbackMembers(dir, scope, members).filter((p) => !isMember(p)));
 }
 
 /** Spec 0046 §2.5: live peers attributed to `scope` that no team.json row names — the orphans
@@ -2957,7 +2971,7 @@ try {
         }
         // Spec 0040 §1.4a: the close set is the union of team.json members and live registry
         // peers outside it; the token pins exactly that union.
-        const closable = closableMembers([...healedMembers, ...peerExtras(dir, team, teamFile)]);
+        const closable = closableMembers([...healedMembers, ...peerExtras(dir, healedMembers, teamFile)]);
         gateClose("disband", team.team_id, closable);
         const results = closable.map((m) => closeOne(m, team.transport));
         out({ closed: results.every((r) => r.closed), results, sources: sourcesField(dir, teamFile, team), ...reconcileAfterClose(dir, team, results) });
@@ -3010,7 +3024,7 @@ try {
       });
       // Spec 0040 §1.4a: live registry peers outside team.json join the plan, labeled, and the
       // token hashes the union — with none present, output and token are exactly the team-only ones.
-      const extras = peerExtras(dir, team, teamFile);
+      const extras = peerExtras(dir, healedMembers, teamFile);
       for (const m of extras) close.push(peerFallbackPlanEntry(m));
       const planToken = closeToken(team.team_id, closableMembers([...healedMembers, ...extras]));
       const disbandOut = { close, close_token: planToken, next: closeCommand("disband", null, planToken), sources: sourcesField(dir, teamFile, team) };

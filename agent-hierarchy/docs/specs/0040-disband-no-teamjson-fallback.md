@@ -1,6 +1,7 @@
 # 0040 — disband/dismiss fallback for route:peer rosters with no team.json
 
 Status: implemented (r2 — §1.4a mixed whole-set disband added at user's request); see §4 status block
+Status note: spec 0054 amends §1.4a's "dedupe by name" — an extra is excluded by pane id first (against the post-resync members), name as the fallback.
 Author: Architect (claudetools-architect)
 Date: 2026-09-04
 Origin: live cross-session report (waves repo, 5 route:peer members spawned via
