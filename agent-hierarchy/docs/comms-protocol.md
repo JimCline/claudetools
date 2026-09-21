@@ -58,9 +58,13 @@ root marketplace.json to 0.29.0.
   reason: null            # request only, see [9]: context | second-opinion | parallel | null
   to_name: null           # optional: the specific instance — peer session name or subagent id
   from_name: null         # optional: sender's instance name
+  team_file: null         # absolute path of the live team file this exchange belongs to, or null outside any Team
+  team_guide: null        # absolute path of docs/team-file.md (what the team file is, how to act on it); set iff team_file is
   created: 2026-08-16T14:32:01-04:00
   ---
   ```
+- `team_file` is written by `msg.mjs new`, never by hand: the team file naming `--to-name`, else the `--team` scope's file, else `null`. A response copies its request's. It outranks any cwd-derived location — a session in a worktree or another repo resolves a different `<dir>`, and the msg gate and the route gate fall back to the `<dir>` the message names when it is self-consistent (the team file exists and the message lies in that `<dir>/msgs`).
+- A request's pool follows its recipient: `msg.mjs new --to-name <n>` run from a linked worktree, where no team file names `<n>` but one in the main checkout does, writes the request to the main checkout's `<dir>/msgs` and says so on stderr. `roster.mjs whoami` searches the main checkout's teams the same way. Anything not addressed to a main-checkout teammate stays worktree-local.
 - MULTIPLE INSTANCES PER ROLE are normal (two implementor peers, or three implementor subagents in flight). Roles are categories; instances are named by `to_name`/`from_name`. Nothing keys on role alone except the one-shot deny records ([8], [9]), which are deliberately per-role reminders.
 - Body — sections are `## [N] key` at column 0; NOTHING else in the file may start with `## [`. Fixed keys per type; every key present even if `- none`.
   - request: `[0] tldr` `[1] goal` `[2] context` `[3] constraints` `[4] files` `[5] acceptance` `[6] want_back`
@@ -98,7 +102,7 @@ root marketplace.json to 0.29.0.
   1. node <AH_ROOT>/hooks/msg.mjs new --to <role> --from orchestrator --slug <slug> [--parent <id>] [--reason context|second-opinion|parallel]
   2. Fill every section (bullets, no prose; keep every constraint verbatim; [0] tldr indexes the rest).
   3. Re-issue this exact dispatch with first line: [hierarchy-msg <path>] then ≤3 TL;DR lines. Peer briefs keep the [hierarchy-peer-brief ...] sentinel too.
-  Reason this call was denied: <missing token | path not found | wrong to: (file says X, dispatch is Y) | not a request file>.
+  Reason this call was denied: <missing token | path not found | wrong to: (file says X, dispatch is Y) | file is outside this session's message pool (<dir>/msgs) | not a request file>.
   ```
 - Fail-open on any internal error (unreadable dir, malformed input): allow.
 - Config: `msgs: "required" | "off"` top-level key in agent-hierarchy.json, default `"required"`. `off` disables [5] and [6] but not the CLI or SessionStart listing.

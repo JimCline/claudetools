@@ -19,9 +19,10 @@
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_LABELS, ROUTE_VALUES, TIER, resolvedPeerTargets, roleFromName, routeHasPane, tierOf } from "./lib-config.mjs";
-import { listTeamNames, readTeam, resolveMemberTeam, teamIsOrphaned, teamMemberByName } from "./lib-roster.mjs";
+import { listTeamNames, readTeam, resolveMemberTeam, teamIsOrphaned, teamFileHome, teamMemberByName, teamPath } from "./lib-roster.mjs";
 
 export { hierarchyDir };
 
@@ -182,8 +183,35 @@ function skeletonBody(keys) {
   return lines.join("\n") + "\n";
 }
 
+/** What the team file is and how a session acts on it — shipped with the plugin, named in every message that names a team file. */
+export const TEAM_GUIDE = resolve(dirname(fileURLToPath(import.meta.url)), "..", "docs", "team-file.md");
+
+/**
+ * Absolute path of the team file a message belongs to, or null when none exists. The file
+ * that names the recipient wins over the sender's team scope: it is the record the recipient
+ * and every gate will look the recipient up in.
+ */
+function teamFileFor(dir, toName, team) {
+  const holder = resolveMemberTeam(dir, toName);
+  const p = resolve(teamPath(dir, holder.found ? holder.team : team));
+  return existsSync(p) ? p : null;
+}
+
+/**
+ * The hierarchy dir a message file itself vouches for, or null. A message names its team file
+ * by absolute path so a reader whose cwd has moved (a worktree, another repo) can still find
+ * the team. It is believed only when self-consistent: the team file exists, sits where team
+ * files sit, and the message lies in that same dir's pool.
+ */
+export function messageHome(msgPath, fm) {
+  const tf = fm && typeof fm.team_file === "string" ? fm.team_file : null;
+  if (!tf || !isAbsolute(tf) || !existsSync(tf)) return null;
+  const home = teamFileHome(tf);
+  return home && isUnder(msgPath, msgsDir(home)) ? resolve(home) : null;
+}
+
 function frontmatterText(fields) {
-  const order = ["id", "type", "to", "from", "slug", "parent", "reason", "eta", "to_name", "from_name", "team", "created"];
+  const order = ["id", "type", "to", "from", "slug", "parent", "reason", "eta", "to_name", "from_name", "team", "team_file", "team_guide", "created"];
   const lines = ["---"];
   for (const key of order) lines.push(`${key}: ${fields[key] === null || fields[key] === undefined ? "null" : fields[key]}`);
   lines.push("---", "");
@@ -246,6 +274,7 @@ export function createMessage(dir, opts) {
       to_name: opts.toName || null,
       from_name: opts.fromName || null,
       team: opts.team || null,
+      team_file: teamFileFor(dir, opts.toName, opts.team),
       created: localIso(now),
     };
   } else {
@@ -300,13 +329,16 @@ export function createMessage(dir, opts) {
       to_name: opts.toName || rf.from_name || null,
       from_name: opts.fromName || rf.to_name || null,
       team: opts.team || rf.team || null,
+      team_file: rf.team_file || null,
       created: localIso(now),
     };
   }
+  fields.team_guide = fields.team_file ? TEAM_GUIDE : null;
   const targetMsgs = opts.reqPath ? dirname(opts.reqPath) : msgsDir(dir);
   const path = join(targetMsgs, msgFilename(fields));
   const body = frontmatterText(fields) + "\n" + skeletonBody(type === "request" ? REQUEST_KEYS : RESPONSE_KEYS);
   if (!opts.reqPath) {
+    mkdirSync(targetMsgs, { recursive: true });
     writeFileSync(path, body, "utf8");
     return { id: fields.id, path, fields };
   }
@@ -351,6 +383,8 @@ export function responsePlan(reqPath) {
     to_name: rf.from_name || null,
     from_name: rf.to_name || null,
     team: rf.team || null,
+    team_file: rf.team_file || null,
+    team_guide: rf.team_file ? TEAM_GUIDE : null,
   };
   return { path: join(dirname(reqPath), msgFilename(fields)), fields };
 }
@@ -504,6 +538,12 @@ function isUnder(path, dir) {
   return resolve(path).startsWith(resolve(dir)) && (rel === "" || rel.startsWith("/"));
 }
 
+// The pool is derived from the session's cwd, so a file that is well-formed but
+// lives in another checkout's pool fails on location, not content — the reason
+// has to say which, or the caller rewrites a file that was never the problem.
+const outsidePool = (dir) =>
+  `file is outside this session's message pool (${msgsDir(dir)}) — the pool follows the session cwd; if cwd moved into a worktree or another repo, the file is fine and the cwd is wrong`;
+
 /**
  * Validate the request pointer a dispatch carries. Returns `{ok:true, path,
  * fm}` or `{ok:false, why}` where `why` is one of the deny reasons in the spec.
@@ -512,8 +552,9 @@ export function validateRequestToken(text, dir, expectedTo) {
   const path = extractMsgToken(text);
   if (!path) return { ok: false, why: "missing token" };
   if (!isAbsolute(path) || !existsSync(path)) return { ok: false, why: `path not found (${path})` };
-  if (!isUnder(path, msgsDir(dir)) || !path.endsWith("--request.md")) return { ok: false, why: "not a request file" };
   const parsed = readMsgFile(path);
+  if (!isUnder(path, msgsDir(dir)) && !messageHome(path, parsed && parsed.fm)) return { ok: false, why: outsidePool(dir) };
+  if (!path.endsWith("--request.md")) return { ok: false, why: "not a request file" };
   if (!parsed || !parsed.fm || parsed.fm.type !== "request") return { ok: false, why: "not a request file" };
   if (expectedTo && parsed.fm.to !== expectedTo) {
     return { ok: false, why: `wrong to: (file says ${parsed.fm.to}, dispatch is ${expectedTo})` };
@@ -533,8 +574,9 @@ export function validateResponseToken(text, dir, expectedFrom, expectedId) {
   const path = extractMsgToken(text);
   if (!path) return { ok: false, why: "missing token" };
   if (!isAbsolute(path) || !existsSync(path)) return { ok: false, why: `path not found (${path})` };
-  if (!isUnder(path, msgsDir(dir)) || !path.endsWith("--response.md")) return { ok: false, why: "not a response file" };
   const parsed = readMsgFile(path);
+  if (!isUnder(path, msgsDir(dir)) && !messageHome(path, parsed && parsed.fm)) return { ok: false, why: outsidePool(dir) };
+  if (!path.endsWith("--response.md")) return { ok: false, why: "not a response file" };
   if (!parsed || !parsed.fm || parsed.fm.type !== "response") return { ok: false, why: "not a response file" };
   if (expectedFrom && parsed.fm.from !== expectedFrom) {
     return { ok: false, why: `wrong from: (file says ${parsed.fm.from}, expected ${expectedFrom})` };

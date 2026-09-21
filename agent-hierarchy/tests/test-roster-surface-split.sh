@@ -47,11 +47,13 @@ done
 check "7: roster.mjs accepts no surface/skill selector at all" \
   '! grep -qE -- "--surface|--skill|--via-team|SURFACE_FLAGS" "$H/roster.mjs"'
 
-# Both slash commands exist and each delegates to its own skill, verbatim.
-check "7: /agent-roster command file delegates to ah:agent-roster" \
-  '[ -f "$PLUGIN/commands/agent-roster.md" ] && grep -q "ah:agent-roster" "$PLUGIN/commands/agent-roster.md"'
-check "7: /agent-team command file delegates to ah:agent-team" \
-  '[ -f "$PLUGIN/commands/agent-team.md" ] && grep -q "ah:agent-team" "$PLUGIN/commands/agent-team.md"'
+# A command file sharing a skill's name wins the `ah:<name>` lookup, so the
+# Skill tool would return the command's body instead of the skill's. Each
+# surface is the skill alone.
+check "7: no /agent-roster command file shadows the ah:agent-roster skill" \
+  '[ ! -e "$PLUGIN/commands/agent-roster.md" ]'
+check "7: no /agent-team command file shadows the ah:agent-team skill" \
+  '[ ! -e "$PLUGIN/commands/agent-team.md" ]'
 check "7: the agent-team skill file exists with a frontmatter name" \
   '[ -f "$TEAM_SKILL" ] && head -5 "$TEAM_SKILL" | grep -q "^name: agent-team$"'
 

@@ -90,6 +90,7 @@ import {
   extractMsgToken,
   hasGate,
   hierarchyDir,
+  messageHome,
   readGates,
   readMsgFile,
   roleTier,
@@ -297,6 +298,7 @@ try {
   // neither the global-scope confirms nor the route ask has anything left to decide.
   const EXEMPT_ROSTER_LEVELS = [null, "repo", "repo-user"]; // an absent key is undefined, so it is not matched by the null here
   let toTeamMember = false;
+  let noTeamRecordNote = "";
   if (isDispatch) {
     role = hierarchyRoleOf(toolInput.subagent_type);
     text = typeof toolInput.prompt === "string" ? toolInput.prompt : "";
@@ -307,8 +309,20 @@ try {
     // Mechanism (A) — spec 0011 §4.4.1/§9.1: "what role is this name" is
     // answered by an all-teams name search, independent of `resolved.team` —
     // the team-scoped form has a silent-null failure mode when rung 2 misses.
-    const membership = to ? resolveMemberTeam(dir, to) : { found: false, team: null };
-    const teamMember = membership.found ? teamMemberByName(dir, to, membership.team) : null;
+    let teamDir = dir;
+    let membership = to ? resolveMemberTeam(dir, to) : { found: false, team: null };
+    if (to && !membership.found) {
+      // The brief's request file names its team file by absolute path, so a session whose cwd
+      // moved away from the checkout it spawned the teammate from still finds the record.
+      const reqPath = extractMsgToken(text);
+      const req = reqPath ? readMsgFile(reqPath) : null;
+      const home = req ? messageHome(reqPath, req.fm) : null;
+      if (home) {
+        teamDir = home;
+        membership = resolveMemberTeam(home, to);
+      }
+    }
+    const teamMember = membership.found ? teamMemberByName(teamDir, to, membership.team) : null;
     role = teamMember ? teamMember.role : null;
     if (teamMember) {
       // The team records decide, not the member: EVERY record holding this name must carry a
@@ -316,9 +330,14 @@ try {
       // which record a scan reaches first. An absent key, "global", or anything unrecognised
       // fails closed and keeps every confirm. So does a team file that exists but yields no
       // record: it cannot be searched for the name, so it cannot be ruled out as a holder.
-      const files = [null, ...listTeamNames(dir)].map((t) => teamFileState(dir, t));
+      const files = [null, ...listTeamNames(teamDir)].map((t) => teamFileState(teamDir, t));
       const holders = files.map((f) => f.team).filter((t) => t && Array.isArray(t.members) && t.members.some((m) => m && m.name === to));
       toTeamMember = !files.some((f) => f.state === "unusable") && holders.length > 0 && holders.every((t) => EXEMPT_ROSTER_LEVELS.includes(t.roster_level));
+    } else if (to) {
+      // A teammate spawned from the main checkout is invisible from a worktree, which has its
+      // own hierarchy dir. The confirms below are then correct but look spurious, so they say
+      // where the search ran and let the caller spot a cwd that moved.
+      noTeamRecordNote = `\n\nNote: no team record names "${to}" under ${dir}. A teammate this session spawned is exempt from this confirm, but only where its team record is found — if you spawned "${to}", this session's cwd has moved (a worktree or another repo has its own hierarchy dir); return to the cwd you spawned from and resend.`;
     }
     if (!role) role = PEER_ELIGIBLE_ROLES.find((r) => resolvedPeerTargets(r, resolved.roles[r], repoBasename).includes(to)) || null;
     if (!role && to) {
@@ -335,11 +354,11 @@ try {
     const preRoute = effectiveRoute(dir, resolved, sessionId).value;
     const scopeAApplies = resolved.rosterLevel === "global" && !(isDispatch && preRoute === "subagents");
     if (scopeAApplies) {
-      enforceGlobalScope(dir, sessionId, "roster", () => globalRosterAskReason(resolved, sessionId, scopeBWillFire), () => globalRosterDenyReason(sessionId), scopeBWillFire);
+      enforceGlobalScope(dir, sessionId, "roster", () => globalRosterAskReason(resolved, sessionId, scopeBWillFire) + noTeamRecordNote, () => globalRosterDenyReason(sessionId), scopeBWillFire);
     }
   }
   if (scopeBWillFire && !toTeamMember) {
-    enforceGlobalScope(dir, sessionId, "config", () => globalConfigAskReason(role, resolved, sessionId), () => globalConfigDenyReason(role));
+    enforceGlobalScope(dir, sessionId, "config", () => globalConfigAskReason(role, resolved, sessionId) + noTeamRecordNote, () => globalConfigDenyReason(role));
   }
 
   // ---- routing preference: ask once per session, then enforce silently
@@ -349,7 +368,7 @@ try {
     if (routeInfo.source !== "session" && !configRoute && !isSubordinateSession && !toTeamMember) {
       if (!hasGate(dir, (r) => r.type === "route-ask" && r.session_id === sessionId)) {
         appendGate(dir, { type: "route-ask", session_id: sessionId });
-        decide("deny", askReason(getRoster(), sessionId));
+        decide("deny", askReason(getRoster(), sessionId) + noTeamRecordNote);
       }
       // already asked this session and still unanswered: fall through, enforce the "peers" default
     }

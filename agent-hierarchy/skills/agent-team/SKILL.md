@@ -1,6 +1,7 @@
 ---
 name: agent-team
 description: Stand up, inspect, reshape, or tear down a live Team of agent sessions from the existing agent-hierarchy roster. Use for /agent-team, for "set up my team", "set up a team", "spawn the team", "spawn my team", "spin up the team", "start the team", "spawn the architect", "spawn just the reviewer", "add a peer to the running team", "dismiss a member", "dismiss the architect", "remove the architect", "close that session", "close the sessions", "kick the reviewer", "dismiss the team", "close the team", "disband the team", "disband my team", "shut down the team", "tear down the team", "end the team", "stop tracking a member", "leave it running but forget it", or "untrack the team".
+argument-hint: "[create [auto|manual]|spawn-one <role>|spawn-ad-hoc <role>|dismiss <name>|disband|untrack|teams|resync|move|adopt|reap|history]"
 ---
 
 # agent-team

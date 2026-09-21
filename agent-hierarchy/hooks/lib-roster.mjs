@@ -15,7 +15,7 @@
 
 import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 
 import { isValidTeamAlias, KIND_DEFAULT, KIND_RE, resolveKind, ROLES, routeHasPane, suggestTeamAlias, VALID_MODELS_BY_ROLE } from "./lib-config.mjs";
 
@@ -89,6 +89,9 @@ export const ON_MISSING_DEFAULT = "prompt";
 
 /** `team.json` for the default team, or `teams/<team>.json` for a named one (spec 0011 §3). */
 export const teamPath = (dir, team = null) => (team ? join(dir, "teams", `${team}.json`) : join(dir, "team.json"));
+
+/** The hierarchy dir a team file path sits in — the inverse of `teamPath` — or null when the path is not shaped like one. */
+export const teamFileHome = (p) => (basename(p) === "team.json" ? dirname(p) : basename(dirname(p)) === "teams" ? dirname(dirname(p)) : null);
 
 // ---------------------------------------------------------------- herdr transport presence (spec 0010 §2.4)
 

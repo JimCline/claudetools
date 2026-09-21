@@ -104,7 +104,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-import { CONFIG_VERSION, findGitRoot, hierarchyDir, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, suggestTeamAlias, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
+import { CONFIG_VERSION, findGitRoot, hierarchyDir, mainHierarchyDir, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, suggestTeamAlias, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
 import { ageSecOf, appendRosterRecord, fmtAge, latestRoster, livePeerSlots, peersPath, readJsonl, newId, localIso, NO_TEAM_SCOPE, pidAlive, realCwd, recordLiveness, synthesizedPeerName } from "./lib-hier.mjs";
 import { readPeerRecords } from "./lib-peer.mjs";
 import { attributeSessionTeam, clearTeam, defaultTeamScope, fingerprint, herdrOnPath, historyEntryIsActive, KIND_AUTO_MODE_ARGS, KIND_DEFAULT, kindAutoModeArgs, kindFieldErrors, listTeamNames, memberArgs, normalizeMembers, readHistory, readTeam, resolveKind, resolveTeamByPane, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamFileState, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
@@ -3635,8 +3635,11 @@ try {
         out(empty("no-pane-id"));
         break;
       }
-      const records = (teamArg ? [teamArg] : [null, ...listTeamNames(dir)])
-        .map((teamName) => ({ teamName, team: readTeam(dir, teamName) }))
+      // A peer running in a linked worktree has its own hierarchy dir, but its Team was written
+      // by an orchestrator in the main checkout — so that dir is searched too.
+      const records = [dir, mainHierarchyDir(cwd)]
+        .filter(Boolean)
+        .flatMap((home) => (teamArg ? [teamArg] : [null, ...listTeamNames(home)]).map((teamName) => ({ home, teamName, team: readTeam(home, teamName) })))
         .filter((r) => r.team);
       if (records.length === 0) {
         out(empty("no-team"));
@@ -3651,7 +3654,7 @@ try {
         out({ ...empty("ambiguous"), candidates: matches.map((m) => ({ team: m.teamName, name: m.member.name ?? null })) });
         break;
       }
-      const { teamName, team, member } = matches[0];
+      const { home, teamName, team, member } = matches[0];
       const orch = team.orchestrator && typeof team.orchestrator === "object" ? team.orchestrator : null;
       const pid = orch && Number.isInteger(orch.pid) ? orch.pid : null;
       const live = pid == null ? null : pidAlive(pid);
@@ -3664,7 +3667,7 @@ try {
       out({
         member: { name: member.name ?? null, role: member.role ?? null, route: member.route ?? null },
         team: teamName,
-        team_file: teamPath(dir, teamName),
+        team_file: teamPath(home, teamName),
         orchestrator: orch ? { pid, session_id: orch.session_id ?? null, live, send_to: live && existsSync(socket) ? `uds:${socket}` : null } : null,
         last_observed_brief,
         reason: null,

@@ -68,6 +68,8 @@ check "Agent: response file used as request -> deny (not a request file)" 'denie
 cp "$IMPL_REQ" "$SANDBOX/outside--request.md"
 agent ah:implementor "[hierarchy-msg $SANDBOX/outside--request.md]"
 check "Agent: request file outside <dir>/msgs -> deny" 'denied'
+check "deny reason: names the pool searched, and does not blame the file's content" \
+  'echo "$OUT" | grep -qF "message pool ($HD/msgs)" && ! echo "$OUT" | grep -q "not a request file"'
 agent ah:implementor "[hierarchy-msg $IMPL_REQ]
 - implement impl-task; see file"
 check "Agent implementor with valid file -> allow (silent)" 'allowed'
@@ -103,6 +105,26 @@ send "some-unrelated-session" "[hierarchy-peer-brief reply-to=\"sender\" task=\"
 check "SendMessage brief to a non-configured peer: role check skipped, file valid -> allow" 'allowed'
 send "some-unrelated-session" "[hierarchy-peer-brief reply-to=\"sender\" task=\"x\"] no file"
 check "SendMessage brief to a non-configured peer without token -> still denied" 'denied'
+
+# ---- 2b: a request names its team file, so a session whose cwd-derived pool is elsewhere still passes
+cat > "$HD/team.json" <<EOF
+{ "team_id": "t1", "roster_level": null, "members": [ { "role": "reviewer", "name": "rev-peer" } ] }
+EOF
+msg new --to reviewer --from orchestrator --slug drift-task --to-name rev-peer
+DRIFT_REQ=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).path)' "$OUT")
+check "request frontmatter names the team file by absolute path" 'grep -qxF "team_file: $HD/team.json" "$DRIFT_REQ"'
+check "request frontmatter names the team-file guide, and the guide exists" \
+  'G=$(sed -n "s/^team_guide: //p" "$DRIFT_REQ"); [ -n "$G" ] && [ -f "$G" ]'
+check "a request written with no team file says so" 'grep -qx "team_file: null" "$IMPL_REQ"'
+DRIFT_BRIEF="[hierarchy-peer-brief reply-to=\"sender\" task=\"drift-task\"]
+[hierarchy-msg $DRIFT_REQ]"
+OUT=$(PROJ="$PROJ" send_payload rev-peer "$DRIFT_BRIEF" | HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$SANDBOX/elsewhere" node "$GATE" 2>&1); RC=$?
+check "pool resolved elsewhere, request beside its named team file -> allow" 'allowed'
+cp "$DRIFT_REQ" "$SANDBOX/20990101-000000-abcd--reviewer--stray--request.md"
+send rev-peer "[hierarchy-peer-brief reply-to=\"sender\" task=\"x\"]
+[hierarchy-msg $SANDBOX/20990101-000000-abcd--reviewer--stray--request.md]"
+check "a request naming a team file it does not sit beside -> still denied" 'denied && echo "$OUT" | grep -qF "message pool ("'
+rm -f "$HD/team.json"
 
 # ---- 3: msgs:"off" disables; malformed input fails open; disabled hierarchy passes
 cat > "$PROJ/.claude/agent-hierarchy.json" <<EOF

@@ -36,7 +36,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { PEER_ELIGIBLE_ROLES, resolveConfig, ROUTE_VALUES, teamPrefix, validateTeamAlias } from "./lib-config.mjs";
+import { mainHierarchyDir, PEER_ELIGIBLE_ROLES, resolveConfig, ROUTE_VALUES, teamPrefix, validateTeamAlias } from "./lib-config.mjs";
 import {
   appendGate,
   createMessage,
@@ -56,7 +56,7 @@ import {
   sweep,
   SWEEP_DAYS,
 } from "./lib-hier.mjs";
-import { listTeamNames, readTeam } from "./lib-roster.mjs";
+import { listTeamNames, readTeam, resolveMemberTeam } from "./lib-roster.mjs";
 
 const BOOL_FLAGS = new Set(["plain", "json", "open", "closed", "all"]);
 
@@ -156,8 +156,20 @@ function downstreamLine(d) {
 try {
   switch (cmd) {
     case "new": {
-      const dir = ensureHierarchyDir(cwd);
+      let dir = ensureHierarchyDir(cwd);
       const type = typeof opts.type === "string" ? opts.type : "request";
+      // A request addressed to a named teammate belongs in that teammate's Team pool. From a
+      // worktree the Team is usually the main checkout's, and a request written to the
+      // worktree's own pool is one the recipient's gates and the team file never see.
+      const toNameArg = typeof opts["to-name"] === "string" ? opts["to-name"] : null;
+      let rehomed = null;
+      if (type === "request" && toNameArg && !resolveMemberTeam(dir, toNameArg).found) {
+        const main = mainHierarchyDir(cwd);
+        if (main && resolveMemberTeam(main, toNameArg).found) {
+          rehomed = { local: dir, target: main };
+          dir = main;
+        }
+      }
       if (opts.req === true) fail("--req needs the request file's absolute path");
       const reqPath = typeof opts.req === "string" ? opts.req : null;
       if (reqPath && type !== "response") fail("--req applies only to --type response");
@@ -177,6 +189,9 @@ try {
         team: teamArg,
       });
       out(plain ? `${res.id}  ${res.path}` : { id: res.id, path: res.path }, plain);
+      if (rehomed) {
+        process.stderr.write(`msg.mjs: note — "${toNameArg}" is a member of a Team under ${rehomed.target}, not ${rehomed.local}; the request was written to that Team's pool\n`);
+      }
       if (res.divergent) {
         process.stderr.write(`msg.mjs: note — this session's own pool is ${res.divergent.local}; the response was written beside its request under ${res.divergent.target} (spec 0037)\n`);
       }

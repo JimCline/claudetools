@@ -1,6 +1,7 @@
 ---
 name: agent-roster
 description: Define, edit, or inspect the agent-hierarchy ROSTER — the template of which roles exist and their model/effort/route/kind. Use for /agent-roster, for "add a reviewer peer", "add a peer to the roster", "change the architect's model", "remove a role from the roster", "what's in my roster", or "set up a roster". Standing up, reshaping, or tearing down a LIVE Team is the agent-team skill, not this one.
+argument-hint: "[show|init|add|edit|remove|layout|alias]"
 ---
 
 # agent-roster

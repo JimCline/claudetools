@@ -274,6 +274,24 @@ check "SendMessage brief with reason: passes" 'allowed'
 set_route u3 prefer-peers
 gate "$(PROJ="$PROJ" send_payload u3 arch-peer 'no sentinel here')" CLAUDE_MODEL=claude-opus-4-1
 check "SendMessage without sentinel: not gated" 'allowed'
+# A peer-named target with no team record gets the ordinary confirms; the deny says where the
+# search ran, because a cwd that moved into a worktree looks exactly like this.
+gate "$(PROJ="$PROJ" send_payload u4 arch-peer "$BRIEF_NOREASON")" CLAUDE_MODEL=claude-opus-4-1
+check "route ask to a peer with no team record names the hierarchy dir searched" \
+  'denied && echo "$OUT" | grep -q "no team record names" && echo "$OUT" | grep -qF "under $HD"'
+# The request names its team file, so the teammate exemption survives a hierarchy dir that
+# resolves somewhere else; a request that names none gets the ordinary ask there.
+cat > "$HD/team.json" <<EOF
+{ "team_id": "t1", "roster_level": null, "members": [ { "role": "architect", "name": "arch-peer" } ] }
+EOF
+REQ_DRIFT=$(HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node "$MSG" new --cwd "$PROJ" --to architect --from orchestrator --slug drift --reason second-opinion --to-name arch-peer | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).path)')
+gate "$(PROJ="$PROJ" send_payload u5 arch-peer "[hierarchy-peer-brief reply-to=\"me\" task=\"x\"]
+[hierarchy-msg $REQ_DRIFT]")" CLAUDE_MODEL=claude-opus-4-1 AGENT_HIERARCHY_DIR="$SANDBOX/elsewhere"
+check "teammate found through the request's team_file when the hierarchy dir resolves elsewhere: no ask" 'allowed'
+gate "$(PROJ="$PROJ" send_payload u6 arch-peer "[hierarchy-peer-brief reply-to=\"me\" task=\"x\"]
+[hierarchy-msg $REQ3_REASON]")" CLAUDE_MODEL=claude-opus-4-1 AGENT_HIERARCHY_DIR="$SANDBOX/elsewhere"
+check "same send with a request naming no team file: asked" 'denied && echo "$OUT" | grep -q "no team record names"'
+rm -f "$HD/team.json"
 
 # ---- 11: disabled / malformed / other tools fail open
 cat > "$PROJ/.claude/agent-hierarchy.json" <<EOF

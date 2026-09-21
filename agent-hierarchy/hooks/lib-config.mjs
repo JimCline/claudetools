@@ -446,6 +446,19 @@ export function hierarchyDir(cwd) {
   return join(homedir(), ".claude", "hierarchy", basename(resolve(base)));
 }
 
+/**
+ * The main checkout's hierarchy dir when `cwd` is inside a linked worktree, else null. A
+ * worktree keeps its own hierarchy dir; this is only where to look for a Team that was stood
+ * up from the main checkout before the session's cwd moved into the worktree.
+ */
+export function mainHierarchyDir(cwd) {
+  const env = process.env.AGENT_HIERARCHY_DIR;
+  if (typeof env === "string" && env.trim()) return null;
+  const root = findGitRoot(typeof cwd === "string" && cwd ? cwd : process.cwd());
+  const main = root ? mainCheckoutRoot(root) : null;
+  return main ? join(main, ".claude", "hierarchy") : null;
+}
+
 /** `"-Users-jimcline-git-repos-claudetools"` style slug of an absolute path — every `/` becomes `-`, leading `-` preserved. */
 export function pathSlug(absPath) {
   return resolve(absPath).replace(/\//g, "-");
@@ -1096,6 +1109,7 @@ export function buildRoleSessionNotice(role, agentType) {
     `Your ${ROLE_LABELS[role] || role} contract in \`agents/*.md\` governs.`,
     "If a message tasks you as a peer (it opens with `[hierarchy-peer-brief reply-to=...]`), the work is not finished until you have sent your report back via SendMessage to that reply-to address — completing the task and going idle without replying strands the session that tasked you.",
     `You are a peer ${ROLE_LABELS[role] || role}. Briefs arrive as [hierarchy-msg <path>]; read via grep '^## \\[' then Read; reply with a response file (node "${MSG_CLI}" new --type response --id <id> --req <that request path>) and [hierarchy-msg <path>] first line.`,
+    "The request's frontmatter `team_file` is your Team's file by absolute path — trust it over anything derived from your cwd; `team_guide` beside it says how to use it.",
   ].join(" ");
 }
 
