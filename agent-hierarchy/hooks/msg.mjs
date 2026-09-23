@@ -15,7 +15,6 @@
  * Every subcommand also accepts `--orchestrator-pid <pid>`, which overrides `CLAUDE_PID` when
  * resolving which team this session owns (spec 0048 §2.3).
  *   msg.mjs route [peers|subagents|prefer-peers] --session <id>
- *   msg.mjs global-scope <roster|config> <allow|deny> --session <id>
  *
  * Every subcommand takes `--cwd <path>` (default process.cwd()) and resolves
  * the runtime dir via lib-hier.mjs; output is JSON unless `--plain`. Writers
@@ -28,7 +27,7 @@
  * 0011 §4.4 rung 3: `CLAUDE_PID` matched against a team's `orchestrator.pid`
  * (`pidAlive`-guarded), so a CLI launched from a named-team orchestrator
  * resolves that team without the flag; no match resolves the default team,
- * same as before this rung existed. `route`/`global-scope` write
+ * same as before this rung existed. `route` writes
  * `gates.jsonl`, which spec 0011 §6.2 leaves shared and unscoped — no
  * `--team` there.
  */
@@ -38,7 +37,6 @@ import { fileURLToPath } from "node:url";
 
 import { mainHierarchyDir, PEER_ELIGIBLE_ROLES, resolveConfig, ROUTE_VALUES, teamPrefix, validateTeamAlias } from "./lib-config.mjs";
 import {
-  appendGate,
   createMessage,
   effectiveRoute,
   ensureHierarchyDir,
@@ -257,7 +255,7 @@ try {
     }
     case "roster": {
       const dir = hierarchyDir(cwd);
-      const resolved = resolveConfig(cwd, { team: teamArg });
+      const resolved = resolveConfig(cwd, { team: teamArg, pid: Number(opts["orchestrator-pid"] ?? process.env.CLAUDE_PID) });
       const ros = roster(dir, resolved, teamPrefix(resolved.cwd, resolved.team));
       if (plain) {
         const lines = [];
@@ -278,7 +276,7 @@ try {
     }
     case "route": {
       const dir = hierarchyDir(cwd);
-      const resolved = resolveConfig(cwd);
+      const resolved = resolveConfig(cwd, { pid: Number(opts["orchestrator-pid"] ?? process.env.CLAUDE_PID) });
       const sessionId = typeof opts.session === "string" ? opts.session : null;
       if (!sessionId) fail("route needs --session <id>");
       const value = opts._[0];
@@ -292,20 +290,8 @@ try {
       }
       break;
     }
-    case "global-scope": {
-      const dir = hierarchyDir(cwd);
-      const scope = opts._[0];
-      const answer = opts._[1];
-      if (!["roster", "config"].includes(scope)) fail(`global-scope needs roster|config, got ${JSON.stringify(scope)}`);
-      if (!["allow", "deny"].includes(answer)) fail(`global-scope needs allow|deny, got ${JSON.stringify(answer)}`);
-      const sessionId = typeof opts.session === "string" ? opts.session : null;
-      if (!sessionId) fail("global-scope needs --session <id>");
-      appendGate(dir, { type: "global-scope", session_id: sessionId, scope, answer });
-      out(plain ? `${scope} ${answer}` : { recorded: answer, scope, session_id: sessionId }, plain);
-      break;
-    }
     default:
-      fail(`usage: msg.mjs new|list|downstream|index|sweep|roster|route|global-scope [--cwd <path>] [--plain]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
+      fail(`usage: msg.mjs new|list|downstream|index|sweep|roster|route [--cwd <path>] [--plain]${cmd ? ` (unknown command ${JSON.stringify(cmd)})` : ""}`);
   }
 } catch (err) {
   fail(err && err.message ? err.message : String(err));

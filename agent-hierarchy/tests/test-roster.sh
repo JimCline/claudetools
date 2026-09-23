@@ -135,7 +135,7 @@ check "ultra gate: SendMessage to the SECOND array peer is gated" 'echo "$OUT" |
 OUT=$(echo "{\"session_id\":\"ug\",\"cwd\":\"$PROJ\",\"tool_name\":\"SendMessage\",\"tool_input\":{\"to\":\"ua-three\",\"message\":\"q\"}}" | HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node "$H/pretooluse-ultra-gate.mjs" 2>&1); RC=$?
 check "ultra gate: SendMessage to a non-listed name passes" '[ -z "$OUT" ]'
 # directive lists both names
-eval_hier "C.buildDirective(resolved, 's').includes('peer \"ua-one\" / \"ua-two\" via SendMessage')"
+eval_hier "C.buildDirective(resolved, 's').includes('SendMessage peer \"ua-one\" / \"ua-two\";')"
 check "directive role line lists every array peer" '[ "$OUT" = true ]'
 # the injection names both spawn verbs, so an Orchestrator need not go read the docs
 eval_hier "C.buildDirective(resolved, 's').includes('spawn-one <role> [--member <n>]')"

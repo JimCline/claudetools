@@ -24,7 +24,7 @@ try {
     const up = sessionId ? upRecordFor(dir, sessionId) : null;
     if (!role && up) role = up.role || null;
     if (role) {
-      appendRosterRecord(dir, { status: "down", role, session_id: sessionId || null, pid: up ? up.pid : process.ppid, cwd });
+      appendRosterRecord(dir, { status: "down", role, session_id: sessionId || null, pid: up ? up.pid : process.ppid, pane_id: (up && up.pane_id) || process.env.HERDR_PANE_ID || null, cwd });
     }
   }
 } catch (err) {

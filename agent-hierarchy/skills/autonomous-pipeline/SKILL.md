@@ -56,7 +56,8 @@ subagent dispatch never creates one, so it is invisible to it, by
 construction, not as a degradation. Resolve the active dispatch route at
 bootstrap (below) and say so in the run-start notification:
 
-- **`peers`** — liveness coverage applies in full.
+- **`peers`** — the default, never asked; liveness coverage applies in full.
+  The other two are user opt-ins only.
 - **`subagents`** — no liveness coverage; a stall surfaces only as the
   dispatching `Agent` call's own completion or failure.
 - **`prefer-peers`** — coverage is per-dispatch, whichever way each one
@@ -72,9 +73,8 @@ Seven steps, in order:
    **Practical consequence:** if a member never checks in after spawn, run
    `roster.mjs doctor`.
 2. **Resolve the roster**.
-3. **Resolve the active dispatch route** (`msg.mjs route` / the session's
-   recorded answer: `peers`, `subagents`, or `prefer-peers`) — never assume
-   one. It determines liveness coverage (§ Liveness) and is one of the four
+3. **Resolve the active dispatch route** (`msg.mjs route`): `peers` unless
+   the user opted into `subagents` or `prefer-peers`. It determines liveness coverage (§ Liveness) and is one of the four
    facts the run-start notification carries.
 4. **Create the team** — `roster.mjs create` plan → confirm → commit exactly as
    [`skills/agent-roster/SKILL.md` § Create](../agent-roster/SKILL.md#create)

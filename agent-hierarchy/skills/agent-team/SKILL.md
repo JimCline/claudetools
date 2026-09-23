@@ -38,8 +38,7 @@ drifted — say so rather than silently picking one.
 When the request names (or clearly implies) ONE role, skip everything below:
 
 - `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs spawn-ad-hoc <role> --cwd <abs>`
-  works in any repo, roster or not — no skill load, no route question, no
-  `--allow-global`. It prints the derived name.
+  works in any repo, roster or not — no skill load. It prints the derived name.
 - Brief it with `msg.mjs new --to <role> --from <your role> …`, then
   SendMessage to the reported name.
 - A subagent may spawn and brief a peer, but the reply is delivered to its
@@ -108,8 +107,7 @@ happens when a bare `create` collides with someone else's live Team.
   herdr's live topology and rewrites the team file. See § resync / move.
 - `move <name> --tab <id> --split right|down | --new-tab [--workspace <id>] | --new-workspace
   [--dry-run] [--allow-global]` — relocates a member's pane via `herdr pane move`, then resyncs its record.
-  Needs `--allow-global` whenever the roster resolves at the global level, exactly like `spawn-one`/`create --spawn` (§4.4) —
-  `move` relocates a live agent pane, so it gets the same confirm-gate protection. See § resync / move.
+  `--allow-global` is accepted and does nothing. See § resync / move.
 - `adopt [--orchestrator-pid <pid>] [--team <name>]` — re-stamps
   `orchestrator.pid` on an ORPHANED team. Recovery only; it refuses to hijack a live team.
 - `reap [--commit]` — lists orphaned team records, or removes them with
@@ -194,9 +192,7 @@ files, offer to reuse a recent one: run `roster.mjs history --json`, and if it r
 "start fresh from the roster" option. If the user picks an entry, run
 `roster.mjs create --from <id> --commit --spawn` (its own id, not the alias)
 in place of the roster-driven plan below — same downstream steps (layout
-confirmation, spawn, check-in) apply unchanged. This capability is skill-only:
-recreating a Team still needs 0009's confirm gates, which only fire on the
-skill path.
+confirmation, spawn, check-in) apply unchanged. This capability is skill-only.
 
 0. **Confirm the layout.** Read the roster's `layout` (via `roster.mjs show`;
    it is `auto` unless set). Ask the user to confirm it for this Team with
@@ -638,28 +634,23 @@ gap; it is not a lighter-weight alternative to Create for a full team.
   Create's whole-team flow is the `/agent-roster` skill's job for building a
   fresh Team, never for patching one member into an existing one.
 
-**Two gates guard both `spawn-one` and full-team `create --spawn`/Create's
-peer-dispatch entry points**, because `roster.mjs` runs as a Bash subprocess
-that the PreToolUse hook cannot see inside:
+**`--allow-global`** is accepted as a no-op by every verb that lists it, so
+existing command strings keep running; a roster at the `global` level needs
+no flag and no confirm. `spawn-ad-hoc` never reads the global roster.
 
-- **`--allow-global`** — required whenever the roster resolves at the
-  `global` level (`~/.claude/agent-hierarchy.json`'s roster block, not a
-  repo-scoped one); omitting it `fail()`s naming the flag. This mirrors the
-  PreToolUse gate's scope-A confirmation (spec 0009 §4) for the CLI path.
-  `spawn-ad-hoc` is exempt: it never reads the global roster.
-- **The PreToolUse global-scope confirm gate** (spec 0009 §4) still applies
-  to any Agent/Task dispatch to the resulting peer, and to a SendMessage to
-  it unless every team record naming it has `roster_level` `null`, `repo` or
-  `repo-user` — `--allow-global` only unblocks the CLI command that stands
-  the peer up, not later dispatch to it.
+**When the `route` is `peers` (the default) and no live peer exists for a
+role**, the route gate denies every Agent call for that role — a wall, not a
+reminder — and the deny carries the whole instruction:
 
-**Fallback ordering when the `route` is `peers` and no live peer exists for a
-role** (spec 0009 §5): the dispatch is denied with a prompt that recommends,
-in order, (1) stand up the real peer with `spawn-one` (Recommended, offered
-only when a roster entry for that role exists at a usable level), (2) spawn a
-one-off subagent instead, (3) neither — wait. This replaces the previous
-subagent-only recommendation; a real, persisted peer is now the default
-fallback, not a disposable subagent.
+| state | the deny carries |
+|---|---|
+| a live instance exists | `SendMessage "<name>"` (a free one first), with the brief the Agent call carried |
+| none live; roster member for the role; `onMissing` `auto` or unset | the exact `spawn-one <role> --cwd <cwd>` command |
+| none live; roster member with explicit `onMissing: "prompt"` | a one-shot AskUserQuestion, "Spawn the peer" first and Recommended; the re-issue passes |
+| none live; no roster member for the role | the exact `spawn-ad-hoc <role> --cwd <cwd>` command |
+
+Run the command, then SendMessage the name it prints. A subagent only when the
+user opts in (`msg.mjs route subagents --session <id>`).
 
 ## `dismiss`
 
@@ -790,13 +781,8 @@ defaults, and writes only the team file.
 4. It launches through the same `spawn-one` machinery, so `--dry-run`, the
    herdr-vs-terminal transport choice, and the blocked-at-startup reporting all
    behave identically. See § spawn-one for those; only the member's source
-   differs. A roster that resolves at the global level is treated as no roster,
-   so `--allow-global` is accepted but does nothing here.
-5. **Briefing the new member skips the route question and the global-scope
-   confirms — but only when every team record naming it has `roster_level`
-   `null`, `repo` or `repo-user`.** The team record decides, not the member:
-   one that `spawn-ad-hoc` adds INTO an existing team stood up from the global
-   roster is not exempt.
+   differs. A roster that resolves at the global level is treated as no roster;
+   `--allow-global` is accepted but does nothing.
 
 Report the derived name back to the user in one line — they did not choose it,
 and they need it for a later `dismiss`.

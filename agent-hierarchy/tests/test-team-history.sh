@@ -8,6 +8,10 @@ H="$PLUGIN/hooks"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-team-history-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 SANDBOX="$(cd "$SANDBOX" && pwd -P)"
+# No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
+# the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
+mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude"
@@ -243,9 +247,12 @@ rm -f "$HISTORY_FILE" "$TEAM_FILE"
 commit "$DEAD_PID" "[$(member architect opus high peer acceptEdits)]" --roster-level global
 run history
 GLOBAL_ENTRY_ID=$(json_field "o.teams[0].id")
-run create --from "$GLOBAL_ENTRY_ID" --spawn --mode auto
-check "create --from --spawn, entry's stored roster_level is global, no --allow-global: exit 2" '[ "$RC" -eq 2 ]'
-check "create --from --spawn, global scope: message names allow-global" 'echo "$OUT" | grep -qi "allow-global"'
+# A stub herdr that fails every call: with the refusal gone this reaches the launch, and the real
+# herdr would open a live pane in a sandbox that is deleted on exit.
+mkdir -p "$SANDBOX/nolaunch"
+printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; chmod +x "$SANDBOX/nolaunch/herdr"
+OUT=$(HOME="$FAKEHOME" HERDR_ENV=1 PATH="$SANDBOX/nolaunch:$(dirname "$(command -v node)"):/usr/bin:/bin" node "$H/roster.mjs" create --from "$GLOBAL_ENTRY_ID" --spawn --mode auto --cwd "$PROJ" 2>&1); RC=$?
+check "create --from --spawn, entry's stored roster_level is global, no --allow-global: not refused for it" '! echo "$OUT" | grep -qi "allow-global"'
 
 # ---- fingerprint-casing-equivalence: both auto_mode and autoMode input casings on an
 # otherwise-identical member must normalize to the SAME fingerprint (what dedupe depends on)

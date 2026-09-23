@@ -105,7 +105,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { CONFIG_VERSION, findGitRoot, hierarchyDir, mainHierarchyDir, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, suggestTeamAlias, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
-import { ageSecOf, appendRosterRecord, fmtAge, latestRoster, livePeerSlots, peersPath, readJsonl, newId, localIso, NO_TEAM_SCOPE, pidAlive, realCwd, recordLiveness, synthesizedPeerName } from "./lib-hier.mjs";
+import { ageSecOf, appendRosterRecord, attributedRoster, fmtAge, latestRoster, livePeerSlots, peersPath, readJsonl, newId, localIso, NO_TEAM_SCOPE, pidAlive, realCwd, recordLiveness, synthesizedPeerName } from "./lib-hier.mjs";
 import { readPeerRecords } from "./lib-peer.mjs";
 import { attributeSessionTeam, clearTeam, defaultTeamScope, fingerprint, herdrOnPath, historyEntryIsActive, KIND_AUTO_MODE_ARGS, KIND_DEFAULT, kindAutoModeArgs, kindFieldErrors, listTeamNames, memberArgs, normalizeMembers, readHistory, readTeam, resolveKind, resolveTeamByPane, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamFileState, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
 
@@ -254,7 +254,7 @@ function doctorReport(cwd) {
   }));
 
   rows.push(row("config", () => {
-    const resolved = resolveConfig(cwd);
+    const resolved = resolveConfig(cwd, { pid: ownOrchestratorPid() });
     const detail = statusReport(cwd).split("\n").slice(0, 4).join(" | ");
     if (!resolved.configured) return { status: "warn", detail: `not configured — ${detail}` };
     return { status: resolved.enabled ? "ok" : "warn", detail };
@@ -1698,16 +1698,6 @@ async function layoutAndLaunch(allMembers, transport, mode, splitCwd, callerLabe
   return allMembers.map((m) => (m.spawn && m.spawn.refuse ? { ...m, transport_id: null, launch_status: "failed", launch_result: { reason: "refused", detail: m.spawn.refuse }, retried: false, error: m.spawn.refuse } : launched[peerMembers.indexOf(m)]));
 }
 
-/** Spec 0009 §6.4: shared CLI-side guard for `spawn-one`, `create --spawn`, `move` (spec 0016
-    §4.4), and `disband --close` (spec 0016 §4.5) — a Bash subprocess that §4's PreToolUse gate
-    cannot see inside must not become the laundering path around it. */
-function requireAllowGlobal(level, path) {
-  if (level !== "global" || opts["allow-global"] === true) return;
-  fail(
-    `ah: this roster resolves at GLOBAL level (${path}) and may belong to an unrelated project. Re-run with --allow-global, or create a repo roster with the /agent-roster skill.`
-  );
-}
-
 /** Spec 0016 §4.5: short hash over `team_id` + the sorted non-null `transport_id`s of the close
     set — binds `disband --close --plan-token` to the exact plan that `disband` (bare/plan mode)
     reported, so a stale plan or a topology change between plan and close is caught rather than
@@ -1775,7 +1765,7 @@ function warnMixedPrefixSpawnOne(dir, member) {
 /** Spec 0009 §6.3 step 4: the same up/pid, seen|briefed/freshness liveness rule `roster()`
     (lib-hier.mjs) applies per-record, applied here to one named team member. */
 function memberIsLive(dir, name) {
-  const rec = latestRoster(dir).find((r) => r.name === name);
+  const rec = attributedRoster(dir).find((r) => r.name === name);
   return Boolean(rec) && rec.status !== "down" && recordLiveness(rec).live;
 }
 
@@ -2059,7 +2049,7 @@ function closeOne(m, teamTransport) {
   return row;
 }
 
-/** Shared token/confirm/allow-global gate for every --close variant (spec 0016 §4.5, 0040 §1.3). */
+/** Shared token/confirm gate for every --close variant. */
 function gateClose(verb, scope, closable) {
   const closeList = closable.map((m) => ({ name: m.name, transport_id: m.transport_id, ...(m.source ? { source: m.source } : {}) }));
   if (opts.confirm !== true) {
@@ -2071,23 +2061,18 @@ function gateClose(verb, scope, closable) {
   if (opts["plan-token"] !== closeToken(scope, closable)) {
     fail(`${verb} --close: --plan-token does not match the current close plan (the topology may have changed) — re-run \`${verb}\` and retry with the fresh token`);
   }
-  const preResolved = resolveRoster(cwd, teamArg);
-  if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
 }
 
 const shellWord = (s) => (/^[A-Za-z0-9_\/.:@%+=-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
 
 /** The exact `--close` command a plan's caller runs after the user says yes, so the agent copies
-    one string instead of assembling flags. Carries `--allow-global` only when `gateClose` would
-    refuse without it. */
+    one string instead of assembling flags. */
 function closeCommand(verb, name, token) {
   const words = ["node", fileURLToPath(import.meta.url), verb];
   if (name != null) words.push(name);
   words.push("--close", "--confirm", "--plan-token", token);
   if (typeof opts.team === "string") words.push("--team", opts.team);
   if (typeof opts.cwd === "string") words.push("--cwd", opts.cwd);
-  const resolved = resolveRoster(cwd, teamArg);
-  if (resolved && resolved.level === "global") words.push("--allow-global");
   return words.map(shellWord).join(" ");
 }
 
@@ -2137,15 +2122,7 @@ function reconcileAfterClose(dir, snapshot, results) {
 async function createSpawn(dir) {
   const mode = opts.mode;
   if (!ROSTER_LAYOUT_VALUES.includes(mode)) fail(`--mode must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(mode)}`);
-  // --from only changes where the member list comes from — it must not change whether a spawn
-  // is gated, so this runs unconditionally either way (a prior version skipped it for --from).
-  if (typeof opts.from === "string") {
-    const entry = resolveHistoryEntry(dir);
-    requireAllowGlobal(entry.roster_level, "stored in team-history.json");
-  } else {
-    const preResolved = resolveRoster(cwd, teamArg);
-    if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
-  }
+  if (typeof opts.from === "string") resolveHistoryEntry(dir);
   const { level, transport, layout_plan, members } = getMembersPlan(dir);
   const peerMembers = members.filter((m) => routeHasPane(m.route));
 
@@ -2220,14 +2197,12 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
   if (!PEER_ELIGIBLE_ROLES.includes(role)) fail(`${callerLabel}: role must be one of ${PEER_ELIGIBLE_ROLES.join(", ")}, got ${JSON.stringify(role)}`);
   const found = resolveRoster(cwd, teamArg);
   // An ad hoc member takes nothing from a roster but its route and layout mode, so a roster that
-  // resolves at global level — possibly another project's — is not read at all on that path;
-  // with nothing borrowed from it there is nothing for --allow-global to confirm.
+  // resolves at global level — possibly another project's — is not read at all on that path.
   const resolved = adHocMember && found && found.level === "global" ? null : found;
   // An ad hoc member need not exist in the roster, and need not have a
   // roster to exist in. A repo-level roster is still read when there IS one — for the layout
   // mode — but its absence is only fatal on the roster-sourced paths.
   if (!resolved && !adHocMember) fail(`no roster configured for ${cwd}; run \`spawn-ad-hoc ${role}\` instead (it needs no roster), or run the /agent-roster skill's Init flow to define one`);
-  if (resolved) requireAllowGlobal(resolved.level, resolved.path);
   const candidates = adHocMember ? [adHocMember] : resolved.members.filter((m) => m.role === role);
   if (candidates.length === 0) {
     const roles = [...new Set(resolved.members.map((m) => m.role))];
@@ -3138,8 +3113,6 @@ try {
         if (opts["plan-token"] !== expectedToken) {
           fail("dismiss --close: --plan-token does not match the current close plan (the topology may have changed) — re-run `dismiss` and retry with the fresh token");
         }
-        const preResolved = resolveRoster(cwd, teamArg);
-        if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
         const results = closable.map((m) => {
           try {
             closeMemberPane(team.transport, m.transport_id);
@@ -3337,8 +3310,6 @@ try {
         if (!MOVE_FLAGS.has(key)) fail(`move: unrecognized flag --${key} (use --tab/--split, --new-tab[/--workspace], --new-workspace, or --allow-global)`);
       }
       const name = typeof opts._[0] === "string" ? opts._[0] : fail("move needs a member name: roster.mjs move <name> --tab <id> [--split right|down] | --new-tab [--workspace <id>] | --new-workspace");
-      const preResolved = resolveRoster(cwd, teamArg);
-      if (preResolved) requireAllowGlobal(preResolved.level, preResolved.path);
       const dir = hierarchyDir(cwd);
       const team = readTeam(dir, teamFile);
       const teamMembers = team && Array.isArray(team.members) ? team.members : [];

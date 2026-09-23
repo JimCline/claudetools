@@ -22,7 +22,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_LABELS, ROUTE_VALUES, TIER, resolvedPeerTargets, roleFromName, routeHasPane, tierOf } from "./lib-config.mjs";
-import { listTeamNames, readTeam, resolveMemberTeam, teamIsOrphaned, teamFileHome, teamMemberByName, teamPath } from "./lib-roster.mjs";
+import { listTeamNames, paneResolver, readTeam, resolveMemberTeam, teamIsOrphaned, teamFileHome, teamMemberByName, teamPath } from "./lib-roster.mjs";
 
 export { hierarchyDir };
 
@@ -764,6 +764,45 @@ export function latestRoster(dir) {
   return [...byKey.values()];
 }
 
+/**
+ * `latestRoster` as the liveness readers must see it. SessionStart never writes `name` (a name
+ * would repartition `rosterKey`), so a spawned peer's own rows are nameless; here a nameless row
+ * whose pane is uniquely a team member's `transport_id`, with a matching role, reads as that
+ * member (its own `team` tag dropped — membership decides). All rows for such a name collapse to
+ * one: the latest pane-attributed row carries liveness and identity, and `busy`/`task` come from
+ * the latest named `seen`/`briefed` row. Names with no pane-attributed row pass through untouched.
+ */
+export function attributedRoster(dir) {
+  const recs = latestRoster(dir);
+  const byPane = paneResolver(dir);
+  const attributed = new Map();
+  const out = recs.map((rec) => {
+    if (rec.name || !rec.pane_id) return rec;
+    const hit = byPane(rec.pane_id);
+    if (!hit || !hit.member.name || hit.member.role !== rec.role) return rec;
+    const { team: _stale, ...rest } = rec;
+    const view = { ...rest, name: hit.member.name };
+    const prev = attributed.get(view.name);
+    if (!prev || String(view.ts || "") >= String(prev.ts || "")) attributed.set(view.name, view);
+    return view;
+  });
+  if (!attributed.size) return recs;
+  const emitted = new Set();
+  const result = [];
+  for (const rec of out) {
+    const rep = attributed.get(rec.name);
+    if (!rep) {
+      result.push(rec);
+      continue;
+    }
+    if (emitted.has(rec.name)) continue;
+    emitted.add(rec.name);
+    const named = recs.find((r) => r.name === rec.name && (r.status === "seen" || r.status === "briefed"));
+    result.push(named ? { ...rep, busy: named.busy, task: named.task } : rep);
+  }
+  return result;
+}
+
 /** The `up` record for a session_id, if its latest state is `up`. */
 export function upRecordFor(dir, sessionId) {
   return latestRoster(dir).find((r) => r.session_id === sessionId && r.status === "up") || null;
@@ -826,7 +865,7 @@ function inScope(dir, effective, team) {
 
 export function livePeerSlots(dir, team = null, now = Date.now()) {
   const slots = [];
-  for (const rec of latestRoster(dir)) {
+  for (const rec of attributedRoster(dir)) {
     if (rec.status === "down") continue;
     const name = rec.name || synthesizedPeerName(rec);
     if (!name) continue;
@@ -862,7 +901,7 @@ export function roster(dir, resolved, repoBasename, now = Date.now()) {
     const parsed = readMsgFile(e.request.path);
     return { to: e.to, toName: parsed && parsed.fm ? parsed.fm.to_name : null };
   });
-  for (const rec of latestRoster(dir)) {
+  for (const rec of attributedRoster(dir)) {
     if (rec.status === "down") continue;
     const role = rec.role || roleForPeerName(rec.name, resolved, repoBasename);
     if (!role || !out[role]) continue;

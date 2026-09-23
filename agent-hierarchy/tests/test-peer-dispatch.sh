@@ -6,6 +6,10 @@
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$PLUGIN/hooks/lib-config.mjs"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-peer-test.XXXXXX")"
+# No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
+# the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
+mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
 trap 'rm -rf "$SANDBOX"' EXIT
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/proj"
@@ -38,35 +42,22 @@ BASE='"version":1,"enabled":true'
 # ---- 1. no dispatch/peer keys at all (every config written before this
 #         feature existed) -> resolves to dispatch:"peer", peer:"auto",
 #         reproducing today's RESOLVED VALUES exactly. Load-bearing regression
-#         guard for the config-resolution rule. The DIRECTIVE TEXT for an
-#         unconfirmed "auto" now points at the one-time PEER NAME CONFIRMATION
-#         flow instead of asserting the convention name silently (Change: the
-#         Orchestrator now confirms a role's peer name with the user once,
-#         even on an exact convention match, rather than trusting it blind).
+#         guard for the config-resolution rule. The directive line for it names
+#         the live teammate, the spawn command for when none is live, and the
+#         subagent opt-in — never an Agent call and never a peer-name ceremony.
 clear_cfgs
 proj_cfg "{$BASE,\"roles\":{\"architect\":{\"model\":\"opus\"}}}"
 eval_js "r.roles.architect.dispatch + '|' + r.roles.architect.peer"
 check "no dispatch/peer keys -> peer/auto" '[ "$OUT" = "peer|auto" ]'
 eval_js "L.buildDirective(r)"
-EXPECTED='- Architect — peer name not yet confirmed for this repo (see PEER NAME CONFIRMATION below); resolve it before your first dispatch of this role, then use Agent(subagent_type:"ah:architect", model:"opus") as the fallback once resolved.'
-check "no dispatch/peer keys -> directive line points at PEER NAME CONFIRMATION" 'printf "%s" "$OUT" | grep -qF -- "$EXPECTED"'
-check "no dispatch/peer keys -> directive includes the PEER NAME CONFIRMATION section" 'printf "%s" "$OUT" | grep -q "^PEER NAME CONFIRMATION"'
-check "no dispatch/peer keys -> repo-basename convention shown in the confirmation guidance" 'printf "%s" "$OUT" | grep -qF "proj-<role>"'
-# A name a spawn verb just reported is already in the team file; asking anyone to confirm it is
-# ceremony, so the paragraph exempts it up front.
-check "confirmation paragraph exempts a name a spawn verb reported this session" \
-  'printf "%s" "$OUT" | grep "^PEER NAME CONFIRMATION" | grep -qF "Skip if \`spawn-one\`/\`spawn-ad-hoc\` reported the name this session."'
+check "no dispatch/peer keys -> directive line: live teammate, spawn command, opt-in" \
+  'printf "%s" "$OUT" | grep "^- Architect" | grep -qF "SendMessage its live teammate (names: \`ListAgents\` / \`roster.mjs teams\`); none live → " && printf "%s" "$OUT" | grep "^- Architect" | grep -qF "spawn-ad-hoc architect --cwd" && printf "%s" "$OUT" | grep "^- Architect" | grep -qF "Subagent only if the user opts in: \`node "'
+check "no dispatch/peer keys -> no Agent call and no else-subagent on the line" '! printf "%s" "$OUT" | grep "^- Architect" | grep -qE "Agent\(|else Agent|else the subagent"'
+check "no dispatch/peer keys -> no PEER NAME CONFIRMATION section" '! printf "%s" "$OUT" | grep -qE "PEER NAME CONFIRMATION|not yet confirmed"'
 check "item 13 no longer routes spawning one member through the skill" \
   '! printf "%s" "$OUT" | grep -qF "spawn or dismiss one member" && printf "%s" "$OUT" | grep -qF "dismiss one member, disband"'
 
-# ---- 1b. once EVERY peer-eligible role's peer name is explicitly
-#          confirmed/recorded (peer is a literal string, not "auto"), the
-#          directive goes straight back to asserting the peer route with no
-#          confirmation pointer anywhere — the one-time-only guarantee from
-#          the PEER NAME CONFIRMATION flow. Every peer-eligible role must be
-#          given an explicit peer here: any role left unmentioned still
-#          defaults to dispatch:"peer", peer:"auto" (case 1 above), which
-#          would keep the confirmation section present and defeat this case.
+# ---- 1b. an explicitly recorded peer name is the SendMessage target on the line.
 clear_cfgs
 proj_cfg "{$BASE,\"roles\":{\
 \"ultra-advisor\":{\"model\":\"fable\",\"dispatch\":\"peer\",\"peer\":\"proj-ultra-advisor\"},\
@@ -75,9 +66,8 @@ proj_cfg "{$BASE,\"roles\":{\
 \"implementor\":{\"model\":\"inherit\",\"dispatch\":\"peer\",\"peer\":\"proj-implementor\"}\
 }}"
 eval_js "L.buildDirective(r)"
-EXPECTED='- Architect — peer "proj-architect" via SendMessage if it appears in ListAgents (default), else Agent(subagent_type:"ah:architect", model:"opus")'
-check "confirmed auto-shaped peer name -> directive line matches convention peer route" 'printf "%s" "$OUT" | grep -qF -- "$EXPECTED"'
-check "all roles confirmed -> no PEER NAME CONFIRMATION section" '! printf "%s" "$OUT" | grep -q "^PEER NAME CONFIRMATION"'
+EXPECTED='- Architect — SendMessage peer "proj-architect"; none live → '
+check "recorded peer name -> directive line names that peer" 'printf "%s" "$OUT" | grep -qF -- "$EXPECTED"'
 
 # ---- 2. dispatch:"model" -> no peer mention at all on that role's line,
 #         same shape as a non-peer-eligible role (e.g. task-runner).

@@ -85,7 +85,7 @@ export const AUTO_MODE_VALUES = ["auto", "acceptEdits", "plan", "dontAsk", "manu
 
 /** What the peer-fallback gate does when this member has no live instance (spec 0021). */
 export const ON_MISSING_VALUES = ["auto", "prompt", "never"];
-export const ON_MISSING_DEFAULT = "prompt";
+export const ON_MISSING_DEFAULT = "auto";
 
 /** `team.json` for the default team, or `teams/<team>.json` for a named one (spec 0011 §3). */
 export const teamPath = (dir, team = null) => (team ? join(dir, "teams", `${team}.json`) : join(dir, "team.json"));
@@ -469,16 +469,23 @@ export function defaultTeamScope(dir, prefix) {
  * a healthy session, so under-attribution is the only acceptable error direction.
  */
 export function resolveTeamByPane(dir, paneId) {
-  if (!paneId) return null;
-  let match = null;
-  for (const teamName of [null, ...listTeamNames(dir)]) {
-    const t = readTeam(dir, teamName);
-    const rows = t && Array.isArray(t.members) ? t.members.filter((m) => m && m.transport_id === paneId) : [];
-    if (!rows.length) continue;
-    if (match || rows.length > 1) return null;
-    match = { teamName, team: t, member: rows[0] };
-  }
-  return match;
+  return paneId ? paneResolver(dir)(paneId) : null;
+}
+
+/** `resolveTeamByPane` with every team file read once up front, for callers resolving many panes. */
+export function paneResolver(dir) {
+  const teams = [null, ...listTeamNames(dir)].map((teamName) => ({ teamName, team: readTeam(dir, teamName) }));
+  return (paneId) => {
+    if (!paneId) return null;
+    let match = null;
+    for (const { teamName, team: t } of teams) {
+      const rows = t && Array.isArray(t.members) ? t.members.filter((m) => m && m.transport_id === paneId) : [];
+      if (!rows.length) continue;
+      if (match || rows.length > 1) return null;
+      match = { teamName, team: t, member: rows[0] };
+    }
+    return match;
+  };
 }
 
 /**

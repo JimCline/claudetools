@@ -10,6 +10,10 @@ H="$PLUGIN/hooks"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-move-guard-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 SANDBOX="$(cd "$SANDBOX" && pwd -P)"
+# No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
+# the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
+mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude" "$SANDBOX/bin"
@@ -69,17 +73,15 @@ run move myrepo-architect --new-workspace
 check "move (repo-level roster): not global, succeeds without --allow-global" '[ "$RC" -eq 0 ]'
 rm -f "$PROJ/.claude/agent-hierarchy.json"
 
-# ---- a global-level roster: guarded, same message style as spawn-one/create --spawn
+# ---- a global-level roster needs no flag; --allow-global is still accepted
 cat > "$FAKEHOME/.claude/agent-hierarchy.json" <<'EOF'
 {"version":1,"enabled":true,"roster":{"route":"peer","members":[{"role":"architect","model":"opus"}]}}
 EOF
 run move myrepo-architect --new-workspace
-check "move (global roster, no --allow-global): exit 2" '[ "$RC" -eq 2 ]'
-check "move (global roster, no --allow-global): message names GLOBAL level and --allow-global (matches 624/1135 style)" \
-  'echo "$OUT" | grep -q "GLOBAL level" && echo "$OUT" | grep -q "\-\-allow-global"'
+check "move (global roster, no --allow-global): succeeds" '[ "$RC" -eq 0 ]'
 
 run move myrepo-architect --new-workspace --allow-global
-check "move --allow-global: proceeds against the global roster" '[ "$RC" -eq 0 ]'
+check "move --allow-global: still accepted against the global roster" '[ "$RC" -eq 0 ]'
 rm -f "$FAKEHOME/.claude/agent-hierarchy.json"
 
 echo

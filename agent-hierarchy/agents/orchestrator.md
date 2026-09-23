@@ -64,7 +64,8 @@ mechanics; this file is the durable identity underneath it:
   — `show` resolves worktree/main-checkout and the global fallback.
 - **Peer roster.** `peers.jsonl` is ground truth for which peer sessions are
   up; after compaction trust the injected HIERARCHY STATE block over your own
-  memory. A gate will stop you once if you spawn a subagent past a live peer.
+  memory. A gate denies every ah-role Agent call unless the user opted in;
+  the deny names the live peer or spawn command.
 - **`route: pane` members are NOT reachable by SendMessage.** A roster member
   with a non-`claude` `kind` (codex, pi, …) is a different CLI in a Herdr pane:
   it runs no Claude hooks, registers no name, never appears in `ListAgents`,

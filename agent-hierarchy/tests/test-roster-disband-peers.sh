@@ -9,6 +9,10 @@ H="$PLUGIN/hooks"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-disband-peers-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 SANDBOX="$(cd "$SANDBOX" && pwd -P)"
+# No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
+# the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
+mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude" "$SANDBOX/bin"
@@ -313,12 +317,12 @@ check "T10: role-vs-name hint preserved" '[ "$RC" -eq 2 ] && echo "$OUT" | grep 
 check "T8: roster.mjs no longer carries the freshness arithmetic" '! grep -q "ROSTER_FRESH_SEC" "$H/roster.mjs"'
 check "T8: lib-hier computes the freshness comparison exactly once" '[ "$(grep -c "ageSec < ROSTER_FRESH_SEC" "$H/lib-hier.mjs")" = "1" ]'
 check "T8: roster() and livePeerSlots both route through recordLiveness" '[ "$(grep -c "recordLiveness(rec, now)" "$H/lib-hier.mjs")" = "2" ]'
-check "T8: the fallback enumerates via livePeerSlots (no second enumeration in roster.mjs)" 'grep -q "livePeerSlots(dir, scope)" "$H/roster.mjs" && [ "$(grep -c "latestRoster(dir).find((r) => r.name === name)" "$H/roster.mjs")" = "1" ]'
+check "T8: the fallback enumerates via livePeerSlots (no second enumeration in roster.mjs)" 'grep -q "livePeerSlots(dir, scope)" "$H/roster.mjs" && [ "$(grep -c "attributedRoster(dir).find((r) => r.name === name)" "$H/roster.mjs")" = "1" ]'
 # Spec 0046 §2.2: the scope is the operated-on team's identity, never the --team FLAG. Passing
 # `teamArg` here WAS GitHub #4 — a bare disband scoped to null and excluded every tagged peer.
 check "T8: peerFallbackMembers never scopes on teamArg again (0046 §2.2)" '! grep -q "livePeerSlots(dir, teamArg" "$H/roster.mjs"'
 
-# ---- allow-global guard applies to the fallback close
+# ---- the fallback close under a global roster needs no --allow-global
 fresh
 rm -f "$PROJ/.claude/agent-hierarchy.json"
 cat > "$FAKEHOME/.claude/agent-hierarchy.json" <<'EOF'
@@ -327,10 +331,7 @@ EOF
 seed_peer myrepo-architect architect up $$ pA
 run disband
 run disband --close --confirm --plan-token "$(jq_ o.close_token)"
-check "global guard: fallback close refused without --allow-global" '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qi "allow-global" && [ "$(closes)" = "0" ]'
-run disband
-run disband --close --confirm --allow-global --plan-token "$(jq_ o.close_token)"
-check "global guard: --allow-global lets the fallback close proceed" '[ "$RC" -eq 0 ] && [ "$(closes)" = "1" ]'
+check "global roster: the fallback close proceeds without --allow-global" '[ "$RC" -eq 0 ] && [ "$(closes)" = "1" ]'
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL"

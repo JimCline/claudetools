@@ -9,6 +9,10 @@ H="$PLUGIN/hooks"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-roster-dismiss-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 SANDBOX="$(cd "$SANDBOX" && pwd -P)"
+# No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
+# the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
+mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 HIER_DIR="$PROJ/.claude/hierarchy"
@@ -314,10 +318,7 @@ write_team
 run dismiss myrepo-architect
 TOKEN18=$(plan_token)
 run dismiss myrepo-architect --close --confirm --plan-token "$TOKEN18"
-check "18: --close refused without --allow-global when roster resolves at global level" \
-  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -qi "allow-global"'
-run dismiss myrepo-architect --close --confirm --plan-token "$TOKEN18" --allow-global
-check "18: --close --allow-global succeeds" '[ "$RC" -eq 0 ]'
+check "18: --close succeeds without --allow-global when the roster resolves at global level" '[ "$RC" -eq 0 ]'
 run untrack myrepo-architect --commit --keep-sessions
 rm -f "$FAKEHOME/.claude/agent-hierarchy.json"
 

@@ -19,6 +19,10 @@ check() {
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-team-alias-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 SANDBOX="$(cd "$SANDBOX" && pwd -P)"
+# No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
+# the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
+mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude" "$PROJ/sub/dir"
@@ -73,6 +77,7 @@ ROUTE_PAYLOAD=$(HOME="$FAKEHOME" "$NODE_BIN" -e '
   }));
 ' "$PROJ/sub/dir" "$BASE-reviewer" '[hierarchy-peer-brief reply-to="me" task="x"]
 plain')
+HOME="$FAKEHOME" "$NODE_BIN" "$H/msg.mjs" route subagents --session team-alias-test-13b --cwd "$PROJ/sub/dir" >/dev/null
 OUT=$(echo "$ROUTE_PAYLOAD" | HOME="$FAKEHOME" "$NODE_BIN" "$ROUTE_GATE" 2>&1); RC=$?
 check "13b: route-gate's derived prefix (subdir cwd) agrees with resolveRoster's" \
   'echo "$OUT" | grep -q "\"permissionDecision\":\"deny\""'

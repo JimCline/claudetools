@@ -177,10 +177,10 @@ check "11: no file in hooks/ calls teamPrefix(/teamPrefixInfo( with a single arg
 # ==== 12 (spec 0011 §11 test 7, BLOCKING) — security-adjacent: with a named
 # team active (rung 2 — sessionId matches the team's orchestrator.session_id),
 # a SendMessage to one of its own members must resolve a role and reach
-# 0009's global-scope confirm gate — POSITIVELY producing a deny, not merely
-# avoiding a crash. The failing state here is silence, so "no exception
-# thrown" would pass on the broken (pre-B3) code too. Isolated sandbox: no
-# repo-level roster/config, so scope A/B trigger naturally. ====
+# the route gate — POSITIVELY producing a deny (the session's recorded
+# `subagents` route denies a peer brief), not merely avoiding a crash. The
+# failing state here is silence, so "no exception thrown" would pass on the
+# broken (pre-B3) code too. ====
 S12="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-multi-team-gate-test.XXXXXX")"
 S12="$(cd "$S12" && pwd -P)"
 S12HOME="$S12/home"; S12HD="$S12/hier"; S12PROJ="$S12/myrepo"
@@ -195,8 +195,9 @@ node --input-type=module -e "
     orchestrator: { session_id: 's12-epsilon', pid: $$ }, members: [{ name: 'epsilon-reviewer', role: 'reviewer' }], partial: false }, 'epsilon');
 "
 S12_PAYLOAD=$(S12PROJ="$S12PROJ" node -e 'const[s,t,m]=process.argv.slice(1);process.stdout.write(JSON.stringify({session_id:s,cwd:process.env.S12PROJ,tool_name:"SendMessage",tool_input:{to:t,message:m}}));' "s12-epsilon" "epsilon-reviewer" '[hierarchy-peer-brief reply-to="x" task="t"]')
+echo '{"type":"route","session_id":"s12-epsilon","value":"subagents"}' >> "$S12HD/gates.jsonl"
 OUT=$(echo "$S12_PAYLOAD" | HOME="$S12HOME" AGENT_HIERARCHY_DIR="$S12HD" "$NODE_BIN" "$H/pretooluse-route-gate.mjs" 2>&1); RC=$?
-check "12: named-team SendMessage to its own member resolves a role and reaches 0009's scope gate — POSITIVE deny, not silence" \
+check "12: named-team SendMessage to its own member resolves a role and reaches the route gate (subagents denies a brief) — POSITIVE deny, not silence" \
   'echo "$OUT" | grep -q "\"permissionDecision\":\"deny\""'
 rm -rf "$S12"
 
@@ -277,6 +278,7 @@ node --input-type=module -e "
     orchestrator: { session_id: 's16-theta', pid: $$ }, members: [{ name: 'quill', role: 'reviewer' }], partial: false }, 'theta');
 "
 S16_PAYLOAD=$(S16PROJ="$S16PROJ" node -e 'const[s,t,m]=process.argv.slice(1);process.stdout.write(JSON.stringify({session_id:s,cwd:process.env.S16PROJ,tool_name:"SendMessage",tool_input:{to:t,message:m}}));' "" "quill" '[hierarchy-peer-brief reply-to="x" task="t"]')
+echo '{"type":"route","session_id":"__nosession__","value":"subagents"}' >> "$S16HD/gates.jsonl"
 OUT=$(echo "$S16_PAYLOAD" | HOME="$S16HOME" AGENT_HIERARCHY_DIR="$S16HD" "$NODE_BIN" "$H/pretooluse-route-gate.mjs" 2>&1); RC=$?
 check "16: resolveMemberTeam finds a named team's member with no session_id available — POSITIVE deny, not silence" \
   'echo "$OUT" | grep -q "\"permissionDecision\":\"deny\""'

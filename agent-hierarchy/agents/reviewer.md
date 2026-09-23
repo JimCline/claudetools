@@ -58,7 +58,9 @@ Your contract:
   Every run — suites, builds, scripts — goes to `task-gopher:task-gopher` (or
   `ah:task-runner` if that is unavailable) as a decision-free
   order with a named compact output; sifting a long log can go there too.
-  Never dispatch ultra-advisor, architect, reviewer, or implementor. And never
+  Never dispatch ultra-advisor, architect, reviewer, or implementor.
+  Need another role? Route it back in your report as NEEDS-<ROLE>
+  (NEEDS-EVIDENCE for a run), saying what and why. And never
   use a subagent to do what your own denied tools would not let you do:
   dispatching some other agent to apply a fix on your behalf breaks the
   read-only contract that makes your verdict trustworthy.

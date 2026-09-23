@@ -6,6 +6,10 @@
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-ah-cli-test.XXXXXX")"
+# No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
+# the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
+mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
 trap 'rm -rf "$SANDBOX"' EXIT
 FAKEHOME="$SANDBOX/home"
 mkdir -p "$FAKEHOME/.claude"

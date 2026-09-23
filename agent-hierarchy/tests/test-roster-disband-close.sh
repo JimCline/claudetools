@@ -10,6 +10,10 @@ H="$PLUGIN/hooks"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-disband-close-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 SANDBOX="$(cd "$SANDBOX" && pwd -P)"
+# No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
+# the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
+mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude" "$SANDBOX/bin"
@@ -134,7 +138,7 @@ run disband --close --confirm --plan-token x --keep-sessions
 check "--close --keep-sessions: rejected, exit 2" '[ "$RC" -eq 2 ]'
 run untrack --all --commit --keep-sessions
 
-# ---- team_disband mode:close's --allow-global guard, matching spawn-one/create --spawn (spec 0016 §4.5)
+# ---- team_disband mode:close against a global roster needs no --allow-global
 mkdir -p "$FAKEHOME/.claude"
 cat > "$FAKEHOME/.claude/agent-hierarchy.json" <<'EOF'
 {"version":1,"enabled":true,"roster":{"route":"peer","members":[{"role":"architect","model":"opus"}]}}
@@ -143,11 +147,7 @@ write_team
 run disband
 TOKEN3=$(echo "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).close_token))')
 run disband --close --confirm --plan-token "$TOKEN3"
-check "--close: refused without --allow-global when the roster resolves at global level" \
-  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qi "allow-global"'
-check "--close: team.json untouched by the refused attempt" '[ -e "$TEAM_FILE" ]'
-run disband --close --confirm --plan-token "$TOKEN3" --allow-global
-check "--close --allow-global: succeeds against the global roster" '[ "$RC" -eq 0 ]'
+check "--close: succeeds against the global roster without --allow-global" '[ "$RC" -eq 0 ]'
 run untrack --all --commit --keep-sessions
 rm -f "$FAKEHOME/.claude/agent-hierarchy.json"
 
@@ -189,8 +189,8 @@ cat > "$FAKEHOME/.claude/agent-hierarchy.json" <<'EOF'
 EOF
 write_team
 run disband
-check "disband (plan): next carries --allow-global exactly when the roster resolves at global level" \
-  'echo "$OUT" | jsq "/ --allow-global$/.test(o.next)"'
+check "disband (plan): next carries no --allow-global even when the roster resolves at global level" \
+  'echo "$OUT" | jsq "typeof o.next === \"string\" && !/allow-global/.test(o.next)"'
 rm -f "$FAKEHOME/.claude/agent-hierarchy.json" "$TEAM_FILE"
 
 # ---- a row with no pane to close survives only while its session is provably or possibly there

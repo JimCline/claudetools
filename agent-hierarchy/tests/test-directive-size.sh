@@ -51,10 +51,12 @@ md_ceiling() { # <file> <max>
   check "agents/$1.md <= $2 B (got $OUT)" "[ \"$OUT\" -le \"$2\" ]"
 }
 
-md_ceiling architect     9600
-md_ceiling ultra-advisor 7100
-md_ceiling reviewer      6400
-md_ceiling implementor   5100
+# The four role contracts each carry the rule that a role routes other roles' work back to the
+# Orchestrator instead of dispatching it; these ceilings include that sentence.
+md_ceiling architect     9700
+md_ceiling ultra-advisor 7300
+md_ceiling reviewer      6500
+md_ceiling implementor   5300
 md_ceiling task-runner   5650
 md_ceiling orchestrator  7350
 

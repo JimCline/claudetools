@@ -14,6 +14,12 @@ H="$PLUGIN/hooks"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-spawn-cwd-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 SANDBOX="$(cd "$SANDBOX" && pwd -P)"
+# No test may reach the real herdr: a stub that fails every call sits first on PATH, and the
+# session's pane environment is dropped. tmux is left real here because T5 and the tmux guard
+# case start their own private server (tmux -S <sandbox socket>) and kill it; nothing reaches the
+# user's tmux server.
+mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; chmod +x "$SANDBOX/nolaunch/herdr"
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
 FAKEHOME="$SANDBOX/home"
 mkdir -p "$FAKEHOME/.claude" "$SANDBOX/bin"
 NODE_DIR="$(dirname "$(command -v node)")"
@@ -119,7 +125,7 @@ if command -v tmux >/dev/null 2>&1; then
   TMUX_DIR="$(dirname "$(command -v tmux)")"
   # Session's own default-path is $SANDBOX, deliberately not $T5_REPO, so a regressed
   # spawnShape (no -c) would land the pane somewhere other than $T5_REPO, not by luck.
-  (cd "$SANDBOX" && tmux -S "$TMUX_SOCK" new-session -d -s w1t5)
+  (cd "$SANDBOX" && PATH="$SANDBOX/bin:$PATH" tmux -S "$TMUX_SOCK" new-session -d -s w1t5)
   OUT=$(cd "$T5_ELSEWHERE" && env -u HERDR_ENV HOME="$FAKEHOME" PATH="$TMUX_DIR:$NODE_DIR" TMUX="$TMUX_SOCK,0,0" CLAUDE_PID=$$ node "$H/roster.mjs" create --spawn --mode auto --cwd "$T5_REPO" 2>&1)
   RC=$?
   PANE_ID=$(echo "$OUT" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const p=JSON.parse(s);const m=p.members.find(x=>x.route==='peer');process.stdout.write(m&&m.transport_id?m.transport_id:'')}catch{}})" 2>/dev/null)
@@ -208,7 +214,7 @@ for transport in herdr tmux terminal; do
       GUARD_TMUX_SOCK="/tmp/ah-w1guard-$$.sock"
       GUARD_TMUX_DIR="$(dirname "$(command -v tmux)" 2>/dev/null)"
       if [ -n "$GUARD_TMUX_DIR" ]; then
-        (cd "$SANDBOX" && tmux -S "$GUARD_TMUX_SOCK" new-session -d -s w1guard)
+        (cd "$SANDBOX" && PATH="$SANDBOX/bin:$PATH" tmux -S "$GUARD_TMUX_SOCK" new-session -d -s w1guard)
         PLAN_OUT=$(env -u HERDR_ENV HOME="$FAKEHOME" PATH="$GUARD_TMUX_DIR:$NODE_DIR" TMUX="$GUARD_TMUX_SOCK,0,0" node "$H/roster.mjs" create --plan --cwd "$GUARD_REPO" 2>&1)
         tmux -S "$GUARD_TMUX_SOCK" kill-server 2>/dev/null
         rm -f "$GUARD_TMUX_SOCK"

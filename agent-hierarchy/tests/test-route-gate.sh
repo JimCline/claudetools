@@ -1,6 +1,6 @@
 #!/bin/bash
-# agent-hierarchy — PreToolUse route gate: session routing preference (ask
-# once, then enforce silently per (session, role), one-shot) and tier deny
+# agent-hierarchy — PreToolUse route gate: session routing preference (the
+# peers wall; subagents/prefer-peers opt-ins) and tier deny
 # (dispatching an advisor role at or below the session's own tier without a
 # reason). HOME- and AGENT_HIERARCHY_DIR-redirected; real state untouched.
 # Usage: bash tests/test-route-gate.sh   (exits 0 iff all cases pass)
@@ -53,20 +53,16 @@ seed_busy() { # <name> <role> — fresh `seen` record, busy:true
 set_route() { # <session> <value>
   HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node "$MSG" route "$2" --session "$1" --cwd "$PROJ" >/dev/null; }
 
-# ---- 1: route unset -> ask once, exactly the three-option prompt, roster dispatches only
+# ---- 1: route unset, no roster, none live -> the wall: spawn-ad-hoc every time, never a route-ask
 gate "$(PROJ="$PROJ" payload s1 Agent ah:reviewer 'review it')"
-check "route unset: first reviewer spawn denied with the ask prompt" 'denied'
-check "ask prompt: exact three options, in order" \
-  'case "$OUT" in *"Peer agents only (Recommended)"*"Prefer peer agents, fall back to subagents"*"Subagents only"*) true;; *) false;; esac'
-check "ask prompt: names the record command with --session" 'echo "$OUT" | grep -q "msg.mjs" && echo "$OUT" | grep -q "route <peers|prefer-peers|subagents>" && echo "$OUT" | grep -q -- "--session s1"'
-check "one-shot: route-ask recorded in gates.jsonl" 'grep -q "\"type\":\"route-ask\"" "$GATES" && grep -q "\"session_id\":\"s1\"" "$GATES"'
+check "route unset: reviewer spawn denied with the spawn-ad-hoc command" 'denied && echo "$OUT" | grep -q "spawn-ad-hoc reviewer --cwd"'
+check "no route question" '! echo "$OUT" | grep -q "dispatch route" && ! grep -q "\"type\":\"route-ask\"" "$GATES" 2>/dev/null'
+gate "$(PROJ="$PROJ" payload s1 Agent ah:reviewer 'review it')"
+check "identical re-issue denied again" 'denied'
 gate "$(PROJ="$PROJ" payload s1 Agent ah:architect 'design it')"
-check "still unanswered, same session: no second route-ask (falls through to peers default); no live architect: asks the per-role fallback question instead" \
-  'denied && echo "$OUT" | grep -q "Architect" && echo "$OUT" | grep -q "spawn a subagent"'
-gate "$(PROJ="$PROJ" payload s1 Agent ah:architect 'design it')"
-check "peers default, no live architect: fallback re-issue passes (one-shot spent)" 'allowed_with_note'
+check "architect with a user-written dispatch:model is an opt-in: passes" 'allowed'
 gate "$(PROJ="$PROJ" payload s8 Agent task-gopher:task-gopher 'run tests')"
-check "task-gopher dispatch: not a roster dispatch, never asked" 'allowed'
+check "task-gopher dispatch: not a roster dispatch, never gated" 'allowed'
 
 # ---- 2: msg.mjs route CLI
 OUT=$(HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node "$MSG" route --session s2 --cwd "$PROJ" --plain 2>&1); RC=$?
@@ -118,22 +114,18 @@ check "subagents: identical re-issue passes (one-shot spent)" 'allowed'
 gate "$(PROJ="$PROJ" payload s4 Agent ah:reviewer 'review it')"
 check "subagents: Agent spawn always allowed, even with a live peer" 'allowed'
 
-# ---- 5: peers route — denies spawn while live; when none is live, asks once
-# per role before allowing the subagent fallback, then allows (with note)
+# ---- 5: peers route — a wall: denies spawn while live, and when none is live, every time
 set_route s5 peers
 gate "$(PROJ="$PROJ" payload s5 Agent ah:reviewer 'review it')"
 check "peers, live instances exist: spawn denied, names candidates" 'denied && echo "$OUT" | grep -q "rev-a" && echo "$OUT" | grep -q "rev-b"'
 gate "$(PROJ="$PROJ" payload s5 Agent ah:reviewer 'review it')"
-check "peers: identical re-issue passes (one-shot spent)" 'allowed'
+check "peers: identical re-issue denied again" 'denied && echo "$OUT" | grep -q "rev-a"'
 set_route s5b peers
 gate "$(PROJ="$PROJ" payload s5b Agent ah:implementor 'implement it')"
-check "peers, no live instance for the role: first attempt denied, asks whether to fall back to a subagent" \
-  'denied && echo "$OUT" | grep -q "Implementor" && echo "$OUT" | grep -q "spawn a subagent"'
-check "one-shot: peer-fallback-ask recorded in gates.jsonl" 'grep -q "\"type\":\"peer-fallback-ask\"" "$GATES" && grep -q "\"session_id\":\"s5b\"" "$GATES"'
+check "peers, no live instance for the role: denied with the spawn command" \
+  'denied && echo "$OUT" | grep -q "spawn-ad-hoc implementor --cwd"'
 gate "$(PROJ="$PROJ" payload s5b Agent ah:implementor 'implement it')"
-check "peers, no live instance, already asked this session: re-issue allowed with a systemMessage explaining why" 'allowed_with_note'
-check "F1: the note carries no permissionDecision key (an allow would auto-approve the tool call)" \
-  '[ $RC -eq 0 ] && echo "$OUT" | grep -q "systemMessage" && ! echo "$OUT" | grep -q "permissionDecision"'
+check "peers, no live instance: re-issue denied again" 'denied && ! grep -q "\"type\":\"peer-fallback-ask\"" "$GATES"'
 
 # ---- 6: prefer-peers route — denies only while a live instance is free
 set_route s6 prefer-peers
@@ -149,18 +141,11 @@ set_route s6b prefer-peers
 gate "$(PROJ="$PROJ" payload s6b Agent ah:reviewer 'review it')"
 check "prefer-peers, all live instances busy: spawn allowed" 'allowed'
 
-# ---- F2: roster is memoized once per invocation and shared across the
-# ask-prompt and enforcement paths. No practical black-box way to count
-# fs.readFileSync(peers.jsonl) calls through this bash harness without a
-# fragile require-hook shimming node:fs under ESM (Node does not guarantee
-# monkeypatching the builtin propagates to `import`-bound names) — flagged
-# in [4] gaps per the request's fallback instruction. This instead pins the
-# behavior the memoization must not break: two roles live at once both show
-# up correctly in the ask prompt, sourced from one shared roster snapshot.
+# ---- F2: with two roles live at once, the deny names the dispatched role's live peer
 seed_live impl-f2 implementor
 gate "$(PROJ="$PROJ" payload sf2 Agent ah:implementor 'implement it')"
-check "F2 (behavior pin): ask prompt still lists live peers correctly with a second live role present" \
-  'denied && echo "$OUT" | grep -q "rev-a" && echo "$OUT" | grep -q "impl-f2"'
+check "F2: the deny names the live implementor, not the reviewers" \
+  'denied && echo "$OUT" | grep -q "impl-f2" && ! echo "$OUT" | grep -q "rev-a"'
 
 # ---- F3: an unconfigured but roster-known peer still resolves a role and gates
 seed_live impl-f3 implementor
@@ -174,19 +159,18 @@ check "F3: brief to a name with no roster record at all still passes through" 'a
 
 # ---- F4: the one-shot key includes the route value — a mid-session route
 # change re-arms the deny instead of silently reusing the old route's gate
-seed_live arch-f4 architect
 set_route sf4 prefer-peers
-gate "$(PROJ="$PROJ" payload sf4 Agent ah:architect 'design it')"
-check "F4: prefer-peers, free live architect: denied" 'denied'
-gate "$(PROJ="$PROJ" payload sf4 Agent ah:architect 'design it')"
+gate "$(PROJ="$PROJ" payload sf4 Agent ah:implementor 'implement it')"
+check "F4: prefer-peers, free live implementor: denied" 'denied'
+gate "$(PROJ="$PROJ" payload sf4 Agent ah:implementor 'implement it')"
 check "F4: identical re-issue under the same route passes (one-shot spent)" 'allowed'
 set_route sf4 peers
-gate "$(PROJ="$PROJ" payload sf4 Agent ah:architect 'design it')"
+gate "$(PROJ="$PROJ" payload sf4 Agent ah:implementor 'implement it')"
 check "F4: same session+role, route changed to peers: denied again under the new route" 'denied'
-# mark arch-f4 busy so it stops being a "free live instance" the routing gate
-# would deny on for the tier-gate cases below, which dispatch architect too
-node -e 'const fs=require("fs");const[f]=process.argv.slice(1);
-  fs.appendFileSync(f,JSON.stringify({type:"peer",status:"seen",name:"arch-f4",role:"architect",busy:true,ts:new Date().toISOString()})+"\n");' "$PEERS"
+set_route sf4b prefer-peers
+seed_live arch-f4 architect
+gate "$(PROJ="$PROJ" payload sf4b Agent ah:architect 'design it')"
+check "F4b: a user-written dispatch:model opts in even under prefer-peers with a free peer" 'allowed'
 
 # ---- 7: tier gate — advisor dispatch at/below the session's own tier
 mk_req() { # <role> [reason] -> REQ path
@@ -197,7 +181,7 @@ mk_req() { # <role> [reason] -> REQ path
 }
 REQ_NOREASON=$(mk_req architect)
 REQ_REASON=$(mk_req architect second-opinion)
-set_route t0 prefer-peers   # skip the route-ask so these isolate the tier gate
+set_route t0 prefer-peers   # an opt-in with no free architect, so these isolate the tier gate
 
 gate "$(PROJ="$PROJ" payload t0 Agent ah:architect "[hierarchy-msg $REQ_NOREASON]")"
 check "model unknown: architect dispatch passes (tier gate inert)" 'allowed'
@@ -274,23 +258,22 @@ check "SendMessage brief with reason: passes" 'allowed'
 set_route u3 prefer-peers
 gate "$(PROJ="$PROJ" send_payload u3 arch-peer 'no sentinel here')" CLAUDE_MODEL=claude-opus-4-1
 check "SendMessage without sentinel: not gated" 'allowed'
-# A peer-named target with no team record gets the ordinary confirms; the deny says where the
-# search ran, because a cwd that moved into a worktree looks exactly like this.
+# A peer brief under the default route asks no route question: only the tier rule applies.
 gate "$(PROJ="$PROJ" send_payload u4 arch-peer "$BRIEF_NOREASON")" CLAUDE_MODEL=claude-opus-4-1
-check "route ask to a peer with no team record names the hierarchy dir searched" \
-  'denied && echo "$OUT" | grep -q "no team record names" && echo "$OUT" | grep -qF "under $HD"'
-# The request names its team file, so the teammate exemption survives a hierarchy dir that
-# resolves somewhere else; a request that names none gets the ordinary ask there.
+check "peer brief with no route recorded: tier-denied, no route question" \
+  'denied && echo "$OUT" | grep -q "tier rule" && ! echo "$OUT" | grep -q "dispatch route"'
+# The request names its team file, so the teammate's role resolves even when the hierarchy dir
+# resolves somewhere else.
 cat > "$HD/team.json" <<EOF
 { "team_id": "t1", "roster_level": null, "members": [ { "role": "architect", "name": "arch-peer" } ] }
 EOF
 REQ_DRIFT=$(HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node "$MSG" new --cwd "$PROJ" --to architect --from orchestrator --slug drift --reason second-opinion --to-name arch-peer | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).path)')
 gate "$(PROJ="$PROJ" send_payload u5 arch-peer "[hierarchy-peer-brief reply-to=\"me\" task=\"x\"]
 [hierarchy-msg $REQ_DRIFT]")" CLAUDE_MODEL=claude-opus-4-1 AGENT_HIERARCHY_DIR="$SANDBOX/elsewhere"
-check "teammate found through the request's team_file when the hierarchy dir resolves elsewhere: no ask" 'allowed'
+check "teammate found through the request's team_file when the hierarchy dir resolves elsewhere: passes" 'allowed'
 gate "$(PROJ="$PROJ" send_payload u6 arch-peer "[hierarchy-peer-brief reply-to=\"me\" task=\"x\"]
 [hierarchy-msg $REQ3_REASON]")" CLAUDE_MODEL=claude-opus-4-1 AGENT_HIERARCHY_DIR="$SANDBOX/elsewhere"
-check "same send with a request naming no team file: asked" 'denied && echo "$OUT" | grep -q "no team record names"'
+check "same send with a request naming no team file: no ask either" 'allowed'
 rm -f "$HD/team.json"
 
 # ---- 11: disabled / malformed / other tools fail open

@@ -79,11 +79,9 @@ check "T6: msg-gate does not fire for a direct architect caller" 'is_empty'
 msg_hook t6m2 ""
 check "T6: msg-gate still fires for an unidentified caller (missing token)" 'is_deny'
 
-# route-gate already scopes itself to the Orchestrator via peers.jsonl's own
-# "up" record (pre-existing, spec 0026) — assert it with a test rather than
-# assuming it (§3.2 primary). A session recorded "up" as a subordinate role
-# must not see the routing-preference ask that would otherwise fire on a
-# peer-eligible Agent dispatch with no route recorded yet.
+# route-gate tells a subordinate role session from the Orchestrator via peers.jsonl's own "up"
+# record: a session recorded "up" as a subordinate role is denied a peer-eligible Agent
+# dispatch with route-back text, never the Orchestrator's spawn instruction.
 HIER_DIR="$SANDBOX/hier"
 route_hook() {
   local sid=$1
@@ -94,9 +92,9 @@ PEERS_JSONL="$HIER_DIR/peers.jsonl"
 mkdir -p "$(dirname "$PEERS_JSONL")"
 printf '{"type":"peer","status":"up","role":"implementor","session_id":"t6r","pid":%d,"ts":"%s"}\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$PEERS_JSONL"
 route_hook t6r
-check "T6: route-gate does not ask a session already recorded as a subordinate role" 'is_empty'
+check "T6: route-gate routes a subordinate role session's ah dispatch back, never a spawn command" 'is_deny && echo "$OUT" | grep -q "NEEDS-ARCHITECT" && ! echo "$OUT" | grep -q "spawn-ad-hoc"'
 route_hook t6r2
-check "T6: route-gate still asks an unrecorded (orchestrator) session" 'is_deny'
+check "T6: route-gate walls an unrecorded (orchestrator) session with the spawn command" 'is_deny && echo "$OUT" | grep -q "spawn-ad-hoc architect"'
 
 # ---- T24: no agent_type, persisted role = architect -> allow (§3.7 face 1)
 SESSROLE="$FAKEHOME/.claude/agent-hierarchy.session-roles.json"

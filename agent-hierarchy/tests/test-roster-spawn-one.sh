@@ -11,6 +11,10 @@ H="$PLUGIN/hooks"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-spawn-one-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 SANDBOX="$(cd "$SANDBOX" && pwd -P)"
+# No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
+# the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
+mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude" "$SANDBOX/bin"
@@ -222,27 +226,26 @@ reset_state; clear_hierarchy; init_geometry 180 42; setup_roster 1
 run_one "" ultra-advisor --bogus-flag
 check "8: unknown flag -> non-zero" '[ "$RC" -ne 0 ]'
 
-# ==== 9 — global-level roster needs --allow-global; create --spawn shares the same guard ====
+# ==== 9 — a global-level roster needs no --allow-global; the flag is still accepted ====
 # rm the repo-level roster left by earlier cases first -- resolveRoster prefers repo over global.
 reset_state; clear_hierarchy; init_geometry 180 42; rm -f "$PROJ/.claude/agent-hierarchy.json"
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level global --route peer --cwd "$PROJ" >/dev/null
 HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level global --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
 run_one "HERDR_ENV=1" ultra-advisor
-check "9a: global roster, no --allow-global -> non-zero, names GLOBAL level, no 'declined'" \
-  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "GLOBAL level" && echo "$OUT" | grep -q -- "--allow-global" && ! echo "$OUT" | grep -qi "declined"'
-check "9b: global roster refusal makes no launch attempt" '[ "$(call_count "c.argv[0]===\"agent\" && c.argv[1]===\"start\"")" -eq 0 ]'
+check "9a: global roster, no --allow-global -> spawns" '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"spawned\": true"'
+reset_state; clear_hierarchy; init_geometry 180 42
 run_one "HERDR_ENV=1" ultra-advisor --allow-global
-check "9c: --allow-global proceeds against a global-level roster" \
+check "9c: --allow-global is still accepted against a global-level roster" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"spawned\": true"'
 
 reset_state; clear_hierarchy; init_geometry 180 42; rm -f "$PROJ/.claude/agent-hierarchy.json"
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level global --route peer --cwd "$PROJ" >/dev/null
 HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level global --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
 run_spawn "HERDR_ENV=1" --mode auto
-check "9d: create --spawn against a global roster, no --allow-global -> non-zero, names GLOBAL level, no 'declined'" \
-  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "GLOBAL level" && echo "$OUT" | grep -q -- "--allow-global" && ! echo "$OUT" | grep -qi "declined"'
+check "9d: create --spawn against a global roster, no --allow-global -> proceeds" '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"partial\": false"'
+reset_state; clear_hierarchy; init_geometry 180 42
 run_spawn "HERDR_ENV=1" --mode auto --allow-global
-check "9e: create --spawn --allow-global proceeds against a global-level roster" \
+check "9e: create --spawn --allow-global is still accepted against a global-level roster" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"partial\": false"'
 
 # ==== 11 — spec 0019 §6.2: THE REPORTED BUG. implementor + implementor-2, implementor
@@ -513,8 +516,7 @@ bare "$GLOBHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --dry-run --a
 check "Z2c: --allow-global is still accepted, and changes nothing" \
   '[ "$RC" -eq 0 ] && [ "$(plan_field mode)" = "$NO_ROSTER_MODE" ]'
 bare "$GLOBHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-one reviewer --dry-run
-check "Z3: spawn-one under the same global roster still refuses naming --allow-global" \
-  '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q -- "--allow-global"'
+check "Z3: spawn-one under the same global roster needs no --allow-global" '[ "$RC" -eq 0 ]'
 
 for bad in "" task-runner orchestrator; do
   bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc $bad

@@ -1,73 +1,35 @@
 #!/usr/bin/env node
 /**
- * agent-hierarchy — PreToolUse route gate: global-scope confirm gate + session
- * routing preference + tier rule.
+ * agent-hierarchy — PreToolUse route gate: who may dispatch an ah role, and how + tier rule.
  *
- * Global-scope confirm gate (spec 0009 §4), two independent predicates, both
- * evaluated before routing preference:
- *   - Scope A (roster identity): fires when `resolved.rosterLevel === "global"`
- *     and the role is peer-eligible, UNLESS the dispatch is an Agent/Task spawn
- *     under route "subagents" (a SendMessage peer brief still fires — the
- *     `subagents` route denies that later anyway, but scope A is the more
- *     specific reason). `rosterLevel === null` never fires it.
- *   - Scope B (role config): fires when `resolved.sources[role] === "user"`
- *     (never `"default"` — that is every unconfigured repo, see spec §8.10),
- *     for ANY resolved role except `ultra-advisor` (its own PreToolUse gate,
- *     `pretooluse-ultra-gate.mjs`, already puts a human in the loop). Runs
- *     regardless of PEER_ELIGIBLE_ROLES/route — a plain subagent dispatch
- *     borrows the same user-scope model/effort.
- * Both are answer-or-stay-denied, strict, per (session_id, scope) — unlike the
- * routing-preference ask below, an unanswered re-issue keeps denying (with a
- * shorter reason once the first full prompt has been shown). `allow`/`deny`
- * are recorded via `msg.mjs global-scope <roster|config> <allow|deny>
- * --session <id>` as `{type:"global-scope", session_id, scope, answer}`; the
- * one-shot `{type:"global-scope-ask", session_id, scope}` only suppresses
- * re-showing the long prompt, it authorises nothing. Scope A denies before
- * scope B when both fire on one dispatch, and its reason mentions scope B is
- * pending. See docs/specs/0009-global-roster-confirm-gate.md.
+ * Role sessions and subagents (Agent/Task, and SendMessage peer briefs): a subordinate role
+ * session (its own `up` row carries a role other than orchestrator) or any subagent (hook input
+ * with `agent_id`) never dispatches a peer-eligible ah role — an Agent/Task spawn of one, or a
+ * sentinel-bearing SendMessage brief to one, is DENIED EVERY TIME with route-back text: the need
+ * goes back to the Orchestrator as NEEDS-<ROLE> / NEEDS-EVIDENCE. Legwork (`ah:task-runner`,
+ * `task-gopher:*`), non-ah agent types, replies, and every other subagent tool call pass
+ * untouched. A session whose own identity cannot be resolved (no session_id) is treated as the
+ * Orchestrator: `__nosession__` never matches sessionstart.mjs's `session_id: null` row, so
+ * `upRecordFor` finds nothing and `selfRole` is null — the safe direction.
  *
- * Routing preference (Agent/Task spawning a peer-eligible role, or a
- * SendMessage peer brief): the FIRST such dispatch each session, when no
- * session route answer exists in `gates.jsonl` and no config `route` key is
- * set, is DENIED ONCE PER SESSION (not per role) with a three-option prompt;
- * the orchestrator records the answer with `msg.mjs route <value> --session
- * <id>` and re-issues. The one-shot record is `{type:"route-ask",
- * session_id}` — once made, later dispatches never ask again this session,
- * even unanswered (they fall through to the "peers" default).
+ * Orchestrator, Agent/Task spawning a peer-eligible role: ah dispatch is a peer unless the user
+ * opted in (`subagentOptIn` in lib-config.mjs — the same predicate the directive renders from).
+ * With an opt-in the spawn passes. `prefer-peers` with a free live peer denies once per
+ * (session, role, route) — record `{type:"route-deny", ...}` — and the re-issue passes.
+ * Otherwise it is a wall, denied every time, and the reason is the whole instruction:
+ *   - a live instance exists → SendMessage it (free ones first) with this brief;
+ *   - none live, the role's first roster member has `onMissing` "auto" or unset → the exact
+ *     `spawn-one` command;
+ *   - none live, that member has an explicit `onMissing:"prompt"` → a one-shot AskUserQuestion,
+ *     spawn-the-peer first; the re-issue passes (record `{type:"peer-fallback-ask", ...}`);
+ *   - none live, no roster member for the role → the exact `spawn-ad-hoc` command.
+ * The hook never spawns: launching panes from here would sidestep the session's own Bash
+ * permission prompts and race the hook timeout.
  *
- * Once a route is known (session record > config `route` > "peers"
- * default — see `effectiveRoute` in lib-hier.mjs), it is enforced silently:
- *   - `subagents`: every Agent/Task spawn passes; a SendMessage peer brief is
- *     denied (route says never use peers this session).
- *   - `peers`: an Agent/Task spawn is denied while ANY live instance of that
- *     role exists (brief it instead). When none is live, the FIRST such
- *     dispatch for that role this session is ALSO denied once, asking the
- *     user (via AskUserQuestion) whether to fall back to a subagent for that
- *     specific role; the identical re-issue then passes regardless of the
- *     answer — this is a reminder gate, not an enforced no. Record:
- *     `{type:"peer-fallback-ask", session_id, role}`. Per-member `onMissing`
- *     (spec 0021) overrides this default before the ask fires: "never" falls
- *     straight through to the subagent every time, no gate; "auto" denies
- *     once naming the `spawn-one` command instead of asking (record
- *     `{type:"on-missing-auto", session_id, role}`), degrading to the
- *     "prompt" behaviour above when no usable roster entry exists for the
- *     role (spec 0009 §5.2's rule: recommending a command that will fail is
- *     worse than not recommending one). Resolved from the role's FIRST
- *     roster member in roster order — this is a role-level question,
- *     independent of 0019's per-instance spawn-one selection.
- *   - `prefer-peers`: an Agent/Task spawn is denied only while a live
- *     instance is NOT busy; allowed — without asking — when every live
- *     instance is busy or none is live (the user already opted into silent
- *     subagent fallback by choosing this route).
- * Every enforcement deny is ONE-SHOT per (session, role, route): the
- * identical re-issue passes, but a mid-session route change re-arms the
- * deny for the new route. Record: `{type:"route-deny", session_id, role,
- * route}`.
- *
- * A SendMessage peer brief resolves its role from config first
- * (`resolvedPeerTargets`), then falls back to the roster: a recorded
- * instance whose name matches `to` supplies its role, so an unconfigured
- * but roster-known peer still routes and gates like any other.
+ * Orchestrator, SendMessage peer brief: under route `subagents` it is denied once per
+ * (session, role, route); otherwise it passes. The brief's role resolves from team records
+ * first (all teams, then the team file its request names), then config peer targets, then the
+ * roster, then the name's role token.
  *
  * Tier gate (Agent/Task, and SendMessage peer briefs carrying the sentinel +
  * `[hierarchy-msg`): when the session model is known, the target is architect
@@ -77,12 +39,11 @@
  * `msgs:"off"` there is no request file to carry `reason:`, so the denial
  * text drops the `reason:` instruction.
  *
- * Both mechanisms are reminders, not walls; both fail open on any internal
- * error. Runs after the ultra approval gate and the msg gate, which are
- * independent.
+ * Fails open on any internal error. Runs after the ultra approval gate and the msg gate, which
+ * are independent.
  */
 
-import { hierarchyRoleOf, isSubagent, logHookError, MSG_CLI, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolvedPeerTargets, ROLE_LABELS, ROSTER_CLI, roleFromName, teamPrefix, tierOf } from "./lib-config.mjs";
+import { hierarchyRoleOf, isSubagent, logHookError, MSG_CLI, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolvedPeerTargets, ROLE_LABELS, ROSTER_CLI, roleFromName, rosterMemberFor, subagentOptIn, teamPrefix, tierOf } from "./lib-config.mjs";
 import {
   appendGate,
   describeInstance,
@@ -91,14 +52,13 @@ import {
   hasGate,
   hierarchyDir,
   messageHome,
-  readGates,
   readMsgFile,
   roleTier,
   roster,
   sessionModel,
   upRecordFor,
 } from "./lib-hier.mjs";
-import { listTeamNames, ON_MISSING_DEFAULT, resolveMemberTeam, teamFileState, teamMemberByName } from "./lib-roster.mjs";
+import { ON_MISSING_DEFAULT, resolveMemberTeam, teamMemberByName } from "./lib-roster.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
 
 const TIER_ROLES = ["architect", "ultra-advisor"];
@@ -116,80 +76,68 @@ function decide(decision, reason, systemMessage) {
   process.exit(0);
 }
 
-function askReason(ros, sessionId) {
-  const liveBits = [];
-  for (const role of PEER_ELIGIBLE_ROLES) {
-    const live = (ros[role] || []).filter((i) => i.live);
-    if (live.length) liveBits.push(`${ROLE_LABELS[role]}=${live.map(describeInstance).join("; ")}`);
-  }
+const needsLabel = (role) => `NEEDS-${role.toUpperCase()}`;
+
+function routeBackReason(role, subagent) {
+  const where = subagent
+    ? "Put it in your final report to the session that spawned you."
+    : "Put it in your report: your response file, or your reply to the brief's reply-to.";
   return [
-    `ah: choose this session's dispatch route before tasking roles. Live peers: ${liveBits.length ? liveBits.join(" | ") : "none"}.`,
-    "Ask the user with AskUserQuestion, exactly these options in this order:",
-    '  "Peer agents only (Recommended)" — never spawn a roster subagent; when no live peer exists for a role, ask before falling back to a subagent for that role.',
-    '  "Prefer peer agents, fall back to subagents" — reuse a live peer when one is free; spawn without asking when none is.',
-    '  "Subagents only" — ignore peers entirely this session.',
-    `Record it: node ${MSG_CLI} route <peers|prefer-peers|subagents> --session ${sessionId}`,
-    "Then re-issue this exact dispatch. Say in one line what you recorded.",
-    'Need live peers that do not exist yet? That is the `ah:agent-team` skill\'s job, not a raw roster MCP call.',
+    `ah: role sessions and subagents do not dispatch ah roles (${ROLE_LABELS[role]} here) — only the Orchestrator does.`,
+    `Route it back to your Orchestrator as ${needsLabel(role)} — or NEEDS-EVIDENCE when what you need is a run or a measurement — saying what is needed and why. ${where}`,
+    "Legwork stays available: task-gopher:* and ah:task-runner.",
   ].join("\n");
 }
+
+const optInCmd = (sessionId) => `node "${MSG_CLI}" route subagents --session ${sessionId}`;
 
 function subagentsDenyReason() {
   return "ah: route is subagents this session — spawn the subagent instead, or change route with msg.mjs route.";
 }
 
-function peersDenyReason(role, live) {
-  return `ah: route is peers this session — live instance(s) for ${ROLE_LABELS[role]}: ${live.map(describeInstance).join("; ")}. SendMessage it (set to_name) instead of spawning, or change route with msg.mjs route.`;
-}
-
-/**
- * Spec 0043 §1.5: a `route: pane` member is NOT SendMessage-addressable — it is driven through
- * Herdr agent-control. Every answer this gate gives is some form of "SendMessage the peer
- * instead", so a pane member must never be the member it points at; the caller degrades to the
- * generic no-peer wording, which is correct for it.
- */
-function sendMessageablePeer(resolved, role) {
-  if (!resolved.roster || !Array.isArray(resolved.roster.members)) return null;
-  return resolved.roster.members.find((m) => m.role === role && (m.route || resolved.roster.route) !== "pane") || null;
-}
-
-function peerFallbackAskReason(role, resolved, dir, sessionId, cwd) {
-  // §5.2: offer the spawn-one option only when a roster entry for `role` exists at a
-  // level this session may use (repo/repo-user, or global with a recorded scope-A allow).
-  const rosterUsable = !!resolved.roster && (resolved.rosterLevel !== "global" || globalScopeAnswer(dir, sessionId, "roster") === "allow");
-  const member = rosterUsable ? sendMessageablePeer(resolved, role) : null;
-  if (member) {
-    return [
-      `ah: route is peers this session, but no live instance of ${ROLE_LABELS[role]} exists to route to.`,
-      `A roster entry for ${ROLE_LABELS[role]} exists at ${resolved.rosterLevel} level (name: ${member.name}).`,
-      "Ask the user with AskUserQuestion, exactly these options in this order:",
-      `  "Stand up the real ${ROLE_LABELS[role]} peer (Recommended)" — node ${ROSTER_CLI} spawn-one ${role} --cwd ${cwd}`,
-      "     Then SendMessage the peer instead of re-issuing this dispatch.",
-      '  "Spawn a one-off subagent instead" — re-issue this exact dispatch.',
-      `  "Neither — I'll start it myself" — do not dispatch; say you are blocked on ${ROLE_LABELS[role]}.`,
-    ].join("\n");
-  }
-  const why = resolved.rosterLevel === "global" && !rosterUsable ? "global roster not confirmed" : `no roster entry for ${ROLE_LABELS[role]}`;
-  return `ah: route is peers this session, but no live instance of ${ROLE_LABELS[role]} exists to route to (${why}). Ask the user with AskUserQuestion: "No live ${ROLE_LABELS[role]} peer is available — spawn a subagent for this role instead?", options "Yes, spawn a subagent (Recommended)" and "No, wait — I'll start the peer myself". If yes, re-issue this exact dispatch. If no, do not dispatch — wait for the peer to come up or tell the user you're blocked on ${ROLE_LABELS[role]}.`;
-}
-
-function onMissingFor(resolved, role) {
-  // §4: a role-level question ("is a peer of this kind available"), not a per-instance one —
-  // 0019's per-instance selection belongs to spawn-one, not here. First member in roster order.
-  const member = sendMessageablePeer(resolved, role);
-  return (member && member.onMissing) || ON_MISSING_DEFAULT;
-}
-
-function onMissingAutoReason(role, cwd) {
+function peersDenyReason(role, live, sessionId, resolved) {
+  const ordered = [...live.filter((i) => !i.busy), ...live.filter((i) => i.busy)];
   return [
-    `ah: no live ${ROLE_LABELS[role]} peer, and its on-missing policy is "auto".`,
-    `Run: node ${ROSTER_CLI} spawn-one ${role} --cwd ${cwd}`,
-    "Then SendMessage the peer instead of re-issuing this dispatch. Do not ask the user — this is configured.",
+    `ah: live ${ROLE_LABELS[role]} peer(s): ${ordered.map(describeInstance).join("; ")}.`,
+    `ah roles are dispatched as peers: SendMessage "${ordered[0].name}" (set to_name) with the brief this Agent call carried, instead of spawning.`,
+    `A subagent only if the user opts in: ${optInCmd(sessionId)}.`,
+    ...paneLine(resolved, rosterMemberFor(resolved, role)),
   ].join("\n");
 }
 
 function preferPeersDenyReason(role, live) {
   return `ah: route is prefer-peers this session — free live instance(s) for ${ROLE_LABELS[role]}: ${live.map(describeInstance).join("; ")}. SendMessage it (set to_name) instead of spawning, or change route with msg.mjs route.`;
+}
+
+function spawnCommand(role, member, cwd, model) {
+  if (member) return `node "${ROSTER_CLI}" spawn-one ${role} --cwd ${cwd}`;
+  return `node "${ROSTER_CLI}" spawn-ad-hoc ${role} --cwd ${cwd}${model ? ` --model ${model}` : ""}`;
+}
+
+function paneLine(resolved, member) {
+  return member && (member.route || resolved.roster.route) === "pane" ? ["This member's route is pane: drive it with `herdr agent prompt`, not SendMessage."] : [];
+}
+
+function spawnReason(role, resolved, member, cwd, model, sessionId) {
+  return [
+    `ah: no live ${ROLE_LABELS[role]} peer. ah roles are dispatched as peers, never subagents, unless the user opts in.`,
+    `Run: ${spawnCommand(role, member, cwd, model)}`,
+    "Then SendMessage the `name` the command prints, with the brief you gave this Agent call. The session takes a few seconds to boot: if the name is not in ListAgents yet, wait until it is (`roster.mjs teams` reports it live).",
+    "If the command reports the member already exists or is already live, SendMessage the name it reports.",
+    `If the command fails (no herdr or tmux, launch error), tell the user and ask whether to opt into subagents: ${optInCmd(sessionId)}. Re-issue this Agent call only after that is recorded; it is denied every time until then.`,
+    ...paneLine(resolved, member),
+  ].join("\n");
+}
+
+function promptAskReason(role, resolved, member, cwd) {
+  return [
+    `ah: no live ${ROLE_LABELS[role]} peer, and its roster member ${member.name ? `"${member.name}" ` : ""}has on-missing policy "prompt".`,
+    "Ask the user with AskUserQuestion, exactly these options in this order:",
+    `  "Spawn the ${ROLE_LABELS[role]} peer (Recommended)" — ${spawnCommand(role, member, cwd, null)}, then SendMessage the name it prints with this brief instead of re-issuing this dispatch.`,
+    '  "Use a subagent for this dispatch" — re-issue this exact dispatch.',
+    `  "Neither — I'll start it myself" — do not dispatch; say you are blocked on ${ROLE_LABELS[role]}.`,
+    ...paneLine(resolved, member),
+  ].join("\n");
 }
 
 function tierReason(model, tier, role, roleModel, roleTierN, msgsOff) {
@@ -199,70 +147,8 @@ function tierReason(model, tier, role, roleModel, roleTierN, msgsOff) {
   return `tier rule: you are ${model}(${tier}) ≥ ${ROLE_LABELS[role]} ${roleModel}(${roleTierN}). ${escape}`;
 }
 
-function globalScopeAnswer(dir, sessionId, scope) {
-  const recs = readGates(dir).filter((r) => r.type === "global-scope" && r.session_id === sessionId && r.scope === scope);
-  return recs.length ? recs[recs.length - 1].answer : null;
-}
-
-function globalScopeReaskReason(scope, sessionId, scopeBPending) {
-  const what = scope === "roster" ? "the global roster" : "user-scope role configuration";
-  const note = scopeBPending ? " Note: a second question about user-scope role configuration (scope B) is also pending for this dispatch." : "";
-  return `ah: you were already asked about ${what} this session and did not record an answer. Run node ${MSG_CLI} global-scope ${scope} <allow|deny> --session ${sessionId}, then re-issue.${note}`;
-}
-
-function globalRosterAskReason(resolved, sessionId, scopeBPending) {
-  const members = resolved.roster.members.map((m) => `${m.name}(${m.role})`).join(", ") || "(none)";
-  const lines = [
-    `ah: no roster is configured for this repo (checked repo and repo-user). The roster resolving here is the GLOBAL one at ${resolved.roster.path}, members: ${members}. It may belong to an unrelated project.`,
-    "Ask the user with AskUserQuestion, exactly these options in this order:",
-    '  "Create a roster for this repo (Recommended)" — run the /agent-roster skill\'s Init then Add flow for this repo, then re-issue.',
-    '  "Use the global roster for this session" — records allow; no further prompting for this scope.',
-    `  "Subagents only this session" — node ${MSG_CLI} route subagents --session ${sessionId}`,
-    `Record the answer: node ${MSG_CLI} global-scope roster <allow|deny> --session ${sessionId}`,
-    "Then re-issue this exact dispatch. Say in one line what you recorded.",
-  ];
-  if (scopeBPending) lines.push("Note: a second question about user-scope role configuration (scope B) is also pending for this dispatch.");
-  return lines.join("\n");
-}
-
-function globalRosterDenyReason(sessionId) {
-  return `ah: the global roster was declined for this session. Create a repo roster with the /agent-roster skill, or switch to subagents (msg.mjs route subagents --session ${sessionId}).`;
-}
-
-function globalConfigAskReason(role, resolved, sessionId) {
-  const entry = resolved.roles[role];
-  const lines = [
-    `ah: ${ROLE_LABELS[role]}'s configuration here comes from your USER-scope config (~/.claude/agent-hierarchy.json): model=${entry.model} effort=${entry.effort || "-"} dispatch=${entry.dispatch || "-"}. This repo has no project or repo-user config for ${ROLE_LABELS[role]}, so those settings may have been set for a different project.`,
-    "Ask the user with AskUserQuestion, exactly these options in this order:",
-    '  "Use the user-scope settings for this session (Recommended)" — records allow.',
-    '  "Set this role for this repo instead" — run the /agent-roster skill\'s Add/Edit flow at repo level, then re-issue.',
-    `  "Stop — I'll decide later" — do not dispatch; say you are blocked on ${ROLE_LABELS[role]}.`,
-    `Record the answer: node ${MSG_CLI} global-scope config <allow|deny> --session ${sessionId}`,
-    "Then re-issue this exact dispatch. Say in one line what you recorded.",
-  ];
-  return lines.join("\n");
-}
-
-function globalConfigDenyReason(role) {
-  return `ah: user-scope role configuration was declined for this session. Set ${ROLE_LABELS[role]} at repo level with the /agent-roster skill, then re-issue.`;
-}
-
-function enforceGlobalScope(dir, sessionId, scope, askReasonFn, denyReasonFn, scopeBPending) {
-  const answer = globalScopeAnswer(dir, sessionId, scope);
-  if (answer === "deny") decide("deny", denyReasonFn());
-  if (answer === "allow") return;
-  const asked = hasGate(dir, (r) => r.type === "global-scope-ask" && r.session_id === sessionId && r.scope === scope);
-  if (!asked) {
-    appendGate(dir, { type: "global-scope-ask", session_id: sessionId, scope });
-    decide("deny", askReasonFn());
-  }
-  decide("deny", globalScopeReaskReason(scope, sessionId, scopeBPending));
-}
-
 try {
   const input = await readHookInput();
-  if (isSubagent(input)) decide(null);
-
   const toolName = input.tool_name;
   const isDispatch = toolName === "Agent" || toolName === "Task";
   const isSend = toolName === "SendMessage";
@@ -276,16 +162,8 @@ try {
   const repoBasename = teamPrefix(cwd, resolved.team);
   const dir = hierarchyDir(cwd);
 
-  // The route question is the Orchestrator's to answer. A session running as a
-  // dispatched subordinate role must resolve routing without a human in the loop
-  // — it is executing someone else's brief, and the human it would interrupt is
-  // not the one who chose to dispatch it. Spec 0026 §3.1.1: `sessionId` is the
-  // "__nosession__" sentinel when the hook input carries none, while
-  // sessionstart.mjs writes `session_id: null` for that same case — they must
-  // NOT be made to agree. The mismatch means `upRecordFor` finds no record,
-  // `selfRole` is null, and the session is treated as Orchestrator: the safe
-  // direction when self-identity can't be resolved.
-  const selfRole = (upRecordFor(dir, sessionId) || {}).role || null;
+  const subagent = isSubagent(input);
+  const selfRole = subagent ? null : (upRecordFor(dir, sessionId) || {}).role || null;
   const isSubordinateSession = selfRole !== null && selfRole !== "orchestrator";
 
   let rosterCache = null;
@@ -293,12 +171,6 @@ try {
 
   let role = null;
   let text = "";
-  // A send to a member already recorded in one of this repo's team files settles the routing
-  // question by itself: the teammate exists, was spawned here, and is addressed by name, so
-  // neither the global-scope confirms nor the route ask has anything left to decide.
-  const EXEMPT_ROSTER_LEVELS = [null, "repo", "repo-user"]; // an absent key is undefined, so it is not matched by the null here
-  let toTeamMember = false;
-  let noTeamRecordNote = "";
   if (isDispatch) {
     role = hierarchyRoleOf(toolInput.subagent_type);
     text = typeof toolInput.prompt === "string" ? toolInput.prompt : "";
@@ -324,21 +196,6 @@ try {
     }
     const teamMember = membership.found ? teamMemberByName(teamDir, to, membership.team) : null;
     role = teamMember ? teamMember.role : null;
-    if (teamMember) {
-      // The team records decide, not the member: EVERY record holding this name must carry a
-      // level known to borrow nothing from the global roster, so the answer never depends on
-      // which record a scan reaches first. An absent key, "global", or anything unrecognised
-      // fails closed and keeps every confirm. So does a team file that exists but yields no
-      // record: it cannot be searched for the name, so it cannot be ruled out as a holder.
-      const files = [null, ...listTeamNames(teamDir)].map((t) => teamFileState(teamDir, t));
-      const holders = files.map((f) => f.team).filter((t) => t && Array.isArray(t.members) && t.members.some((m) => m && m.name === to));
-      toTeamMember = !files.some((f) => f.state === "unusable") && holders.length > 0 && holders.every((t) => EXEMPT_ROSTER_LEVELS.includes(t.roster_level));
-    } else if (to) {
-      // A teammate spawned from the main checkout is invisible from a worktree, which has its
-      // own hierarchy dir. The confirms below are then correct but look spurious, so they say
-      // where the search ran and let the caller spot a cwd that moved.
-      noTeamRecordNote = `\n\nNote: no team record names "${to}" under ${dir}. A teammate this session spawned is exempt from this confirm, but only where its team record is found — if you spawned "${to}", this session's cwd has moved (a worktree or another repo has its own hierarchy dir); return to the cwd you spawned from and resend.`;
-    }
     if (!role) role = PEER_ELIGIBLE_ROLES.find((r) => resolvedPeerTargets(r, resolved.roles[r], repoBasename).includes(to)) || null;
     if (!role && to) {
       const ros = getRoster();
@@ -346,94 +203,46 @@ try {
     }
     if (!role && to) role = roleFromName(to);
   }
+  const peerEligible = !!role && PEER_ELIGIBLE_ROLES.includes(role);
 
-  // ---- scope A/B: global-scope confirm gate (spec 0009 §4), evaluated before
-  // routing preference — see the header comment for the two predicates.
-  const scopeBWillFire = !!role && role !== "ultra-advisor" && resolved.sources[role] === "user";
-  if (!toTeamMember && role && PEER_ELIGIBLE_ROLES.includes(role)) {
-    const preRoute = effectiveRoute(dir, resolved, sessionId).value;
-    const scopeAApplies = resolved.rosterLevel === "global" && !(isDispatch && preRoute === "subagents");
-    if (scopeAApplies) {
-      enforceGlobalScope(dir, sessionId, "roster", () => globalRosterAskReason(resolved, sessionId, scopeBWillFire) + noTeamRecordNote, () => globalRosterDenyReason(sessionId), scopeBWillFire);
-    }
-  }
-  if (scopeBWillFire && !toTeamMember) {
-    enforceGlobalScope(dir, sessionId, "config", () => globalConfigAskReason(role, resolved, sessionId) + noTeamRecordNote, () => globalConfigDenyReason(role));
+  // ---- role sessions and subagents: never dispatch an ah role, whatever the route or config
+  if (subagent || isSubordinateSession) {
+    if (peerEligible) decide("deny", routeBackReason(role, subagent));
+    decide(null);
   }
 
-  // ---- routing preference: ask once per session, then enforce silently
-  if (role && PEER_ELIGIBLE_ROLES.includes(role)) {
-    const configRoute = resolved.route;
+  // ---- Orchestrator: ah dispatch is a peer unless the user opted in
+  if (peerEligible) {
     const routeInfo = effectiveRoute(dir, resolved, sessionId);
-    if (routeInfo.source !== "session" && !configRoute && !isSubordinateSession && !toTeamMember) {
-      if (!hasGate(dir, (r) => r.type === "route-ask" && r.session_id === sessionId)) {
-        appendGate(dir, { type: "route-ask", session_id: sessionId });
-        decide("deny", askReason(getRoster(), sessionId) + noTeamRecordNote);
-      }
-      // already asked this session and still unanswered: fall through, enforce the "peers" default
-    }
-    // Spec 0026 §3.3: with the ask suppressed above, a subordinate session with no config route
-    // lands on prefer-peers — the only route with no interactive ask anywhere in it — rather than
-    // the "peers" default, which contains two.
-    const route = isSubordinateSession && routeInfo.source !== "session" && !configRoute ? "prefer-peers" : routeInfo.value;
+    const route = routeInfo.value;
     const alreadyDenied = hasGate(dir, (r) => r.type === "route-deny" && r.session_id === sessionId && r.role === role && r.route === route);
 
-    if (route === "subagents") {
-      if (isSend && !alreadyDenied) {
+    if (isSend) {
+      if (route === "subagents" && !alreadyDenied) {
         appendGate(dir, { type: "route-deny", session_id: sessionId, role, route });
         decide("deny", subagentsDenyReason());
       }
-    } else if (isDispatch) {
+    } else {
       const live = (getRoster()[role] || []).filter((i) => i.live);
-      if (route === "peers") {
-        if (live.length) {
-          if (!alreadyDenied) {
-            appendGate(dir, { type: "route-deny", session_id: sessionId, role, route });
-            decide("deny", peersDenyReason(role, live));
-          }
-        } else {
-          // spec 0021 §4: per-member on-missing policy overrides the default "ask" behaviour.
-          const policy = onMissingFor(resolved, role);
-          if (policy === "never") {
-            decide(null, null, `ah: no live ${ROLE_LABELS[role]} peer, and its on-missing policy is "never" — spawning the subagent.`);
-          }
-          if (policy === "auto") {
-            // §4.3: identical availability guard to peerFallbackAskReason's roster-usable check —
-            // recommending a spawn-one command that will fail is worse than not recommending one.
-            const rosterUsable = !!resolved.roster && (resolved.rosterLevel !== "global" || globalScopeAnswer(dir, sessionId, "roster") === "allow");
-            const member = rosterUsable ? sendMessageablePeer(resolved, role) : null;
-            if (member) {
-              const askedAuto = hasGate(dir, (r) => r.type === "on-missing-auto" && r.session_id === sessionId && r.role === role);
-              if (!isSubordinateSession && !askedAuto) {
-                appendGate(dir, { type: "on-missing-auto", session_id: sessionId, role });
-                decide("deny", onMissingAutoReason(role, cwd));
-              }
-              // Spec 0026 §3.4: a subordinate session never sees the ask above, so the narration
-              // here must not claim one was already shown this session.
-              const note = isSubordinateSession
-                ? `ah: no live ${ROLE_LABELS[role]} peer; its on-missing policy is "auto" — spawning the subagent (subordinate session, not asking).`
-                : `ah: no live ${ROLE_LABELS[role]} peer; its on-missing policy is "auto" and spawn-one was already recommended this session — spawning the subagent.`;
-              decide(null, null, note);
-            }
-            // !rosterUsable or no roster member for the role: degrade to "prompt" below (§4.3).
-          }
-          const askedFallback = hasGate(dir, (r) => r.type === "peer-fallback-ask" && r.session_id === sessionId && r.role === role);
-          if (!isSubordinateSession && !askedFallback) {
-            appendGate(dir, { type: "peer-fallback-ask", session_id: sessionId, role });
-            decide("deny", peerFallbackAskReason(role, resolved, dir, sessionId, cwd));
-          }
-          // Spec 0026 §3.4: same narration correction — a subordinate session was never asked.
-          const fallbackNote = isSubordinateSession
-            ? `ah: route is peers this session, no live instance of ${ROLE_LABELS[role]} exists — spawning the subagent (subordinate session, not asking).`
-            : `ah: route is peers this session, no live instance of ${ROLE_LABELS[role]} exists, and the user was already asked this session — spawning the subagent.`;
-          decide(null, null, fallbackNote);
-        }
-      } else if (route === "prefer-peers") {
-        const free = live.filter((i) => !i.busy);
-        if (free.length && !alreadyDenied) {
+      const free = live.filter((i) => !i.busy);
+      const optedIn = subagentOptIn(role, resolved, routeInfo, live);
+      if (!optedIn && route === "prefer-peers" && free.length) {
+        if (!alreadyDenied) {
           appendGate(dir, { type: "route-deny", session_id: sessionId, role, route });
           decide("deny", preferPeersDenyReason(role, free));
         }
+      } else if (!optedIn) {
+        if (live.length) decide("deny", peersDenyReason(role, live, sessionId, resolved));
+        const member = rosterMemberFor(resolved, role);
+        if (member && (member.onMissing || ON_MISSING_DEFAULT) === "prompt") {
+          if (!hasGate(dir, (r) => r.type === "peer-fallback-ask" && r.session_id === sessionId && r.role === role)) {
+            appendGate(dir, { type: "peer-fallback-ask", session_id: sessionId, role });
+            decide("deny", promptAskReason(role, resolved, member, cwd));
+          }
+          decide(null, null, `ah: no live ${ROLE_LABELS[role]} peer, its on-missing policy is "prompt", and the user was already asked this session — spawning the subagent.`);
+        }
+        const model = typeof toolInput.model === "string" && toolInput.model ? toolInput.model : null;
+        decide("deny", spawnReason(role, resolved, member, cwd, model, sessionId));
       }
     }
   }

@@ -44,7 +44,8 @@ Your contract:
   reviewer, or implementor — you have the Agent tool, so this is a rule you
   enforce on yourself, not one the harness enforces for you. You may dispatch
   `task-gopher:task-gopher` (or `ah:task-runner` if that is
-  unavailable) for retrieval and execution legwork.
+  unavailable) for retrieval and execution legwork. Need another role? Route it back in your report as NEEDS-<ROLE>
+  (NEEDS-EVIDENCE for a run), saying what and why.
 - **Do not commit** unless the dispatch explicitly tells you to.
 - **Never call the generic `advisor` tool** — denied in your frontmatter;
   harness offers it anyway → rule stands. Escalation path for anything beyond

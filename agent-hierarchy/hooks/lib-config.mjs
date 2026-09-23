@@ -123,16 +123,12 @@ export function cliRootLine() {
 export const MSGS_MODES = ["required", "off"];
 
 /**
- * Session dispatch-routing preference for peer-eligible roles: "peers" (never
- * spawn a roster subagent — the default when nothing has decided; when no
- * live peer exists for a role, the gate asks once per role before allowing a
- * subagent fallback), "subagents" (never route to a peer), or "prefer-peers"
- * (peer when one is live and free, else subagent, without asking). Unlike
- * `msgs`/`handoffs`, an unset config value is NOT normalized to a default
- * here — `resolveConfig` returns `route: null` when no layer sets it, because
- * "unset" and "explicitly peers" are different states to
- * `pretooluse-route-gate.mjs`: only the former asks the user once per session
- * which route to use at all.
+ * Session dispatch-routing preference for peer-eligible roles: "peers" (the
+ * default — never a subagent; no live peer means spawn one, and the gate's
+ * deny carries the spawn command), "subagents" (never route to a peer), or
+ * "prefer-peers" (peer when one is live and free, else subagent, without
+ * asking). The latter two are user opt-ins. `resolveConfig` returns
+ * `route: null` when no layer sets it; `effectiveRoute` then reads "peers".
  */
 export const ROUTE_VALUES = ["peers", "subagents", "prefer-peers"];
 
@@ -272,8 +268,8 @@ export function tierOf(model) {
 export const HANDOFF_MODES = ["auto", "confirm"];
 
 /**
- * Roles the Orchestrator should try as a named peer session (SendMessage)
- * before falling back to spawning a subagent. Ultra-Advisor is included
+ * Roles the Orchestrator dispatches as a named peer session (SendMessage),
+ * never as a subagent unless the user opted in (`subagentOptIn`). Ultra-Advisor is included
  * because pretooluse-ultra-gate.mjs also watches SendMessage calls addressed
  * to its named peer, so the peer route is gated exactly like the subagent
  * route — see that file. Task-Runner is excluded: task-gopher is already its
@@ -281,7 +277,7 @@ export const HANDOFF_MODES = ["auto", "confirm"];
  */
 export const PEER_ELIGIBLE_ROLES = ["ultra-advisor", "architect", "reviewer", "implementor"];
 
-/** Per-role dispatch route: "peer" tries the named peer session first, falling back to a subagent; "model" always spawns a subagent. */
+/** Per-role dispatch route: "peer" dispatches to a peer session, spawning one when none is live; "model" always spawns a subagent. */
 export const DISPATCH_MODES = ["peer", "model"];
 
 /** The named-peer-session convention shared by the injected directive and the Ultra-Advisor gate: "<repo-basename>-<role>". */
@@ -322,6 +318,31 @@ export function resolvedPeerTargets(role, entry, repoBasename) {
   if (Array.isArray(entry.peer)) return entry.peer.filter((p) => typeof p === "string" && p.trim());
   if (entry.peer && entry.peer !== "auto") return [entry.peer];
   return [peerName(repoBasename, role)];
+}
+
+/** The first roster member for `role`, in roster order, or null. */
+export function rosterMemberFor(resolved, role) {
+  const r = resolved && resolved.roster;
+  return r && Array.isArray(r.members) ? r.members.find((m) => m && m.role === role) || null : null;
+}
+
+/**
+ * Whether peer-eligible `role` may be spawned as a subagent in an Orchestrator session. Only a
+ * user opt-in makes it so: the effective route is `subagents`, or `prefer-peers` with no free live
+ * peer; a user-written `roles.<role>.dispatch:"model"`; or the role's roster member has route
+ * `subagent`, or `onMissing:"never"` with no live peer. `route` is `effectiveRoute()`'s
+ * `{value, source}` or null. `live` is the role's live instances, or null when unknown — the
+ * live-dependent opt-ins then do not apply.
+ */
+export function subagentOptIn(role, resolved, route, live) {
+  const known = Array.isArray(live);
+  const value = route && route.value;
+  if (value === "subagents" || (value === "prefer-peers" && known && !live.some((i) => !i.busy))) return true;
+  const entry = resolved.roles && resolved.roles[role];
+  if (entry && entry.dispatch === "model" && resolved.sources && resolved.sources[role] !== "default") return true;
+  const member = rosterMemberFor(resolved, role);
+  if (!member) return false;
+  return (member.route || resolved.roster.route) === "subagent" || (member.onMissing === "never" && known && live.length === 0);
 }
 
 /** One-name convenience wrapper over `resolvedPeerTargets`: the first target, or null when there is none. */
@@ -725,24 +746,34 @@ function loadScope(path, scope, warnings) {
  * trusted as-is, the CLI layer validates it with `validateTeamAlias` before
  * we ever see it; (2) the team (default or named) whose `team.json` binds
  * `orchestrator.session_id === opts.sessionId`, letting an orchestrator omit
- * `--team` after `create`; (3) `null`, the default team. Any read failure
- * (missing team file, unreadable member list) degrades to `null` rather than
- * throwing — 0009 §8.12's fail-open catch, extended to team resolution.
+ * `--team` after `create`; (3) the team whose `orchestrator.session_id` is
+ * unset and whose `orchestrator.pid` is the calling Claude session's pid —
+ * `spawn-one`/`spawn-ad-hoc` record only the pid, so without this the
+ * session that spawned a team cannot see it; (4) `null`, the default team.
+ * The caller pid is `opts.pid`, else `process.ppid` (a hook's parent is the
+ * Claude process). A CLI's parent is a shell, so CLI callers pass the pid
+ * spawn-* records (`--orchestrator-pid`, else `CLAUDE_PID`); a non-integer
+ * pid skips (3). A team with a session_id is
+ * never adopted by pid. Any read failure (missing team file, unreadable
+ * member list) degrades to `null` rather than throwing — 0009 §8.12's
+ * fail-open catch, extended to team resolution.
  */
 function resolveTeamScope(cwd, opts) {
   if (opts && typeof opts.team === "string" && opts.team) return opts.team;
-  if (opts && opts.sessionId) {
-    try {
-      const dir = hierarchyDir(cwd);
-      const base = readTeam(dir);
-      if (base && base.orchestrator && base.orchestrator.session_id === opts.sessionId) return null;
-      for (const name of listTeamNames(dir)) {
-        const team = readTeam(dir, name);
-        if (team && team.orchestrator && team.orchestrator.session_id === opts.sessionId) return name;
-      }
-    } catch {
-      // fail-open to default — see doc comment above.
+  const pid = opts && opts.pid !== undefined ? opts.pid : process.ppid;
+  try {
+    const dir = hierarchyDir(cwd);
+    const teams = [null, ...listTeamNames(dir)].map((name) => ({ name, orch: (readTeam(dir, name) || {}).orchestrator }));
+    if (opts && opts.sessionId) {
+      const hit = teams.find((t) => t.orch && t.orch.session_id === opts.sessionId);
+      if (hit) return hit.name;
     }
+    if (Number.isInteger(pid) && pid > 0) {
+      const hit = teams.find((t) => t.orch && !t.orch.session_id && t.orch.pid === pid);
+      if (hit) return hit.name;
+    }
+  } catch {
+    // fail-open to default — see doc comment above.
   }
   return null;
 }
@@ -942,32 +973,29 @@ export function subagentType(role, entry) {
 
 /**
  * One dispatch line per role. `inherit` renders as "omit the parameter", never
- * as a value. A peer-eligible role still sitting on the unconfirmed
- * `peer:"auto"` default gets a pointer to PEER NAME CONFIRMATION instead of a
- * resolved name — the repo-basename convention is a guess, not a settled
- * answer, until a user has confirmed it once. A role whose peer name IS
- * already settled (see `resolvedPeerTarget`) leads with the named-peer
- * SendMessage route and gives the subagent call as the fallback; a role
- * resolved to "model" — including every non-peer-eligible role — gets the
- * subagent call alone.
+ * as a value. A peer-eligible role the user has not opted into subagents for
+ * (`subagentOptIn`, with live state unknown here) gets its peer target, the
+ * spawn command for when none is live, and the opt-in command — never a
+ * subagent call. Every other role gets the subagent call alone.
  */
-function roleLines(roles, repoBasename) {
+function roleLines(resolved, repoBasename, sessionId, route) {
+  const cwd = resolved.cwd || "<abs cwd>";
   return ROLES.map((role) => {
-    const entry = roles[role];
+    const entry = resolved.roles[role];
     const type = subagentType(role, entry);
     const agentCall =
       entry.model === "inherit"
         ? `Agent(subagent_type:"${type}") — OMIT \`model\` entirely (inherits this session's model). Never pass "inherit" as a value.`
         : `Agent(subagent_type:"${type}", model:"${entry.model}")`;
-    if (PEER_ELIGIBLE_ROLES.includes(role) && entry.dispatch === "peer" && entry.peer === "auto") {
-      return `- ${ROLE_LABELS[role]} — peer name not yet confirmed for this repo (see PEER NAME CONFIRMATION below); resolve it before your first dispatch of this role, then use ${agentCall} as the fallback once resolved.`;
-    }
-    const peers = resolvedPeerTargets(role, entry, repoBasename);
-    if (!peers.length) {
+    if (!PEER_ELIGIBLE_ROLES.includes(role) || subagentOptIn(role, resolved, route, null)) {
       return `- ${ROLE_LABELS[role]} — ${agentCall}`;
     }
-    const named = peers.map((p) => `"${p}"`).join(" / ");
-    return `- ${ROLE_LABELS[role]} — peer ${named} via SendMessage if it appears in ListAgents (default), else ${agentCall}`;
+    const explicit = entry.peer && entry.peer !== "auto";
+    const target = explicit
+      ? `peer ${resolvedPeerTargets(role, entry, repoBasename).map((p) => `"${p}"`).join(" / ")}`
+      : "its live teammate (names: `ListAgents` / `roster.mjs teams`)";
+    const verb = rosterMemberFor(resolved, role) ? "spawn-one" : "spawn-ad-hoc";
+    return `- ${ROLE_LABELS[role]} — SendMessage ${target}; none live → \`node "${ROSTER_CLI}" ${verb} ${role} --cwd ${cwd}\`, then SendMessage the name it prints. Subagent only if the user opts in: \`node "${MSG_CLI}" route subagents --session ${sessionId || "<id>"}\`.`;
   });
 }
 
@@ -992,26 +1020,6 @@ function gateSentences(sessionId) {
 }
 
 /**
- * Guidance appended once, only when at least one peer-eligible role's config
- * still has `peer:"auto"` — its peer session name has never been confirmed
- * for this repo. Mirrors the ranking `/hierarchy init` steps 6-8 already use,
- * applied lazily at first dispatch instead of only during the wizard, so a
- * role never run through `init` (or hand-added to the config) still gets its
- * peer name settled once rather than guessed at on every dispatch forever.
- */
-function peerConfirmationParagraph(repoBasename) {
-  return [
-    "PEER NAME CONFIRMATION — a role above marked \"peer name not yet confirmed\" has `peer:\"auto\"` never settled for this repo. Skip if `spawn-one`/`spawn-ad-hoc` reported the name this session. Else resolve ONCE, at that role's first dispatch:",
-    `1. ListAgents. Exact match on "${repoBasename}-<role>" first (repo-basename convention).`,
-    "2. No match + you know this session's display name (UI, or user told you) → also try \"<that name's prefix>-<role>\" — some setups name peers off a shared custom prefix, not the repo dir.",
-    "3. Rank ListAgents output: (a) exact match on expected name, (b) contains expected prefix AND a role-match token (\"architect\", \"reviewer\", \"implementor\", \"ultra-advisor\"/\"advisor\"), (c) role token only, (d) prefix only, (e) everything else — same tiers as `/hierarchy init`.",
-    "4. AskUserQuestion — even an exact match gets this one-time confirmation, never assume silently. Offer: confirm the top candidate (if any); \"pick from a list\" of up to the top 4 ranked candidates when 2 or more exist; \"type in the exact name\"; \"no peer — always use a subagent for this role\".",
-    "5. Record immediately with the Write tool in the most specific `.claude/agent-hierarchy.json` that already exists (project if present, else user), replacing only that role's object: `peer:\"<confirmed-name>\"` (keep `dispatch:\"peer\"`) for a confirmed name; `dispatch:\"model\"` with `peer` omitted for \"no peer\". Preserve every other key and role. One line: what you recorded, where.",
-    "6. Proceed with THIS dispatch on the resolved route. Every later dispatch of this role in this repo uses the recorded value — never ask again unless the user changes it via `/hierarchy` or the config file.",
-  ].join("\n");
-}
-
-/**
  * The three 0.29.0 protocol items: message files (12), roster + route (13),
  * tier rule (14). `hierDir`, `model`, and `route` may be null (unit callers);
  * the text degrades to the generic form. `route`, when given, is
@@ -1019,7 +1027,7 @@ function peerConfirmationParagraph(repoBasename) {
  */
 function protocolItems1214(resolved, hierDir, model, route, sessionId) {
   const dirText = hierDir || "<hierarchy dir>";
-  const routeText = route ? `${route.value} (from ${route.source})` : "not yet chosen — your first roster dispatch will ask";
+  const routeText = route ? `${route.value} (from ${route.source})` : "peers (default)";
   const routeCmd = `node "${MSG_CLI}" route <peers|prefer-peers|subagents>${sessionId ? ` --session ${sessionId}` : ""}`;
   const t = tierOf(model);
   const roleTierText = `Architect ${resolved.roles.architect.model}(${tierOf(resolved.roles.architect.model) ?? "?"}), Ultra-Advisor ${resolved.roles["ultra-advisor"].model}(${tierOf(resolved.roles["ultra-advisor"].model) ?? "?"})`;
@@ -1029,7 +1037,7 @@ function protocolItems1214(resolved, hierDir, model, route, sessionId) {
       : `TIER RULE — read your own model from your environment line and rank haiku<sonnet<opus<fable; ${roleTierText}.`;
   return [
     `12. MESSAGE FILES — every role dispatch (Agent spawn of architect/implementor/reviewer/ultra-advisor, or a peer brief via SendMessage) carries its brief as a file, not inline prose; a PreToolUse gate denies the dispatch otherwise. Writer: \`node "${MSG_CLI}" new --to <role> --from orchestrator --slug <slug> [--to-name <peer-or-agent name>] [--parent <id>] [--reason context|second-opinion|parallel]\` (never hand-roll ids or skeletons), then fill EVERY section of the skeleton it prints — request keys [0] tldr [1] goal [2] context [3] constraints [4] files [5] acceptance [6] want_back; \`[0] tldr\` = one bullet per section, \`- [N] key: <≤10-word gist>\`. Style: bullets, imperative, no prose, no restating what the reader can see; every constraint / negative / acceptance criterion survives verbatim — brevity is the tie-breaker, never the goal. In-band pointer: the Agent prompt / SendMessage body opens with \`[hierarchy-msg <abs request path>]\` then ≤3 TL;DR lines (peer briefs keep the [hierarchy-peer-brief ...] sentinel line first). Reader: \`grep -n '^## \\\\[' <path>\` = the index; Read(offset,limit) only the sections the tldr says matter (whole-file Read fine when small). The role replies \`[hierarchy-msg <abs response path>]\` + its [1] status bullet; a response file closes the exchange — new work is a new id (\`--parent <id>\` links it), never an append. Files under ${dirText}/msgs/; \`node "${MSG_CLI}" list|index|sweep|roster\` (or /hierarchy msgs|peers|sweep). Multiple instances per role are normal — roles are categories; \`to_name:\`/\`from_name:\` name the instance.`,
-    `13. PEER ROSTER + ROUTE — ${dirText}/peers.jsonl is ground truth for which role peers are up, seen, or briefed; after compaction trust the HIERARCHY STATE block over memory. This session's dispatch route is ${routeText} — honor it without re-asking (a PreToolUse gate enforces it, one-shot per role per session, on the roster roles). User changes it in chat ("peers only", "subagents only", "prefer peers"/"peers when free") → record immediately with \`${routeCmd}\` and confirm in one line. Standing up, reshaping, or tearing down a live Team — create/spawn a Team, dismiss one member, disband, resync/move — goes through the \`ah:agent-team\` skill (\`Skill(skill:"ah:agent-team")\`, or \`/agent-team\`); editing the roster TEMPLATE — add/edit/remove a role — through \`ah:agent-roster\`; neither is a raw roster MCP call. A one-off subagent dispatch of a role is ordinary protocol, no skill. Spawning one session is a direct call, not a skill: a roster member is \`node "${ROSTER_CLI}" spawn-one <role> [--member <n>] --cwd <abs cwd>\`; with no roster, or for a role the roster does not carry, \`… spawn-ad-hoc <role> [--kind pi|codex|claude] [--route peer|pane] --cwd <abs cwd>\`. A non-\`claude\` \`--kind\` is route \`pane\`: drive it with \`herdr agent prompt\`, never SendMessage.`,
+    `13. PEER ROSTER + ROUTE — ${dirText}/peers.jsonl is ground truth for which role peers are up, seen, or briefed; after compaction trust the HIERARCHY STATE block over memory. This session's dispatch route is ${routeText} — honor it without re-asking. Under "peers" a PreToolUse gate denies EVERY Agent call for Ultra-Advisor/Architect/Reviewer/Implementor: the deny names the live peer to SendMessage, or carries the exact spawn command to run. A subagent for those roles only when the user opts in: they say so ("subagents only", "prefer peers"/"peers when free") → record immediately with \`${routeCmd}\` and confirm in one line; "peers only" revokes it. Standing up, reshaping, or tearing down a live Team — create/spawn a Team, dismiss one member, disband, resync/move — goes through the \`ah:agent-team\` skill (\`Skill(skill:"ah:agent-team")\`, or \`/agent-team\`); editing the roster TEMPLATE — add/edit/remove a role — through \`ah:agent-roster\`; neither is a raw roster MCP call. Spawning one session is a direct call, not a skill: a roster member is \`node "${ROSTER_CLI}" spawn-one <role> [--member <n>] --cwd <abs cwd>\`; with no roster, or for a role the roster does not carry, \`… spawn-ad-hoc <role> [--kind pi|codex|claude] [--route peer|pane] --cwd <abs cwd>\`. A non-\`claude\` \`--kind\` is route \`pane\`: drive it with \`herdr agent prompt\`, never SendMessage.`,
     `14. ${tierOpen} Do not dispatch Architect or Ultra-Advisor for REASONING when its tier ≤ yours — take that role's contract inline (write the spec at the spec path yourself; adjudicate yourself). Same-or-lower-tier dispatch only for: context — the design is large and belongs out of your window; second-opinion — the user asked, or you want a fresh-context check; parallel — other work runs meanwhile. Put the reason in the request file's reason: field and one tldr line. Ultra-Advisor: escalate only when strictly higher than you; same tier → decide it yourself and say so. Reviewer is exempt — review buys independence, not tier. A PreToolUse gate denies ONCE per role per session when your model is known, the role's tier ≤ yours, and the request file carries no reason:.`,
   ];
 }
@@ -1045,28 +1053,23 @@ export function buildDirective(resolved, sessionId, extra = {}) {
   const route = extra && extra.route && typeof extra.route.value === "string" ? extra.route : null;
   const confirm = resolved.handoffs === "confirm";
   const repoBasename = teamPrefix(resolved.cwd, resolved.team);
-  const needsPeerConfirmation = ROLES.some(
-    (role) =>
-      PEER_ELIGIBLE_ROLES.includes(role) && resolved.roles[role].dispatch === "peer" && resolved.roles[role].peer === "auto"
-  );
   const lines = [
     "Agent hierarchy ACTIVE. You are the Orchestrator: decompose, dispatch, synthesize — do not design or implement non-trivial changes yourself.",
     "",
-    "Roles — dispatch route per role below: peer session via SendMessage, or always a spawned subagent. Legwork (Task-Runner) always spawns or delegates to task-gopher; pass `model` on the Agent call — agent frontmatter is fallback only. Role with a peer target: SendMessage it first when ListAgents shows it running (Ultra-Advisor's peer route gated exactly like its subagent route — item 7), else the subagent. No peer target → always the subagent:",
-    ...roleLines(resolved.roles, repoBasename),
+    "Roles — dispatch route per role below. Ultra-Advisor, Architect, Reviewer, Implementor are peer sessions: SendMessage the live one; none live → spawn it with the command on its line, then SendMessage the name it prints. A subagent for these only when its line shows an Agent call — the user opted in (Ultra-Advisor's peer route gated exactly like its subagent route — item 7). Legwork (Task-Runner) always spawns or delegates to task-gopher; pass `model` on the Agent call — agent frontmatter is fallback only:",
+    ...roleLines(resolved, repoBasename, sessionId, route),
     "",
-    ...(needsPeerConfirmation ? [peerConfirmationParagraph(repoBasename), ""] : []),
     "PEER BRIEF CONTRACT — a peer session is an independent Claude session: unlike a subagent, NOTHING returns its result to you automatically; a peer that finishes goes idle without telling you unless the brief itself obliges it to report. Every SendMessage that tasks a role peer must:",
     "- Open with the sentinel line `[hierarchy-peer-brief reply-to=\"sender\" task=\"<short-slug>\"]`. reply-to=\"sender\" = the peer replies to the delivery-envelope address: your message arrives wrapped as `<cross-session-message from=\"...\">`; copying that `from` into the reply's `to` is the reliable route (the sender is often NOT in the peer's ListAgents — never rely on that). Explicit `reply-to=\"<name> [ref]\"` only to redirect the report to a third session.",
     "- Next line: `[hierarchy-msg <request path>]` — the brief lives in the message file (item 12); set its `to_name:` to the peer's session name.",
     "- Same self-contained brief a subagent would get (spec path, task, constraints) — the peer shares none of your context.",
     "- End with an explicit report-back order: the exact report expected (same as the role's subagent form); the reply rule restated in prose (copy this message's wrapper `from` into the SendMessage `to`); and plainly: task NOT COMPLETE until that report is sent back via SendMessage — finishing silently strands the caller.",
-    "- No reply and ListAgents shows the peer idle → ping ONCE (\"you owe a report on task <slug> — SendMessage it back to the sender\"); still silent → dispatch the role's subagent and tell the user the peer stalled.",
+    "- No reply and ListAgents shows the peer idle → ping ONCE (\"you owe a report on task <slug> — SendMessage it back to the sender\"); still silent → tell the user the peer stalled; a subagent for that role only if they opt in (item 13).",
     "",
     "Protocol (hard default, not a preference):",
     ...(confirm
       ? [
-          "0. Handoff gate — user chose per-handoff approval (config handoffs:\"confirm\"). Before dispatching Ultra-Advisor, Architect, Implementor, or Reviewer — review-loop re-dispatches included — read that role's dispatch line in Roles above. No peer target (subagent-only) → skip ListAgents for it; offer \"Dispatch <role> (Recommended)\", \"Do it inline yourself\", \"Skip this step\". Peer target named → ListAgents first: is that session present? Then AskUserQuestion naming the role, its model, one line on what you hand it. Peer listed → offer \"Task peer \\\"<name>\\\" via SendMessage (Recommended)\", \"Dispatch <role> subagent instead\", \"Do it inline yourself\", \"Skip this step\", in that order. Peer target but not listed → drop the peer option for this dispatch; offer the subagent-only three. Filter peer-vs-subagent options by this session's route (item 13): \"peers\" → peer option only, no subagent option; \"subagents\" → subagent option only, no peer option even if listed; \"prefer-peers\" → both, peer first. This item decides only WHETHER to hand off — the route decides HOW, asked once, not per dispatch. Ultra-Advisor: both routes equally gated by item 7's PreToolUse approval gate (it watches SendMessage to the Ultra-Advisor peer as it watches Agent/Task) — the peer option never skips user approval. Ask per dispatch, not per plan; never re-ask a dispatch already approved. Legwork (Task-Runner / task-gopher) exempt — errands are not handoffs. \"Task peer\" = SendMessage that peer the same self-contained brief a subagent gets, then await its reply as you would a subagent's completion; the brief must follow the PEER BRIEF CONTRACT above — a peer not ordered to report back does the work and goes idle silently. \"Do it inline\" = you take that role's contract for that step. \"Skip\" = the step does not happen; say plainly what that leaves undesigned or unverified.",
+          "0. Handoff gate — user chose per-handoff approval (config handoffs:\"confirm\"). Before dispatching Ultra-Advisor, Architect, Implementor, or Reviewer — review-loop re-dispatches included — read that role's dispatch line in Roles above. Line shows an Agent call (the user opted into subagents for it) → skip ListAgents for it; offer \"Dispatch <role> (Recommended)\", \"Do it inline yourself\", \"Skip this step\". Otherwise ListAgents first: is its peer present? Then AskUserQuestion naming the role, its model, one line on what you hand it. Peer listed → offer \"Task peer \\\"<name>\\\" via SendMessage (Recommended)\", \"Do it inline yourself\", \"Skip this step\", in that order. Peer not listed → offer \"Spawn the <role> peer (Recommended)\", \"Do it inline yourself\", \"Skip this step\". Add \"Dispatch <role> subagent instead\" only when the user opted in (route subagents/prefer-peers, item 13). This item decides only WHETHER to hand off — the route decides HOW. Ultra-Advisor: both routes equally gated by item 7's PreToolUse approval gate (it watches SendMessage to the Ultra-Advisor peer as it watches Agent/Task) — the peer option never skips user approval. Ask per dispatch, not per plan; never re-ask a dispatch already approved. Legwork (Task-Runner / task-gopher) exempt — errands are not handoffs. \"Task peer\" = SendMessage that peer the same self-contained brief a subagent gets, then await its reply as you would a subagent's completion; the brief must follow the PEER BRIEF CONTRACT above — a peer not ordered to report back does the work and goes idle silently. \"Do it inline\" = you take that role's contract for that step. \"Skip\" = the step does not happen; say plainly what that leaves undesigned or unverified.",
         ]
       : []),
     "1. Gate: binds the top-level Orchestrator only. Role agents never spawn ultra-advisor/architect/reviewer/implementor. They MAY dispatch task-gopher for legwork — that is not recursion.",
@@ -1110,6 +1113,7 @@ export function buildRoleSessionNotice(role, agentType) {
     "If a message tasks you as a peer (it opens with `[hierarchy-peer-brief reply-to=...]`), the work is not finished until you have sent your report back via SendMessage to that reply-to address — completing the task and going idle without replying strands the session that tasked you.",
     `You are a peer ${ROLE_LABELS[role] || role}. Briefs arrive as [hierarchy-msg <path>]; read via grep '^## \\[' then Read; reply with a response file (node "${MSG_CLI}" new --type response --id <id> --req <that request path>) and [hierarchy-msg <path>] first line.`,
     "The request's frontmatter `team_file` is your Team's file by absolute path — trust it over anything derived from your cwd; `team_guide` beside it says how to use it.",
+    "Role sessions do not dispatch ah roles (Ultra-Advisor, Architect, Reviewer, Implementor): route any such need back to your Orchestrator in your report as NEEDS-<ROLE> (e.g. NEEDS-IMPLEMENTOR), or NEEDS-EVIDENCE for a run or a measurement; legwork (`task-gopher:*`, `ah:task-runner`) is allowed.",
   ].join(" ");
 }
 
@@ -1151,11 +1155,11 @@ export function statusReport(cwd) {
     const r = resolved.roster;
     out.push(`Roster: level=${r.level} route=${r.route} path=${r.path}`);
     for (const m of r.members) {
-      // spec 0021: default ("prompt") is resolved here at the display site, not stamped onto the
+      // The default ("auto") is resolved here at the display site, not stamped onto the
       // member — literal, not imported, to avoid a lib-roster.mjs -> lib-config.mjs import cycle
       // (lib-roster.mjs already imports ROLES/VALID_MODELS_BY_ROLE from this file).
       const onMissingDefaulted = m.onMissing === undefined || m.onMissing === null;
-      const onMissingEffective = onMissingDefaulted ? "prompt" : m.onMissing;
+      const onMissingEffective = onMissingDefaulted ? "auto" : m.onMissing;
       // §3.3: name the reason, not a bare "(inert)" — non-peer-eligible role and subagent route are
       // two different causes with two different fixes.
       // Spec 0043 §1.3: `pane` keeps on-missing's spawn-selection meaning but has no
@@ -1183,13 +1187,6 @@ export function statusReport(cwd) {
       ? `Team alias: ${aliasInfo.alias} (from ${aliasInfo.source}) — agents named ${aliasInfo.alias}-<role>`
       : `Team alias: none — agents named ${aliasInfo.prefix}-<role>`
   );
-  if (resolved.rosterLevel === "global") {
-    out.push("  — GLOBAL roster; confirmation required before dispatching to its members (spec 0009 §4).");
-  }
-  const userScopeRoles = ROLES.filter((role) => resolved.sources[role] === "user");
-  if (userScopeRoles.length) {
-    out.push(`  — role config for ${userScopeRoles.map((role) => ROLE_LABELS[role]).join(", ")} comes from user scope; confirmation required (spec 0009 §4).`);
-  }
   out.push(`Stand up one missing peer: node "${ROSTER_CLI}" spawn-one <role> --cwd ${resolved.cwd}. Full-team Create is the /agent-team skill's job — do not hand-assemble create calls.`);
   let team = null;
   try {

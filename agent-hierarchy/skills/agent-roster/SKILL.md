@@ -206,13 +206,11 @@ Layout (`roster.layout`) is team-wide, not a per-member field — there is no
 change it outside of `init`.
 
 `--on-missing auto|prompt|never` (spec 0021, peer-routed members only) sets
-what the route gate does when this role has no live peer: `prompt` (default)
-is today's three-option ask; `never` falls straight through to a subagent,
-no prompt; `auto` denies once naming the `spawn-one` command instead of
-asking — **spawn without asking**, still one orchestrator turn, never a
-zero-turn spawn. It never bypasses the global-scope confirm gate (§4.4 of the
-spec) — a global-level roster still asks before it is used at all, regardless
-of any member's `onMissing`.
+what the route gate does when this role has no live peer: `auto` (default)
+denies every time naming the `spawn-one` command — **spawn without asking**,
+still one orchestrator turn, never a zero-turn spawn; `prompt` asks once,
+spawn-the-peer first, and the re-issue passes; `never` is a user opt-in to a
+subagent, no prompt.
 
 ### `--kind`: non-Claude members (spec 0043)
 

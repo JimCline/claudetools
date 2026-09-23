@@ -201,7 +201,8 @@ for an explicit **`dispatch`** route, stored per role in the config:
 - **`"peer"`** (the recommended default, and what every config written
   before this option existed already did) — check `ListAgents` for that
   role's peer session and `SendMessage` it instead of spawning a fresh
-  subagent when one is listed, falling back to a subagent when it isn't —
+  subagent when one is listed, spawning the peer (`roster.mjs spawn-one` /
+  `spawn-ad-hoc`) when it isn't, never a subagent unless you opt in —
   the same cold-start and re-briefing tax the pane experiment was trying to
   avoid, solved without a terminal in the loop. The peer's name is either the
   `<repo>-<role>` convention (e.g. `agent-hierarchy-architect`) or an
@@ -249,8 +250,8 @@ carry the same self-contained brief a subagent would get, since the peer
 shares none of the caller's context; end with an explicit report-back order
 naming the exact report expected and stating plainly that the task is not
 complete until that report is sent; and, if no reply arrives and `ListAgents`
-shows the peer idle, ping it once before falling back to a subagent and
-telling the user the peer stalled.
+shows the peer idle, ping it once, then tell the user the peer stalled — a
+subagent for that role only if the user opts in.
 
 On the peer side, hooks enforce the obligation rather than relying on prose
 alone: a `UserPromptSubmit` hook records an owed reply when a brief's sentinel
@@ -296,24 +297,22 @@ records `seen`/`briefed` from ListAgents output and sent briefs (fresh within
 accepts an array — and open briefs are split per instance by `to_name`
 (unassigned briefs count against every instance).
 
-**Routing preference.** One question per session, not one per role: the first
-dispatch that would task a peer-eligible role (Architect, Ultra-Advisor,
-Reviewer, Implementor) is denied once with an `AskUserQuestion` prompt —
-`peers` (never spawn a subagent — the default), `subagents` (never route to a
-peer), or `prefer-peers` (peer when one is live and free, else subagent,
-without asking). `msg.mjs route <value> --session <id>` records the answer; a
-config `route` key means never ask. After that, enforcement is silent and per
-(session, role) one-shot — the identical re-issue passes: `subagents` denies
-a SendMessage peer brief; `peers` denies a subagent spawn while any live
-instance exists, and when none exists ALSO asks once per role, via
-`AskUserQuestion`, before allowing the subagent fallback for that role
-(reminder gate — the re-issue passes regardless of the answer); `prefer-peers`
-denies a spawn only while a live instance is free (not busy), and falls back
-to a subagent silently, without asking, when none is. `handoffs: "confirm"`'s
-per-dispatch question (item 0) still asks whether to hand off at all, but its
-peer-vs-subagent options are filtered by the route so the same choice is never
-asked twice. Task-Runner/task-gopher are exempt — errands are not roster
-dispatches.
+**Routing preference.** ah dispatch of a peer-eligible role (Architect,
+Ultra-Advisor, Reviewer, Implementor) is always a peer unless the user opted
+in. The default route, `peers`, is a wall, not a reminder: every Agent spawn
+of such a role is denied, and the deny is the whole instruction — SendMessage
+the live peer (named), or run the exact `spawn-one` command (roster member,
+`onMissing` `auto` or unset) or `spawn-ad-hoc` command (no roster member),
+then SendMessage the name it prints. Only a roster member with an explicit
+`onMissing: "prompt"` asks once, spawn-the-peer first. Opt-ins, all the
+user's: `msg.mjs route subagents --session <id>` (or `prefer-peers`: peer when
+one is live and free, else subagent), a config `route` key, a user-written
+`dispatch: "model"`, or a roster member with `route: "subagent"` or
+`onMissing: "never"`; `route peers` revokes a session opt-in. Under
+`subagents` a SendMessage peer brief is denied once. Role sessions and
+subagents never dispatch these roles at all — they route the need back to the
+Orchestrator as `NEEDS-<ROLE>`. Task-Runner/task-gopher are exempt — errands
+are not roster dispatches.
 
 **Tier rule.** Dispatching an advisor role (Architect, Ultra-Advisor) at or
 below the session's own model tier (haiku < sonnet < opus < fable) is
