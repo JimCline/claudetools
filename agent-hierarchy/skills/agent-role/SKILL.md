@@ -63,17 +63,19 @@ the fix loop below.
    drafted sentence, a tighter variant, or Other.
 5. **Agent file**, from the dry-run's `agent_file` status:
    - found: "Use existing <path> (Recommended)" or "Point at a different agent";
-   - not found: "Scaffold .claude/agents/<name>.md in this repo — passes the
-     contract (Recommended inside a repo)", "Scaffold
-     ~/.claude/agents/<name>.md", "I'll write my own file first" (stop here —
+   - not found: "Scaffold ~/.claude/agents/<name>.md — passes the contract,
+     usable in every repo (Recommended)", "Scaffold .claude/agents/<name>.md
+     in this repo only", "I'll write my own file first" (stop here —
      the user writes it and re-runs add or check), or "Use an existing agent"
      via Other.
 6. **Model.** The class allowlist, class default first. advise needs an
    explicit fable or opus.
 7. **Description.** "Use the agent file's description (Recommended)" when it
    has one, or "Write a one-line description".
-8. **Level.** repo (Recommended inside a repo), repo-user, or global. Say so
-   when the level does not match where the agent file lives.
+8. **Level.** global (Recommended), repo, or repo-user — but when the agent
+   file is repo-level, recommend repo instead, since a global row pointing at
+   it is unavailable in every other repo. Say so when the level does not
+   match where the agent file lives.
 9. **Pre-flight.** The full `R role set … --dry-run`. Errors → the fix loop,
    then dry-run again until there are none.
 10. **Commit.** Show the exact command, run `R role set …`, and report the row,

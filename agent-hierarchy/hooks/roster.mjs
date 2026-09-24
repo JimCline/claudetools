@@ -313,7 +313,12 @@ function roleSet(name) {
       if (given[k] !== undefined) fail(`role set ${name}: --${k} does not apply to a built-in role — only --agent, --model and --dispatch`);
     }
   }
-  const level = typeof opts.level === "string" ? requireLevel(opts.level) : targetLevel({ allowMissing: true }).level;
+  // Default: where the row already lives (a write elsewhere would be shadowed
+  // or would shadow it), else beside a repo scaffold, else global.
+  const defined = levelOfScope(reg.sources[name]);
+  const level = typeof opts.level === "string" ? requireLevel(opts.level)
+    : defined && defined !== "shipped" ? defined
+    : given.scaffold === "repo" ? "repo" : "global";
   const path = rosterLevelPaths(cwd)[level];
   const data = readLevelFile(path);
   const layerRoles = data.roles && typeof data.roles === "object" && !Array.isArray(data.roles) ? data.roles : null;

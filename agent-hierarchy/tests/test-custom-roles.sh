@@ -70,6 +70,15 @@ done
 R role set auditor --class review --description "Audits licences." --level repo
 R role set auditor --model sonnet --level repo
 check "T2: seeding from the row keeps class, description and unrelated keys" 'node -e "const c=JSON.parse(require(\"fs\").readFileSync(\"$CFG\",\"utf8\"));const a=c.roles.auditor;process.exit(a.class===\"review\"&&a.description===\"Audits licences.\"&&a.model===\"sonnet\"&&c.handoffs===\"auto\"?0:1)"'
+R role set auditor --model sonnet
+R role list --json
+check "T2: with no --level an edit stays at the level the role is defined at" '[ "$(echo "$OUT" | jfield "o.roles.find(r=>r.name===\"auditor\").level")" = "repo" ]'
+R role set fetcher --class legwork
+R role list --json
+check "T2: with no --level a new role is written globally" '[ "$(echo "$OUT" | jfield "o.roles.find(r=>r.name===\"fetcher\").level")" = "global" ]'
+R role remove fetcher
+R role set newbie --class legwork --description "Runs errands." --scaffold repo --dry-run
+check "T2: with no --level a repo scaffold puts the row at repo" '[ "$(echo "$OUT" | jfield "o.level")" = "repo" ]'
 mkdir -p "$(dirname "$(HOME="$FAKEHOME" node -e "import('$H/lib-config.mjs').then(L=>process.stdout.write(L.rosterLevelPaths('$PROJ')['repo-user']))")")"
 RU=$(HOME="$FAKEHOME" node -e "import('$H/lib-config.mjs').then(L=>process.stdout.write(L.rosterLevelPaths('$PROJ')['repo-user']))")
 echo '{"version":1,"roles":{"auditor":{"model":"opus"}}}' > "$RU"
