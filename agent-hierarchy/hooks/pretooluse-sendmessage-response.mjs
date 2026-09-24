@@ -33,11 +33,9 @@
  * Fails open on every error path, exactly like the rest of this plugin.
  */
 
-import { isSubagent, logHookError, MSG_CLI, readHookInput, resolveConfig, resolveHierarchyRole } from "./lib-config.mjs";
+import { classProp, isSubagent, logHookError, MSG_CLI, readHookInput, resolveConfig, resolveHierarchyRole } from "./lib-config.mjs";
 import { appendGate, extractMsgToken, hasGate, hierarchyDir, parseMsgFilename, readMsgFile, responsePlan, validateResponseToken } from "./lib-hier.mjs";
 import { pendingFor } from "./lib-peer.mjs";
-
-const GATED_ROLES = ["architect", "implementor"];
 
 function decide(decision, reason) {
   if (decision) {
@@ -114,8 +112,8 @@ try {
   if (input.tool_name !== "SendMessage") decide(null);
   if (isSubagent(input)) decide(null);
 
-  const { role: callerRole, direct: callerDirect } = resolveHierarchyRole(input);
-  if (!callerDirect || !GATED_ROLES.includes(callerRole)) decide(null);
+  const { role: callerRole, direct: callerDirect, resolved: callerRegistry } = resolveHierarchyRole(input);
+  if (!callerDirect || classProp(callerRole, callerRegistry, "owesResponse") !== true) decide(null);
 
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
   const sessionId = typeof input.session_id === "string" && input.session_id ? input.session_id : "__nosession__";

@@ -32,15 +32,18 @@ import { dirname, join } from "node:path";
 
 import {
   hierarchyDir,
+  hierarchyRoleOf,
   logHookError,
   peerName,
+  registryRoles,
+  roleClass,
   readHookInput,
   resolveConfig,
   resolvedPeerTargets,
   resolveHierarchyRole,
   teamPrefix,
 } from "./lib-config.mjs";
-import { getDecision, isGatedPeerTarget, isGatedSubagentType, NO_SESSION_KEY, normalizeSessionId } from "./lib-gate.mjs";
+import { getDecision, isGatedPeerTarget, NO_SESSION_KEY, normalizeSessionId } from "./lib-gate.mjs";
 import { listTeamNames } from "./lib-roster.mjs";
 
 const GATE_CLI = join(dirname(fileURLToPath(import.meta.url)), "gate.mjs");
@@ -139,13 +142,25 @@ try {
   const teamNames = resolved.team === null ? listTeamNames(hierarchyDir(cwd)) : [];
   const gatedPrefixes = teamNames.length > 0 ? [repoBasename, ...teamNames.map((team) => teamPrefix(cwd, team))] : [repoBasename];
 
-  let gated = isDispatch
-    ? isGatedSubagentType(toolInput.subagent_type)
-    : gatedPrefixes.some((prefix) => isGatedPeerTarget(toolInput.to, peerName(prefix, "ultra-advisor"))) ||
-      resolvedPeerTargets("ultra-advisor", resolved.roles["ultra-advisor"], repoBasename).some((name) => isGatedPeerTarget(toolInput.to, name));
-  if (!gated) decide(null);
+  // Every advise-class role is gated, custom ones included; one approval covers them all for the
+  // session. A dispatch is gated when the lookup says advise, so `x:ultra-advisor` is gated too.
+  const adviseRoles = registryRoles(resolved).filter((r) => roleClass(r, resolved) === "advise");
+  let gatedRole = null;
+  if (isDispatch) {
+    const type = typeof toolInput.subagent_type === "string" ? toolInput.subagent_type.trim() : "";
+    const hit = hierarchyRoleOf(type, { resolved });
+    gatedRole = hit && roleClass(hit, resolved) === "advise" ? hit : null;
+  } else {
+    gatedRole =
+      adviseRoles.find(
+        (r) =>
+          gatedPrefixes.some((prefix) => isGatedPeerTarget(toolInput.to, peerName(prefix, r))) ||
+          resolvedPeerTargets(r, resolved.roles[r], repoBasename).some((name) => isGatedPeerTarget(toolInput.to, name))
+      ) || null;
+  }
+  if (!gatedRole) decide(null);
 
-  const model = resolved.roles["ultra-advisor"].model;
+  const model = resolved.roles[gatedRole].model;
 
   switch (getDecision(sessionId)) {
     case "session":

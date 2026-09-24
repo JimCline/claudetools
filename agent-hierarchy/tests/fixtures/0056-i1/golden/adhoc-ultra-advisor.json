@@ -1,0 +1,9 @@
+{
+  "dry_run": true,
+  "role": "ultra-advisor",
+  "name": "myrepo-ultra-advisor",
+  "mode": "auto",
+  "launch": [
+    "herdr agent start myrepo-ultra-advisor --kind claude --pane <TARGET> -- --agent ah:ultra-advisor --name myrepo-ultra-advisor --model fable"
+  ]
+}

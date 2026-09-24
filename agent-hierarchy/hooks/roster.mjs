@@ -97,14 +97,14 @@
  * memory only (no write) — see docs/specs/0008-roster-relocate.md.
  */
 
-import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-import { CONFIG_VERSION, findGitRoot, hierarchyDir, mainHierarchyDir, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, PEER_ELIGIBLE_ROLES, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, suggestTeamAlias, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
+import { AGENT_REF_RE, agentRefError, hierarchyNameParts as parseNameParts, chainRoles, checkCustomRow, CLASSES, classBuiltin, classProp, customRoleNames, defaultLabel, DISPATCH_MODES, formatFindings, hasContractErrors, isAlternative, isBuiltinRole, isOverride, locateAgentFile, registryRoles, roleAgent, roleClass, ROLE_LABELS, roleLabel, validateAgentContract, validateRole, CONFIG_VERSION, findGitRoot, hierarchyDir, mainHierarchyDir, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, suggestTeamAlias, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
 import { ageSecOf, appendRosterRecord, attributedRoster, fmtAge, latestRoster, livePeerSlots, peersPath, readJsonl, newId, localIso, NO_TEAM_SCOPE, pidAlive, realCwd, recordLiveness, synthesizedPeerName } from "./lib-hier.mjs";
 import { readPeerRecords } from "./lib-peer.mjs";
 import { attributeSessionTeam, clearTeam, defaultTeamScope, fingerprint, herdrOnPath, historyEntryIsActive, KIND_AUTO_MODE_ARGS, KIND_DEFAULT, kindAutoModeArgs, kindFieldErrors, listTeamNames, memberArgs, normalizeMembers, readHistory, readTeam, resolveKind, resolveTeamByPane, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamFileState, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamPath, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
@@ -200,6 +200,276 @@ function gitPorcelain(dir) {
 }
 
 /** Read-only state report: rows a human or an agent can read in one pass. Writes nothing. */
+// ---------------------------------------------------------------- role verbs (custom roles)
+
+const ROLE_FLAGS = new Set(["class", "agent", "label", "description", "routes", "model", "dispatch", "level", "scaffold", "dry-run", "json", "team", "cwd"]);
+
+/** resolveConfig's scope names → roster level names. */
+function levelOfScope(scope) {
+  return { user: "global", project: "repo", "repo-user": "repo-user", default: "shipped" }[scope] || scope || null;
+}
+
+/** One `role list` row per registry role, with its contract status (validated for custom rows and overrides). */
+function roleRows() {
+  const reg = registry();
+  return registryRoles(reg).map((role) => {
+    const entry = reg.roles[role];
+    const builtin = isBuiltinRole(role);
+    const cls = roleClass(role, reg);
+    let v = null;
+    try {
+      v = validateRole(role, reg);
+    } catch (err) {
+      v = { findings: [{ level: "error", code: "agent-not-found", path: null, field: null, message: String(err && err.message), fix: [{ kind: "create-file", detail: "check the agent file" }] }], description: { text: null, source: null }, file: { found: null } };
+    }
+    const errors = v ? v.findings.filter((f) => f.level === "error").length : 0;
+    const warns = v ? v.findings.length - errors : 0;
+    const status = !v
+      ? "shipped"
+      : errors
+        ? builtin ? `UNAVAILABLE → reverted to ah:${role}` : `UNAVAILABLE: ${errors} error${errors > 1 ? "s" : ""}`
+        : warns ? `${warns} warning${warns > 1 ? "s" : ""}` : "ok";
+    const placement = !CLASSES[cls].chain
+      ? "legwork"
+      : isAlternative(role, entry)
+        ? `alt. to ${ROLE_LABELS[classBuiltin(cls)]}: ${entry.routes}`
+        : builtin ? `built-in · ${CLASSES[cls].step}` : "side";
+    return {
+      name: role,
+      builtin,
+      class: cls,
+      label: roleLabel(role, reg),
+      agent: roleAgent(role, entry),
+      model: entry.model,
+      level: levelOfScope(reg.sources[role]),
+      placement,
+      description: v ? v.description.text : null,
+      description_source: v ? v.description.source : null,
+      status,
+      path: v ? v.file.found : null,
+      findings: v ? v.findings : [],
+    };
+  });
+}
+
+function roleList() {
+  const reg = registry();
+  const roles = roleRows();
+  const excluded = reg.excludedRoles.map((e) => ({ name: e.name, level: levelOfScope(e.scope), path: e.path, reason: e.reason }));
+  if (opts.json === true) return out({ roles, excluded });
+  const lines = roles.map(
+    (r) => `${r.name.padEnd(20)} ${r.builtin ? "built-in" : "custom  "} ${r.class.padEnd(9)} ${r.agent.padEnd(26)} ${String(r.model).padEnd(8)} ${String(r.level).padEnd(9)} ${r.placement} — ${r.status}${r.description ? ` — "${r.description}" (${r.description_source})` : ""}`
+  );
+  for (const e of excluded) lines.push(`EXCLUDED ${e.name} (${e.level}, ${e.path}): ${e.reason}`);
+  process.stdout.write(`${lines.join("\n")}\n`);
+}
+
+/** The row to seed `role set` from when its level has none: the effective row, minus defaults. */
+function seedRow(name, entry) {
+  const seed = {};
+  for (const [k, v] of Object.entries(entry)) {
+    if (k === "effectiveDescription") continue;
+    if (k === "dispatch" && v === "peer") continue;
+    if (k === "peer" && v === "auto") continue;
+    if (!isBuiltinRole(name) && k === "agent" && v === name) continue;
+    if (!isBuiltinRole(name) && k === "label" && v === defaultLabel(name)) continue;
+    seed[k] = Array.isArray(v) ? [...v] : v;
+  }
+  return seed;
+}
+
+/** A minimal agent file that passes its class contract: no tools allowlist, and the class's forbidden plus discouraged tools disallowed. */
+function scaffoldText(agent, cls, label, description, routes) {
+  const c = CLASSES[cls];
+  const disallowed = c.contract ? [...c.contract.forbidden, ...c.contract.discouraged] : [];
+  const standIn = routes ? `, standing in for the ${ROLE_LABELS[classBuiltin(cls)]} for: ${routes}` : "";
+  return [
+    "---",
+    `name: ${agent}`,
+    `description: ${JSON.stringify(description)}`,
+    ...(disallowed.length ? [`disallowedTools: ${disallowed.join(", ")}`] : []),
+    "---",
+    "",
+    `You are the ${label}, an agent-hierarchy role of class ${cls}${standIn}. The hierarchy contract you receive at session or subagent start governs your protocol; this file adds your specialisation.`,
+    "",
+    "## Specialisation",
+    "",
+    "<!-- Replace this line with what this role specialises in. -->",
+    "",
+  ].join("\n");
+}
+
+function roleSet(name) {
+  if (typeof name !== "string" || !name) fail("role set needs a role name: role set <name> [flags]");
+  const reg = registry();
+  const builtin = isBuiltinRole(name);
+  const dry = opts["dry-run"] === true;
+  const given = { class: opts.class, agent: opts.agent, label: opts.label, description: opts.description, routes: opts.routes, model: opts.model, dispatch: opts.dispatch, scaffold: opts.scaffold, level: opts.level };
+  for (const [k, v] of Object.entries(given)) {
+    if (v === true) fail(`role set: --${k} needs a value`);
+  }
+  if (builtin) {
+    for (const k of ["class", "label", "description", "routes", "scaffold"]) {
+      if (given[k] !== undefined) fail(`role set ${name}: --${k} does not apply to a built-in role — only --agent, --model and --dispatch`);
+    }
+  }
+  const level = typeof opts.level === "string" ? requireLevel(opts.level) : targetLevel({ allowMissing: true }).level;
+  const path = rosterLevelPaths(cwd)[level];
+  const data = readLevelFile(path);
+  const layerRoles = data.roles && typeof data.roles === "object" && !Array.isArray(data.roles) ? data.roles : null;
+  const atLevel = layerRoles && layerRoles[name] && typeof layerRoles[name] === "object" && !Array.isArray(layerRoles[name]) ? layerRoles[name] : null;
+  const row = atLevel ? { ...atLevel } : reg.roles[name] ? seedRow(name, reg.roles[name]) : {};
+  for (const k of ["class", "agent", "label", "model", "dispatch"]) if (typeof given[k] === "string") row[k] = given[k];
+  for (const k of ["description", "routes"]) {
+    if (typeof given[k] !== "string") continue;
+    if (given[k] === "") delete row[k];
+    else row[k] = given[k];
+  }
+  if (row.dispatch !== undefined && !DISPATCH_MODES.includes(row.dispatch)) fail(`role set ${name}: --dispatch must be one of ${DISPATCH_MODES.join(", ")}`);
+
+  const warnings = [];
+  let cls;
+  let checked;
+  if (builtin) {
+    cls = roleClass(name, null);
+    if (row.agent !== undefined) {
+      const why = agentRefError(row.agent);
+      if (why) fail(`role set ${name}: ${why}`);
+      if (row.agent.startsWith("ah:") && row.agent !== `ah:${name}`) fail(`role set ${name}: ah:* agents belong to the built-ins`);
+    }
+    if (row.model !== undefined && !CLASSES[cls].models.includes(row.model)) {
+      fail(`role set ${name}: model ${JSON.stringify(row.model)} is not allowed for ${name} (allowed: ${CLASSES[cls].models.join(", ")})`);
+    }
+    checked = row;
+  } else {
+    if (!row.class) fail(`role set ${name}: --class is required for a new role (one of ${Object.keys(CLASSES).join(", ")})`);
+    const c = checkCustomRow(name, row);
+    if (c.error) fail(`role set ${name}: ${c.error}`);
+    warnings.push(...c.warnings);
+    if (row.routes !== undefined && !CLASSES[row.class].chain) delete row.routes;
+    cls = row.class;
+    checked = c.row;
+  }
+  const agent = builtin ? roleAgent(name, row) : checked.agent;
+  const owner = registryRoles(reg).find((r) => r !== name && roleAgent(r, reg.roles[r]) === agent);
+  if (owner) fail(`role set ${name}: agent ${JSON.stringify(agent)} is already the ${owner} role's agent — an agent maps to exactly one role`);
+  if (!builtin) {
+    const alias = teamPrefix(cwd, teamArg);
+    const v = validateTeamAlias(alias, { roles: { ...reg.roles, [name]: checked } });
+    if (!v.ok) fail(`role set ${name}: the team prefix "${alias}" collides with this role name (${v.why}) — rename the role, or set a different alias with \`roster.mjs alias --set\``);
+    if (checked.routes) {
+      const rival = customRoleNames(reg).find((r) => r !== name && reg.roles[r].class === cls && reg.roles[r].routes);
+      if (rival) warnings.push(`class ${cls} already has an alternative (${rival}); candidates are tried in name order and the first fit wins`);
+    }
+  }
+  const loc = agent.includes(":") ? null : locateAgentFile(agent, cwd);
+  if (level === "repo" && loc && loc.level === "user") warnings.push(`this repo-level row points at ${loc.path}, which exists only in your user agents dir — other users of this repo will not have it`);
+
+  let scaffold = null;
+  if (opts.scaffold !== undefined) {
+    if (!["repo", "user"].includes(opts.scaffold)) fail("role set: --scaffold must be repo or user");
+    if (agent.includes(":")) fail(`role set ${name}: --scaffold cannot write a plugin agent's file (${agent})`);
+    const root = findGitRoot(cwd);
+    if (opts.scaffold === "repo" && !root) fail("role set: --scaffold repo needs a git repo");
+    const file = opts.scaffold === "repo" ? join(root, ".claude", "agents", `${agent}.md`) : join(homedir(), ".claude", "agents", `${agent}.md`);
+    if (existsSync(file)) fail(`role set ${name}: --scaffold refuses to overwrite ${file}`);
+    const description = checked.description || (checked.routes ? `${checked.label} — ${checked.routes}` : null);
+    if (!description) fail(`role set ${name}: --scaffold needs a description — give --description or --routes`);
+    scaffold = { path: file, text: scaffoldText(agent, cls, checked.label, description, checked.routes || null) };
+  }
+
+  const needsContract = !builtin || isOverride(name, row);
+  const validate = (inMemory) =>
+    needsContract
+      ? validateAgentContract({ role: name, cls, agent, description: builtin ? null : checked.description || null, builtin, cwd, inMemory })
+      : null;
+  const report = (v) => {
+    const findings = v ? v.findings : [];
+    if (findings.length) process.stderr.write(`${formatFindings(findings)}\n`);
+    for (const w of warnings) process.stderr.write(`roster.mjs: warning — ${w}\n`);
+    return {
+      level,
+      path,
+      role: name,
+      row,
+      agent_file: v ? { path: v.file.found, status: scaffold && dry ? "scaffold (not written)" : v.file.found ? "found" : "not found" } : null,
+      description: v ? v.description : null,
+      findings,
+      warnings,
+      scaffold: scaffold ? scaffold.path : null,
+    };
+  };
+
+  if (dry) return { dry_run: true, ...report(validate(scaffold)) };
+
+  if (scaffold) {
+    mkdirSync(dirname(scaffold.path), { recursive: true });
+    writeFileSync(scaffold.path, scaffold.text, "utf8");
+  }
+  const dropScaffold = () => {
+    if (!scaffold) return;
+    try {
+      unlinkSync(scaffold.path);
+    } catch {}
+  };
+  let v;
+  try {
+    v = validate(null);
+  } catch (err) {
+    dropScaffold();
+    throw err;
+  }
+  const result = report(v);
+  if (v && hasContractErrors(v.findings)) {
+    dropScaffold();
+    fail(`role set ${name}: the agent file fails the ${cls} contract — nothing was written (findings above)`);
+  }
+  try {
+    writeLevelFile(path, { ...data, version: data.version || CONFIG_VERSION, roles: { ...(layerRoles || {}), [name]: row } });
+  } catch (err) {
+    dropScaffold();
+    throw err;
+  }
+  return { written: true, ...result };
+}
+
+function roleRemove(name) {
+  if (typeof name !== "string" || !name) fail("role remove needs a role name");
+  const reg = registry();
+  const builtin = isBuiltinRole(name);
+  const excluded = reg.excludedRoles.find((e) => e.name === name);
+  const defined = levelOfScope(reg.sources[name] || (excluded && excluded.scope));
+  const level = typeof opts.level === "string" ? requireLevel(opts.level) : defined && defined !== "shipped" ? defined : fail(`role remove ${name}: it is not defined at any level`);
+  if (!builtin) {
+    const users = [];
+    for (const [lvl, p] of Object.entries(rosterLevelPaths(cwd))) {
+      const d = readLevelFile(p);
+      const blocks = [["roster", d.roster], ...Object.entries(d.rosters && typeof d.rosters === "object" ? d.rosters : {}).map(([t, b]) => [`rosters.${t}`, b])];
+      for (const [label, b] of blocks) {
+        if (!b || !Array.isArray(b.members)) continue;
+        b.members.forEach((m, i) => {
+          if (m && m.role === name) users.push(`${lvl} ${label} member ${i + 1} (${name})`);
+        });
+      }
+    }
+    if (users.length) fail(`role remove ${name}: roster members still use it — ${users.join("; ")}. Remove them first (/ah:agent-roster).`);
+  }
+  const path = rosterLevelPaths(cwd)[level];
+  const data = readLevelFile(path);
+  const layerRoles = data.roles && typeof data.roles === "object" && !Array.isArray(data.roles) ? data.roles : null;
+  if (!layerRoles || !layerRoles[name]) fail(`role remove ${name}: no row for it at level "${level}" (${path})`);
+  if (builtin) {
+    if (layerRoles[name].agent === undefined) fail(`role remove ${name}: a built-in role cannot be removed, and it has no agent override at level "${level}"`);
+    delete layerRoles[name].agent;
+    // An empty row would still shadow a wider level's row for this role under whole-row precedence.
+    if (!Object.keys(layerRoles[name]).length) delete layerRoles[name];
+  } else {
+    delete layerRoles[name];
+  }
+  writeLevelFile(path, data);
+  return { removed: name, level, path, override_only: builtin };
+}
+
 function doctorReport(cwd) {
   const rows = [];
 
@@ -257,6 +527,15 @@ function doctorReport(cwd) {
     const resolved = resolveConfig(cwd, { pid: ownOrchestratorPid() });
     const detail = statusReport(cwd).split("\n").slice(0, 4).join(" | ");
     if (!resolved.configured) return { status: "warn", detail: `not configured — ${detail}` };
+    // Custom roles: an invalid row is excluded, and a row whose agent fails its class contract is
+    // unavailable. Either is a warning, named here so it is visible without reading the directive.
+    const roleProblems = resolved.excludedRoles.map((e) => `invalid custom role ${e.name} (${e.reason})`);
+    for (const role of registryRoles(resolved)) {
+      if (isBuiltinRole(role) && !isOverride(role, resolved.roles[role])) continue;
+      const v = validateRole(role, resolved);
+      if (v && hasContractErrors(v.findings)) roleProblems.push(`role ${role} is unavailable: its agent fails the ${roleClass(role, resolved)} contract (roster.mjs role list)`);
+    }
+    if (roleProblems.length) return { status: "warn", detail: `${detail} | ${roleProblems.join("; ")}` };
     return { status: resolved.enabled ? "ok" : "warn", detail };
   }));
 
@@ -268,9 +547,14 @@ function doctorReport(cwd) {
     const alive = Number.isInteger(pid) && pidAlive(pid);
     const age = team.created_at ? `${fmtAge(ageSecOf(team.created_at))} ago` : "unknown age";
     const live = teamIsLive(team);
+    const known = new Set(registryRoles(registry()));
+    const orphans = (team.members || []).filter((m) => m && m.role && !known.has(m.role));
+    const orphanNote = orphans.length
+      ? `; ${orphans.map((m) => `member ${m.name || "(unnamed)"} has role "${m.role}", which is not defined here — it can still be dismissed or disbanded`).join("; ")}`
+      : "";
     return {
-      status: live ? "ok" : "warn",
-      detail: `team_id ${team.team_id || "?"} , orchestrator pid ${pid ?? "none"} ${alive ? "alive" : "dead"}, created ${age}, live=${live}`,
+      status: live && !orphans.length ? "ok" : "warn",
+      detail: `team_id ${team.team_id || "?"} , orchestrator pid ${pid ?? "none"} ${alive ? "alive" : "dead"}, created ${age}, live=${live}${orphanNote}`,
     };
   }));
 
@@ -570,7 +854,7 @@ function memberFromFlags(role, cmdLabel) {
   // Spec 0043 §1.3 (the role-default trap): ROLE_DEFAULTS fills `model` whenever --model is
   // absent. Applied to a non-claude member that model would then be rejected by §1.3's own
   // rule, making non-claude members impossible to create. The default is claude-only.
-  const defaultedModel = kind === KIND_DEFAULT ? (ROLE_DEFAULTS[role] || {}).model : undefined;
+  const defaultedModel = kind === KIND_DEFAULT ? (isBuiltinRole(role) ? ROLE_DEFAULTS[role] || {} : registry().roles[role] || {}).model : undefined;
   const member = { role, model: typeof opts.model === "string" ? opts.model : defaultedModel };
   if (member.model === undefined) delete member.model;
   if (kind !== KIND_DEFAULT) member.kind = kind;
@@ -744,7 +1028,7 @@ function shQuote(s) {
  * with its native arguments after `--`. No `--timeout` on either path — r6 dropped it once
  * Herdr's own default was confirmed to be the same value it was passing.
  */
-function spawnShape(member, transport) {
+function spawnShape(member, transport, agent = null) {
   const kind = resolveKind(member);
   const isClaude = kind === KIND_DEFAULT;
   // §1.9: `add`/`edit` already refuse these combinations, but a hand-edited config reaches this
@@ -760,10 +1044,16 @@ function spawnShape(member, transport) {
   if (!isClaude && transport !== "herdr") {
     return { transport, kind, layout: [], launch: [], launch_cwd: cwd, target_placeholder: null, target_from: null, target_source: null, refuse: `member ${member.name} has kind ${JSON.stringify(kind)}, which requires the herdr transport, but the detected transport is ${JSON.stringify(transport)} — start a Herdr session (HERDR_ENV=1) to spawn non-claude kinds` };
   }
+  // The agent is interpolated into a shell string, so its charset is re-checked here at the seam
+  // even though every config write and read already checked it.
+  const agentRef = agent || `ah:${member.role}`;
+  if (isClaude && !AGENT_REF_RE.test(agentRef)) {
+    return { transport, kind, layout: [], launch: [], launch_cwd: cwd, target_placeholder: null, target_from: null, target_source: null, refuse: `member ${member.name} has an invalid agent reference ${JSON.stringify(agentRef)}` };
+  }
   // §1.4: emitted only for kind claude — `--agent ah:<role>` is a Claude Code plugin-agent
   // reference and --model/--effort/--permission-mode are Claude CLI flags (§F3, §1.8).
   const agentFlags = isClaude
-    ? [`--agent ah:${member.role}`, `--name ${member.name}`, member.model && member.model !== "inherit" ? `--model ${member.model}` : null, member.effort ? `--effort ${member.effort}` : null, member.autoMode ? `--permission-mode ${member.autoMode}` : null].filter(Boolean)
+    ? [`--agent ${agentRef}`, `--name ${member.name}`, member.model && member.model !== "inherit" ? `--model ${member.model}` : null, member.effort ? `--effort ${member.effort}` : null, member.autoMode ? `--permission-mode ${member.autoMode}` : null].filter(Boolean)
     : [];
   // A non-claude member's permission flags are its autoMode translated into that CLI's own
   // vocabulary, placed ahead of its own args so an explicit native flag wins.
@@ -810,6 +1100,71 @@ function spawnShape(member, transport) {
   // for output parity — launchMember must actually apply it (§2.3), or the child inherits
   // roster.mjs's own process cwd instead of the resolved --cwd.
   return { transport, kind, args: null, layout: [], launch: [`${claudeCmd} --bg`], launch_cwd: cwd, target_placeholder: null, target_from: null, target_source: null };
+}
+
+let registryCache = null;
+/** The role registry for this invocation's cwd and team, read once. */
+function registry() {
+  if (!registryCache) {
+    try {
+      registryCache = resolveConfig(cwd, { team: teamArg });
+    } catch {
+      registryCache = { roles: {}, sources: {}, excludedRoles: [], warnings: [], cwd };
+    }
+  }
+  return registryCache;
+}
+
+/**
+ * Re-run the class-contract validator at the spawn seam for a claude-kind member whose agent is
+ * custom or overridden — the agent file may have changed since `role set`. Returns null for a
+ * shipped built-in; otherwise `{agent, findings, notice}` or `{refuse, findings}`. A failing
+ * custom role is refused; a failing built-in override falls back to the shipped `ah:<role>`.
+ */
+function spawnValidation(member) {
+  if (resolveKind(member) !== KIND_DEFAULT) return null;
+  const reg = registry();
+  const entry = reg.roles && reg.roles[member.role];
+  if (!entry) return { refuse: `role "${member.role}" is not defined here — roster.mjs role list`, findings: [] };
+  if (isBuiltinRole(member.role) && !isOverride(member.role, entry)) return null;
+  const result = validateRole(member.role, reg);
+  const failed = hasContractErrors(result.findings);
+  if (isBuiltinRole(member.role)) {
+    if (!failed) return { agent: roleAgent(member.role, entry), findings: result.findings, notice: null };
+    return { agent: `ah:${member.role}`, findings: result.findings, notice: `spawned ah:${member.role} in place of ${roleAgent(member.role, entry)} — that agent fails the ${roleClass(member.role, reg)} contract` };
+  }
+  if (failed) return { refuse: `role ${member.role}: agent ${entry.agent} fails the ${entry.class} contract, so ${member.name} was not launched:\n${formatFindings(result.findings)}`, findings: result.findings };
+  return { agent: entry.agent, findings: result.findings, notice: null };
+}
+
+/** `spawnShape` behind the spawn-seam revalidation; findings and any fallback notice ride on `validation`. */
+function shapeFor(member, transport) {
+  const v = spawnValidation(member);
+  const shape = v && v.refuse
+    ? { transport, kind: resolveKind(member), layout: [], launch: [], launch_cwd: cwd, target_placeholder: null, target_from: null, target_source: null, refuse: v.refuse }
+    : spawnShape(member, transport, v ? v.agent : null);
+  if (v && (v.refuse || v.notice || v.findings.length)) {
+    shape.validation = { refused: Boolean(v.refuse), notice: v.notice || null, findings: v.findings };
+    if (!v.refuse) {
+      for (const f of v.findings) process.stderr.write(`roster.mjs: ${member.name}: ${formatFindings([f])}\n`);
+      if (v.notice) process.stderr.write(`roster.mjs: ${member.name}: ${v.notice}\n`);
+    }
+  }
+  return shape;
+}
+
+/**
+ * Warn when a roster at `level` names a custom role defined only at a more specific level: another
+ * repo (for a global roster) or another user (for a repo roster) resolving it would not see the role.
+ */
+function warnRoleVisibility(role, level) {
+  if (isBuiltinRole(role)) return;
+  const source = registry().sources[role];
+  const rank = { user: 0, project: 1, "repo-user": 2 };
+  const levelRank = { global: 0, repo: 1, "repo-user": 2 }[level];
+  if (source && rank[source] > levelRank) {
+    process.stderr.write(`roster.mjs: warning — role "${role}" is defined at ${source === "project" ? "repo" : source} level, below this ${level} roster; where that definition does not resolve, this member's role is unknown.\n`);
+  }
 }
 
 /** Plan-level herdr layout instructions for the orchestrator to drive (spec 0004 §5.2). Null for non-herdr or an all-subagent roster. */
@@ -1458,7 +1813,7 @@ function resolveMembersPlan(dir) {
   const transport = detectTransport();
   const plan = resolved.members.map((m) => {
     const route = m.route || resolved.route;
-    return { role: m.role, name: m.name, kind: resolveKind(m), model: m.model, effort: m.effort, route, autoMode: m.autoMode, args: memberArgs(m), spawn: routeHasPane(route) ? spawnShape({ ...m, route }, transport) : null };
+    return { role: m.role, name: m.name, kind: resolveKind(m), model: m.model, effort: m.effort, route, autoMode: m.autoMode, args: memberArgs(m), spawn: routeHasPane(route) ? shapeFor({ ...m, route }, transport) : null };
   });
   return { level: resolved.level, path: resolved.path, transport, layout_plan: layoutPlan(resolved, transport, plan), members: plan };
 }
@@ -1489,7 +1844,7 @@ function validateHistoryMembers(entry) {
     return out;
   });
   const rosterBlock = { route: (renamed[0] && renamed[0].route) || "peer", layout: "auto", members: renamed };
-  const errors = validateRosterBlock(rosterBlock);
+  const errors = validateRosterBlock(rosterBlock, registry());
   if (errors.length) fail(errors.join("; "));
   return renamed;
 }
@@ -1507,7 +1862,7 @@ function planMembersFromHistory(entry, dir) {
   const named = namedMembers(renamed);
   const plan = named.map((m) => {
     const route = m.route || rosterBlock.route;
-    return { role: m.role, name: m.name, kind: resolveKind(m), model: m.model, effort: m.effort, route, autoMode: m.autoMode, args: memberArgs(m), spawn: routeHasPane(route) ? spawnShape({ ...m, route }, transport) : null };
+    return { role: m.role, name: m.name, kind: resolveKind(m), model: m.model, effort: m.effort, route, autoMode: m.autoMode, args: memberArgs(m), spawn: routeHasPane(route) ? shapeFor({ ...m, route }, transport) : null };
   });
   return { level: entry.roster_level || null, path: null, transport, layout_plan: layoutPlan(rosterBlock, transport, plan), members: plan };
 }
@@ -1863,23 +2218,9 @@ function dedupPeers(members) {
   return out;
 }
 
-/** Roles a hierarchy session name can carry: the roster roles plus `orchestrator`, which owns a
-    pane of its own even though it is never a roster member. */
-const HIERARCHY_NAME_ROLES = [...ROLES, "orchestrator"];
-
-/**
- * Split `<prefix>-<role>` / `<prefix>-<role>-<n>` into its parts, or null when the name is not one
- * a hierarchy session carries. Parsed from the RIGHT: a prefix may itself contain hyphens, so only
- * a trailing ordinal and the role token can be stripped, and what remains is the whole prefix.
- */
+/** `<prefix>-<role>[-<n>]` → `{prefix, role}` against this invocation's registry (see lib-config's `hierarchyNameParts`). */
 function hierarchyNameParts(name) {
-  if (typeof name !== "string" || !name) return null;
-  const ordinal = name.match(/-(\d+)$/);
-  const base = ordinal ? name.slice(0, -ordinal[0].length) : name;
-  const role = HIERARCHY_NAME_ROLES.find((r) => base.endsWith(`-${r}`));
-  if (!role) return null;
-  const prefix = base.slice(0, -(role.length + 1));
-  return prefix ? { prefix, role } : null;
+  return parseNameParts(name, registry());
 }
 
 /** The naming prefix a scope's sessions were dispatched under: a named team's own name, else the
@@ -2150,6 +2491,7 @@ async function createSpawn(dir) {
     const entry = { role: m.role, name: m.name, ...kindFields(m), model: m.model, route: m.route, autoMode: m.autoMode, transport_id: m.transport_id, launch_status: lm.launch_status, launch_result: lm.launch_result, retried: lm.retried, launch_cwd: m.spawn ? m.spawn.launch_cwd : null };
     if (lm.error) entry.error = lm.error;
     if (lm.label) entry.label = lm.label;
+    if (m.spawn && m.spawn.validation) entry.validation = m.spawn.validation;
     // Spec 0008 §6: populate tab_id/workspace_id from the launch result when it carries them.
     // No new herdr query on this path — if absent, the first `resync` fills them in.
     const launchedPane = transport === "herdr" && lm.launch_result && lm.launch_result.result && lm.launch_result.result.pane;
@@ -2194,7 +2536,7 @@ function allTeamRows(dir, myPid) {
     the layout call. */
 async function spawnOneCore(role, callerLabel, adHocMember = null) {
   resolveWritableTeamScope(hierarchyDir(cwd));
-  if (!PEER_ELIGIBLE_ROLES.includes(role)) fail(`${callerLabel}: role must be one of ${PEER_ELIGIBLE_ROLES.join(", ")}, got ${JSON.stringify(role)}`);
+  if (!chainRoles(registry()).includes(role)) fail(`${callerLabel}: role must be one of ${chainRoles(registry()).join(", ")}, got ${JSON.stringify(role)}`);
   const found = resolveRoster(cwd, teamArg);
   // An ad hoc member takes nothing from a roster but its route and layout mode, so a roster that
   // resolves at global level — possibly another project's — is not read at all on that path.
@@ -2298,7 +2640,7 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
   // effective route to apply §1.3's non-claude rule.
   const blockRoute = resolved ? resolved.route : null;
   const memberRoute = routeHasPane(member.route || blockRoute) ? member.route || blockRoute : "peer";
-  const planEntry = { role: member.role, name: member.name, kind: resolveKind(member), model: member.model, effort: member.effort, route: memberRoute, autoMode: member.autoMode, args: memberArgs(member), spawn: spawnShape({ ...member, route: memberRoute }, transport) };
+  const planEntry = { role: member.role, name: member.name, kind: resolveKind(member), model: member.model, effort: member.effort, route: memberRoute, autoMode: member.autoMode, args: memberArgs(member), spawn: shapeFor({ ...member, route: memberRoute }, transport) };
   // §1.4 point 3 (one launch path): an ad hoc member with no roster behind it still goes through
   // layoutPlan, given the same block shape a roster would have supplied. A second, simpler layout
   // branch here is exactly the fork the spec forbids.
@@ -2307,8 +2649,10 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
   const mode = layoutInfo ? layoutInfo.mode : layoutSource.layout;
   if (!ROSTER_LAYOUT_VALUES.includes(mode)) fail(`${callerLabel}: layout mode must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(mode)}`);
 
+  if (planEntry.spawn.validation && planEntry.spawn.validation.refused) fail(`${callerLabel}: ${planEntry.spawn.refuse}`);
+  const validation = planEntry.spawn.validation ? { validation: planEntry.spawn.validation } : {};
   if (opts["dry-run"] === true) {
-    return { dry_run: true, role: member.role, name: member.name, mode, launch: planEntry.spawn.launch };
+    return { dry_run: true, role: member.role, name: member.name, mode, launch: planEntry.spawn.launch, ...validation };
   }
 
   const seedPanes = team && Array.isArray(team.members)
@@ -2370,7 +2714,7 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
   writeTeam(dir, outTeam, teamFile);
   const outMember = launched.label ? { ...newRecord, label: launched.label } : newRecord;
   // Spec 0035 §2.4: report where this peer actually launched, not just that it launched.
-  const spawnOut = { spawned: true, member: outMember, team_id: outTeam.team_id, roster_level: outTeam.roster_level, launch_cwd: planEntry.spawn.launch_cwd };
+  const spawnOut = { spawned: true, member: outMember, team_id: outTeam.team_id, roster_level: outTeam.roster_level, launch_cwd: planEntry.spawn.launch_cwd, ...validation };
   // Spec 0043 §1.4: blocked-at-startup is success WITH AN ACTION OUTSTANDING, not a failure —
   // the agent is live and queryable, so the team row stands and the caller is told what to do.
   if (launched.launch_status === "blocked-at-startup") {
@@ -2488,7 +2832,7 @@ try {
       if (!Array.isArray(container.members)) container.members = [];
       const role = opts.role;
       if (role === "orchestrator") fail('role "orchestrator" is not a roster member — the Orchestrator is whatever session runs /agent-team create');
-      if (!ROLES.includes(role)) fail(`--role must be one of ${ROLES.join(", ")}, got ${JSON.stringify(role)}`);
+      if (!registryRoles(registry()).includes(role)) fail(`--role must be one of ${registryRoles(registry()).join(", ")}, got ${JSON.stringify(role)}`);
       const member = memberFromFlags(role, "add");
       if (member.onMissing !== undefined && (member.route || container.route) === "subagent") {
         fail('on-missing applies only to peer-routed members (this member\'s route is "subagent")');
@@ -2497,14 +2841,15 @@ try {
       // route of its own inherits the block's — the same `member.route || container.route` the
       // on-missing check above already uses. Validating the bare member instead would reject
       // `add --kind codex` under a `route: pane` roster block, which is the one place it belongs.
-      const memberErrors = validateMember({ ...member, route: member.route || container.route });
+      const memberErrors = validateMember({ ...member, route: member.route || container.route }, registry());
       if (memberErrors.length) fail(memberErrors.join("; "));
       if (member.autoMode === "bypassPermissions" && (member.route || container.route) === "peer") {
         process.stderr.write('roster.mjs: warning — auto-mode "bypassPermissions" can leave a headless peer stuck at a startup confirmation screen; use --auto-mode auto for hands-off runs\n');
       }
       container.members.push(member);
-      const blockErrors = validateRosterBlock(container);
+      const blockErrors = validateRosterBlock(container, registry());
       if (blockErrors.length) fail(blockErrors.join("; "));
+      warnRoleVisibility(role, level);
       const addedNamed = namedMembers(container.members).at(-1);
       requireHerdrName({ ...addedNamed, route: addedNamed.route || container.route }, "add");
       writeLevelFile(path, data);
@@ -2521,7 +2866,7 @@ try {
       // next step is named rather than left to be discovered.
       const effectiveRoute = member.route || container.route;
       result.spawned = false;
-      result.next_step = routeHasPane(effectiveRoute) && PEER_ELIGIBLE_ROLES.includes(role)
+      result.next_step = routeHasPane(effectiveRoute) && classProp(role, registry(), "chain") === true
         ? `config only — nothing was launched. To start this member: roster.mjs spawn-one ${role} --member ${added.name}`
         : `config only — nothing was launched. ${!routeHasPane(effectiveRoute) ? `route ${effectiveRoute}` : `role ${role} is never a peer session`}: dispatched on demand.`;
       process.stderr.write(`roster.mjs: ${result.next_step}\n`);
@@ -2601,8 +2946,9 @@ try {
         process.stderr.write(`roster.mjs: ah: dropped on-missing "${dropped}" — it applies only to peer-routed members, and this member is now route "subagent"\n`);
       }
       if (updated.role === "orchestrator") fail('role "orchestrator" is not a roster member');
-      const errors = validateMember({ ...updated, route: updated.route || container.route });
+      const errors = validateMember({ ...updated, route: updated.route || container.route }, registry());
       if (errors.length) fail(errors.join("; "));
+      warnRoleVisibility(updated.role, level);
       if (updated.autoMode === "bypassPermissions" && (updated.route || container.route) === "peer") {
         process.stderr.write('roster.mjs: warning — auto-mode "bypassPermissions" can leave a headless peer stuck at a startup confirmation screen; use --auto-mode auto for hands-off runs\n');
       }
@@ -2633,7 +2979,7 @@ try {
       if (typeof opts.layout === "string") {
         if (!ROSTER_LAYOUT_VALUES.includes(opts.layout)) fail(`--layout must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(opts.layout)}`);
         container.layout = opts.layout;
-        const blockErrors = validateRosterBlock(container);
+        const blockErrors = validateRosterBlock(container, registry());
         if (blockErrors.length) fail(blockErrors.join("; "));
         writeLevelFile(path, data);
       }
@@ -2658,7 +3004,7 @@ try {
 
       if (opts.set !== undefined) {
         if (typeof opts.set !== "string") fail("alias --set needs a value: roster.mjs alias --set <name>");
-        const v = validateTeamAlias(opts.set);
+        const v = validateTeamAlias(opts.set, registry());
         if (!v.ok) fail(`alias: ${v.why}`);
         const { level } = targetLevel();
         if (level === "global") fail("alias: an alias is repo-scoped — use --level repo or --level repo-user, not global (spec 0010 §4.3)");
@@ -2834,7 +3180,7 @@ try {
           });
           needsResync = true;
         } else if (allObjects) {
-          const offenses = verified.map((m, i) => ({ i, errs: validateTeamMember(m) })).filter((o) => o.errs.length > 0);
+          const offenses = verified.map((m, i) => ({ i, errs: validateTeamMember(m, registry()) })).filter((o) => o.errs.length > 0);
           if (offenses.length > 0) {
             const detail = offenses.map((o) => `--verified entry ${o.i} is not a valid member: ${o.errs.join("; ")}`).join(". ");
             fail(`create --commit: ${detail}. --verified takes either a JSON array of member objects (as produced by the spawn/check-in cycle) or a JSON array of member-name strings (hydrated from the roster at --roster-level).`);
@@ -3403,9 +3749,10 @@ try {
       // The ad hoc path takes exactly one peer-eligible role and defaults everything else; a
       // request that cannot name one is under-specified and belongs on the skill-driven path.
       const formalPath = "Ask the user which role they want, or for a whole team use Skill ah:agent-team (Create).";
-      if (!role) fail(`spawn-ad-hoc: under-specified — no role named (spawn-ad-hoc <role>, one of ${PEER_ELIGIBLE_ROLES.join(", ")}). ${formalPath}`);
-      if (!PEER_ELIGIBLE_ROLES.includes(role)) {
-        fail(`spawn-ad-hoc: under-specified — ${JSON.stringify(role)} is not a role spawn-ad-hoc can stand up; it spawns exactly one of ${PEER_ELIGIBLE_ROLES.join(", ")}. ${formalPath}`);
+      const adHocRoles = chainRoles(registry());
+      if (!role) fail(`spawn-ad-hoc: under-specified — no role named (spawn-ad-hoc <role>, one of ${adHocRoles.join(", ")}). ${formalPath}`);
+      if (!adHocRoles.includes(role)) {
+        fail(`spawn-ad-hoc: under-specified — ${JSON.stringify(role)} is not a role spawn-ad-hoc can stand up; it spawns exactly one of ${adHocRoles.join(", ")}. ${formalPath}`);
       }
       const adHoc = memberFromFlags(role, "spawn-ad-hoc");
       // §1.4 point 1: the same validation rules, unrelaxed. An ad hoc member has no roster block
@@ -3415,7 +3762,7 @@ try {
       if (adHoc.onMissing !== undefined && adHoc.route === "subagent") {
         fail('on-missing applies only to peer-routed members (this member\'s route is "subagent")');
       }
-      const adHocErrors = validateMember(adHoc);
+      const adHocErrors = validateMember(adHoc, registry());
       if (adHocErrors.length) fail(adHocErrors.join("; "));
       if (!routeHasPane(adHoc.route)) {
         fail(`spawn-ad-hoc: route ${JSON.stringify(adHoc.route)} has no session to spawn — a subagent-routed member is dispatched on demand by the Agent tool, so there is nothing to launch`);
@@ -3684,6 +4031,19 @@ try {
         transport: e.transport,
       }));
       out({ teams });
+      break;
+    }
+
+    case "role": {
+      for (const key of Object.keys(opts)) {
+        if (key === "_") continue;
+        if (!ROLE_FLAGS.has(key)) fail(`role: unrecognized flag --${key} (use --class, --agent, --label, --description, --routes, --model, --dispatch, --level, --scaffold, --dry-run, --json, --team, --cwd)`);
+      }
+      const sub = opts._[0];
+      if (sub === "list") roleList();
+      else if (sub === "set") out(roleSet(opts._[1]));
+      else if (sub === "remove") out(roleRemove(opts._[1]));
+      else fail("usage: roster.mjs role list [--json] | role set <name> [--class C] [--agent A] [--label L] [--description D] [--routes R] [--model M] [--dispatch peer|model] [--level L] [--scaffold repo|user] [--dry-run] | role remove <name> [--level L]  (all with --cwd <abs cwd>)");
       break;
     }
 

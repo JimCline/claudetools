@@ -25,7 +25,7 @@
  * the current working directory — that is what `/hierarchy status` uses.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -135,51 +135,81 @@ export const ROUTE_VALUES = ["peers", "subagents", "prefer-peers"];
 /** Config schema version this plugin understands. */
 export const CONFIG_VERSION = 1;
 
-/** Selectable roles, in display order. Orchestrator is the session agent and is not configurable. */
-export const ROLES = ["ultra-advisor", "architect", "reviewer", "implementor", "task-runner"];
-
-export const ROLE_LABELS = {
-  "ultra-advisor": "Ultra-Advisor",
-  architect: "Architect",
-  reviewer: "Reviewer",
-  implementor: "Implementor",
-  "task-runner": "Task-Runner",
-};
-
-/** Shipped defaults — these mirror the agent-file frontmatter (implementor has no `model:` key). */
-export const ROLE_DEFAULTS = {
-  "ultra-advisor": { model: "fable" },
-  architect: { model: "opus" },
-  reviewer: { model: "opus" },
-  implementor: { model: "inherit" },
-  "task-runner": { model: "haiku", delegate: "task-gopher" },
-};
-
 /**
- * Accepted model values, per role. `inherit` is accepted here and converted at
+ * Accepted model values, per class. `inherit` is accepted here and converted at
  * render time into "omit the model parameter" — it is NOT a legal Agent-tool
  * value and must never be passed through literally.
  *
- * Architect, Reviewer, and Implementor are REASONING roles: haiku is never
- * valid for them — a Haiku-tier model cannot carry design, review, or
- * implementation judgment. Only Task-Runner (legwork, no reasoning) may run
- * on haiku.
+ * design, review and implement are REASONING classes: haiku is never valid for
+ * them — a Haiku-tier model cannot carry design, review, or implementation
+ * judgment. Only legwork (no reasoning) may run on haiku.
  *
- * Ultra-Advisor is the escalation apex: it exists only to bring MORE reasoning
- * than the Architect already applied, so it takes top-tier models only and
- * never `inherit` — inheriting a Sonnet session would make the tier
- * decorative, which is the same argument that keeps haiku out of the
- * reasoning roles. Its model is always explicit.
+ * advise is the escalation apex: it exists only to bring MORE reasoning than
+ * the design class already applied, so it takes top-tier models only and never
+ * `inherit` — inheriting a Sonnet session would make the tier decorative, which
+ * is the same argument that keeps haiku out of the reasoning classes. Its model
+ * is always explicit.
  */
 export const REASONING_MODELS = ["opus", "sonnet", "fable", "inherit"];
 export const TOP_TIER_MODELS = ["fable", "opus"];
-export const VALID_MODELS_BY_ROLE = {
-  "ultra-advisor": TOP_TIER_MODELS,
-  architect: REASONING_MODELS,
-  reviewer: REASONING_MODELS,
-  implementor: REASONING_MODELS,
-  "task-runner": [...REASONING_MODELS, "haiku"],
+
+/**
+ * The class table: the one place class behaviour lives. Every gate, the
+ * directive, spawn and the validator read a role's behaviour from its class,
+ * never from its name.
+ *
+ * - `chain`: peer-eligible, message-file gated, SubagentStop-nudged, handoff-confirmed.
+ * - `tier`: the tier rule applies. `owesResponse`: a session of this class owes a response file.
+ * - `ultraGate`: dispatches need the user's per-session approval.
+ * - `roleDispatchable`: a role session may dispatch it (legwork only).
+ * - `contract`: the tool contract the validator enforces on custom and overridden agents.
+ *   `required` entries are a tool name or an array meaning "any one of these".
+ *   `missingRecommended` names tools whose absence is a warning.
+ */
+export const CLASSES = {
+  advise: {
+    builtin: "ultra-advisor", step: "Escalate", models: TOP_TIER_MODELS,
+    chain: true, tier: true, owesResponse: false, ultraGate: true, roleDispatchable: false,
+    contract: { required: ["Read", "SendMessage"], forbidden: [], discouraged: ["Edit", "NotebookEdit", "advisor"], missingRecommended: [] },
+  },
+  design: {
+    builtin: "architect", step: "Design", models: REASONING_MODELS,
+    chain: true, tier: true, owesResponse: true, ultraGate: false, roleDispatchable: false,
+    contract: { required: ["Read", "SendMessage", "Write"], forbidden: [], discouraged: ["Bash", "NotebookEdit", "advisor"], missingRecommended: [] },
+  },
+  review: {
+    builtin: "reviewer", step: "Review", models: REASONING_MODELS,
+    chain: true, tier: false, owesResponse: false, ultraGate: false, roleDispatchable: false,
+    contract: { required: ["Read", "SendMessage"], forbidden: ["Edit", "Write", "NotebookEdit"], discouraged: ["advisor"], missingRecommended: ["Bash"] },
+  },
+  implement: {
+    builtin: "implementor", step: "Implement", models: REASONING_MODELS,
+    chain: true, tier: false, owesResponse: true, ultraGate: false, roleDispatchable: false,
+    contract: { required: ["Read", "SendMessage", ["Edit", "Write"], ["Write", "Bash"]], forbidden: [], discouraged: ["advisor"], missingRecommended: ["Bash"] },
+  },
+  legwork: {
+    builtin: "task-runner", step: null, models: [...REASONING_MODELS, "haiku"],
+    chain: false, tier: false, owesResponse: false, ultraGate: false, roleDispatchable: true,
+    contract: null,
+  },
 };
+export const CLASS_NAMES = Object.keys(CLASSES);
+
+/** The shipped built-in rows, in display order. Defaults mirror the agent-file frontmatter (implementor has no `model:` key). */
+const BUILTIN_ROWS = [
+  { name: "ultra-advisor", class: "advise", label: "Ultra-Advisor", defaults: { model: "fable" } },
+  { name: "architect", class: "design", label: "Architect", defaults: { model: "opus" } },
+  { name: "reviewer", class: "review", label: "Reviewer", defaults: { model: "opus" } },
+  { name: "implementor", class: "implement", label: "Implementor", defaults: { model: "inherit" } },
+  { name: "task-runner", class: "legwork", label: "Task-Runner", defaults: { model: "haiku", delegate: "task-gopher" } },
+];
+
+/** Built-in roles, in display order. Orchestrator is the session agent and is not configurable. */
+export const ROLES = BUILTIN_ROWS.map((r) => r.name);
+export const ROLE_LABELS = Object.fromEntries(BUILTIN_ROWS.map((r) => [r.name, r.label]));
+export const ROLE_DEFAULTS = Object.fromEntries(BUILTIN_ROWS.map((r) => [r.name, { ...r.defaults }]));
+export const VALID_MODELS_BY_ROLE = Object.fromEntries(BUILTIN_ROWS.map((r) => [r.name, CLASSES[r.class].models]));
+const BUILTIN_CLASS = Object.fromEntries(BUILTIN_ROWS.map((r) => [r.name, r.class]));
 
 /**
  * A roster member's agent kind (spec 0043 §1.1/§1.2) — which CLI Herdr starts
@@ -242,9 +272,6 @@ export function validateHerdrName(name) {
 
 export const CONFIG_BASENAME = "agent-hierarchy.json";
 
-/** Roles a roster member may carry — the same ROLES list, orchestrator is never a member (§3.2). */
-export const ROSTER_ROLES = ROLES;
-
 /** Roster levels, in resolution precedence order (highest first). */
 export const ROSTER_LEVELS = ["repo-user", "repo", "global"];
 
@@ -275,7 +302,64 @@ export const HANDOFF_MODES = ["auto", "confirm"];
  * route — see that file. Task-Runner is excluded: task-gopher is already its
  * dedicated fast path.
  */
-export const PEER_ELIGIBLE_ROLES = ["ultra-advisor", "architect", "reviewer", "implementor"];
+export const PEER_ELIGIBLE_ROLES = ROLES.filter((r) => CLASSES[BUILTIN_CLASS[r]].chain);
+
+/** The class of a role: a built-in's from the table (never from config), a custom row's from its resolved entry; null when unknown. */
+export function roleClass(role, resolved) {
+  if (BUILTIN_CLASS[role]) return BUILTIN_CLASS[role];
+  const entry = resolved && resolved.roles && resolved.roles[role];
+  return entry && CLASSES[entry.class] ? entry.class : null;
+}
+
+/** One class property of a role (see CLASSES), or undefined when the role is unknown. */
+export function classProp(role, resolved, prop) {
+  const c = roleClass(role, resolved);
+  return c ? CLASSES[c][prop] : undefined;
+}
+
+export function isBuiltinRole(role) {
+  return Object.prototype.hasOwnProperty.call(BUILTIN_CLASS, role);
+}
+
+/** Custom role names in the resolved registry, sorted by name. */
+export function customRoleNames(resolved) {
+  return resolved && resolved.roles ? Object.keys(resolved.roles).filter((r) => !isBuiltinRole(r)).sort() : [];
+}
+
+/** Every registry role: the built-ins in display order, then custom roles by name. */
+export function registryRoles(resolved) {
+  return [...ROLES, ...customRoleNames(resolved)];
+}
+
+/** Registry roles of a chain class (peer-eligible, gated, nudged), same order as registryRoles. */
+export function chainRoles(resolved) {
+  return registryRoles(resolved).filter((r) => classProp(r, resolved, "chain") === true);
+}
+
+export function roleLabel(role, resolved) {
+  if (ROLE_LABELS[role]) return ROLE_LABELS[role];
+  const entry = resolved && resolved.roles && resolved.roles[role];
+  return (entry && entry.label) || role;
+}
+
+/**
+ * The agent a role launches (`--agent`) and the name its sessions report as `agent_type`: a custom
+ * row's `agent`, a built-in's validated override, else `ah:<role>`. Unlike `subagentType`, never the
+ * task-runner delegate — a delegate is a dispatch substitution, not the role's identity.
+ */
+export function roleAgent(role, entry) {
+  return entry && typeof entry.agent === "string" && entry.agent ? entry.agent : `ah:${role}`;
+}
+
+/** True when a built-in's entry names an agent other than its shipped `ah:<role>`. */
+export function isOverride(role, entry) {
+  return isBuiltinRole(role) && roleAgent(role, entry) !== `ah:${role}`;
+}
+
+/** The step's built-in for a class, e.g. `implement` → `implementor`. */
+export function classBuiltin(cls) {
+  return CLASSES[cls] ? CLASSES[cls].builtin : null;
+}
 
 /** Per-role dispatch route: "peer" dispatches to a peer session, spawning one when none is live; "model" always spawns a subagent. */
 export const DISPATCH_MODES = ["peer", "model"];
@@ -299,11 +383,49 @@ const ROLE_TOKENS = [
   ["advisor", "ultra-advisor"],
 ];
 
-/** The role a session name implies, via a role token, or null. */
-export function roleFromName(name) {
+/**
+ * Peer-name parsing, pass 1: the longest registry role `r` (built-in or custom) such that `name`
+ * ends with `-r` or `-r-<digits>` — returned only when it is a custom role. A built-in longest
+ * match, or none, leaves the name to the built-in scan (pass 2), unchanged. Custom names never
+ * take part in a substring match, so a custom `imp` cannot capture `repo-implementor`.
+ */
+export function customRoleFromSuffix(name, resolved) {
+  if (typeof name !== "string" || !customRoleNames(resolved).length) return null;
+  const base = name.replace(/-\d+$/, "");
+  let best = null;
+  for (const role of registryRoles(resolved)) {
+    if (base.endsWith(`-${role}`) && (!best || role.length > best.length)) best = role;
+  }
+  return best && !isBuiltinRole(best) ? best : null;
+}
+
+/** The role a session name implies, or null: a suffix-anchored custom role, else a built-in role token (substring, in token order). */
+export function roleFromName(name, resolved = null) {
   if (typeof name !== "string") return null;
+  const custom = customRoleFromSuffix(name, resolved);
+  if (custom) return custom;
   for (const [token, role] of ROLE_TOKENS) if (name.includes(token)) return role;
   return null;
+}
+
+/** Roles a hierarchy session name can carry in the built-in scan: the built-ins plus `orchestrator`, which owns a pane of its own even though it is never a roster member. */
+const HIERARCHY_NAME_ROLES = [...ROLES, "orchestrator"];
+
+/**
+ * Split `<prefix>-<role>` / `<prefix>-<role>-<n>` into its parts, or null when the name is not one
+ * a hierarchy session carries. Parsed from the RIGHT: a prefix may itself contain hyphens, so only
+ * a trailing ordinal and the role token can be stripped, and what remains is the whole prefix.
+ * A suffix-anchored custom role wins (see `customRoleFromSuffix`); otherwise the built-in scan.
+ */
+export function hierarchyNameParts(name, resolved = null) {
+  if (typeof name !== "string" || !name) return null;
+  const ordinal = name.match(/-(\d+)$/);
+  const base = ordinal ? name.slice(0, -ordinal[0].length) : name;
+  const custom = customRoleFromSuffix(name, resolved);
+  const role = custom || HIERARCHY_NAME_ROLES.find((r) => base.endsWith(`-${r}`));
+  if (!role) return null;
+  const prefix = base.slice(0, -(role.length + 1));
+  return prefix ? { prefix, role } : null;
 }
 
 /**
@@ -313,7 +435,8 @@ export function roleFromName(name) {
  * peer-eligible at all.
  */
 export function resolvedPeerTargets(role, entry, repoBasename) {
-  if (!PEER_ELIGIBLE_ROLES.includes(role)) return [];
+  const cls = isBuiltinRole(role) ? BUILTIN_CLASS[role] : entry && entry.class;
+  if (!CLASSES[cls] || !CLASSES[cls].chain) return [];
   if (!entry || entry.dispatch === "model") return [];
   if (Array.isArray(entry.peer)) return entry.peer.filter((p) => typeof p === "string" && p.trim());
   if (entry.peer && entry.peer !== "auto") return [entry.peer];
@@ -400,16 +523,53 @@ export function isTopLevelAgentSession(input) {
 }
 
 /**
- * The hierarchy role an `agent_type` names, or null when it names none.
+ * The identity lookup: the registry role an `agent_type` or `subagent_type` names, or null.
  *
- * Matched anchored on `(^|:)role$`, the same matcher the rest of the plugin
- * uses to identify roles. A foreign `someplugin:architect` therefore reads as
- * `architect`; that imprecision is accepted, because the text this selects is
- * generic enough for the false positive to be harmless.
+ *   1. exactly `ah:<builtin>` → that built-in, with no config read;
+ *   2. an exact match on a registry row's agent (`roleAgent`) → that row — a custom role, or a
+ *      built-in whose agent is overridden. Claude Code reports a bare agent's name with no level
+ *      marker, so which file a bare name denotes follows Claude Code's own project-over-user order;
+ *   3. `<builtin>` or `*:<builtin>` → that built-in. A foreign `someplugin:architect` therefore
+ *      reads as `architect`; that imprecision is accepted, because the text it selects is generic
+ *      enough for the false positive to be harmless;
+ *   4. otherwise null.
+ *
+ * Step 2 needs the registry: `opts.resolved` when the caller holds it, else it is resolved from
+ * `opts.cwd` — lazily, only once step 1 has missed. With neither, step 2 is skipped.
  */
-export function hierarchyRoleOf(agentType) {
+export function hierarchyRoleOf(agentType, opts = {}) {
   if (typeof agentType !== "string" || !agentType) return null;
+  if (agentType.startsWith("ah:") && isBuiltinRole(agentType.slice(3))) return agentType.slice(3);
+  let resolved = (opts && opts.resolved) || null;
+  if (!resolved && opts && typeof opts.cwd === "string" && opts.cwd) {
+    try {
+      resolved = resolveConfig(opts.cwd);
+    } catch {
+      resolved = null;
+    }
+  }
+  if (resolved && resolved.roles) {
+    const hit = registryRoles(resolved).find((role) => roleAgent(role, resolved.roles[role]) === agentType);
+    if (hit) return hit;
+  }
   return ROLES.find((role) => agentType === role || agentType.endsWith(`:${role}`)) || null;
+}
+
+/**
+ * `hierarchyRoleOf` for a hook that does not already hold the config: `{role, resolved}`, where
+ * `resolved` is read only when the type is not `ah:<builtin>` (null otherwise, and whenever the
+ * read fails). `classProp(role, resolved, …)` works on the result either way.
+ */
+export function lookupRole(agentType, cwd) {
+  if (typeof agentType !== "string" || !agentType) return { role: null, resolved: null };
+  if (agentType.startsWith("ah:") && isBuiltinRole(agentType.slice(3))) return { role: agentType.slice(3), resolved: null };
+  let resolved = null;
+  try {
+    resolved = resolveConfig(cwd || process.cwd());
+  } catch {
+    resolved = null;
+  }
+  return { role: hierarchyRoleOf(agentType, { resolved }), resolved };
 }
 
 /**
@@ -424,9 +584,14 @@ export function hierarchyRoleOf(agentType) {
  * not collapse this to a bare role string; hiding `direct` invites the exact
  * defect §3.7 describes.
  */
-export function resolveHierarchyRole(input) {
-  const direct = input && input.agent_type ? hierarchyRoleOf(input.agent_type) : null;
-  if (direct) return { role: direct, direct: true };
+export function resolveHierarchyRole(input, resolved = null) {
+  const cwd = input && typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
+  let direct = null;
+  if (input && input.agent_type) {
+    if (resolved) direct = hierarchyRoleOf(input.agent_type, { resolved });
+    else ({ role: direct, resolved } = lookupRole(input.agent_type, cwd));
+  }
+  if (direct) return resolved ? { role: direct, direct: true, resolved } : { role: direct, direct: true };
   const persisted = readSessionRole(normalizeSessionId(input && input.session_id));
   return { role: persisted, direct: false };
 }
@@ -569,15 +734,15 @@ export function rosterMemberNames(members, repoBasename) {
  * Character-set + role-collision rule for a `teamAlias` (spec 0010 §4.4,
  * amendment (d)): starts alphanumeric, 1-32 chars of letters/digits/`-`
  * thereafter, and must not derive a peer name that `roleFromName`'s
- * unanchored substring match resolves to the wrong role, for any role in
- * `PEER_ELIGIBLE_ROLES` (e.g. alias `architect` yields peer name
+ * unanchored substring match resolves to the wrong role, for any chain-class
+ * role in `resolved`'s registry (e.g. alias `architect` yields peer name
  * `architect-reviewer`, which resolves to role `architect`, not `reviewer`).
  * Stated behaviorally against the real functions, not a hardcoded token
  * list, so it stays correct if `ROLE_TOKENS` ever changes — a blacklist
  * would wrongly reject `advisor`, which is genuinely safe. Returns
  * `{ok: true}` or `{ok: false, why}`.
  */
-export function validateTeamAlias(alias) {
+export function validateTeamAlias(alias, resolved = null) {
   if (typeof alias !== "string" || !alias) return { ok: false, why: "alias must be a non-empty string" };
   if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,31}$/.test(alias)) {
     return {
@@ -585,7 +750,7 @@ export function validateTeamAlias(alias) {
       why: "alias must start with a letter or digit, be 1-32 characters, and contain only letters, digits, and -",
     };
   }
-  const collidesWith = PEER_ELIGIBLE_ROLES.find((role) => roleFromName(peerName(alias, role)) !== role);
+  const collidesWith = chainRoles(resolved).find((role) => roleFromName(peerName(alias, role), resolved) !== role);
   if (collidesWith) {
     return {
       ok: false,
@@ -717,6 +882,119 @@ export function resolveRoster(cwd, team) {
   return null;
 }
 
+/** Row keys a built-in cannot change: present in config → a warning, ignored. */
+const BUILTIN_FIXED_KEYS = ["class", "label", "description", "routes"];
+
+export const ROLE_NAME_RE = /^[a-z][a-z0-9-]{0,30}$/;
+/**
+ * An agent reference is interpolated into shell strings (spawn commands and the directive's spawn
+ * lines), so this charset is a security boundary: checked when a row is read or written, and again
+ * at the spawn seam.
+ */
+export const AGENT_REF_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}(:[A-Za-z0-9][A-Za-z0-9_.-]{0,63})?$/;
+export const LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9 -]{0,31}$/;
+const RESERVED_ROLE_NAMES = ["orchestrator", "advisor", "other"];
+/** Cap on `description` and `routes`: they are pasted verbatim into injected prose. */
+export const ONE_LINE_MAX = 160;
+
+export function roleNameError(name) {
+  if (typeof name !== "string" || !ROLE_NAME_RE.test(name)) return `name must match ${ROLE_NAME_RE}`;
+  if (/-$|-\d+$/.test(name)) return "name must not end in - or -<digits> (that suffix is a peer instance ordinal)";
+  if (isBuiltinRole(name) || RESERVED_ROLE_NAMES.includes(name)) return `name ${JSON.stringify(name)} is reserved`;
+  return null;
+}
+
+export function agentRefError(agent) {
+  if (typeof agent !== "string" || !AGENT_REF_RE.test(agent)) return `agent ${JSON.stringify(agent)} must match ${AGENT_REF_RE}`;
+  return null;
+}
+
+export function oneLineError(field, value) {
+  if (typeof value !== "string" || !value.trim()) return `${field} must be a non-empty string`;
+  if (value.length > ONE_LINE_MAX) return `${field} must be at most ${ONE_LINE_MAX} characters`;
+  if (/[\n\r`]/.test(value)) return `${field} must be one line with no backticks`;
+  return null;
+}
+
+/** `ui-implementor` → `Ui-Implementor`. */
+export function defaultLabel(name) {
+  return name.split("-").map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w)).join("-");
+}
+
+function builtinAgentError(role, agent) {
+  const why = agentRefError(agent);
+  if (why) return why;
+  if (agent.startsWith("ah:") && agent !== `ah:${role}`) return "ah:* agents belong to the built-ins";
+  return null;
+}
+
+/**
+ * The row checks for one custom role (name, class, agent, label, description, routes, model):
+ * `{row, warnings}` with defaults applied, or `{error}`. Never throws.
+ */
+export function checkCustomRow(name, raw) {
+  const nameErr = roleNameError(name);
+  if (nameErr) return { error: nameErr };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { error: "row must be an object" };
+  if (!CLASSES[raw.class]) return { error: `class is required, one of ${CLASS_NAMES.join(", ")}` };
+  const cls = CLASSES[raw.class];
+  const warnings = [];
+  const agent = raw.agent === undefined ? name : raw.agent;
+  const agentErr = agentRefError(agent);
+  if (agentErr) return { error: agentErr };
+  if (agent.startsWith("ah:")) return { error: "ah:* agents belong to the built-ins" };
+  const label = raw.label === undefined ? defaultLabel(name) : raw.label;
+  if (typeof label !== "string" || !LABEL_RE.test(label)) return { error: `label must match ${LABEL_RE}` };
+  const row = { class: raw.class, agent, label };
+  if (raw.description !== undefined) {
+    const e = oneLineError("description", raw.description);
+    if (e) return { error: e };
+    row.description = raw.description;
+  }
+  if (raw.routes !== undefined) {
+    const e = oneLineError("routes", raw.routes);
+    if (e) return { error: e };
+    if (cls.chain) row.routes = raw.routes;
+    else warnings.push("routes is ignored on a legwork role — legwork is never routed within the chain");
+  }
+  if (raw.class === "advise" && (raw.model === undefined || raw.model === "inherit")) {
+    return { error: `an advise-class role needs an explicit model (${cls.models.join(", ")})` };
+  }
+  const model = raw.model === undefined ? "inherit" : raw.model;
+  if (typeof model !== "string" || !cls.models.includes(model)) {
+    return { error: `model ${JSON.stringify(model)} is not allowed for class ${raw.class} (allowed: ${cls.models.join(", ")})` };
+  }
+  row.model = model;
+  if (cls.chain) {
+    if (raw.dispatch !== undefined) row.dispatch = raw.dispatch;
+    if (raw.peer !== undefined) row.peer = raw.peer;
+  }
+  return { row, warnings };
+}
+
+/** Default and validate a chain role's `dispatch` and `peer` in place, warning on a bad value. */
+function normalizeDispatch(role, roles, warnings) {
+  const rawDispatch = roles[role].dispatch;
+  let dispatch = rawDispatch === undefined ? "peer" : rawDispatch;
+  if (!DISPATCH_MODES.includes(dispatch)) {
+    warnings.push(
+      `ah: dispatch ${JSON.stringify(rawDispatch)} is not valid for role "${role}" (allowed: ${DISPATCH_MODES.join(", ")}) — using "peer".`
+    );
+    dispatch = "peer";
+  }
+  roles[role] = { ...roles[role], dispatch };
+  if (dispatch === "peer") {
+    const rawPeer = roles[role].peer;
+    let peer = rawPeer === undefined ? "auto" : rawPeer;
+    const validArray = Array.isArray(peer) && peer.length > 0 && peer.every((p) => typeof p === "string" && p.trim());
+    if (!validArray && (typeof peer !== "string" || !peer.trim())) {
+      warnings.push(`ah: peer value for role "${role}" must be a non-empty string or array of names — using "auto".`);
+      peer = "auto";
+    }
+    roles[role] = { ...roles[role], peer };
+  }
+}
+
 /** Load one scope. Returns null when absent/unreadable/not an object. */
 function loadScope(path, scope, warnings) {
   if (!path || !existsSync(path)) return null;
@@ -838,6 +1116,7 @@ export function resolveConfig(cwd, opts = {}) {
       roles,
       sources,
       shadowed: [],
+      excludedRoles: [],
       layers,
       warnings,
       cwd: resolvedCwd,
@@ -895,11 +1174,19 @@ export function resolveConfig(cwd, opts = {}) {
   }
 
   const definedBy = {};
+  const customRaw = {};
   for (const layer of layers) {
     const layerRoles = layer.data.roles;
     if (!layerRoles || typeof layerRoles !== "object" || Array.isArray(layerRoles)) continue;
-    for (const role of ROLES) {
+    for (const role of Object.keys(layerRoles)) {
       const entry = layerRoles[role];
+      if (!isBuiltinRole(role)) {
+        // Whole-row precedence, as for built-ins: the most specific layer's row wins as written,
+        // and an invalid one is excluded rather than falling back to a wider layer.
+        customRaw[role] = { raw: entry, scope: layer.scope, path: layer.path };
+        (definedBy[role] ||= []).push(layer.scope);
+        continue;
+      }
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
       // Shallow replacement: the whole role object is swapped, not merged key-by-key.
       roles[role] = { ...entry };
@@ -909,7 +1196,7 @@ export function resolveConfig(cwd, opts = {}) {
   }
 
   // A user-scope role value that a project config also defines is shadowed.
-  const shadowed = ROLES.filter((role) => (definedBy[role] || []).length > 1);
+  const shadowed = [...ROLES, ...Object.keys(customRaw).sort()].filter((role) => (definedBy[role] || []).length > 1);
 
   for (const role of ROLES) {
     const model = roles[role].model;
@@ -921,25 +1208,56 @@ export function resolveConfig(cwd, opts = {}) {
       roles[role] = { ...roles[role], model: ROLE_DEFAULTS[role].model };
     }
     if (!PEER_ELIGIBLE_ROLES.includes(role)) continue;
-    const rawDispatch = roles[role].dispatch;
-    let dispatch = rawDispatch === undefined ? "peer" : rawDispatch;
-    if (!DISPATCH_MODES.includes(dispatch)) {
-      warnings.push(
-        `ah: dispatch ${JSON.stringify(rawDispatch)} is not valid for role "${role}" (allowed: ${DISPATCH_MODES.join(", ")}) — using "peer".`
-      );
-      dispatch = "peer";
+    normalizeDispatch(role, roles, warnings);
+  }
+
+  for (const role of ROLES) {
+    for (const key of BUILTIN_FIXED_KEYS) {
+      if (roles[role][key] !== undefined) warnings.push(`ah: roles.${role}.${key} is ignored — a built-in role's ${key} cannot be changed (only agent, model, dispatch and peer).`);
     }
-    roles[role] = { ...roles[role], dispatch };
-    if (dispatch === "peer") {
-      const rawPeer = roles[role].peer;
-      let peer = rawPeer === undefined ? "auto" : rawPeer;
-      const validArray = Array.isArray(peer) && peer.length > 0 && peer.every((p) => typeof p === "string" && p.trim());
-      if (!validArray && (typeof peer !== "string" || !peer.trim())) {
-        warnings.push(`ah: peer value for role "${role}" must be a non-empty string or array of names — using "auto".`);
-        peer = "auto";
-      }
-      roles[role] = { ...roles[role], peer };
+    if (roles[role].agent === undefined) continue;
+    const why = builtinAgentError(role, roles[role].agent);
+    if (why) {
+      warnings.push(`ah: roles.${role}.agent ${JSON.stringify(roles[role].agent)} is invalid (${why}) — using ah:${role}.`);
+      const { agent, ...rest } = roles[role];
+      roles[role] = rest;
     }
+  }
+
+  const excludedRoles = [];
+  const exclude = (name, info, reason) => {
+    excludedRoles.push({ name, scope: info.scope, path: info.path, reason });
+    warnings.push(`ah: custom role "${name}" at ${info.scope}-scope config (${info.path}) is invalid (${reason}) — ignoring it.`);
+  };
+  const customRows = {};
+  for (const name of Object.keys(customRaw).sort()) {
+    const info = customRaw[name];
+    const checked = checkCustomRow(name, info.raw);
+    if (checked.error) {
+      exclude(name, info, checked.error);
+      continue;
+    }
+    for (const w of checked.warnings) warnings.push(`ah: custom role "${name}": ${w}`);
+    customRows[name] = checked.row;
+  }
+  // An agent maps to exactly one role: a custom row whose agent a built-in already owns is invalid
+  // (built-ins win), and custom rows sharing one agent are all invalid — neither can own it.
+  const builtinAgents = new Map(ROLES.map((r) => [roleAgent(r, roles[r]), r]));
+  const agentUsers = {};
+  for (const [name, row] of Object.entries(customRows)) (agentUsers[row.agent] ||= []).push(name);
+  for (const [name, row] of Object.entries(customRows)) {
+    const owner = builtinAgents.get(row.agent);
+    if (owner) {
+      exclude(name, customRaw[name], `agent ${JSON.stringify(row.agent)} is already the ${owner} role's agent`);
+      continue;
+    }
+    if (agentUsers[row.agent].length > 1) {
+      exclude(name, customRaw[name], `agent ${JSON.stringify(row.agent)} is also used by ${agentUsers[row.agent].filter((n) => n !== name).join(", ")}`);
+      continue;
+    }
+    roles[name] = row;
+    sources[name] = customRaw[name].scope;
+    if (CLASSES[row.class].chain) normalizeDispatch(name, roles, warnings);
   }
 
   const rosterResult = resolveRoster(cwd, team);
@@ -954,6 +1272,7 @@ export function resolveConfig(cwd, opts = {}) {
     roles,
     sources,
     shadowed,
+    excludedRoles,
     layers,
     warnings,
     cwd: resolvedCwd,
@@ -963,12 +1282,348 @@ export function resolveConfig(cwd, opts = {}) {
   };
 }
 
-/** The subagent_type to dispatch for a role, honouring task-runner's `delegate`. */
+// ---------------------------------------------------------------- agent files (read, validate)
+
+/** Only this much of an agent file is read: frontmatter sits at the top, and a huge body is not ah's to parse. */
+export const AGENT_READ_CAP = 16 * 1024;
+
+function readHead(path, cap = AGENT_READ_CAP) {
+  const fd = openSync(path, "r");
+  try {
+    const buf = Buffer.alloc(cap);
+    const n = readSync(fd, buf, 0, cap, 0);
+    return buf.subarray(0, n).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function installedPluginsPath() {
+  return join(homedir(), ".claude", "plugins", "installed_plugins.json");
+}
+
+/**
+ * Where an agent ref's file is: `{kind, path, level, shadowed, error}`. A bare name is looked up in
+ * `<repoRoot>/.claude/agents/` then `~/.claude/agents/` — Claude Code's own project-over-user
+ * order — and `shadowed` names the user file when both exist. `plugin:agent` goes through
+ * `installed_plugins.json`: the first install record whose `agents/<agent>.md` exists. `error` is
+ * `agent-not-found` or `plugin-unresolvable`.
+ */
+export function locateAgentFile(ref, cwd) {
+  const colon = typeof ref === "string" ? ref.indexOf(":") : -1;
+  if (colon === -1) {
+    const root = findGitRoot(resolve(cwd || process.cwd())) || resolve(cwd || process.cwd());
+    const repo = join(root, ".claude", "agents", `${ref}.md`);
+    const user = join(homedir(), ".claude", "agents", `${ref}.md`);
+    const inRepo = existsSync(repo);
+    const inUser = existsSync(user);
+    if (inRepo) return { kind: "bare", path: repo, level: "repo", shadowed: inUser ? user : null, error: null, candidates: [repo, user] };
+    if (inUser) return { kind: "bare", path: user, level: "user", shadowed: null, error: null, candidates: [repo, user] };
+    return { kind: "bare", path: null, level: null, shadowed: null, error: "agent-not-found", candidates: [repo, user] };
+  }
+  const plugin = ref.slice(0, colon);
+  const agent = ref.slice(colon + 1);
+  let records = [];
+  try {
+    const data = JSON.parse(readFileSync(installedPluginsPath(), "utf8"));
+    const plugins = data && data.plugins && typeof data.plugins === "object" ? data.plugins : {};
+    for (const [key, list] of Object.entries(plugins)) {
+      if (key.split("@")[0] === plugin && Array.isArray(list)) records.push(...list);
+    }
+  } catch {
+    records = [];
+  }
+  const candidates = records.filter((r) => r && typeof r.installPath === "string").map((r) => join(r.installPath, "agents", `${agent}.md`));
+  const path = candidates.find((p) => existsSync(p)) || null;
+  return { kind: "plugin", path, level: path ? "plugin" : null, shadowed: null, error: path ? null : "plugin-unresolvable", records: records.length, candidates };
+}
+
+const TOOL_TOKEN_RE = /^(\*|[A-Za-z_][A-Za-z0-9_.-]*(\([^()]*\))?)$/;
+
+function unquote(v) {
+  const t = v.trim();
+  if (t.length >= 2 && t[0] === '"' && t[t.length - 1] === '"') {
+    return t.slice(1, -1).replace(/\\(["\\nt])/g, (_, c) => (c === "n" ? "\n" : c === "t" ? "\t" : c));
+  }
+  if (t.length >= 2 && t[0] === "'" && t[t.length - 1] === "'") return t.slice(1, -1).replace(/''/g, "'");
+  return t;
+}
+
+/** A tools field value → array of entries, or null when it is not one of the three list forms. */
+function parseToolList(value, blockItems) {
+  if (blockItems) {
+    const items = blockItems.map(unquote);
+    return items.every((i) => TOOL_TOKEN_RE.test(i)) ? items : null;
+  }
+  let t = value.trim();
+  if (t.startsWith("[")) {
+    if (!t.endsWith("]")) return null;
+    t = t.slice(1, -1);
+    if (!t.trim()) return [];
+  } else if (/^["']/.test(t)) {
+    t = unquote(t);
+  }
+  const items = t.split(",").map((i) => unquote(i)).filter((i) => i !== "");
+  return items.length && items.every((i) => TOOL_TOKEN_RE.test(i)) ? items : null;
+}
+
+/**
+ * Parse an agent file's frontmatter without a YAML dependency. Reads only `name`, `description`,
+ * `model`, `tools` and `disallowedTools`. Never throws: fields that are present but unparseable are
+ * named in `parseErrors`.
+ */
+export function parseAgentFrontmatter(text) {
+  const out = { frontmatter: false, name: null, description: null, model: null, tools: null, disallowedTools: null, parseErrors: [] };
+  const lines = String(text).split(/\r?\n/);
+  if (lines[0].trim() !== "---") return out;
+  const end = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
+  if (end === -1) return out;
+  out.frontmatter = true;
+  const body = lines.slice(1, end);
+  const wanted = { name: "name", description: "description", model: "model", tools: "tools", disallowedTools: "disallowedTools" };
+  for (let i = 0; i < body.length; i++) {
+    const m = /^([A-Za-z][A-Za-z0-9_-]*):(?:\s(.*)|$)/.exec(body[i]);
+    if (!m) continue;
+    const key = m[1];
+    const raw = m[2] === undefined ? "" : m[2];
+    // Continuation lines: anything indented, or a `- ` list item, up to the next top-level key.
+    const cont = [];
+    let j = i + 1;
+    while (j < body.length && (/^\s/.test(body[j]) || /^-(\s|$)/.test(body[j]) || body[j].trim() === "")) cont.push(body[j++]);
+    i = j - 1;
+    if (!wanted[key]) continue;
+    const field = wanted[key];
+    const v = raw.trim();
+    if (field === "tools" || field === "disallowedTools") {
+      const items = cont.filter((l) => l.trim());
+      const isBlock = v === "" && items.length && items.every((l) => /^\s*-\s+\S/.test(l));
+      const list = v === "" && !items.length ? null : parseToolList(v, isBlock ? items.map((l) => l.replace(/^\s*-\s+/, "")) : null);
+      if (list === null) out.parseErrors.push(field);
+      else out[field] = list;
+      continue;
+    }
+    if (field === "description") {
+      // Never a parse error: block scalars keep their form, a multi-line plain scalar is folded.
+      if (/^[|>][-+]?$/.test(v)) {
+        const block = cont.map((l) => l.replace(/^\s+/, ""));
+        while (block.length && !block[block.length - 1]) block.pop();
+        out.description = v[0] === "|" ? block.join("\n") : block.filter((l) => l).join(" ");
+      } else {
+        const folded = [unquote(v), ...cont.map((l) => l.trim())].filter((l) => l).join(" ");
+        out.description = folded || null;
+      }
+      continue;
+    }
+    if (/^[|>][-+]?$/.test(v)) {
+      const block = cont.map((l) => l.replace(/^\s+/, ""));
+      while (block.length && !block[block.length - 1]) block.pop();
+      out[field] = v[0] === "|" ? block.join("\n") : block.filter((l) => l).join(" ");
+      continue;
+    }
+    if (v === "" || /^[[{]/.test(v) || /[\s,]/.test(unquote(v))) {
+      out.parseErrors.push(field);
+      continue;
+    }
+    out[field] = unquote(v);
+  }
+  return out;
+}
+
+/**
+ * The frontmatter reader: locate an agent ref's file and parse it. Never throws. Returns
+ * `{found, frontmatter, name, description, model, tools, disallowedTools, parseErrors, location}`.
+ * Callers are SessionStart, SubagentStart-free CLI paths and spawn — never a per-tool-call hook.
+ */
+export function readAgentFile(ref, cwd) {
+  let location;
+  try {
+    location = locateAgentFile(ref, cwd);
+  } catch {
+    location = { kind: "bare", path: null, level: null, shadowed: null, error: "agent-not-found", candidates: [] };
+  }
+  const empty = { found: null, frontmatter: false, name: null, description: null, model: null, tools: null, disallowedTools: null, parseErrors: [], location };
+  if (!location.path) return empty;
+  try {
+    return { ...parseAgentFrontmatter(readHead(location.path)), found: location.path, location };
+  } catch {
+    return { ...empty, found: location.path, unreadable: true };
+  }
+}
+
+/** Frontmatter description → one directive-safe line (≤160 chars). Null when there is nothing left. */
+export function normalizeDescription(text) {
+  if (typeof text !== "string") return null;
+  let t = text.replace(/<example>[\s\S]*?<\/example>/gi, " ").replace(/\\n/g, " ").replace(/`/g, "").replace(/\s+/g, " ").trim();
+  if (!t) return null;
+  const first = /^(.*?[.!?])(\s|$)/.exec(t);
+  if (first && first[1].length <= ONE_LINE_MAX) return first[1];
+  return t.length <= ONE_LINE_MAX ? t : `${t.slice(0, ONE_LINE_MAX - 3)}…`;
+}
+
+/** A model value's family alias (`claude-opus-5-5` → `opus`); `inherit` and aliases map to themselves. */
+function modelAlias(model) {
+  if (typeof model !== "string") return null;
+  if (model === "inherit") return model;
+  const m = model.toLowerCase().match(/(?:^|[^a-z])(haiku|sonnet|opus|fable)(?:[^a-z]|$)/);
+  return m ? m[1] : model;
+}
+
+function finding(level, code, path, field, message, fix) {
+  return { level, code, path: path || null, field: field || null, message, fix };
+}
+
+/**
+ * The class-contract validator. Checks one custom row, or one built-in override, against its
+ * class's contract: the agent file exists and has frontmatter, its `name` matches, its model is in
+ * the class allowlist, its effective tools meet the required/forbidden/discouraged table, and it
+ * is not shadowed. Returns `{findings, file, description}`; `description` is the effective one
+ * (config first, else the normalised frontmatter description) with its `source`.
+ *
+ * `inMemory` (`{path, text}`) validates text that is not on disk yet — a scaffold under `--dry-run`.
+ *
+ * @param {{role: string, cls: string, agent: string, description?: string|null, builtin?: boolean, cwd: string, inMemory?: {path: string, text: string}|null}} spec
+ */
+export function validateAgentContract({ role, cls, agent, description = null, builtin = false, cwd, inMemory = null }) {
+  const findings = [];
+  const file = inMemory
+    ? { ...parseAgentFrontmatter(inMemory.text), found: inMemory.path, location: { kind: "bare", path: inMemory.path, level: null, shadowed: null, error: null, candidates: [inMemory.path] } }
+    : readAgentFile(agent, cwd);
+  const loc = file.location;
+  const scaffoldFix = [
+    { kind: "scaffold", detail: `roster.mjs role set ${role} --scaffold repo (or --scaffold user) writes a template that passes the ${cls} contract` },
+  ];
+  const effDescription = description
+    ? { text: description, source: "config" }
+    : file.description && normalizeDescription(file.description)
+      ? { text: normalizeDescription(file.description), source: "frontmatter" }
+      : { text: null, source: null };
+  if (loc.error === "agent-not-found") {
+    findings.push(finding("error", "agent-not-found", null, null, `No agent file for ${JSON.stringify(agent)}: looked in ${loc.candidates.join(" and ")}.`, [
+      ...(builtin ? [] : scaffoldFix),
+      ...loc.candidates.map((p) => ({ kind: "create-file", detail: p })),
+    ]));
+    return { findings, file, description: effDescription };
+  }
+  if (loc.error === "plugin-unresolvable") {
+    const why = loc.records ? `no agents/${agent.split(":")[1]}.md under its install path(s)` : "the plugin has no install record in ~/.claude/plugins/installed_plugins.json";
+    findings.push(finding("error", "plugin-unresolvable", null, null, `Cannot validate ${JSON.stringify(agent)}: ${why}.`, [
+      { kind: "copy-agent", detail: `copy the agent into .claude/agents/${role}.md as a user-owned file, then point the role at the bare name ${role}` },
+    ]));
+    return { findings, file, description: effDescription };
+  }
+  const path = file.found;
+  if (file.unreadable) {
+    findings.push(finding("error", "no-frontmatter", path, null, `${path} could not be read.`, [{ kind: "edit-frontmatter", detail: `make ${path} readable, with a --- frontmatter block` }]));
+    return { findings, file, description: effDescription };
+  }
+  if (!file.frontmatter) {
+    findings.push(finding("error", "no-frontmatter", path, null, `${path} has no --- frontmatter block, so Claude Code cannot load it as an agent.`, [
+      { kind: "edit-frontmatter", detail: `add a --- block at the top with name: ${agent.split(":").pop()} and a description` },
+    ]));
+    return { findings, file, description: effDescription };
+  }
+  for (const field of file.parseErrors) {
+    findings.push(finding("error", "unparseable-field", path, field, `Frontmatter ${field} is present but cannot be parsed.`, [
+      { kind: "edit-frontmatter", detail: field === "tools" || field === "disallowedTools" ? `write ${field} as a comma list (Read, Grep), a [flow, list] or a block list of - items` : `write ${field} as a plain one-line value` },
+    ]));
+  }
+  const expectedName = agent.split(":").pop();
+  if (!file.parseErrors.includes("name") && file.name !== expectedName) {
+    findings.push(finding("error", "name-mismatch", path, "name", `Frontmatter name is ${JSON.stringify(file.name)}, but Claude Code loads this agent by name ${JSON.stringify(expectedName)}.`, [
+      { kind: "edit-frontmatter", detail: `set name: ${expectedName}` },
+    ]));
+  }
+  const allowed = CLASSES[cls].models;
+  if (file.model !== null && !file.parseErrors.includes("model") && !allowed.includes(modelAlias(file.model))) {
+    findings.push(finding("error", "model-not-allowed", path, "model", `Frontmatter model ${JSON.stringify(file.model)} is outside the ${cls} allowlist (${allowed.join(", ")}); it runs whenever the row is inherit or a subagent is dispatched without a model.`, [
+      { kind: "edit-frontmatter", detail: "remove model: from the agent file (the row's model then governs)" },
+      { kind: "edit-frontmatter", detail: `set model: to one of ${allowed.join(", ")}` },
+    ]));
+  }
+  const contract = CLASSES[cls].contract;
+  if (contract && !file.parseErrors.includes("tools") && !file.parseErrors.includes("disallowedTools")) {
+    const tools = file.tools;
+    const disallowed = file.disallowedTools || [];
+    const allowlist = Array.isArray(tools) && !tools.includes("*");
+    const lists = (list, t) => list.some((e) => e === t || e.startsWith(`${t}(`));
+    const present = (t) => (!allowlist || lists(tools, t)) && !lists(disallowed, t);
+    const addFix = (t) =>
+      lists(disallowed, t)
+        ? { kind: "edit-frontmatter", detail: `remove ${t} from disallowedTools` }
+        : { kind: "edit-frontmatter", detail: `add ${t} to tools (you use an allowlist)` };
+    const removeFix = (t) =>
+      allowlist ? { kind: "edit-frontmatter", detail: `remove ${t} from tools` } : { kind: "edit-frontmatter", detail: `add ${t} to disallowedTools` };
+    for (const req of contract.required) {
+      const alts = Array.isArray(req) ? req : [req];
+      if (alts.some(present)) continue;
+      findings.push(finding("error", `missing-tool:${alts.join("|")}`, path, "tools", `The ${cls} contract needs ${alts.join(" or ")}, and this agent's effective tools lack ${alts.length > 1 ? "all of them" : "it"}.`, alts.map(addFix)));
+    }
+    for (const t of contract.forbidden) {
+      if (!present(t)) continue;
+      findings.push(finding("error", `forbidden-tool:${t}`, path, "tools", `A ${cls}-class agent must not have ${t}: a reviewer that can edit ends up validating its own fixes.`, [
+        removeFix(t),
+        { kind: "change-class", detail: "implement" },
+      ]));
+    }
+    for (const t of contract.discouraged) {
+      if (!present(t)) continue;
+      findings.push(finding("warn", `discouraged-tool:${t}`, path, "tools", `${t} is outside the ${cls} convention.`, [removeFix(t)]));
+    }
+    for (const t of contract.missingRecommended) {
+      if (present(t)) continue;
+      findings.push(finding("warn", `missing-recommended:${t}`, path, "tools", `A ${cls}-class agent is expected to have ${t}.`, [addFix(t)]));
+    }
+    for (const e of Array.isArray(tools) ? tools : []) {
+      const m = /^([A-Za-z_][A-Za-z0-9_.-]*)\(/.exec(e);
+      if (!m) continue;
+      findings.push(finding("warn", "scoped-tool-entry", path, "tools", `tools entry ${JSON.stringify(e)} grants the whole ${m[1]} tool: Claude Code does not enforce the scope.`, [
+        { kind: "edit-frontmatter", detail: `remove ${e} from tools, or list plain ${m[1]} knowingly; to restrict a tool, add it to disallowedTools` },
+      ]));
+    }
+  }
+  if (!builtin && !effDescription.text) {
+    findings.push(finding("warn", "no-description", path, "description", "No config description and no frontmatter description: a side role's directive line would be empty.", [
+      { kind: "set-description", detail: `roster.mjs role set ${role} --description "<one line>"` },
+    ]));
+  }
+  if (loc.shadowed) {
+    findings.push(finding("warn", "shadowed-agent", path, null, `${JSON.stringify(agent)} exists at both levels: ${path} was validated and loads here; ${loc.shadowed} is shadowed in this repo.`, [
+      { kind: "remove-file", detail: `delete or rename the shadowed user file ${loc.shadowed}, or rename the repo agent ${path}` },
+    ]));
+  }
+  return { findings, file, description: effDescription };
+}
+
+/** True when any finding is an error. */
+export function hasContractErrors(findings) {
+  return Array.isArray(findings) && findings.some((f) => f.level === "error");
+}
+
+/** Plain-text findings: `<LEVEL> <code>: <message>` and one `  fix: …` line per fix. */
+export function formatFindings(findings) {
+  return findings.map((f) => [`${f.level.toUpperCase()} ${f.code}: ${f.message}`, ...f.fix.map((x) => `  fix: [${x.kind}] ${x.detail}`)].join("\n")).join("\n");
+}
+
+/**
+ * Validate one registry role, when it needs validating: every custom row and every built-in
+ * override. Shipped `ah:*` agents are trusted and return null.
+ */
+export function validateRole(role, resolved) {
+  const entry = resolved && resolved.roles && resolved.roles[role];
+  if (!entry) return null;
+  if (isBuiltinRole(role)) {
+    if (!isOverride(role, entry)) return null;
+    return validateAgentContract({ role, cls: BUILTIN_CLASS[role], agent: roleAgent(role, entry), builtin: true, cwd: resolved.cwd });
+  }
+  return validateAgentContract({ role, cls: entry.class, agent: entry.agent, description: entry.description || null, cwd: resolved.cwd });
+}
+
+/** The subagent_type to dispatch for a role: its agent (`roleAgent`), or task-runner's `delegate` when its agent is not overridden. */
 export function subagentType(role, entry) {
-  if (role === "task-runner" && entry && entry.delegate === "task-gopher") {
+  if (role === "task-runner" && entry && entry.delegate === "task-gopher" && !isOverride(role, entry)) {
     return "task-gopher:task-gopher";
   }
-  return `ah:${role}`;
+  return roleAgent(role, entry);
 }
 
 /**
@@ -980,23 +1635,170 @@ export function subagentType(role, entry) {
  */
 function roleLines(resolved, repoBasename, sessionId, route) {
   const cwd = resolved.cwd || "<abs cwd>";
-  return ROLES.map((role) => {
+  return registryRoles(resolved).map((role) => {
     const entry = resolved.roles[role];
     const type = subagentType(role, entry);
+    const tag = isBuiltinRole(role) ? "" : customTag(role, entry);
     const agentCall =
       entry.model === "inherit"
         ? `Agent(subagent_type:"${type}") — OMIT \`model\` entirely (inherits this session's model). Never pass "inherit" as a value.`
         : `Agent(subagent_type:"${type}", model:"${entry.model}")`;
-    if (!PEER_ELIGIBLE_ROLES.includes(role) || subagentOptIn(role, resolved, route, null)) {
-      return `- ${ROLE_LABELS[role]} — ${agentCall}`;
+    if (classProp(role, resolved, "chain") !== true || subagentOptIn(role, resolved, route, null)) {
+      return `- ${roleLabel(role, resolved)}${tag} — ${agentCall}`;
     }
     const explicit = entry.peer && entry.peer !== "auto";
     const target = explicit
       ? `peer ${resolvedPeerTargets(role, entry, repoBasename).map((p) => `"${p}"`).join(" / ")}`
       : "its live teammate (names: `ListAgents` / `roster.mjs teams`)";
     const verb = rosterMemberFor(resolved, role) ? "spawn-one" : "spawn-ad-hoc";
-    return `- ${ROLE_LABELS[role]} — SendMessage ${target}; none live → \`node "${ROSTER_CLI}" ${verb} ${role} --cwd ${cwd}\`, then SendMessage the name it prints. Subagent only if the user opts in: \`node "${MSG_CLI}" route subagents --session ${sessionId || "<id>"}\`.`;
+    return `- ${roleLabel(role, resolved)}${tag} — SendMessage ${target}; none live → \`node "${ROSTER_CLI}" ${verb} ${role} --cwd ${cwd}\`, then SendMessage the name it prints. Subagent only if the user opts in: \`node "${MSG_CLI}" route subagents --session ${sessionId || "<id>"}\`.`;
   });
+}
+
+/** True when a custom row is an in-chain alternative: a chain class with `routes`. */
+export function isAlternative(role, entry) {
+  return !isBuiltinRole(role) && !!entry && CLASSES[entry.class] && CLASSES[entry.class].chain && typeof entry.routes === "string" && !!entry.routes;
+}
+
+/** A custom role line's tag: `[custom · <class> · alt. to <Builtin>]`, or `[custom · <class>]` plus its quoted description. */
+function customTag(role, entry) {
+  if (isAlternative(role, entry)) return ` [custom · ${entry.class} · alt. to ${ROLE_LABELS[classBuiltin(entry.class)]}]`;
+  return ` [custom · ${entry.class}]${entry.effectiveDescription ? ` "${entry.effectiveDescription}"` : ""}`;
+}
+
+/**
+ * The directive's view of the registry at SessionStart: every custom row and built-in override
+ * is validated against its class contract. A custom row with errors is dropped from the view
+ * (it stays in the real registry, so gates and messaging still work); an override with errors
+ * reverts to the shipped `ah:<role>`. Available custom rows gain their effective description.
+ * Returns `{view, unavailable}` with `unavailable` as display names.
+ */
+export function availabilityView(resolved) {
+  const roles = { ...resolved.roles };
+  const unavailable = [];
+  for (const role of registryRoles(resolved)) {
+    const entry = resolved.roles[role];
+    if (isBuiltinRole(role) && !isOverride(role, entry)) continue;
+    let result;
+    try {
+      result = validateRole(role, resolved);
+    } catch {
+      result = { findings: [finding("error", "agent-not-found", null, null, "validation failed", [])], description: { text: null } };
+    }
+    if (!result) continue;
+    const failed = hasContractErrors(result.findings);
+    if (isBuiltinRole(role)) {
+      if (!failed) continue;
+      const { agent, ...rest } = entry;
+      roles[role] = rest;
+      unavailable.push(`${role} (${agent})`);
+      continue;
+    }
+    if (failed) {
+      delete roles[role];
+      unavailable.push(role);
+      continue;
+    }
+    roles[role] = { ...entry, effectiveDescription: result.description.text };
+  }
+  return { view: { ...resolved, roles }, unavailable };
+}
+
+/** Available custom rows with `routes`, grouped by chain step class, each list in name order. */
+function alternativesByClass(resolved) {
+  const out = {};
+  for (const role of customRoleNames(resolved)) {
+    const entry = resolved.roles[role];
+    if (isAlternative(role, entry)) (out[entry.class] ||= []).push(role);
+  }
+  return out;
+}
+
+/** The generated routing item, numbered `n`, or null when no available custom row has `routes`. */
+function routingItem(resolved, n) {
+  const alts = alternativesByClass(resolved);
+  const steps = ["advise", "design", "implement", "review"].filter((c) => alts[c]);
+  if (!steps.length) return null;
+  const lines = steps.map((c) => {
+    const picks = alts[c].map((r) => `${roleLabel(r, resolved)} for "${resolved.roles[r].routes}"`).join("; ");
+    return `· ${CLASSES[c].step}: ${picks}; otherwise ${ROLE_LABELS[classBuiltin(c)]}.`;
+  });
+  return [
+    `${n}. ROUTING — custom alternatives (first fit by name):`,
+    ...lines,
+    "A spec's `Implementer:`/`Reviewer:` decides; unsure → built-in (auto) or ask (confirm). A routed role owns its rework: impl-defect → the implementing role, spec-defect → the designing role. Handoff gate, review loop, message files: as for the built-in.",
+  ].join("\n");
+}
+
+/**
+ * The design routing block, given to design-class roles (built-in or custom) when Implement or
+ * Review alternatives exist; null otherwise.
+ */
+export function designRoutingBlock(resolved) {
+  const alts = alternativesByClass(resolved);
+  const steps = ["implement", "review"].filter((c) => alts[c]);
+  if (!steps.length) return null;
+  const lines = steps.map((c) => {
+    const picks = alts[c].map((r) => `\`${r}\` for "${resolved.roles[r].routes}"`).join("; ");
+    return `· ${CLASSES[c].step}: ${picks}; otherwise \`${classBuiltin(c)}\`.`;
+  });
+  return [
+    "ROUTING — when you write a spec, name its roles within its first 40 lines, each on its own line: `Implementer: <role>` and/or `Reviewer: <role>`. Choices:",
+    ...lines,
+  ].join("\n");
+}
+
+const CONTRACTS_DIR = join(dirname(dirname(fileURLToPath(import.meta.url))), "contracts");
+let contractLogged = false;
+
+function readContractFile(name) {
+  try {
+    return readFileSync(join(CONTRACTS_DIR, `${name}.md`), "utf8");
+  } catch (err) {
+    if (!contractLogged) {
+      contractLogged = true;
+      logHookError("contracts", err);
+    }
+    return null;
+  }
+}
+
+/**
+ * The injected behavioural contract for a custom or overridden chain role: `contracts/common.md`
+ * plus the class file, placeholders substituted. `peerRoute` drops the `~` lines the role-session
+ * notice already carries. Null for legwork, for a role that needs no contract, or when a contract
+ * file is missing (logged once).
+ */
+export function contractBlock(role, resolved, { peerRoute = false } = {}) {
+  const entry = resolved && resolved.roles && resolved.roles[role];
+  const cls = roleClass(role, resolved);
+  if (!entry || !cls || !CLASSES[cls].chain) return null;
+  if (isBuiltinRole(role) && !isOverride(role, entry)) return null;
+  const common = readContractFile("common");
+  const specific = readContractFile(cls);
+  if (common === null || specific === null) return null;
+  const routes = isAlternative(role, entry) ? entry.routes : null;
+  const fill = (t) =>
+    t
+      .split("<Label>").join(roleLabel(role, resolved))
+      .split("<class>").join(cls)
+      .split("<BuiltinLabel>").join(ROLE_LABELS[classBuiltin(cls)])
+      .split("<routes>").join(routes || "")
+      .split("<msg-cli>").join(MSG_CLI);
+  const lines = [];
+  for (const line of common.split("\n")) {
+    if (!line.trim()) continue;
+    if (line.startsWith("?routes ")) {
+      if (routes) lines.push(line.slice("?routes ".length));
+      continue;
+    }
+    if (line.startsWith("~ ")) {
+      if (!peerRoute) lines.push(line.slice(2));
+      continue;
+    }
+    lines.push(line);
+  }
+  return fill(["HIERARCHY CONTRACT —", ...lines, specific.trim()].join("\n"));
 }
 
 /**
@@ -1020,6 +1822,16 @@ function gateSentences(sessionId) {
 }
 
 /**
+ * `, and custom: <labels>` for the custom roles the tier rule applies to (design and advise
+ * classes), appended to the tier prose; empty when there are none, so the built-in text is
+ * unchanged.
+ */
+export function customTierText(resolved) {
+  const labels = customRoleNames(resolved).filter((r) => classProp(r, resolved, "tier") === true).map((r) => roleLabel(r, resolved));
+  return labels.length ? `, and custom: ${labels.join(", ")}` : "";
+}
+
+/**
  * The three 0.29.0 protocol items: message files (12), roster + route (13),
  * tier rule (14). `hierDir`, `model`, and `route` may be null (unit callers);
  * the text degrades to the generic form. `route`, when given, is
@@ -1030,7 +1842,7 @@ function protocolItems1214(resolved, hierDir, model, route, sessionId) {
   const routeText = route ? `${route.value} (from ${route.source})` : "peers (default)";
   const routeCmd = `node "${MSG_CLI}" route <peers|prefer-peers|subagents>${sessionId ? ` --session ${sessionId}` : ""}`;
   const t = tierOf(model);
-  const roleTierText = `Architect ${resolved.roles.architect.model}(${tierOf(resolved.roles.architect.model) ?? "?"}), Ultra-Advisor ${resolved.roles["ultra-advisor"].model}(${tierOf(resolved.roles["ultra-advisor"].model) ?? "?"})`;
+  const roleTierText = `Architect ${resolved.roles.architect.model}(${tierOf(resolved.roles.architect.model) ?? "?"}), Ultra-Advisor ${resolved.roles["ultra-advisor"].model}(${tierOf(resolved.roles["ultra-advisor"].model) ?? "?"})${customTierText(resolved)}`;
   const tierOpen =
     model && t !== null
       ? `TIER RULE — you are ${model} (tier ${t}). ${roleTierText}. haiku<sonnet<opus<fable.`
@@ -1047,17 +1859,27 @@ function protocolItems1214(resolved, hierDir, model, route, sessionId) {
  * `extra.hierDir` (runtime dir) and `extra.model` (session model, if known)
  * shape items 4/12/14; both optional.
  */
-export function buildDirective(resolved, sessionId, extra = {}) {
+export function buildDirective(fullResolved, sessionId, extra = {}) {
   const hierDir = extra && typeof extra.hierDir === "string" ? extra.hierDir : null;
   const model = extra && typeof extra.model === "string" ? extra.model : null;
   const route = extra && extra.route && typeof extra.route.value === "string" ? extra.route : null;
+  const { view: resolved, unavailable } = availabilityView(fullResolved);
   const confirm = resolved.handoffs === "confirm";
   const repoBasename = teamPrefix(resolved.cwd, resolved.team);
+  const custom = customRoleNames(resolved);
+  const sideRoles = custom.filter((r) => !isAlternative(r, resolved.roles[r]));
+  const registryNotes = [
+    ...(sideRoles.length ? ["Custom side roles are dispatched when the user asks for one or when its quoted description fits; they are never substituted into the chain."] : []),
+    ...(unavailable.length ? [`Unavailable user-defined roles (agent file fails its class contract — /ah:agent-role): ${unavailable.join(", ")}.`] : []),
+  ];
+  const taskRunnerAgent = isOverride("task-runner", resolved.roles["task-runner"]) ? roleAgent("task-runner", resolved.roles["task-runner"]) : null;
+  const routing = routingItem(resolved, 15);
   const lines = [
     "Agent hierarchy ACTIVE. You are the Orchestrator: decompose, dispatch, synthesize — do not design or implement non-trivial changes yourself.",
     "",
     "Roles — dispatch route per role below. Ultra-Advisor, Architect, Reviewer, Implementor are peer sessions: SendMessage the live one; none live → spawn it with the command on its line, then SendMessage the name it prints. A subagent for these only when its line shows an Agent call — the user opted in (Ultra-Advisor's peer route gated exactly like its subagent route — item 7). Legwork (Task-Runner) always spawns or delegates to task-gopher; pass `model` on the Agent call — agent frontmatter is fallback only:",
     ...roleLines(resolved, repoBasename, sessionId, route),
+    ...registryNotes,
     "",
     "PEER BRIEF CONTRACT — a peer session is an independent Claude session: unlike a subagent, NOTHING returns its result to you automatically; a peer that finishes goes idle without telling you unless the brief itself obliges it to report. Every SendMessage that tasks a role peer must:",
     "- Open with the sentinel line `[hierarchy-peer-brief reply-to=\"sender\" task=\"<short-slug>\"]`. reply-to=\"sender\" = the peer replies to the delivery-envelope address: your message arrives wrapped as `<cross-session-message from=\"...\">`; copying that `from` into the reply's `to` is the reliable route (the sender is often NOT in the peer's ListAgents — never rely on that). Explicit `reply-to=\"<name> [ref]\"` only to redirect the report to a third session.",
@@ -1079,11 +1901,14 @@ export function buildDirective(resolved, sessionId, extra = {}) {
     "5. Living spec: Implementor reports a spec gap, or a deviation is agreed → amend the spec file (yourself, or re-dispatch the Architect for design questions) BEFORE the Reviewer runs. The Reviewer always validates against the current spec.",
     "6. Review loop: Reviewer classifies each finding impl-defect or spec-defect. Impl-defect → Implementor; spec-defect → Architect. Max 2 round-trips; findings still open after that → escalate to Ultra-Advisor, not another loop, then surface its verdict to the user.",
     `7. Ultra-Advisor — escalation apex, never a routine step. Reasons and adjudicates; never implements. Dispatch ONLY when: the user says the problem is hard, important, or high-stakes, or asks for a second opinion; the Architect reports low confidence or a fork it could not resolve; the review loop hits item 6's cap; or the change carries outsized blast radius (security, auth, data migration, concurrency, a public interface, anything hard to reverse). Give it the same absolute spec path plus the specific question. Its answer is authoritative: fold it into the spec before the Implementor runs again. Never escalate because a task feels large — size is the Architect's job. ${gateSentences(sessionId)}`,
-    "8. Task-Runner: prefer `task-gopher:task-gopher`; that agent type unavailable → `ah:task-runner`. task-gopher's on/off toggle controls only its directive, not the agent — delegation works either way.",
+    taskRunnerAgent
+      ? `8. Task-Runner: dispatch \`${taskRunnerAgent}\` (roles.task-runner.agent); that agent type unavailable → \`ah:task-runner\`.`
+      : "8. Task-Runner: prefer `task-gopher:task-gopher`; that agent type unavailable → `ah:task-runner`. task-gopher's on/off toggle controls only its directive, not the agent — delegation works either way.",
     "9. Skills and commands override: a skill mandating a different flow (tdd, diagnose, review) wins over this protocol for its scope.",
     `10. Flow control — handoffs are currently "${resolved.handoffs}"${confirm ? " (ask before each reasoning-role dispatch, per item 0)" : " (you advance the chain yourself and report)"}. The user owns this switch and may flip it AT ANY TIME, either direction, just by telling you — "ask me before handoffs", "stop asking", or /hierarchy flow auto|confirm. Then: update the "handoffs" key in the most specific agent-hierarchy.json that exists (project if present, else user) with the Write tool, preserving every other key; confirm in one line; honor the new mode immediately for the rest of this session — no restart.`,
     "11. Evidence loop — YOU keep the roles in their lanes. The Architect reasons and designs; it never executes — no tests, builds, or experiments, direct or via a runner (Bash is denied to it). (a) Dispatch it with design questions only: never fold \"and verify it works\" into an Architect prompt. (b) Its report or spec carries NEEDS-EVIDENCE items → route that gruntwork to the Implementor (write/run/measure, at implementation rates; Task-Runner for a pure run-and-report), then re-dispatch the Architect with the results and the same spec path. (c) The Reviewer likewise reasons only: it reads diffs itself (read-only git is its instrument) but MUST delegate every execution — suites, builds, repro scripts — to task-gopher and judge the compact report; its Bash is for inspection, never for running. (d) A role's report shows it did another role's work — an Architect that ran tests, a Reviewer that ran a suite itself, an Implementor that redesigned → do not accept that part: note the overstep, route the work to the role that owns it. Reasoning-tier tokens buy judgment, not gruntwork; enforcing that split is YOUR job, not the roles' goodwill.",
     ...protocolItems1214(resolved, hierDir, model, route, sessionId),
+    ...(routing ? [routing] : []),
   ];
   for (const warning of resolved.warnings) lines.push(warning);
   return lines.join("\n");
@@ -1105,16 +1930,37 @@ export function buildNudge(resolved) {
  * sentences. It deliberately carries no role→model table and no protocol: the
  * role's own `agents/*.md` body is the whole contract here.
  */
-export function buildRoleSessionNotice(role, agentType) {
-  return [
+export function buildRoleSessionNotice(role, agentType, resolved = null) {
+  const entry = resolved && resolved.roles ? resolved.roles[role] : null;
+  // Keyed on the agent this session actually runs: an ah:* session is the shipped agent even when
+  // an override is configured (a failing override is spawned as ah:<role>), and is never injected.
+  const viaAgentFile = !!entry && typeof agentType === "string" && !agentType.startsWith("ah:") && agentType === roleAgent(role, entry);
+  const label = roleLabel(role, resolved);
+  let governs = `Your ${label} contract in \`agents/*.md\` governs.`;
+  if (viaAgentFile) {
+    const cls = roleClass(role, resolved);
+    const alt = isAlternative(role, entry) ? `, alternative to ${ROLE_LABELS[classBuiltin(cls)]} for: ${entry.routes}` : "";
+    governs = `Your ${label} contract (${isBuiltinRole(role) ? "built-in" : "custom"} ${cls} role${alt}): your agent file (\`${roleAgent(role, entry)}\`) governs, subject to the hierarchy contract below.`;
+  }
+  const notice = [
     `You are running as \`${agentType}\` as the MAIN session of this Claude Code instance, launched with \`--agent\`.`,
     "The agent-hierarchy Orchestrator protocol does NOT apply to you: do not decompose-and-dispatch, and do not treat yourself as the top of the chain.",
-    `Your ${ROLE_LABELS[role] || role} contract in \`agents/*.md\` governs.`,
+    governs,
     "If a message tasks you as a peer (it opens with `[hierarchy-peer-brief reply-to=...]`), the work is not finished until you have sent your report back via SendMessage to that reply-to address — completing the task and going idle without replying strands the session that tasked you.",
-    `You are a peer ${ROLE_LABELS[role] || role}. Briefs arrive as [hierarchy-msg <path>]; read via grep '^## \\[' then Read; reply with a response file (node "${MSG_CLI}" new --type response --id <id> --req <that request path>) and [hierarchy-msg <path>] first line.`,
+    `You are a peer ${label}. Briefs arrive as [hierarchy-msg <path>]; read via grep '^## \\[' then Read; reply with a response file (node "${MSG_CLI}" new --type response --id <id> --req <that request path>) and [hierarchy-msg <path>] first line.`,
     "The request's frontmatter `team_file` is your Team's file by absolute path — trust it over anything derived from your cwd; `team_guide` beside it says how to use it.",
     "Role sessions do not dispatch ah roles (Ultra-Advisor, Architect, Reviewer, Implementor): route any such need back to your Orchestrator in your report as NEEDS-<ROLE> (e.g. NEEDS-IMPLEMENTOR), or NEEDS-EVIDENCE for a run or a measurement; legwork (`task-gopher:*`, `ah:task-runner`) is allowed.",
   ].join(" ");
+  const blocks = [notice];
+  if (viaAgentFile) {
+    const contract = contractBlock(role, resolved, { peerRoute: true });
+    if (contract) blocks.push(contract);
+  }
+  if (resolved && roleClass(role, resolved) === "design") {
+    const routing = designRoutingBlock(availabilityView(resolved).view);
+    if (routing) blocks.push(routing);
+  }
+  return blocks.join("\n\n");
 }
 
 /** Human-readable resolved table for `/hierarchy status` and the wizard's echo. */
@@ -1148,6 +1994,13 @@ export function statusReport(cwd) {
       `  ${ROLE_LABELS[role].padEnd(13)} ${model.padEnd(14)} from ${resolved.sources[role].padEnd(8)} -> ${subagentType(role, entry)}${dispatch ? `  [${dispatch}]` : ""}`
     );
   }
+  for (const role of customRoleNames(resolved)) {
+    const entry = resolved.roles[role];
+    const model = entry.model === "inherit" ? "inherit*" : entry.model;
+    const placement = isAlternative(role, entry) ? `alt. to ${ROLE_LABELS[classBuiltin(entry.class)]}` : "side";
+    out.push(`  ${entry.label.padEnd(13)} ${model.padEnd(14)} from ${resolved.sources[role].padEnd(8)} -> ${entry.agent}  [custom · ${entry.class} · ${placement}]`);
+  }
+  if (customRoleNames(resolved).length || resolved.excludedRoles.length) out.push("  (custom roles: node \"" + ROSTER_CLI + "\" role list --cwd <abs cwd>, or /ah:agent-role)");
   out.push("");
   out.push("* inherit = omit the `model` parameter on the Agent call (never pass \"inherit\").");
   out.push("");
@@ -1166,7 +2019,7 @@ export function statusReport(cwd) {
       // peer-fallback meaning (nothing to fall back TO), so it gets its own wording rather
       // than reusing the subagent one, which would read as "this setting does nothing".
       const effRoute = m.route || r.route;
-      const onMissingTag = !PEER_ELIGIBLE_ROLES.includes(m.role)
+      const onMissingTag = classProp(m.role, resolved, "chain") !== true
         ? " (inert: role is not peer-eligible)"
         : effRoute === "subagent"
           ? " (inert: route is subagent)"

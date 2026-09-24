@@ -15,7 +15,7 @@
  * readGateState/setDecision.
  */
 
-import { logHookError, readHookInput, resolveHierarchyRole, ROLE_LABELS } from "./lib-config.mjs";
+import { logHookError, readHookInput, resolveHierarchyRole, roleLabel } from "./lib-config.mjs";
 
 function decide(decision, reason) {
   if (decision) {
@@ -42,9 +42,9 @@ const ALTERNATIVE_BY_TOOL = {
   PushNotification: `The notification it would have sent is not sent — ${ARTIFACT_ALTERNATIVE}`,
 };
 
-function denyReason(role, toolName) {
+function denyReason(role, toolName, resolved) {
   return [
-    `ah: ${ROLE_LABELS[role] || role} does not talk to the user — the Orchestrator is the sole conduit. This call was BLOCKED and did not run.`,
+    `ah: ${roleLabel(role, resolved)} does not talk to the user — the Orchestrator is the sole conduit. This call was BLOCKED and did not run.`,
     ALTERNATIVE_BY_TOOL[toolName],
     "Returning with an unresolved question is a correct outcome here, not a failure.",
     "If you reached here because another gate told you to ask the user, that gate should not have fired for your role — report it as a defect in your response message rather than retrying.",
@@ -59,10 +59,10 @@ try {
   // §3.7: enforce only on positive direct attribution. `role` is never
   // "orchestrator" here — the Orchestrator has no entry in ROLES — so a
   // direct, non-null role is always one of the gated non-orchestrator roles.
-  const { role, direct } = resolveHierarchyRole(input);
+  const { role, direct, resolved } = resolveHierarchyRole(input);
   if (!direct || !role) decide(null);
 
-  decide("deny", denyReason(role, toolName));
+  decide("deny", denyReason(role, toolName, resolved));
 } catch (err) {
   logHookError("pretooluse-conduit-gate.mjs", err);
   decide(null);

@@ -1,0 +1,1 @@
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"tier rule: you are claude-fable-5(4) ≥ Ultra-Advisor fable(4). Do it inline, or set reason: context|second-opinion|parallel in the request file and re-issue."}}

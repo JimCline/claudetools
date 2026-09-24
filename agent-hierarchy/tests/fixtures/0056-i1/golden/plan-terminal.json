@@ -1,0 +1,133 @@
+{
+  "level": "repo",
+  "path": "<SANDBOX>/myrepo/.claude/agent-hierarchy.json",
+  "transport": "terminal",
+  "layout_plan": null,
+  "members": [
+    {
+      "role": "architect",
+      "name": "myrepo-architect",
+      "kind": "claude",
+      "model": "opus",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "terminal",
+        "kind": "claude",
+        "args": null,
+        "layout": [],
+        "launch": [
+          "claude --agent ah:architect --name myrepo-architect --model opus --bg"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": null,
+        "target_from": null,
+        "target_source": null
+      }
+    },
+    {
+      "role": "implementor",
+      "name": "myrepo-implementor",
+      "kind": "claude",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "terminal",
+        "kind": "claude",
+        "args": null,
+        "layout": [],
+        "launch": [
+          "claude --agent ah:implementor --name myrepo-implementor --bg"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": null,
+        "target_from": null,
+        "target_source": null
+      }
+    },
+    {
+      "role": "reviewer",
+      "name": "myrepo-reviewer",
+      "kind": "claude",
+      "model": "opus",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "terminal",
+        "kind": "claude",
+        "args": null,
+        "layout": [],
+        "launch": [
+          "claude --agent ah:reviewer --name myrepo-reviewer --model opus --bg"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": null,
+        "target_from": null,
+        "target_source": null
+      }
+    },
+    {
+      "role": "ultra-advisor",
+      "name": "myrepo-ultra-advisor",
+      "kind": "claude",
+      "model": "fable",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "terminal",
+        "kind": "claude",
+        "args": null,
+        "layout": [],
+        "launch": [
+          "claude --agent ah:ultra-advisor --name myrepo-ultra-advisor --model fable --bg"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": null,
+        "target_from": null,
+        "target_source": null
+      }
+    },
+    {
+      "role": "task-runner",
+      "name": "myrepo-task-runner",
+      "kind": "claude",
+      "model": "haiku",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "terminal",
+        "kind": "claude",
+        "args": null,
+        "layout": [],
+        "launch": [
+          "claude --agent ah:task-runner --name myrepo-task-runner --model haiku --bg"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": null,
+        "target_from": null,
+        "target_source": null
+      }
+    },
+    {
+      "role": "implementor",
+      "name": "myrepo-implementor-2",
+      "kind": "claude",
+      "model": "opus",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "terminal",
+        "kind": "claude",
+        "args": null,
+        "layout": [],
+        "launch": [
+          "claude --agent ah:implementor --name myrepo-implementor-2 --model opus --bg"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": null,
+        "target_from": null,
+        "target_source": null
+      }
+    }
+  ]
+}

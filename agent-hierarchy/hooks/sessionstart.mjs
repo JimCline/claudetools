@@ -87,8 +87,16 @@ try {
   let context = null;
 
   if (!isSubagent(input)) {
-    const role = isTopLevelAgentSession(input) ? hierarchyRoleOf(input.agent_type) : null;
     const cwd = input.cwd || process.cwd();
+    let registry = null;
+    if (isTopLevelAgentSession(input)) {
+      try {
+        registry = resolveConfig(cwd, { sessionId: input.session_id || null });
+      } catch {
+        registry = null;
+      }
+    }
+    const role = isTopLevelAgentSession(input) ? hierarchyRoleOf(input.agent_type, { resolved: registry }) : null;
 
     // Compaction drops the skill body out of context while the one-shot gate record still says this
     // session was shown it once. A reset record puts the gate back within reach. Unconditional on
@@ -102,7 +110,7 @@ try {
     }
 
     if (role) {
-      context = buildRoleSessionNotice(role, input.agent_type);
+      context = buildRoleSessionNotice(role, input.agent_type, registry);
       // Spec 0028 §3.3: the persisted half of resolveHierarchyRole's fallback —
       // non-enforcing (§3.7), best-effort like the roster record beside it.
       try {

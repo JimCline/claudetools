@@ -43,7 +43,7 @@
  * are independent.
  */
 
-import { hierarchyRoleOf, isSubagent, logHookError, MSG_CLI, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolvedPeerTargets, ROLE_LABELS, ROSTER_CLI, roleFromName, rosterMemberFor, subagentOptIn, teamPrefix, tierOf } from "./lib-config.mjs";
+import { chainRoles, classProp, hierarchyRoleOf, isSubagent, logHookError, MSG_CLI, readHookInput, resolveConfig, resolvedPeerTargets, roleLabel, ROSTER_CLI, roleFromName, rosterMemberFor, subagentOptIn, teamPrefix, tierOf } from "./lib-config.mjs";
 import {
   appendGate,
   describeInstance,
@@ -61,7 +61,9 @@ import {
 import { ON_MISSING_DEFAULT, resolveMemberTeam, teamMemberByName } from "./lib-roster.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
 
-const TIER_ROLES = ["architect", "ultra-advisor"];
+/** The registry this call resolved; labels for custom roles come from it. */
+let registry = null;
+const label = (role) => roleLabel(role, registry);
 
 function decide(decision, reason, systemMessage) {
   if (decision || systemMessage) {
@@ -83,7 +85,7 @@ function routeBackReason(role, subagent) {
     ? "Put it in your final report to the session that spawned you."
     : "Put it in your report: your response file, or your reply to the brief's reply-to.";
   return [
-    `ah: role sessions and subagents do not dispatch ah roles (${ROLE_LABELS[role]} here) — only the Orchestrator does.`,
+    `ah: role sessions and subagents do not dispatch ah roles (${label(role)} here) — only the Orchestrator does.`,
     `Route it back to your Orchestrator as ${needsLabel(role)} — or NEEDS-EVIDENCE when what you need is a run or a measurement — saying what is needed and why. ${where}`,
     "Legwork stays available: task-gopher:* and ah:task-runner.",
   ].join("\n");
@@ -98,7 +100,7 @@ function subagentsDenyReason() {
 function peersDenyReason(role, live, sessionId, resolved) {
   const ordered = [...live.filter((i) => !i.busy), ...live.filter((i) => i.busy)];
   return [
-    `ah: live ${ROLE_LABELS[role]} peer(s): ${ordered.map(describeInstance).join("; ")}.`,
+    `ah: live ${label(role)} peer(s): ${ordered.map(describeInstance).join("; ")}.`,
     `ah roles are dispatched as peers: SendMessage "${ordered[0].name}" (set to_name) with the brief this Agent call carried, instead of spawning.`,
     `A subagent only if the user opts in: ${optInCmd(sessionId)}.`,
     ...paneLine(resolved, rosterMemberFor(resolved, role)),
@@ -106,7 +108,7 @@ function peersDenyReason(role, live, sessionId, resolved) {
 }
 
 function preferPeersDenyReason(role, live) {
-  return `ah: route is prefer-peers this session — free live instance(s) for ${ROLE_LABELS[role]}: ${live.map(describeInstance).join("; ")}. SendMessage it (set to_name) instead of spawning, or change route with msg.mjs route.`;
+  return `ah: route is prefer-peers this session — free live instance(s) for ${label(role)}: ${live.map(describeInstance).join("; ")}. SendMessage it (set to_name) instead of spawning, or change route with msg.mjs route.`;
 }
 
 function spawnCommand(role, member, cwd, model) {
@@ -120,7 +122,7 @@ function paneLine(resolved, member) {
 
 function spawnReason(role, resolved, member, cwd, model, sessionId) {
   return [
-    `ah: no live ${ROLE_LABELS[role]} peer. ah roles are dispatched as peers, never subagents, unless the user opts in.`,
+    `ah: no live ${label(role)} peer. ah roles are dispatched as peers, never subagents, unless the user opts in.`,
     `Run: ${spawnCommand(role, member, cwd, model)}`,
     "Then SendMessage the `name` the command prints, with the brief you gave this Agent call. The session takes a few seconds to boot: if the name is not in ListAgents yet, wait until it is (`roster.mjs teams` reports it live).",
     "If the command reports the member already exists or is already live, SendMessage the name it reports.",
@@ -131,11 +133,11 @@ function spawnReason(role, resolved, member, cwd, model, sessionId) {
 
 function promptAskReason(role, resolved, member, cwd) {
   return [
-    `ah: no live ${ROLE_LABELS[role]} peer, and its roster member ${member.name ? `"${member.name}" ` : ""}has on-missing policy "prompt".`,
+    `ah: no live ${label(role)} peer, and its roster member ${member.name ? `"${member.name}" ` : ""}has on-missing policy "prompt".`,
     "Ask the user with AskUserQuestion, exactly these options in this order:",
-    `  "Spawn the ${ROLE_LABELS[role]} peer (Recommended)" — ${spawnCommand(role, member, cwd, null)}, then SendMessage the name it prints with this brief instead of re-issuing this dispatch.`,
+    `  "Spawn the ${label(role)} peer (Recommended)" — ${spawnCommand(role, member, cwd, null)}, then SendMessage the name it prints with this brief instead of re-issuing this dispatch.`,
     '  "Use a subagent for this dispatch" — re-issue this exact dispatch.',
-    `  "Neither — I'll start it myself" — do not dispatch; say you are blocked on ${ROLE_LABELS[role]}.`,
+    `  "Neither — I'll start it myself" — do not dispatch; say you are blocked on ${label(role)}.`,
     ...paneLine(resolved, member),
   ].join("\n");
 }
@@ -144,7 +146,7 @@ function tierReason(model, tier, role, roleModel, roleTierN, msgsOff) {
   const escape = msgsOff
     ? "Do it inline, or re-issue this exact dispatch to proceed."
     : "Do it inline, or set reason: context|second-opinion|parallel in the request file and re-issue.";
-  return `tier rule: you are ${model}(${tier}) ≥ ${ROLE_LABELS[role]} ${roleModel}(${roleTierN}). ${escape}`;
+  return `tier rule: you are ${model}(${tier}) ≥ ${label(role)} ${roleModel}(${roleTierN}). ${escape}`;
 }
 
 try {
@@ -159,6 +161,7 @@ try {
   const sessionId = typeof input.session_id === "string" && input.session_id ? input.session_id : "__nosession__";
   const resolved = resolveConfig(cwd, { sessionId: sessionId !== "__nosession__" ? sessionId : undefined });
   if (!resolved.enabled) decide(null);
+  registry = resolved;
   const repoBasename = teamPrefix(cwd, resolved.team);
   const dir = hierarchyDir(cwd);
 
@@ -172,7 +175,7 @@ try {
   let role = null;
   let text = "";
   if (isDispatch) {
-    role = hierarchyRoleOf(toolInput.subagent_type);
+    role = hierarchyRoleOf(toolInput.subagent_type, { resolved });
     text = typeof toolInput.prompt === "string" ? toolInput.prompt : "";
   } else {
     text = typeof toolInput.message === "string" ? toolInput.message : "";
@@ -196,14 +199,14 @@ try {
     }
     const teamMember = membership.found ? teamMemberByName(teamDir, to, membership.team) : null;
     role = teamMember ? teamMember.role : null;
-    if (!role) role = PEER_ELIGIBLE_ROLES.find((r) => resolvedPeerTargets(r, resolved.roles[r], repoBasename).includes(to)) || null;
+    if (!role) role = chainRoles(resolved).find((r) => resolvedPeerTargets(r, resolved.roles[r], repoBasename).includes(to)) || null;
     if (!role && to) {
       const ros = getRoster();
-      role = PEER_ELIGIBLE_ROLES.find((r) => (ros[r] || []).some((i) => i.name === to)) || null;
+      role = chainRoles(resolved).find((r) => (ros[r] || []).some((i) => i.name === to)) || null;
     }
-    if (!role && to) role = roleFromName(to);
+    if (!role && to) role = roleFromName(to, resolved);
   }
-  const peerEligible = !!role && PEER_ELIGIBLE_ROLES.includes(role);
+  const peerEligible = !!role && classProp(role, resolved, "chain") === true;
 
   // ---- role sessions and subagents: never dispatch an ah role, whatever the route or config
   if (subagent || isSubordinateSession) {
@@ -239,7 +242,7 @@ try {
             appendGate(dir, { type: "peer-fallback-ask", session_id: sessionId, role });
             decide("deny", promptAskReason(role, resolved, member, cwd));
           }
-          decide(null, null, `ah: no live ${ROLE_LABELS[role]} peer, its on-missing policy is "prompt", and the user was already asked this session — spawning the subagent.`);
+          decide(null, null, `ah: no live ${label(role)} peer, its on-missing policy is "prompt", and the user was already asked this session — spawning the subagent.`);
         }
         const model = typeof toolInput.model === "string" && toolInput.model ? toolInput.model : null;
         decide("deny", spawnReason(role, resolved, member, cwd, model, sessionId));
@@ -248,7 +251,7 @@ try {
   }
 
   // ---- tier gate: same-or-lower-tier Architect / Ultra-Advisor without a reason
-  if (TIER_ROLES.includes(role)) {
+  if (role && classProp(role, resolved, "tier") === true) {
     const model = sessionModel(input, dir);
     const tier = tierOf(model);
     if (tier !== null) {

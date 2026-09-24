@@ -1,0 +1,165 @@
+{
+  "level": "repo",
+  "path": "<SANDBOX>/myrepo/.claude/agent-hierarchy.json",
+  "transport": "herdr",
+  "layout_plan": {
+    "mode": "auto",
+    "computed_by": "roster.mjs layout-splits",
+    "pane_count": 6,
+    "inspect_command": "herdr pane layout --current",
+    "inspect_source": {
+      "kind": "json",
+      "path": ".result.layout.panes"
+    },
+    "split_command": "herdr pane split --pane <SPLIT_TARGET> --direction <DIRECTION> --cwd \"<SANDBOX>/myrepo\" --no-focus",
+    "target_source": {
+      "kind": "json",
+      "path": ".result.pane.pane_id"
+    }
+  },
+  "members": [
+    {
+      "role": "architect",
+      "name": "myrepo-architect",
+      "kind": "claude",
+      "model": "opus",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "herdr",
+        "kind": "claude",
+        "args": null,
+        "layout": [],
+        "launch": [
+          "herdr agent start myrepo-architect --kind claude --pane <TARGET> -- --agent ah:architect --name myrepo-architect --model opus"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": "<TARGET>",
+        "target_from": null,
+        "target_source": {
+          "kind": "json",
+          "path": ".result.pane.pane_id"
+        }
+      }
+    },
+    {
+      "role": "implementor",
+      "name": "myrepo-implementor",
+      "kind": "claude",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "herdr",
+        "kind": "claude",
+        "args": null,
+        "layout": [],
+        "launch": [
+          "herdr agent start myrepo-implementor --kind claude --pane <TARGET> -- --agent ah:implementor --name myrepo-implementor"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": "<TARGET>",
+        "target_from": null,
+        "target_source": {
+          "kind": "json",
+          "path": ".result.pane.pane_id"
+        }
+      }
+    },
+    {
+      "role": "reviewer",
+      "name": "myrepo-reviewer",
+      "kind": "claude",
+      "model": "opus",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "herdr",
+        "kind": "claude",
+        "args": null,
+        "layout": [],
+        "launch": [
+          "herdr agent start myrepo-reviewer --kind claude --pane <TARGET> -- --agent ah:reviewer --name myrepo-reviewer --model opus"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": "<TARGET>",
+        "target_from": null,
+        "target_source": {
+          "kind": "json",
+          "path": ".result.pane.pane_id"
+        }
+      }
+    },
+    {
+      "role": "ultra-advisor",
+      "name": "myrepo-ultra-advisor",
+      "kind": "claude",
+      "model": "fable",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "herdr",
+        "kind": "claude",
+        "args": null,
+        "layout": [],
+        "launch": [
+          "herdr agent start myrepo-ultra-advisor --kind claude --pane <TARGET> -- --agent ah:ultra-advisor --name myrepo-ultra-advisor --model fable"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": "<TARGET>",
+        "target_from": null,
+        "target_source": {
+          "kind": "json",
+          "path": ".result.pane.pane_id"
+        }
+      }
+    },
+    {
+      "role": "task-runner",
+      "name": "myrepo-task-runner",
+      "kind": "claude",
+      "model": "haiku",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "herdr",
+        "kind": "claude",
+        "args": null,
+        "layout": [],
+        "launch": [
+          "herdr agent start myrepo-task-runner --kind claude --pane <TARGET> -- --agent ah:task-runner --name myrepo-task-runner --model haiku"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": "<TARGET>",
+        "target_from": null,
+        "target_source": {
+          "kind": "json",
+          "path": ".result.pane.pane_id"
+        }
+      }
+    },
+    {
+      "role": "implementor",
+      "name": "myrepo-implementor-2",
+      "kind": "claude",
+      "model": "opus",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "herdr",
+        "kind": "claude",
+        "args": null,
+        "layout": [],
+        "launch": [
+          "herdr agent start myrepo-implementor-2 --kind claude --pane <TARGET> -- --agent ah:implementor --name myrepo-implementor-2 --model opus"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": "<TARGET>",
+        "target_from": null,
+        "target_source": {
+          "kind": "json",
+          "path": ".result.pane.pane_id"
+        }
+      }
+    }
+  ]
+}

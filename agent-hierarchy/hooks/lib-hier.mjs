@@ -21,7 +21,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realp
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { hierarchyDir, PEER_ELIGIBLE_ROLES, ROLES, ROLE_LABELS, ROUTE_VALUES, TIER, resolvedPeerTargets, roleFromName, routeHasPane, tierOf } from "./lib-config.mjs";
+import { availabilityView, chainRoles, customTierText, hierarchyDir, PEER_ELIGIBLE_ROLES, registryRoles, resolveConfig, ROLES, ROLE_LABELS, ROUTE_VALUES, TIER, resolvedPeerTargets, roleFromName, routeHasPane, tierOf } from "./lib-config.mjs";
 import { listTeamNames, paneResolver, readTeam, resolveMemberTeam, teamIsOrphaned, teamFileHome, teamMemberByName, teamPath } from "./lib-roster.mjs";
 
 export { hierarchyDir };
@@ -250,8 +250,9 @@ export function createMessage(dir, opts) {
     const to = opts.to;
     const from = opts.from;
     const slug = opts.slug;
-    if (!MSG_ROLES.includes(to)) throw new Error(`--to must be one of ${MSG_ROLES.join("|")}, got ${JSON.stringify(to)}`);
-    if (!MSG_ROLES.includes(from)) throw new Error(`--from must be one of ${MSG_ROLES.join("|")}, got ${JSON.stringify(from)}`);
+    const valid = MSG_ROLES.includes(to) && MSG_ROLES.includes(from) ? MSG_ROLES : msgRoles(opts.cwd);
+    if (!valid.includes(to)) throw new Error(`--to must be one of ${valid.join("|")}, got ${JSON.stringify(to)}`);
+    if (!valid.includes(from)) throw new Error(`--from must be one of ${valid.join("|")}, got ${JSON.stringify(from)}`);
     if (typeof slug !== "string" || !SLUG_RE.test(slug)) throw new Error(`--slug must match [a-z0-9-]{1,32}, got ${JSON.stringify(slug)}`);
     if (opts.reason !== undefined && opts.reason !== null && !REASONS.includes(opts.reason)) {
       throw new Error(`--reason must be one of ${REASONS.join("|")}, got ${JSON.stringify(opts.reason)}`);
@@ -693,6 +694,15 @@ export function effectiveRoute(dir, resolved, sessionId) {
  * first (ADR 0002 — authoritative once a Team exists), then the role whose
  * configured peer targets include `name`, then the role its token implies.
  */
+/** `orchestrator` plus every registry role for a cwd: what `--to`/`--from` accept. */
+export function msgRoles(cwd) {
+  try {
+    return ["orchestrator", ...registryRoles(resolveConfig(cwd))];
+  } catch {
+    return MSG_ROLES;
+  }
+}
+
 export function roleForPeerName(name, resolved, repoBasename) {
   try {
     const member = teamMemberByName(hierarchyDir(resolved.cwd), name, resolved && resolved.team);
@@ -700,10 +710,10 @@ export function roleForPeerName(name, resolved, repoBasename) {
   } catch {
     // team lookup is best-effort; fall through to the existing paths
   }
-  for (const role of PEER_ELIGIBLE_ROLES) {
+  for (const role of chainRoles(resolved)) {
     if (resolvedPeerTargets(role, resolved.roles[role], repoBasename).includes(name)) return role;
   }
-  return roleFromName(name);
+  return roleFromName(name, resolved);
 }
 
 /**
@@ -723,10 +733,10 @@ export function roleForAnyPeerName(dir, name, resolved, repoBasename) {
   } catch {
     // team lookup is best-effort; fall through to the existing paths
   }
-  for (const role of PEER_ELIGIBLE_ROLES) {
+  for (const role of chainRoles(resolved)) {
     if (resolvedPeerTargets(role, resolved.roles[role], repoBasename).includes(name)) return role;
   }
-  return roleFromName(name);
+  return roleFromName(name, resolved);
 }
 
 export function readRoster(dir) {
@@ -894,7 +904,7 @@ export function livePeerSlots(dir, team = null, now = Date.now()) {
  */
 export function roster(dir, resolved, repoBasename, now = Date.now()) {
   const out = {};
-  for (const role of PEER_ELIGIBLE_ROLES) out[role] = [];
+  for (const role of chainRoles(resolved)) out[role] = [];
   const unattributed = [];
   const team = (resolved && resolved.team) || null;
   const open = openExchanges(dir, team).map((e) => {
@@ -964,7 +974,7 @@ export function describeInstance(inst) {
 /** `peers:` line for HIERARCHY STATE / msg.mjs roster. */
 export function rosterLine(ros) {
   const parts = [];
-  for (const role of PEER_ELIGIBLE_ROLES) {
+  for (const role of [...new Set([...PEER_ELIGIBLE_ROLES, ...Object.keys(ros)])].filter((k) => k !== "unattributed")) {
     const list = ros[role] || [];
     if (!list.length) {
       parts.push(`${role}: none`);
@@ -1015,7 +1025,10 @@ export function roleModelLabel(role, resolved) {
 /** The `tier:` line for HIERARCHY STATE. */
 export function tierLine(resolved, model) {
   const t = tierOf(model);
-  const roles = `architect ${roleModelLabel("architect", resolved)}; ultra-advisor ${roleModelLabel("ultra-advisor", resolved)}`;
+  // Only available custom roles are named; availabilityView reads agent files, and this line is
+  // built only at SessionStart.
+  const custom = customTierText(resolved) ? customTierText(availabilityView(resolved).view) : "";
+  const roles = `architect ${roleModelLabel("architect", resolved)}; ultra-advisor ${roleModelLabel("ultra-advisor", resolved)}${custom}`;
   if (model && t !== null) return `tier: you are ${model}(${t}); ${roles}`;
   return `tier: model unknown — see TIER RULE; ${roles}`;
 }
@@ -1051,7 +1064,7 @@ export function buildStateBlock(dir, resolved, repoBasename, model, sessionId = 
     peersLine = `Team ${team.team_id} (authoritative)${team.partial ? " [partial]" : ""}: ${rows.join("; ")}`;
   } else {
     const ros = roster(dir, resolved, repoBasename, now);
-    const anyPeer = PEER_ELIGIBLE_ROLES.some((r) => ros[r].length);
+    const anyPeer = chainRoles(resolved).some((r) => ros[r].length);
     peersLine = `peers: ${anyPeer ? rosterLine(ros) : "none"}`;
   }
   const eff = route || (sessionId ? effectiveRoute(dir, resolved, sessionId) : null);

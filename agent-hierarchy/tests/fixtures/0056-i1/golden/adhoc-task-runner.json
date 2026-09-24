@@ -1,0 +1,1 @@
+roster.mjs: spawn-ad-hoc: under-specified — "task-runner" is not a role spawn-ad-hoc can stand up; it spawns exactly one of ultra-advisor, architect, reviewer, implementor. Ask the user which role they want, or for a whole team use Skill ah:agent-team (Create).

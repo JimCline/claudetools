@@ -35,7 +35,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { mainHierarchyDir, PEER_ELIGIBLE_ROLES, resolveConfig, ROUTE_VALUES, teamPrefix, validateTeamAlias } from "./lib-config.mjs";
+import { chainRoles, mainHierarchyDir, resolveConfig, ROUTE_VALUES, teamPrefix, validateTeamAlias } from "./lib-config.mjs";
 import {
   createMessage,
   effectiveRoute,
@@ -259,7 +259,7 @@ try {
       const ros = roster(dir, resolved, teamPrefix(resolved.cwd, resolved.team));
       if (plain) {
         const lines = [];
-        for (const role of PEER_ELIGIBLE_ROLES) {
+        for (const role of chainRoles(resolved)) {
           const list = ros[role];
           if (!list.length) lines.push(`${role}: none`);
           for (const i of list) {

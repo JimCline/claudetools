@@ -144,7 +144,7 @@ happens when a bare `create` collides with someone else's live Team.
   tool wraps it — it is unreachable from the skill, so it never forces a Bash fallback; tests keep
   calling the CLI directly.
 
-Roles: `architect`, `implementor`, `reviewer`, `task-runner`, `ultra-advisor`.
+Roles: the built-ins `architect`, `implementor`, `reviewer`, `task-runner`, `ultra-advisor`, plus custom roles (`roster.mjs role list`; define them with `/ah:agent-role`).
 `orchestrator` is rejected by the CLI — the Orchestrator is whatever session
 runs `create`, never a team member.
 

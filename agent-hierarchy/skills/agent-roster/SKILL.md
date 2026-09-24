@@ -94,7 +94,7 @@ resolves (repo-user > repo > global) and print which level they picked — say
 that back to the user in one line. If no roster resolves anywhere, the CLI
 errors pointing at `init`; run `init` first (asking the user per § Init below).
 
-Roles: `architect`, `implementor`, `reviewer`, `task-runner`, `ultra-advisor`.
+Roles: the built-ins `architect`, `implementor`, `reviewer`, `task-runner`, `ultra-advisor`, plus custom roles (`roster.mjs role list`; define them with `/ah:agent-role`).
 `orchestrator` is rejected by the CLI — the Orchestrator is whatever session
 runs `create`, never a roster entry.
 
@@ -147,7 +147,10 @@ configured at any level), say so and offer to run `init`.
    (builds exactly what the spec says), `reviewer` (validates an
    Implementor's diff against the spec), `task-runner` (cheap runner for
    tests/builds/log-sifting/search), `ultra-advisor` (deepest-reasoning
-   escalation for hard or high-stakes calls). Then, for each role picked,
+   escalation for hard or high-stakes calls). Run `roster.mjs role list` first:
+   each custom role it shows with status `ok` or `n warnings` is offered too,
+   described by its class and placement (`alt. to <Builtin>` or `side`); an
+   `UNAVAILABLE` role is left out and named in one line. Then, for each role picked,
    ask (AskUserQuestion, batched into calls of up to 4 questions) its model,
    effort, and auto-mode. The auto-mode options are exactly `auto
    (Recommended)`, `acceptEdits`, `plan`, and `default (none)` —

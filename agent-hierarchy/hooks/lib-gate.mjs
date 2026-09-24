@@ -36,9 +36,6 @@ export const GATE_CHOICE_LABELS = {
   off: "blocked for the rest of this session",
 };
 
-/** Subagent types this gate covers. The bare name does not resolve as a dispatch target, but gating it too costs nothing. */
-export const GATED_SUBAGENT_TYPES = ["ah:ultra-advisor", "ultra-advisor"];
-
 /** Cap on retained sessions. Entries are pruned oldest-first on write. */
 export const MAX_SESSIONS = 50;
 
@@ -51,10 +48,6 @@ export function gatePath() {
 
 export function normalizeSessionId(sessionId) {
   return typeof sessionId === "string" && sessionId.trim() ? sessionId.trim() : NO_SESSION_KEY;
-}
-
-export function isGatedSubagentType(type) {
-  return typeof type === "string" && GATED_SUBAGENT_TYPES.includes(type.trim());
 }
 
 /**

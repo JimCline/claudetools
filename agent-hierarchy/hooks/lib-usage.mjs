@@ -28,12 +28,15 @@ export const PRUNE_TO = 30_000;
  * the raw agent_type, so this mapping can evolve without invalidating data.
  * task-gopher counts as Task-Runner because the role's default config delegates
  * to it. Everything unrecognized lands in "other" (the reporter shows a
- * breakdown), and the main session is "orchestrator" by construction.
+ * breakdown), and the main session is "orchestrator" by construction. `agentRoles` maps a
+ * registry row's agent to its role (the report cwd's custom roles and overrides); a custom role
+ * defined only in another repo therefore reports as "other".
  */
-export function roleFor(agentType) {
+export function roleFor(agentType, agentRoles = null) {
   if (typeof agentType !== "string" || !agentType) return "other";
   if (agentType.startsWith("ah:")) return agentType.slice("ah:".length);
   if (agentType === "task-gopher:task-gopher" || agentType === "task-gopher") return "task-runner";
+  if (agentRoles && Object.prototype.hasOwnProperty.call(agentRoles, agentType)) return agentRoles[agentType];
   return "other";
 }
 

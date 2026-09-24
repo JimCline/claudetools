@@ -65,9 +65,22 @@ Resolution rules you must respect in everything below:
   `inherit` means "omit the `model` parameter on the Agent call" — it is a
   legal value in this JSON file only, and must never be passed to the Agent
   tool literally.
-- Roles are `ultra-advisor`, `architect`, `reviewer`, `implementor`,
+- Built-in roles are `ultra-advisor`, `architect`, `reviewer`, `implementor`,
   `task-runner`. The **Orchestrator is not configurable** — it is always the
   session agent itself.
+- **Custom roles** are further `roles.<name>` rows with a required `class`
+  (`advise`, `design`, `review`, `implement`, `legwork`); the class sets every
+  gate and the model allowlist above (advise = the ultra-advisor list, design /
+  review / implement = the reasoning list, legwork = + `haiku`). Optional keys:
+  `agent` (default: the name), `label`, `description`, `model` (default
+  `inherit`; advise needs `fable` or `opus`), `dispatch`, `peer`, and `routes`,
+  which makes a chain-class role an in-chain **alternative** to its step's
+  built-in for that work (without it, a side role). A built-in row may set
+  `agent` to override the agent it launches. Every custom or overridden agent
+  file must pass its class's **tool contract** (review may not Edit or Write;
+  design needs Write; every chain class needs Read and SendMessage); a failing
+  one is marked unavailable. Never hand-write these rows — use `/ah:agent-role`
+  (it drives `roster.mjs role list|set|remove`).
 
 The resolved table is printed by the plugin's own resolver, so it can never
 drift from what the hook injects. Run it with Bash from the repo you care about,

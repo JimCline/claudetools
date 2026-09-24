@@ -92,7 +92,11 @@ Seven steps, in order:
 ### Elastic membership
 
 `roster.mjs spawn-one` adds one role to a live team without touching
-the rest — that's the whole growth primitive, already shipped. Two hard
+the rest — that's the whole growth primitive, already shipped. A routed role
+with no live peer is spawned the same way: `spawn-one <role>` when it is a
+roster member, else `spawn-ad-hoc <role>`. When the spawn is refused because
+the role's agent file fails its class contract, that item falls back to its
+step's built-in; record the fallback in the item's state and report it. Two hard
 constraints on the other direction:
 
 - **Never dismiss or close a member mid-task.** In-flight work that has
@@ -115,22 +119,48 @@ inverts the goal.
 |---|---|
 | design or a decision about *how* | Architect |
 | a call that is properly the user's | Ultra-Advisor (§ UA escalation) |
-| work that is specified and ready to build | Implementor |
-| Implementor reports done | Reviewer — **and** the next queued item to Implementor |
-| Reviewer finding, `impl-defect` | rework queue → Implementor when free |
-| Reviewer finding, `spec-defect` | Architect |
+| work that is specified and ready to build | the item's implementer |
+| the item's implementer reports done | the item's reviewer — **and** that implementer's next queued item |
+| reviewer finding, `impl-defect` | the item's implementer's rework queue, applied when it is free |
+| reviewer finding, `spec-defect` | the design-class role that wrote the item's spec |
 
 The `impl-defect`/`spec-defect` split is the Reviewer's existing contract
 (`agents/reviewer.md`) — route on it, don't reinterpret it.
+
+**The item's implementer / reviewer.** With no custom roles these are the
+Implementor and the Reviewer, and everything below reads exactly as before.
+When the registry has in-chain alternatives (`roster.mjs role list` shows
+`alt. to Implementor` / `alt. to Reviewer`), resolve each item's roles once, at
+queue time, and record them in the item's state:
+
+1. the role the user named for it, if any;
+2. else a valid `Implementer:` / `Reviewer:` line in the first 40 lines of the
+   item's spec (a line naming an unknown, wrong-class or unavailable role is
+   ignored, and the user is told);
+3. else the directive's ROUTING rule — the first alternative, in name order,
+   whose routes fit the item;
+4. else the built-in.
+
+The routed role owns the item and its rework. Gates, the review loop and the
+caps apply to it exactly as to the built-in it stands in for.
+
+Design and Escalate are routed the same way, by the same precedence (the user,
+then the routing rule, then the built-in — the spec header names only the
+implementer and reviewer): the item's **designer** is resolved at queue time,
+and its spec-defects go back to the role that wrote the spec; an Ultra-Advisor
+escalation (§ UA escalation) goes to the routed advise-class role.
 
 ### The pipelining rule
 
 When the Implementor finishes item N, the Reviewer gets N **and** the
 Implementor gets N+1 in the same move — the Implementor does not idle
-through review. That overlap is the entire point of this skill.
+through review. That overlap is the entire point of this skill. With
+alternatives in use there is one queue per implement-class role: when X
+finishes N, N goes to its reviewer and X takes its own next item, and items
+routed to different implementers run concurrently.
 
 **Rework never preempts.** A finding on item N joins the rework queue and
-is applied when the Implementor next comes free — never by interrupting a
+is applied when the item's implementer next comes free — never by interrupting a
 half-built N+1. Interrupting produces a half-built item and a rework that
 lands on a moving base.
 

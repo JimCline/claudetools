@@ -1,0 +1,1 @@
+{"hookSpecificOutput":{"hookEventName":"SubagentStart","additionalContext":"ah CLI root (v<VER>): <PLUGIN> — roster: `node <PLUGIN>/hooks/roster.mjs <verb> --cwd <abs cwd>`, messages: `node <PLUGIN>/hooks/msg.mjs <verb> --cwd <abs cwd>` (verbs: agent-hierarchy/docs/cli-tools.md)"}}

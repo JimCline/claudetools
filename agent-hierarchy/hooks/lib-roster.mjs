@@ -17,7 +17,7 @@ import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync
 import { createHash, randomBytes } from "node:crypto";
 import { basename, delimiter, dirname, join } from "node:path";
 
-import { isValidTeamAlias, KIND_DEFAULT, KIND_RE, resolveKind, ROLES, routeHasPane, suggestTeamAlias, VALID_MODELS_BY_ROLE } from "./lib-config.mjs";
+import { CLASSES, isValidTeamAlias, KIND_DEFAULT, KIND_RE, registryRoles, resolveKind, roleClass, routeHasPane, suggestTeamAlias } from "./lib-config.mjs";
 
 // Spec 0043 §1.1/§1.5: `kind`/`route`-shape helpers are DEFINED in lib-config.mjs (the leaf) and
 // re-exported here so the member schema still reads as one module. Defining them here instead
@@ -218,12 +218,18 @@ export function kindFieldErrors(m) {
   return errors;
 }
 
-/** Validation errors for one roster member object; empty array = valid. */
-export function validateMember(m) {
+/**
+ * Validation errors for one roster member object; empty array = valid. `resolved` supplies the
+ * registry, so a custom role is accepted and its model is checked against its class allowlist;
+ * without it only the built-ins are known.
+ */
+export function validateMember(m, resolved = null) {
   const errors = [];
   if (!m || typeof m !== "object") return ["member must be an object"];
-  if (!ROLES.includes(m.role)) errors.push(`role must be one of ${ROLES.join(", ")}, got ${JSON.stringify(m.role)}`);
-  const validModels = VALID_MODELS_BY_ROLE[m.role] || [];
+  const roles = registryRoles(resolved);
+  if (!roles.includes(m.role)) errors.push(`role must be one of ${roles.join(", ")}, got ${JSON.stringify(m.role)}`);
+  const cls = roleClass(m.role, resolved);
+  const validModels = cls ? CLASSES[cls].models : [];
   if (m.model !== undefined && m.model !== null && !validModels.includes(m.model)) {
     errors.push(`model ${JSON.stringify(m.model)} is not valid for role ${JSON.stringify(m.role)} (allowed: ${validModels.join(", ")})`);
   }
@@ -250,10 +256,11 @@ export function validateMember(m) {
  * correct for roster-config members (derived at resolve time) but wrong here: the spawn path
  * writes team members WITH a `name` (roster.mjs:768, roster.mjs:1620).
  */
-export function validateTeamMember(m) {
+export function validateTeamMember(m, resolved = null) {
   if (!m || typeof m !== "object" || Array.isArray(m)) return [`member must be an object, got ${JSON.stringify(m)}`];
   const errors = [];
-  if (!ROLES.includes(m.role)) errors.push(`role must be one of ${ROLES.join(", ")}, got ${JSON.stringify(m.role)}`);
+  const roles = registryRoles(resolved);
+  if (!roles.includes(m.role)) errors.push(`role must be one of ${roles.join(", ")}, got ${JSON.stringify(m.role)}`);
   // Spec 0025 §3 amendment: name addresses a pane, so it's load-bearing only for route "peer" —
   // a subagent-routed member legitimately has no pane and no name (SKILL.md's hand-built recipe).
   // Spec 0043 §1.5: a `pane`-routed member addresses a pane exactly as a `peer` one does — its
@@ -281,7 +288,7 @@ export function validateTeamMember(m) {
 }
 
 /** Validation errors for a whole `roster` block (`{route, members}`); empty array = valid. */
-export function validateRosterBlock(roster) {
+export function validateRosterBlock(roster, resolved = null) {
   if (!roster || typeof roster !== "object" || Array.isArray(roster)) return ["roster must be an object"];
   const errors = [];
   if (!ROSTER_ROUTE_VALUES.includes(roster.route)) {
@@ -302,7 +309,7 @@ export function validateRosterBlock(roster) {
       // reads `route` — spec 0043 §1.3's "kind requires route pane" above all — must see the
       // EFFECTIVE route. Validating the bare member instead rejects a legal `kind: codex` member
       // in a `route: pane` block, and does so for every reader: add, edit, create, show.
-      for (const e of validateMember({ ...m, route: (m && m.route) || roster.route })) errors.push(`member ${i}: ${e}`);
+      for (const e of validateMember({ ...m, route: (m && m.route) || roster.route }, resolved)) errors.push(`member ${i}: ${e}`);
     });
   }
   return errors;

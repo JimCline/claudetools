@@ -26,7 +26,7 @@ answer and `team_file` disagree, `team_file` is right.**
 | `roster_level` | which roster level the Team was stood up from (`null` for an ad hoc one) |
 | `transport` | `herdr`, `tmux`, or `terminal` |
 | `partial` | true when some member never checked in — the Team is degraded |
-| `members[]` | one row per member: `role`, `name`, `route`, `model`, `effort`, `autoMode`, `transport_id` (its pane); `kind` and `args` only for a non-Claude member; `tab_id`/`workspace_id` under herdr |
+| `members[]` | one row per member: `role` (a built-in, or a custom role name from `roster.mjs role list`), `name`, `route`, `model`, `effort`, `autoMode`, `transport_id` (its pane); `kind` and `args` only for a non-Claude member; `tab_id`/`workspace_id` under herdr |
 
 `members[].name` is the address: it is the `to` of a SendMessage and the `--to-name`
 of `msg.mjs new`.
