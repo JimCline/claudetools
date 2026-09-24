@@ -368,6 +368,10 @@ function roleSet(name) {
     }
   }
   const loc = agent.includes(":") ? null : locateAgentFile(agent, cwd);
+  if (!builtin) {
+    const peerName = `${teamPrefix(cwd, teamArg)}-${name}`;
+    if (!validateHerdrName(peerName).ok) warnings.push(`its peer name here, ${peerName}, is ${peerName.length} characters — Herdr allows at most 32 ([a-z][a-z0-9_-]), so spawning it under Herdr is refused; use a shorter role name or \`roster.mjs alias --set <short>\``);
+  }
   if (level === "repo" && loc && loc.level === "user") warnings.push(`this repo-level row points at ${loc.path}, which exists only in your user agents dir — other users of this repo will not have it`);
 
   let scaffold = null;
@@ -1042,6 +1046,12 @@ function spawnShape(member, transport, agent = null) {
   const configErrors = kindFieldErrors(member);
   if (configErrors.length) {
     return { transport, kind, layout: [], launch: [], launch_cwd: cwd, target_placeholder: null, target_from: null, target_source: null, refuse: `member ${member.name} (kind ${kind}) has an invalid configuration: ${configErrors.join("; ")}` };
+  }
+  // Herdr rejects the name only at `agent start`, after the pane has been split, which strands an
+  // empty pane; a refusal here lands before layout, so no pane is ever opened for it.
+  const herdrName = transport === "herdr" ? validateHerdrName(member.name) : { ok: true };
+  if (!herdrName.ok) {
+    return { transport, kind, layout: [], launch: [], launch_cwd: cwd, target_placeholder: null, target_from: null, target_source: null, refuse: `member ${member.name}: ${herdrName.why}` };
   }
   // §1.4: forced by F2 — the tmux branch sends the literal string `claude <flags>` into a pane
   // and the terminal branch execs `claude`; neither can start another kind, and teaching them
@@ -1926,6 +1936,32 @@ function herdrErrorCode(attempt) {
 }
 
 /**
+ * A failed herdr launch leaves the pane split for it behind, and the user would have to close it
+ * by hand. When no agent registered under the member's name, the pane's recent output — usually
+ * the only explanation of the failure — is captured into the report, then the pane is closed.
+ * A pane is left open, with its close command as the remedy, only when an agent may be live in it
+ * or the close itself fails.
+ */
+function closeOrphanPane(member) {
+  const id = member.transport_id;
+  if (!id) return { remedy: "the agent name never registered" };
+  const keep = { orphaned_transport_id: id, remedy: `the pane is orphaned (the agent name never registered) — close it with \`herdr pane close ${id}\`` };
+  if (herdrAgentState(member.name).live) return keep;
+  const call = (args) => {
+    try {
+      return herdrCall(args, { allowFailure: true });
+    } catch {
+      return { ok: false, stdout: "" };
+    }
+  };
+  const read = call(["pane", "read", id, "--source", "recent-unwrapped", "--lines", "40"]);
+  const closed = call(["pane", "close", id]);
+  const paneOutput = read.ok && read.stdout.trim() ? read.stdout.trim() : null;
+  if (!closed.ok) return { ...keep, pane_output: paneOutput };
+  return { closed_pane: id, pane_output: paneOutput };
+}
+
+/**
  * One member's launch, with the herdr-only retry (spec 0005 §4 step 6). NEEDS-EVIDENCE item 2 (§9)
  * is unresolved — no live pane was available to reproduce the retryable "pane busy" condition, only
  * the non-retryable ones (bad --kind, nonexistent pane) — so this uses the spec's documented safe
@@ -1968,23 +2004,11 @@ async function launchMember(member, transport) {
           retried,
         };
       }
-      // §1.4/§1.9: on a startup timeout the agent name never registers, so only the pane
-      // survives. Report it with the close command rather than closing it — that pane holds the
-      // target CLI's own output, which is usually the only explanation of what went wrong.
-      if (code === "timeout") {
-        const args = member.spawn.args;
-        const result = {
-          code,
-          detail: errorText(),
-          orphaned_transport_id: member.transport_id || null,
-          remedy: member.transport_id ? `the pane is orphaned (the agent name never registered) — close it with \`herdr pane close ${member.transport_id}\`` : "the agent name never registered",
-        };
-        if (args && args.length) {
-          result.likely_cause = `args ${JSON.stringify(args)} most likely made ${resolveKind(member)} run and exit instead of staying interactive — these are passed through unvalidated, so this is a diagnostic, not a verdict`;
-        }
-        return { ...member, launch_status: "failed", launch_result: result, retried, error: errorText() };
+      const result = { code, detail: errorText(), ...closeOrphanPane(member) };
+      if (code === "timeout" && member.spawn.args && member.spawn.args.length) {
+        result.likely_cause = `args ${JSON.stringify(member.spawn.args)} most likely made ${resolveKind(member)} run and exit instead of staying interactive — these are passed through unvalidated, so this is a diagnostic, not a verdict`;
       }
-      return { ...member, launch_status: "failed", launch_result: null, retried, error: errorText() };
+      return { ...member, launch_status: "failed", launch_result: result, retried, error: errorText() };
     }
     if (!attempt.err) {
       let parsed = null;
@@ -2673,7 +2697,7 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
     // dropping them leaves the user with a bare timeout and no way to find either the evidence
     // or the pane it is sitting in.
     const lr = launched.launch_result;
-    const extra = lr ? [lr.likely_cause, lr.remedy].filter(Boolean) : [];
+    const extra = lr ? [lr.likely_cause, lr.remedy, lr.closed_pane ? `its pane ${lr.closed_pane} was closed` : null, lr.pane_output ? `the pane's last output:\n${lr.pane_output}` : null].filter(Boolean) : [];
     // The transport's own error rarely says which name was attempted, and a name taken where the
     // liveness check cannot see it surfaces only here.
     fail([`${callerLabel}: launching ${member.name} failed`, launched.error, ...extra].filter(Boolean).join(" — "));

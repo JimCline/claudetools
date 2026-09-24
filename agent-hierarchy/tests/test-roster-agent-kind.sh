@@ -110,6 +110,11 @@ if (args[0] === "agent" && args[1] === "get") {
   const exit = Number(process.env.FAKE_HERDR_GET_EXIT || 0);
   // Default: the agent does not exist — exit 1 with the error JSON on STDOUT, which is Herdr's
   // real shape (r4). Tests that need another state set FAKE_HERDR_GET_JSON/_EXIT explicitly.
+  const afterStart = process.env.FAKE_HERDR_GET_AFTER_START_JSON;
+  if (afterStart !== undefined && fs.existsSync(path.join(dir, "last-start.json"))) {
+    console.log(afterStart);
+    finish(0);
+  }
   const body = process.env.FAKE_HERDR_GET_JSON;
   if (body === undefined) {
     console.log(JSON.stringify({ error: { code: "agent_not_found", message: "no such agent" } }));
@@ -126,6 +131,11 @@ if (args[0] === "pane" && args[1] === "rename") {
 
 if (args[0] === "pane" && args[1] === "close") {
   console.log(JSON.stringify({ result: { closed: args[2] } }));
+  finish(0);
+}
+
+if (args[0] === "pane" && args[1] === "read") {
+  console.log("codex: unrecognized flag --help");
   finish(0);
 }
 
@@ -704,21 +714,39 @@ r "" add --no-spawn --role implementor --kind codex --route pane --args '"[\"--h
 r "HERDR_ENV=1 FAKE_HERDR_START_MODE=timeout" spawn-one implementor
 check "4.5g: a timeout WITH args names the args as the likely cause and prints them" \
   '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "likely_cause\|most likely made" && echo "$OUT" | grep -q -- "--help"'
-check "4.5h: ...reports the orphaned transport_id with herdr pane close as the remedy" \
-  'echo "$OUT" | grep -q "herdr pane close"'
-check "4.5i: ...and does NOT close the pane itself" \
+check "4.5h: ...reports the closed pane and the output read from it before closing" \
+  'echo "$OUT" | grep -q "was closed" && echo "$OUT" | grep -q "unrecognized flag --help"'
+check "4.5i: ...and closes the orphaned pane itself, after reading it" \
   '[ "$(node -e "
       const fs=require(\"fs\");const dir=process.argv[1];
       const rows=fs.readdirSync(dir).map(f=>JSON.parse(fs.readFileSync(dir+\"/\"+f,\"utf8\")));
-      console.log(rows.filter(c=>c.argv[0]===\"pane\"&&c.argv[1]===\"close\").length)
-    " "$FAKE_STATE_DIR/calls")" -eq 0 ]'
+      const n=(v)=>rows.filter(c=>c.argv[0]===\"pane\"&&c.argv[1]===v).length;
+      console.log(n(\"read\")===1&&n(\"close\")===1 ? 1 : 0)
+    " "$FAKE_STATE_DIR/calls")" -eq 1 ]'
+check "4.5i2: ...leaving no herdr pane close for the user to run" '! echo "$OUT" | grep -q "close it with"'
 
 reset_state; clear_hierarchy; init_geometry; init_roster
 r "" add --no-spawn --role implementor --kind codex --route pane
 r "HERDR_ENV=1 FAKE_HERDR_START_MODE=timeout" spawn-one implementor
 check "4.5j: a timeout with NO args does not blame args" \
   '[ "$RC" -ne 0 ] && ! echo "$OUT" | grep -q "likely_cause"'
-check "4.5j2: ...but still reports the orphaned pane" 'echo "$OUT" | grep -q "herdr pane close"'
+check "4.5j2: ...but still closes the orphaned pane" 'echo "$OUT" | grep -q "was closed"'
+
+# a live agent in the pane is never closed out from under it
+reset_state; clear_hierarchy; init_geometry; init_roster
+r "" add --no-spawn --role implementor --kind codex --route pane
+r "HERDR_ENV=1 FAKE_HERDR_START_MODE=timeout FAKE_HERDR_GET_AFTER_START_JSON='{\"result\":{\"agent\":{\"name\":\"myrepo-implementor\",\"agent_status\":\"working\"}}}'" spawn-one implementor
+check "4.5j3: a failed launch whose agent IS live leaves the pane and reports its close command" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "close it with" && ! grep -rq "\"close\"" "$FAKE_STATE_DIR/calls"'
+
+# a name Herdr would reject is refused before any pane is split for it
+reset_state; clear_hierarchy; init_geometry; init_roster
+r "" add --no-spawn --role implementor --route peer
+r "HERDR_ENV=1" spawn-ad-hoc implementor --team abcdefghij-abcdefghij-abcdefghij
+check "4.5k: a member name over 32 characters is refused under Herdr, naming the limit" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "max 32 characters"'
+check "4.5k2: ...and no pane was split and no agent start ran for it" \
+  '! grep -rqE "\"split\"" "$FAKE_STATE_DIR/calls" 2>/dev/null && [ ! -f "$FAKE_STATE_DIR/last-start.json" ]'
 
 ########################################################################
 # fix-round: block-level route inheritance, and converting a member's kind

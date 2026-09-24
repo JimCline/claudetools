@@ -39,6 +39,10 @@ When the request names (or clearly implies) ONE role, skip everything below:
 
 - `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs spawn-ad-hoc <role> --cwd <abs>`
   works in any repo, roster or not — no skill load. It prints the derived name.
+- Under Herdr every session name — `<team-prefix>-<role>`, or `--member` — must
+  be `[a-z][a-z0-9_-]`, at most 32 characters. Check it before spawning; the
+  CLI refuses a longer one before any pane opens. Never run `herdr pane split`
+  / `herdr agent start` by hand to work around a refusal.
 - Brief it with `msg.mjs new --to <role> --from <your role> …`, then
   SendMessage to the reported name.
 - A subagent may spawn and brief a peer, but the reply is delivered to its

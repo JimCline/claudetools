@@ -654,10 +654,13 @@ for shape in '{"version":1,"team_id":"t-trunc"}' '{"version":1,"team_id":"t-trun
   check "U10: team file $shape -> exit 2 naming it before any launch, no stack, file untouched" \
     '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qF "$NAMED_BAD" && ! echo "$OUT" | grep -qE "TypeError|^ +at " && no_launch && [ "$(cat "$NAMED_BAD")" = "$shape" ]'
 done
-shaped_named '{"version":1,"team_id":"t-empty","roster_level":null,"transport":"herdr","orchestrator":{"session_id":null,"pid":null},"members":[]}'
-bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --team T
+# Herdr refuses an uppercase agent name, so a Herdr team here is lowercase.
+NAMED_EMPTY="$BARE/.claude/hierarchy/teams/t.json"
+rm -rf "$BARE/.claude"; mkdir -p "$(dirname "$NAMED_EMPTY")"; reset_state; init_geometry 180 42
+printf '%s' '{"version":1,"team_id":"t-empty","roster_level":null,"transport":"herdr","orchestrator":{"session_id":null,"pid":null},"members":[]}' > "$NAMED_EMPTY"
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --team t
 check "U11: an empty members array is a usable team -> the spawn joins it" \
-  '[ "$RC" -eq 0 ] && node -e "const t=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));process.exit(t.team_id===\"t-empty\"&&t.members.length===1&&t.members[0].name===\"T-reviewer\"?0:1)" "$NAMED_BAD"'
+  '[ "$RC" -eq 0 ] && node -e "const t=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));process.exit(t.team_id===\"t-empty\"&&t.members.length===1&&t.members[0].name===\"t-reviewer\"?0:1)" "$NAMED_EMPTY"'
 
 reset_state; init_geometry 180 42; rm -rf "$BARE/.claude"
 bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=$SANDBOX/garbage.json::$RACE_FILE" spawn-ad-hoc reviewer --team race

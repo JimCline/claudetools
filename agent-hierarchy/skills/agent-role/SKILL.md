@@ -52,7 +52,10 @@ the fix loop below.
 
 ## add
 
-1. **Name.** Suggest one from the user's words, plus up to two variants.
+1. **Name.** Suggest one from the user's words, plus up to two variants. Its
+   peer name is `<team-prefix>-<name>`, which Herdr caps at 32 characters
+   (`[a-z][a-z0-9_-]`) — suggest only names that fit here, and keep them short
+   for a global role, since other repos have their own prefixes.
 2. **Class.** Offer the inferred class first; the fifth is reachable via
    Other. Each option is one line: its gates and its tool contract (table
    above).

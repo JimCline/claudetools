@@ -50,7 +50,9 @@ Member names are **derived, never stored**: the first member of a role at the
 winning level is `<team-prefix>-<role>` (e.g. `claudetools-architect`) — the
 team-prefix is the repo's `teamAlias` if one is set, else the repo basename;
 see `roster.mjs alias`. A second, third, ... same-role member gets `-2`, `-3`
-appended, in array order.
+appended, in array order. Under Herdr the whole name must be `[a-z][a-z0-9_-]`,
+at most 32 characters, ordinal included; a longer one is refused at spawn, so
+pick a short alias up front.
 Removing an earlier member re-ordinals the ones after it — names are only
 meaningful for a Team's lifetime, and a live Team's authoritative names are
 frozen in `team.json` at check-in time (§ Check-in registry), not recomputed

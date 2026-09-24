@@ -48,6 +48,10 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-roster-skill-gate.mjs\""
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/pretooluse-herdr-name-gate.mjs\""
           }
         ]
       },

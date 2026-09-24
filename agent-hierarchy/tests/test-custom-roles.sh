@@ -79,6 +79,11 @@ check "T2: with no --level a new role is written globally" '[ "$(echo "$OUT" | j
 R role remove fetcher
 R role set newbie --class legwork --description "Runs errands." --scaffold repo --dry-run
 check "T2: with no --level a repo scaffold puts the row at repo" '[ "$(echo "$OUT" | jfield "o.level")" = "repo" ]'
+R role set a-long-custom-role-name-here-x --class legwork --description "Runs errands." --scaffold repo --dry-run
+check "T2: a role whose peer name exceeds Herdr's 32 characters is warned about, naming the peer name" \
+  'echo "$ERR$OUT" | grep -q "at most 32" && echo "$ERR$OUT" | grep -q -- "-a-long-custom-role-name-here-x"'
+R role set newbie --class legwork --description "Runs errands." --scaffold repo --dry-run
+check "T2: a short role name draws no peer-name warning" '! echo "$ERR$OUT" | grep -q "at most 32"'
 mkdir -p "$(dirname "$(HOME="$FAKEHOME" node -e "import('$H/lib-config.mjs').then(L=>process.stdout.write(L.rosterLevelPaths('$PROJ')['repo-user']))")")"
 RU=$(HOME="$FAKEHOME" node -e "import('$H/lib-config.mjs').then(L=>process.stdout.write(L.rosterLevelPaths('$PROJ')['repo-user']))")
 echo '{"version":1,"roles":{"auditor":{"model":"opus"}}}' > "$RU"

@@ -171,10 +171,12 @@ cat > "$SANDBOX/bin/herdr" <<EOF
 case "\$1 \$2" in
   "pane layout") echo '{"result":{"layout":{"panes":[{"pane_id":"self1","rect":{"x":0,"y":0,"width":100,"height":100}}]}}}'; exit 0 ;;
   "pane split") echo '{"result":{"pane":{"pane_id":"p1"}}}'; exit 0 ;;
+  "agent start") ;;
+  *) echo '{"result":{}}'; exit 0 ;;
 esac
 pwd >> "$T7_LOG"
 if [ ! -f "$SANDBOX/t7.fired" ]; then
-  touch "$SANDBOX/t7.fired"
+  /usr/bin/touch "$SANDBOX/t7.fired"
   echo "fake herdr: agent start failed (once)" >&2
   exit 1
 fi
