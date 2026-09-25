@@ -15,6 +15,7 @@
  *                        supersedes spec 0039's auto-spawn. Use spawn-one, or spawn-ad-hoc.)
  *   roster.mjs edit    [level] [--level L] [--roster <r>] --member <NAME> [--role R] [--model M]
  *                       [--effort E] [--route ...] [--auto-mode A] [--on-missing auto|prompt|never] [--cwd <path>]
+ *                       (--model "" and --effort "" clear the field)
  *   roster.mjs remove  [level] [--level L] [--roster <r>] --member <NAME> [--cwd <path>]
  *   roster.mjs create  [--plan] [--commit --verified <json> --transport <t>
  *                       (--verified: JSON array of member objects from the spawn/check-in
@@ -25,8 +26,14 @@
  *   roster.mjs create  --spawn [--roster-level <L>] [--cwd <path>]
  *                       (every create phase takes [--team <T>], the team's name — default the
  *                       repo basename; [--roster <r>], build from `rosters.<r>` — default the
- *                       `roster` block; and [--mode <auto|columns|grid>], the team's layout — an
- *                       explicit --mode on --spawn/--commit is stored as the default for future teams)
+ *                       `roster` block; [--mode <auto|columns|grid>], the team's layout — an
+ *                       explicit --mode on --spawn/--commit is stored as the default for future teams;
+ *                       and [--member-model <name>=<model>], repeatable, the model a member runs on
+ *                       this time, which --spawn requires for every launched member with none stored.
+ *                       A legwork member with no model is skipped while task-gopher is installed:
+ *                       `skipped_members` lists it, and its work goes to task-gopher subagents.
+ *                       [--no-legwork-handoff] counts task-gopher as not installed, for a driver that
+ *                       cannot dispatch it)
  *   (`--spawn` launches only; `--commit` persists. Both are required, in that order.)
  *   roster.mjs next-split --mode <auto|columns|grid> --pane-count <N> --self <pane-id>
  *                       --created '<json array of pane ids>'
@@ -43,8 +50,9 @@
  *                       <name> --new-tab [--workspace <id>]
  *                       <name> --new-workspace
  *                       [--dry-run] [--cwd <path>]
- *   roster.mjs spawn-one <role> [--member <name>] [--team <T>] [--cwd <path>] [--dry-run]
+ *   roster.mjs spawn-one <role> [--member <name>] [--model M] [--team <T>] [--cwd <path>] [--dry-run]
  *                       [--allow-global] [--orchestrator-pid <pid>]
+ *                       (--model: required when the member has no model stored; this launch only)
  *                       (--team names the team to join; an unknown name creates that scope —
  *                        no separate create step, and nothing to ask about.)
  *   roster.mjs spawn-ad-hoc <role> [--model M] [--effort E] [--route peer|pane] [--kind K]
@@ -106,12 +114,12 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-import { AGENT_REF_RE, agentRefError, hierarchyNameParts as parseNameParts, chainRoles, checkCustomRow, CLASSES, classBuiltin, classProp, customRoleNames, defaultLabel, DISPATCH_MODES, formatFindings, hasContractErrors, isAlternative, isBuiltinRole, isOverride, locateAgentFile, registryRoles, roleAgent, roleClass, ROLE_LABELS, roleLabel, validateAgentContract, validateRole, CONFIG_VERSION, findGitRoot, hierarchyDir, mainHierarchyDir, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, ROLES, ROLE_DEFAULTS, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, namedRosterKeys, rosterBlocksOf, staleTeamKeys, suggestTeamAlias, teamLayoutPreference, teamPrefix, teamPrefixInfo, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
+import { AGENT_REF_RE, agentRefError, hierarchyNameParts as parseNameParts, chainRoles, checkCustomRow, CLASSES, classBuiltin, classProp, customRoleNames, defaultLabel, DISPATCH_MODES, formatFindings, hasContractErrors, isAlternative, isBuiltinRole, isOverride, locateAgentFile, registryRoles, roleAgent, roleClass, ROLE_LABELS, roleLabel, validateAgentContract, validateRole, CONFIG_VERSION, findGitRoot, hierarchyDir, mainHierarchyDir, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, ROLES, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, namedRosterKeys, rosterBlocksOf, staleTeamKeys, suggestTeamAlias, teamLayoutPreference, teamPrefix, teamPrefixInfo, tierOf, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
 import { ageSecOf, appendRosterRecord, attributedRoster, fmtAge, latestRoster, livePeerSlots, peersPath, readJsonl, newId, localIso, NO_TEAM_SCOPE, pidAlive, realCwd, recordLiveness, synthesizedPeerName } from "./lib-hier.mjs";
 import { readPeerRecords } from "./lib-peer.mjs";
 import { attributeSessionTeam, clearTeam, defaultTeamScope, envTeamFile, fingerprint, herdrOnPath, historyEntryIsActive, KIND_AUTO_MODE_ARGS, KIND_DEFAULT, kindAutoModeArgs, kindFieldErrors, listTeamNames, memberArgs, memberNamePrefix, normalizeMembers, readHistory, readTeam, resolveKind, resolveTeamByPane, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamFileState, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamOwnedBy, teamPath, teamRosterKey, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
 
-const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config", "no-spawn", "allow-roster-edit"]);
+const BOOL_FLAGS = new Set(["plain", "json", "plan", "commit", "partial", "manual", "next", "apply", "kill", "keep-sessions", "spawn", "dry-run", "new-tab", "new-workspace", "allow-global", "clear", "close", "confirm", "also-config", "no-spawn", "allow-roster-edit", "no-legwork-handoff"]);
 const DISBAND_FLAGS = new Set(["kill", "plan", "close", "confirm", "plan-token", "allow-global", "cwd", "team"]);
 // Spec 0046 §3: tracking-only removal moved OFF dismiss/disband and onto its own verb, so the
 // destructive verbs cannot be reached with a flag that quietly means "do not close anything".
@@ -119,7 +127,7 @@ const UNTRACK_FLAGS = new Set(["all", "plan", "commit", "keep-sessions", "also-c
 const DISMISS_FLAGS = new Set(["plan", "close", "confirm", "plan-token", "also-config", "level", "allow-global", "cwd", "team"]);
 const RESYNC_FLAGS = new Set(["dry-run", "cwd", "team", "bind"]);
 const MOVE_FLAGS = new Set(["tab", "split", "new-tab", "workspace", "new-workspace", "dry-run", "allow-global", "cwd", "team"]);
-const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global", "team", "orchestrator-pid", "member"]);
+const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global", "team", "orchestrator-pid", "member", "model"]);
 /** Spec 0044 §1.4: the member-spec flags `add` takes, plus the spawn-side ones `spawn-one` takes.
     No `--level` and no `--member`: an ad hoc member has no roster level to land in, and its name
     is derived (point 5), never supplied. */
@@ -809,19 +817,36 @@ function teamNameProblem(name, transport, block) {
   return failingMember ? { why: validateHerdrName(failingMember.name).why, failing_member: failingMember } : null;
 }
 
-/** This invocation, with `--team <TEAM>` in place of any --team it had. */
-function rerunWithTeamPlaceholder() {
+function argWord(a) {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(a) ? a : shQuote(a);
+}
+
+/** This invocation as a command line, without each `--flag [value]` that `drop(flag, value)`
+    selects, and with `tail` appended as written. */
+function rerunCommand(drop, tail) {
   const argv = process.argv.slice(2);
   const kept = [];
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--team") {
-      if (argv[i + 1] !== undefined && !argv[i + 1].startsWith("--")) i++;
+    const value = argv[i + 1] !== undefined && !argv[i + 1].startsWith("--") ? argv[i + 1] : undefined;
+    if (argv[i].startsWith("--") && drop(argv[i].slice(2), value)) {
+      if (value !== undefined) i++;
       continue;
     }
     kept.push(argv[i]);
   }
-  const word = (a) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(a) ? a : shQuote(a));
-  return `node ${word(fileURLToPath(import.meta.url))} ${kept.map(word).join(" ")} --team <TEAM>`;
+  return `node ${argWord(fileURLToPath(import.meta.url))} ${kept.map(argWord).join(" ")} ${tail}`;
+}
+
+/** This invocation, with `--team <TEAM>` in place of any --team it had. */
+function rerunWithTeamPlaceholder() {
+  return rerunCommand((flag) => flag === "team", "--team <TEAM>");
+}
+
+/** A refusal whose choice belongs to the user: JSON on stdout for a caller that branches on
+    `refused`, the message on stderr for one that reads text, exit 2. */
+function refuse(fields) {
+  process.stdout.write(JSON.stringify({ ok: false, ...fields }, null, 2) + "\n");
+  fail(fields.message);
 }
 
 /**
@@ -847,14 +872,156 @@ function refuseTeamName(name, nameSource, problem, transport, block) {
   const message = needsUserChoice
     ? `Team name "${name}" (${nameSource}) can't be used: ${problem.why}. Do not pick a name yourself. Ask the user with AskUserQuestion — first option "Use ${suggestion} (Recommended)", and let them type another name. Then re-run ${rerun} with <TEAM> replaced by their answer. This is not a launch failure: do not offer the subagent opt-in.`
     : `No team name can make member names valid under ${transport}: ${suggestionWhy}. Tell the user; the fix is a shorter or renamed role or --member name. Do not retry with a name of your own.`;
-  process.stdout.write(
-    JSON.stringify(
-      { ok: false, refused: "team-name-unusable", needs_user_choice: needsUserChoice, verb: cmd, name, name_source: nameSource, transport, why: problem.why, failing_member: problem.failing_member, suggestion, suggestion_why: suggestionWhy, rerun, message },
-      null,
-      2
-    ) + "\n"
-  );
-  fail(message);
+  refuse({ refused: "team-name-unusable", needs_user_choice: needsUserChoice, verb: cmd, name, name_source: nameSource, transport, why: problem.why, failing_member: problem.failing_member, suggestion, suggestion_why: suggestionWhy, rerun, message });
+}
+
+/** Every value of a repeatable `--<flag> <value>` on this invocation, in order. parseArgs keeps
+    only a flag's last value, so argv is read directly. */
+function repeatedFlag(flag) {
+  const argv = process.argv.slice(2);
+  const values = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== `--${flag}`) continue;
+    const value = argv[i + 1] !== undefined && !argv[i + 1].startsWith("--") ? argv[i + 1] : null;
+    if (value === null) fail(`${cmd}: --${flag} requires a value`);
+    values.push(value);
+    i++;
+  }
+  return values;
+}
+
+const TASK_GOPHER = "task-gopher:task-gopher";
+
+/**
+ * This create's `--member-model <name>=<model>` values, checked against `members`, the members it
+ * is planned from: each must name one of them, a claude-kind one, with a model its class allows.
+ */
+function memberModelOverrides(members) {
+  const models = new Map();
+  for (const value of repeatedFlag("member-model")) {
+    const eq = value.indexOf("=");
+    if (eq <= 0) fail(`${cmd}: --member-model takes <name>=<model>, got ${JSON.stringify(value)}`);
+    const name = value.slice(0, eq);
+    const model = value.slice(eq + 1);
+    if (models.has(name)) fail(`${cmd}: --member-model names ${name} twice`);
+    const m = members.find((x) => x.name === name);
+    if (!m) fail(`${cmd}: --member-model names no member ${JSON.stringify(name)} — the members are: ${members.map((x) => x.name).join(", ") || "(none)"}`);
+    if (resolveKind(m) !== KIND_DEFAULT) fail(`${cmd}: --member-model ${name}: ${name} is kind ${JSON.stringify(resolveKind(m))}, and a model applies only to kind claude`);
+    const errs = validateMember({ role: m.role, model }, registry());
+    if (errs.length) fail(`${cmd}: --member-model ${name}: ${errs.join("; ")}`);
+    models.set(name, model);
+  }
+  return models;
+}
+
+/** The member with `model` in place of its own when one is supplied at invocation. */
+function withModel(m, model) {
+  return model === undefined ? m : { ...m, model };
+}
+
+let taskGopherInstalledCache;
+/** Installed per installed_plugins.json. Whether it is enabled only the driver's agent list can tell,
+    so a driver that cannot dispatch it passes --no-legwork-handoff and it counts as not installed. */
+function taskGopherInstalled() {
+  if (opts["no-legwork-handoff"] === true) return false;
+  if (taskGopherInstalledCache === undefined) taskGopherInstalledCache = Boolean(locateAgentFile(TASK_GOPHER, cwd).path);
+  return taskGopherInstalledCache;
+}
+
+/** A claude-kind legwork member with no model is not launched while task-gopher is installed: its
+    legwork goes to task-gopher subagents instead, and nobody is asked for a model. */
+function autoSkipped(m) {
+  return resolveKind(m) === KIND_DEFAULT && !m.model && roleClass(m.role, registry()) === "legwork" && taskGopherInstalled();
+}
+
+/** A skipped member as reported. */
+function skippedEntry(m) {
+  return { name: m.name, role: m.role, handoff: TASK_GOPHER };
+}
+
+/** `obj` with `skipped_members`, and what to do about them, when there are any. */
+function withSkipped(obj, skipped) {
+  if (!skipped.length) return obj;
+  const one = skipped.length === 1;
+  const message =
+    `${skipped.map((m) => m.name).join(", ")} ${one ? "has" : "have"} no model and task-gopher is installed, so ${one ? "it was" : "they were"} not launched: ` +
+    `send that legwork to ${TASK_GOPHER} subagents, and do not ask the user about ${one ? "it" : "them"}. ` +
+    `If ${TASK_GOPHER} is not among your available agent types (installed but not enabled), tell the user which member was not launched and why: ` +
+    "adding it means `disband`, then `create --no-legwork-handoff`, which lists it for a model like any other member. " +
+    `A driver that cannot dispatch ${TASK_GOPHER} passes --no-legwork-handoff on every create phase from the start.`;
+  return { ...obj, skipped_members: skipped, message };
+}
+
+const CHAIN_WORK_CLASSES = ["design", "review", "implement"];
+
+/**
+ * What a member of class `cls` with no model borrows: the highest-tier model among the claude-kind
+ * design, review and implement members of `pool` that `cls` allows, the first in roster order on a
+ * tie — `{model, from}`, or null. `inherit` has no knowable tier, so it is never borrowed, and a
+ * legwork member never borrows a chain model.
+ */
+function memberFallback(cls, pool) {
+  if (cls === "legwork") return null;
+  const allowed = CLASSES[cls] ? CLASSES[cls].models : [];
+  let best = null;
+  for (const m of pool) {
+    if (resolveKind(m) !== KIND_DEFAULT || !CHAIN_WORK_CLASSES.includes(roleClass(m.role, registry()))) continue;
+    const tier = tierOf(m.model);
+    if (tier === null || !allowed.includes(m.model)) continue;
+    if (!best || tier > best.tier) best = { tier, model: m.model, from: m.name };
+  }
+  return best && { model: best.model, from: best.from };
+}
+
+/** The claude-kind members of `launching` with no model, each with the models its class allows and
+    what it would borrow from `pool`. */
+function membersNeedingModel(launching, pool) {
+  return launching
+    .filter((m) => resolveKind(m) === KIND_DEFAULT && !m.model)
+    .map((m) => {
+      const cls = roleClass(m.role, registry());
+      return { name: m.name, role: m.role, class: cls, allowed: CLASSES[cls] ? [...CLASSES[cls].models] : [], fallback: memberFallback(cls, pool) };
+    });
+}
+
+/** A create plan's pane- and peer-routed members that have no model. */
+function planNeedingModel(plan) {
+  return membersNeedingModel(plan.members.filter((m) => routeHasPane(m.route)), plan.members);
+}
+
+/**
+ * The refusal for members about to launch with no model. A member's model is the user's to choose,
+ * and the CLI cannot tell whether its caller can ask, so it never applies the fallback itself: it
+ * names the members and hands back two reruns — one with a literal <MODEL> per member for the
+ * user's answers, and one with each fallback filled in, for a caller that cannot ask.
+ */
+function refuseMemberModels(needing) {
+  const listed = new Set(needing.map((m) => m.name));
+  const drop =
+    cmd === "create"
+      ? (flag, value) => flag === "member-model" && typeof value === "string" && listed.has(value.slice(0, value.indexOf("=")))
+      : cmd === "spawn-one"
+        ? (flag) => flag === "member" || flag === "model"
+        : (flag) => flag === "model";
+  const tail = (modelOf) =>
+    cmd === "create"
+      ? needing.map((m) => `--member-model ${argWord(m.name)}=${modelOf(m)}`).join(" ")
+      : cmd === "spawn-one"
+        ? `--member ${argWord(needing[0].name)} --model ${modelOf(needing[0])}`
+        : `--model ${modelOf(needing[0])}`;
+  const rerun = rerunCommand(drop, tail(() => "<MODEL>"));
+  const rerunFallback = needing.every((m) => m.fallback) ? rerunCommand(drop, tail((m) => m.fallback.model)) : null;
+  const who = needing.map((m) => `${m.name} (${m.role}; allowed: ${m.allowed.join(", ")}; fallback: ${m.fallback ? `${m.fallback.model}, from ${m.fallback.from}` : "none"})`).join("; ");
+  const message =
+    `No model is defined for ${needing.length === 1 ? "this member" : "these members"}: ${who}. A member's model is the user's choice: ` +
+    "ask the user with AskUserQuestion, one question per member, with its fallback model as the first option when it has one, " +
+    `then re-run ${rerun} with each <MODEL> replaced by the answer. ` +
+    (rerunFallback
+      ? `Only a top-level session that cannot ask the user (a non-interactive run: claude -p, the SDK, headless) runs the fallback rerun instead: ${rerunFallback}. `
+      : `rerun_fallback is null — there is no fallback for ${needing.filter((m) => !m.fallback).map((m) => m.name).join(", ")} — so a session that cannot ask the user stops and reports these members. `) +
+    "A subagent never runs rerun_fallback: it returns this refusal to its caller. Never choose a model any other way. " +
+    "This is not a launch failure: do not offer the subagent opt-in.";
+  refuse({ refused: "member-model-undefined", verb: cmd, members: needing, rerun, rerun_fallback: rerunFallback, message });
 }
 
 /** The name check a verb about to create `teamFile` runs before anything is launched or written. */
@@ -1027,12 +1194,10 @@ function requireHerdrName(member, cmd) {
 function memberFromFlags(role, cmdLabel) {
   if (opts.kind === true) fail(`${cmdLabel}: --kind requires a value (e.g. claude, codex, pi)`);
   const kind = typeof opts.kind === "string" ? opts.kind : KIND_DEFAULT;
-  // Spec 0043 §1.3 (the role-default trap): ROLE_DEFAULTS fills `model` whenever --model is
-  // absent. Applied to a non-claude member that model would then be rejected by §1.3's own
-  // rule, making non-claude members impossible to create. The default is claude-only.
-  const defaultedModel = kind === KIND_DEFAULT ? (isBuiltinRole(role) ? ROLE_DEFAULTS[role] || {} : registry().roles[role] || {}).model : undefined;
-  const member = { role, model: typeof opts.model === "string" ? opts.model : defaultedModel };
-  if (member.model === undefined) delete member.model;
+  // A model is the user's to define: none is filled in, and a member without one is asked for it
+  // when it is launched.
+  const member = { role };
+  if (typeof opts.model === "string") member.model = opts.model;
   if (kind !== KIND_DEFAULT) member.kind = kind;
   if (typeof opts.effort === "string") member.effort = opts.effort;
   if (typeof opts.route === "string") member.route = opts.route;
@@ -2064,13 +2229,17 @@ function resolveMembersPlan(dir) {
   const resolved = resolveRoster(cwd, rosterArg, repoBasename);
   if (!resolved) fail("no roster resolves at any level — hand off to `roster.mjs init`");
   const transport = detectTransport();
-  const plan = resolved.members.map((m) => {
+  const models = memberModelOverrides(resolved.members);
+  const rows = resolved.members.map((row) => withModel(row, models.get(row.name)));
+  const skipped = rows.filter((m) => routeHasPane(m.route || resolved.route) && autoSkipped(m));
+  const plan = rows.filter((m) => !skipped.includes(m)).map((m) => {
     const route = m.route || resolved.route;
     return { role: m.role, name: m.name, kind: resolveKind(m), model: m.model, effort: m.effort, route, autoMode: m.autoMode, args: memberArgs(m), spawn: routeHasPane(route) ? shapeFor({ ...m, route }, transport) : null };
   });
   const layout = createLayout();
   const named = namedRosterKeys(cwd);
-  return { level: resolved.level, path: resolved.path, transport, layout, layout_plan: layoutPlan(layout.mode, transport, plan), members: plan, ...(named.length ? { named_rosters: named } : {}) };
+  const result = { level: resolved.level, path: resolved.path, transport, layout, layout_plan: layoutPlan(layout.mode, transport, plan), members: plan, ...(named.length ? { named_rosters: named } : {}) };
+  return withSkipped(result, skipped.map(skippedEntry));
 }
 
 /** `create --from <id|alias>` (spec 0015 §7.2): resolve which history entry `--from` names. */
@@ -2115,12 +2284,28 @@ function planMembersFromHistory(entry, dir) {
   const rosterBlock = { route: (renamed[0] && renamed[0].route) || "peer", members: renamed };
   const transport = detectTransport();
   const named = namedMembers(renamed);
-  const plan = named.map((m) => {
+  const models = memberModelOverrides(named);
+  const rows = named.map((row) => withModel(row, models.get(row.name)));
+  const skipped = rows.filter((m) => routeHasPane(m.route || rosterBlock.route) && autoSkipped(m));
+  const plan = rows.filter((m) => !skipped.includes(m)).map((m) => {
     const route = m.route || rosterBlock.route;
     return { role: m.role, name: m.name, kind: resolveKind(m), model: m.model, effort: m.effort, route, autoMode: m.autoMode, args: memberArgs(m), spawn: routeHasPane(route) ? shapeFor({ ...m, route }, transport) : null };
   });
   const layout = createLayout();
-  return { level: entry.roster_level || null, path: null, transport, layout, layout_plan: layoutPlan(layout.mode, transport, plan), members: plan };
+  const result = { level: entry.roster_level || null, path: null, transport, layout, layout_plan: layoutPlan(layout.mode, transport, plan), members: plan };
+  return withSkipped(result, skipped.map(skippedEntry));
+}
+
+/** The members a create run is planned from, named and with their effective routes, without planning
+    it: the history entry's with --from, else the roster's. */
+function createSourceMembers(dir) {
+  if (typeof opts.from === "string") {
+    const renamed = validateHistoryMembers(resolveHistoryEntry(dir));
+    const route = (renamed[0] && renamed[0].route) || "peer";
+    return namedMembers(renamed).map((m) => ({ ...m, route: m.route || route }));
+  }
+  const resolved = resolveRoster(cwd, rosterArg, repoBasename);
+  return resolved ? resolved.members.map((m) => ({ ...m, route: m.route || resolved.route })) : [];
 }
 
 /** `create`'s member source: history (`--from`) or the live roster (default). */
@@ -2717,8 +2902,11 @@ function reconcileAfterClose(dir, snapshot, results) {
 /** `create --spawn` (spec 0005): resolve + layout + launch + retry in one script invocation. */
 async function createSpawn(dir, withWarnings) {
   if (typeof opts.from === "string") resolveHistoryEntry(dir);
-  const { level, transport, layout, members } = getMembersPlan(dir);
+  const plan = getMembersPlan(dir);
+  const { level, transport, layout, members } = plan;
   const peerMembers = members.filter((m) => routeHasPane(m.route));
+  const needing = planNeedingModel(plan);
+  if (needing.length) refuseMemberModels(needing);
 
   const launched = await layoutAndLaunch(peerMembers, transport, layout.mode, cwd, "create --spawn");
   storeTeamLayout(layout);
@@ -2754,7 +2942,7 @@ async function createSpawn(dir, withWarnings) {
     return entry;
   });
   const isPartial = outputMembers.some((m) => routeHasPane(m.route) && m.launch_status === "failed");
-  out(withWarnings({ level, transport, members: outputMembers, partial: isPartial }));
+  out(withWarnings(withSkipped({ level, transport, members: outputMembers, partial: isPartial }, plan.skipped_members || [])));
 }
 
 /** One team's inventory row (spec 0011 §5.4 / 0033 §3.1): `null` for the default team, or
@@ -2818,6 +3006,14 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
     member = candidates[0];
   } else {
     member = candidates.find((m) => !memberLiveness(dir, m).live) || candidates[candidates.length - 1];
+  }
+  // A model given at invocation launches this member on it, this time only; the roster is untouched.
+  if (!adHocMember && opts.model !== undefined) {
+    if (typeof opts.model !== "string") fail(`${callerLabel}: --model requires a value`);
+    if (resolveKind(member) !== KIND_DEFAULT) fail(`${callerLabel}: --model: ${member.name} is kind ${JSON.stringify(resolveKind(member))}, and a model applies only to kind claude`);
+    const modelErrors = validateMember({ role: member.role, model: opts.model }, registry());
+    if (modelErrors.length) fail(`${callerLabel}: --model: ${modelErrors.join("; ")}`);
+    member = withModel(member, opts.model);
   }
 
   const team = readTeam(dir, teamFile);
@@ -2885,6 +3081,8 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
     }
     return { spawned: false, reason: "already live", member: out_member, ...liveInfo };
   }
+  const needing = membersNeedingModel([member], resolved ? resolved.members : []);
+  if (needing.length) refuseMemberModels(needing);
   warnMixedPrefixSpawnOne(dir, member);
 
   const transport = detectTransport();
@@ -3140,8 +3338,11 @@ try {
       if (idx === -1) fail(`no member named ${JSON.stringify(memberName)} at level "${level}"`);
       const updated = { ...container.members[idx] };
       if (typeof opts.role === "string") updated.role = opts.role;
-      if (typeof opts.model === "string") updated.model = opts.model;
-      if (typeof opts.effort === "string") updated.effort = opts.effort;
+      // An empty value clears the field, as `--args ""` does.
+      if (opts.model === "") delete updated.model;
+      else if (typeof opts.model === "string") updated.model = opts.model;
+      if (opts.effort === "") delete updated.effort;
+      else if (typeof opts.effort === "string") updated.effort = opts.effort;
       if (typeof opts.route === "string") updated.route = opts.route;
       if (typeof opts["auto-mode"] === "string") updated.autoMode = opts["auto-mode"];
       if (opts.kind === true) fail("edit: --kind requires a value (e.g. claude, codex, pi)");
@@ -3152,10 +3353,9 @@ try {
         else updated.kind = opts.kind;
         if (opts.kind !== KIND_DEFAULT) {
           // §1.3: model/effort/auto-mode are Claude CLI flags and are rejected for another kind.
-          // A member added as claude always carries a `model` from ROLE_DEFAULTS, so without this
-          // every `edit --kind codex` on an existing member would be unreachable. Cleared with a
-          // notice rather than a new flag, following the on-missing route-switch precedent below:
-          // clear what the switch stranded, and say so.
+          // A claude member usually carries a `model`, so without this every `edit --kind codex`
+          // on one would be unreachable. Cleared with a notice rather than a new flag, following
+          // the on-missing route-switch precedent below: clear what the switch stranded, and say so.
           const mapsAutoMode = Boolean(KIND_AUTO_MODE_ARGS[opts.kind]);
           const strandable = mapsAutoMode ? ["model", "effort"] : ["model", "effort", "autoMode"];
           const stranded = strandable.filter((k) => updated[k] !== undefined && updated[k] !== null);
@@ -3385,6 +3585,11 @@ try {
         const allObjects = verified.every((m) => m && typeof m === "object" && !Array.isArray(m));
         let members;
         let needsResync = false;
+        const sourceMembers = createSourceMembers(dir);
+        const memberModels = memberModelOverrides(sourceMembers);
+        // A member create --spawn skipped never ran, so it is not recorded even when named here.
+        const skips = sourceMembers.map((m) => withModel(m, memberModels.get(m.name))).filter((m) => routeHasPane(m.route) && autoSkipped(m));
+        const skipNames = new Set(skips.map((m) => m.name));
         if (allStrings) {
           // Spec 0032 §3.4a/§3.4c: reuse resolveRoster's own resolution and no-match predicate
           // directly, rather than re-deriving the container from --roster-level by hand — a
@@ -3394,12 +3599,12 @@ try {
           const resolved = resolveRoster(cwd, rosterArg, repoBasename);
           const rosterMembers = resolved ? resolved.members : [];
           const rosterRoute = resolved ? resolved.route : undefined;
-          members = verified.map((name) => {
+          members = verified.filter((name) => !skipNames.has(name)).map((name) => {
             const found = rosterMembers.find((m) => m.name === name);
             if (!found) {
               fail(`create --commit: --verified names no member ${JSON.stringify(name)} in the ${rosterLevel} roster — it defines: ${rosterMembers.map((m) => m.name).join(", ") || "(none)"}`);
             }
-            return { role: found.role, name: found.name, model: found.model, effort: found.effort, route: found.route || rosterRoute, autoMode: found.autoMode, transport_id: null };
+            return { role: found.role, name: found.name, model: memberModels.get(found.name) ?? found.model, effort: found.effort, route: found.route || rosterRoute, autoMode: found.autoMode, transport_id: null };
           });
           needsResync = true;
         } else if (allObjects) {
@@ -3419,7 +3624,7 @@ try {
             );
           }
           // The check-in's `team` has done its job; the file the row lands in already says which team it is.
-          members = verified.map(({ team: _checkedInTeam, ...member }) => member);
+          members = verified.filter((m) => !(skipNames.has(m.name) && !m.model)).map(({ team: _checkedInTeam, ...member }) => member);
         } else {
           fail("create --commit: --verified must be either all member objects or all member-name strings, not a mix");
         }
@@ -3460,7 +3665,8 @@ try {
         storeTeamLayout(layout);
         // A history-write failure must not fail `create` — the Team is already committed and
         // running; a missing history row is cosmetic (spec 0015 §4).
-        const outObj = withWarnings({ committed: true, team });
+        const skipped = skips.filter((m) => !members.some((x) => x.name === m.name)).map(skippedEntry);
+        const outObj = withSkipped(withWarnings({ committed: true, team }), skipped);
         // Spec 0025 §4: a hydrated commit has names but no panes yet — tell the caller the next
         // step (`resync`) instead of letting `move` fail confusingly on "no pane to move".
         if (needsResync) outObj.needs_resync = true;
@@ -3486,7 +3692,9 @@ try {
         break;
       }
       // --plan (default): resolve, refuse a live Team, clear a stale one, report the spawn plan.
-      out(withWarnings(getMembersPlan(dir)));
+      const plan = withWarnings(getMembersPlan(dir));
+      const needing = planNeedingModel(plan);
+      out(needing.length ? { ...plan, members_needing_model: needing } : plan);
       break;
     }
 
@@ -3970,7 +4178,7 @@ try {
       // dead or never launched. Extracted, not forked, from `createSpawn`'s launch path.
       for (const key of Object.keys(opts)) {
         if (key === "_") continue;
-        if (!SPAWN_ONE_FLAGS.has(key)) fail(`spawn-one: unrecognized flag --${key} (use --cwd, --dry-run, --allow-global, --team, --orchestrator-pid, or --member)`);
+        if (!SPAWN_ONE_FLAGS.has(key)) fail(`spawn-one: unrecognized flag --${key} (use --cwd, --dry-run, --allow-global, --team, --orchestrator-pid, --member, or --model)`);
       }
       out(await spawnOneCore(opts._[0], "spawn-one"));
       break;

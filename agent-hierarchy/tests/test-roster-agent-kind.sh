@@ -298,8 +298,8 @@ check "4.2d3: ...and the stored member records kind codex" \
 
 clear_hierarchy; init_roster
 r "" add --no-spawn --role implementor --kind claude
-check "4.2e: --kind claude with no --model still gets ROLE_DEFAULTS.implementor (inherit)" \
-  '[ "$RC" -eq 0 ] && node -e "const m=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).roster.members[0];process.exit(m.model===\"inherit\"?0:1)" "$CFG"'
+check "4.2e: --kind claude with no --model stores no model — none is filled in" \
+  '[ "$RC" -eq 0 ] && node -e "const m=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\")).roster.members[0];process.exit(!(\"model\" in m)?0:1)" "$CFG"'
 check "4.2e2: an explicit --kind claude is NOT written to the file (§1.1 persistence)" \
   '! grep -q "\"kind\"" "$CFG"'
 
@@ -765,8 +765,8 @@ r "HERDR_ENV=1" spawn-one implementor
 check "F2a: a member inheriting route pane from the roster block spawns" '[ "$RC" -eq 0 ]'
 check "F2b: ...and is recorded as route pane, not peer"   '[ "$(jo "o.member.route")" = "pane" ]'
 
-# §1.3: `add` fills model from ROLE_DEFAULTS for a claude member, and model is rejected for any
-# other kind — so without clearing it, converting an existing member's kind was impossible.
+# §1.3: a claude member usually carries a model, and model is rejected for any other kind — so
+# without clearing it, converting an existing member's kind was impossible.
 reset_state; clear_hierarchy; init_geometry; init_roster
 r "" add --no-spawn --role implementor --model sonnet
 r "" edit --member myrepo-implementor --kind codex --route pane

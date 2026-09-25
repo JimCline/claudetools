@@ -54,6 +54,14 @@ When the request names (or clearly implies) ONE role, skip everything below:
   its `suggestion` first and marked "(Recommended)", then re-run its `rerun`
   with `<TEAM>` replaced by their answer. Never pick or sanitize a name yourself,
   and this is not a launch failure: do not offer the subagent opt-in.
+- If it refuses with `refused: "member-model-undefined"`, the member has no
+  model and its model is the user's choice: follow the refusal's `message` —
+  ask with AskUserQuestion, the member's `fallback` first when it has one (not
+  marked "(Recommended)"), then its `allowed` models, and re-run its `rerun`
+  with `<MODEL>` replaced by the answer. Only a top-level session that cannot
+  ask the user runs `rerun_fallback`; a subagent returns the refusal to its
+  caller; with no fallback, stop and report. Never choose a model any other
+  way, and this is not a launch failure: do not offer the subagent opt-in.
 - The formal path (the rest of this skill) applies only when no single role is
   named, when a whole team is wanted, or for lifecycle ops.
 
@@ -87,7 +95,8 @@ someone else's live Team.
   variant of a roster role, or a role the roster does not define at all. Launches through the same
   path as `spawn-one` and writes **only** the team file — the roster is never touched. This is the
   answer whenever the running team needs a member the roster does not describe; editing the roster
-  to get one is the mistake spec 0044 exists to prevent. See § spawn-ad-hoc.
+  to get one is the mistake spec 0044 exists to prevent. Without `--model` it refuses with
+  `member-model-undefined`: handle it as § One peer, zero ceremony says. See § spawn-ad-hoc.
 - `dismiss <name> [--plan | --close --confirm --plan-token <tok>] [--also-config]` — **CLOSES ONE MEMBER'S SESSION**
   and drops its row: the inverse of `spawn-one`, and what "dismiss the architect" / "remove that
   member" / "kick the reviewer" mean. The plan form (no `--close`) is read-only and returns a `close_token`;
@@ -251,6 +260,40 @@ check-in) apply unchanged. This capability is skill-only.
    for the rest. A named choice adds `--roster <r>` to every later phase
    (re-run the plan with it). Without `named_rosters`, do not ask.
 
+   **Models — only when the plan lists `members_needing_model`.** Each entry
+   is a member about to launch with no model, and its model is the user's
+   choice. Ask one question per listed member in the **same** AskUserQuestion
+   round as the team name and roster questions (at most 4 questions per call;
+   further calls if needed):
+   - First, the entry's `fallback` when it has one, labelled with its source
+     and not marked "(Recommended)", e.g. "opus — highest defined
+     (myrepo-architect)".
+   - Then the entry's `allowed` models, up to 4 options in all; a legwork
+     member lists haiku before the reasoning models. Other takes the rest.
+   - Each answer adds `--member-model <name>=<answer>` to every later phase
+     (the re-run plan, `--spawn`, `--commit`), carried the same way as
+     `--roster <r>`.
+   - Never launch from a plan that still lists `members_needing_model`:
+     re-run the plan with the flags first.
+   - If you cannot ask (a top-level session with no one to ask — `claude -p`,
+     the SDK, headless), use each entry's `fallback`: `--member-model
+     <name>=<fallback.model>`. If any fallback is null, stop and report the
+     members. A subagent never does this; it returns the plan to its caller.
+
+   **Skipped members — `skipped_members`.** A legwork member with no model is
+   not launched while task-gopher is installed; every phase lists it under
+   `skipped_members` and it is never recorded. Never ask about it: send its
+   legwork to `task-gopher:task-gopher` subagents.
+
+   **Before the bare `--plan`:** if `task-gopher:task-gopher` is not among
+   your available agent types (for example the plugin is installed but not
+   enabled), add `--no-legwork-handoff` to every create phase, carried like
+   `--roster <r>`. Model-less legwork members then arrive in
+   `members_needing_model` and are asked about like any other member.
+
+   `--spawn` refuses with `refused: "member-model-undefined"` if a launched
+   member still has no model: follow its `message` as above.
+
    **Second-Team collision (spec 0011 §5.3).** A bare `create` (no `--team`)
    can fail because a *different*, live orchestrator already owns the default
    Team here — the CLI cannot read stdin to ask, so it refuses and hands back
@@ -283,9 +326,9 @@ check-in) apply unchanged. This capability is skill-only.
 
    **`auto` mode:** run one command:
 
-       roster.mjs create --spawn [--team <name>] [--roster <r>] [--mode <m>] [--roster-level <L>] --cwd <repo root>
+       roster.mjs create --spawn [--team <name>] [--roster <r>] [--member-model <name>=<m>]... [--mode <m>] [--roster-level <L>] --cwd <repo root>
 
-   with the same `--team`/`--roster` as the plan, and `--mode` only when § 0 gave one.
+   with the same `--team`/`--roster`/`--member-model` as the plan, and `--mode` only when § 0 gave one.
 
    It resolves the roster, runs the layout phase, asserts one distinct
    non-empty target id per peer-routed member before launching anything, then
@@ -640,9 +683,13 @@ gap; it is not a lighter-weight alternative to Create for a full team.
     step and nothing to ask the user about. The AskUserQuestion mandates above
     (team name, second-team collision) are `create`'s, and none of them apply
     here: a user who named a team has already answered the only question, so
-    `spawn-one <role> --team <what they said>` is the whole command. The one
-    exception is a `team-name-unusable` refusal, which always goes back to the
-    user (§ One peer, zero ceremony).
+    `spawn-one <role> --team <what they said>` is the whole command. The
+    exceptions are a `team-name-unusable` refusal and a
+    `member-model-undefined` refusal, which always go back to the user (§ One
+    peer, zero ceremony).
+  - `--model <M>` launches the member on `M` this time only; the roster row is
+    not changed. It is how a `member-model-undefined` refusal's `rerun` gives
+    the answer.
 
   Prefer `spawn-one` over Create whenever a Team already (partially) exists —
   Create's whole-team flow is the `/agent-roster` skill's job for building a

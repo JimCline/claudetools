@@ -32,14 +32,14 @@ EOF
 chmod +x "$SANDBOX/bin/tmux"
 NODE_DIR="$(dirname "$(command -v node)")"
 
-# every role exercised: implementor defaults to model "inherit" (ROLE_DEFAULTS),
+# every role exercised, each on the model ROLE_DEFAULTS gives it — the implementor's is "inherit" —
 # plus a second implementor with an explicit model to prove real models still emit.
 run init --level repo --route peer
-run add --no-spawn --level repo --role ultra-advisor
-run add --no-spawn --level repo --role architect
-run add --no-spawn --level repo --role reviewer
-run add --no-spawn --level repo --role implementor
-run add --no-spawn --level repo --role task-runner
+run add --no-spawn --level repo --role ultra-advisor --model fable
+run add --no-spawn --level repo --role architect --model opus
+run add --no-spawn --level repo --role reviewer --model opus
+run add --no-spawn --level repo --role implementor --model inherit
+run add --no-spawn --level repo --role task-runner --model haiku
 run add --no-spawn --level repo --role implementor --model opus
 check "setup: 6 members added" 'echo "$OUT" | grep -q "\"name\": \"myrepo-implementor-2\""'
 

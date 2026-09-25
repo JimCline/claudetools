@@ -150,8 +150,8 @@ check "T1: §1.10 — no team file at either location" 'no_team_file'
 check "T1: §1.10 — no spawn field in the output" '! echo "$OUT" | grep -q "\"spawn\":"'
 check "T1: §1.10 — the write is reported and the spawn step is named, not left to be discovered" \
   'echo "$OUT" | grep -q "added reviewer to $CFG" && echo "$OUT" | grep -q "spawn-one reviewer"'
-check "T1: §1.10 — the removal is surgical: the row is exactly what add always wrote" \
-  'grep -q "\"role\": \"reviewer\"" "$CFG" && grep -q "\"model\": \"opus\"" "$CFG"'
+check "T1: §1.10 — the removal is surgical: the row is exactly what add writes, with no model it was not given" \
+  'grep -q "\"role\": \"reviewer\"" "$CFG" && ! grep -q "\"model\"" "$CFG"'
 
 # ==== T2 — --no-spawn (§1.10 R1): still accepted, now a silent no-op — byte-identical to T1. ====
 T1_CFG="$(cat "$CFG")"

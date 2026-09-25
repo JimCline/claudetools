@@ -83,7 +83,7 @@ A Team's name and pane arrangement belong to the Team, chosen when
 - `show [--level global|repo|repo-user] [--roster <r>]` — resolved roster, or one level's raw file.
 - `init --level <L> --route <peer|subagent> [--roster <r>]` — replaces that level's block wholesale.
 - `add --role <R> [--level L] [--roster <r>] [--model M] [--effort E] [--route peer|subagent|pane] [--kind K] [--args '<json>'] [--auto-mode A]` — writes the template row and **spawns nothing** (spec 0044 §1.10, superseding 0039). To start the member afterwards, that is `/agent-team`'s job: `spawn-one <role>` for a roster-conforming one, `spawn-ad-hoc` for a divergent or ad hoc one.
-- `edit --member <NAME> [--level L] [--roster <r>] [--role R] [--model M] [--effort E] [--route ...] [--auto-mode A]`
+- `edit --member <NAME> [--level L] [--roster <r>] [--role R] [--model M] [--effort E] [--route ...] [--auto-mode A]` — `--model ""` and `--effort ""` clear the field, leaving the model to be chosen at each spawn.
 - `remove --member <NAME> [--level L] [--roster <r>]` — edits the
   roster **template**, not a live Team; `/agent-team`'s `dismiss` is the live-Team equivalent.
 
@@ -134,13 +134,16 @@ configured at any level), say so and offer to run `init`.
    described by its class and placement (`alt. to <Builtin>` or `side`); an
    `UNAVAILABLE` role is left out and named in one line. Then, for each role picked,
    ask (AskUserQuestion, batched into calls of up to 4 questions) its model,
-   effort, and auto-mode. The auto-mode options are exactly `auto
-   (Recommended)`, `acceptEdits`, `plan`, and `default (none)` —
-   `bypassPermissions` is never offered, and is accepted only if the user
-   types it into Other. Prefill/offer defaults from `ROLE_DEFAULTS` in
-   `hooks/lib-config.mjs` — do not invent separate defaults here. For each
-   picked role, run `roster.mjs add --level <L> --role <role>
-   [--model ...] [--effort ...] [--auto-mode ...]`. `add` writes config and
+   effort, and auto-mode. The model question's first option is `Undefined —
+   choose at each spawn`, followed by models valid for the role's class, with
+   the rest via Other; no model option is marked `(Recommended)` and none is
+   preselected. The effort question likewise starts with `Undefined`. The
+   auto-mode options are exactly `auto (Recommended)`, `acceptEdits`, `plan`,
+   and `default (none)` — `bypassPermissions` is never offered, and is
+   accepted only if the user types it into Other. For each picked role, run
+   `roster.mjs add --level <L> --role <role> [--model ...] [--effort ...]
+   [--auto-mode ...]`, passing `--model` and `--effort` only for values the
+   user picked: an undefined model is asked for when the member is spawned. `add` writes config and
    nothing else (spec 0044 §1.10), so this flow adds every role and then
    spawns once, at `create --spawn` — no per-add flag is needed to hold the
    spawn back, and none should be passed. A role can be added more than once —

@@ -111,19 +111,19 @@ function preferPeersDenyReason(role, live) {
   return `ah: route is prefer-peers this session — free live instance(s) for ${label(role)}: ${live.map(describeInstance).join("; ")}. SendMessage it (set to_name) instead of spawning, or change route with msg.mjs route.`;
 }
 
-function spawnCommand(role, member, cwd, model) {
+function spawnCommand(role, member, cwd) {
   if (member) return `node "${ROSTER_CLI}" spawn-one ${role} --cwd ${cwd}`;
-  return `node "${ROSTER_CLI}" spawn-ad-hoc ${role} --cwd ${cwd}${model ? ` --model ${model}` : ""}`;
+  return `node "${ROSTER_CLI}" spawn-ad-hoc ${role} --cwd ${cwd}`;
 }
 
 function paneLine(resolved, member) {
   return member && (member.route || resolved.roster.route) === "pane" ? ["This member's route is pane: drive it with `herdr agent prompt`, not SendMessage."] : [];
 }
 
-function spawnReason(role, resolved, member, cwd, model, sessionId) {
+function spawnReason(role, resolved, member, cwd, sessionId) {
   return [
     `ah: no live ${label(role)} peer. ah roles are dispatched as peers, never subagents, unless the user opts in.`,
-    `Run: ${spawnCommand(role, member, cwd, model)}`,
+    `Run: ${spawnCommand(role, member, cwd)}`,
     "Then SendMessage the `name` the command prints, with the brief you gave this Agent call. The session takes a few seconds to boot: if the name is not in ListAgents yet, wait until it is (`roster.mjs teams` reports it live).",
     "If the command reports the member already exists or is already live, SendMessage the name it reports.",
     'If the command refuses with `refused: "team-name-unusable"`, follow its `message`: ask the user for the team name, then re-run with `--team`. That is not a launch failure and does not lead to the subagent opt-in.',
@@ -136,7 +136,7 @@ function promptAskReason(role, resolved, member, cwd) {
   return [
     `ah: no live ${label(role)} peer, and its roster member ${member.name ? `"${member.name}" ` : ""}has on-missing policy "prompt".`,
     "Ask the user with AskUserQuestion, exactly these options in this order:",
-    `  "Spawn the ${label(role)} peer (Recommended)" — ${spawnCommand(role, member, cwd, null)}, then SendMessage the name it prints with this brief instead of re-issuing this dispatch.`,
+    `  "Spawn the ${label(role)} peer (Recommended)" — ${spawnCommand(role, member, cwd)}, then SendMessage the name it prints with this brief instead of re-issuing this dispatch.`,
     '  "Use a subagent for this dispatch" — re-issue this exact dispatch.',
     `  "Neither — I'll start it myself" — do not dispatch; say you are blocked on ${label(role)}.`,
     ...paneLine(resolved, member),
@@ -245,8 +245,7 @@ try {
           }
           decide(null, null, `ah: no live ${label(role)} peer, its on-missing policy is "prompt", and the user was already asked this session — spawning the subagent.`);
         }
-        const model = typeof toolInput.model === "string" && toolInput.model ? toolInput.model : null;
-        decide("deny", spawnReason(role, resolved, member, cwd, model, sessionId));
+        decide("deny", spawnReason(role, resolved, member, cwd, sessionId));
       }
     }
   }

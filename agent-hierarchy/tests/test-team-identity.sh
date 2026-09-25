@@ -632,7 +632,7 @@ check "D8b: the same --team on tmux proceeds" '[ "$RC" -eq 0 ] && [ "$(jq_out o.
 fresh_home; new_repo proj-d8-abcdefghijk
 run_roster init --level global --route peer
 run_roster add --level global --role ultra-advisor --model opus
-run_herdr_split spawn-ad-hoc architect
+run_herdr_split spawn-ad-hoc architect --model opus
 check "D8c: spawn-ad-hoc under herdr ignores a global roster's members in the name check" \
   '[ "$RC" -eq 0 ] && [ "$(jq_out o.member.name)" = "proj-d8-abcdefghijk-architect" ]'
 

@@ -165,5 +165,22 @@
         }
       }
     }
+  ],
+  "members_needing_model": [
+    {
+      "name": "myrepo-implementor",
+      "role": "implementor",
+      "class": "implement",
+      "allowed": [
+        "opus",
+        "sonnet",
+        "fable",
+        "inherit"
+      ],
+      "fallback": {
+        "model": "opus",
+        "from": "myrepo-architect"
+      }
+    }
   ]
 }

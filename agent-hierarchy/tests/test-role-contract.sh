@@ -130,7 +130,7 @@ for cls in advise design review implement legwork; do
 done
 
 # ---- C10: revalidation at spawn and at SessionStart
-roles_json '{"version":1,"roles":{"coder":{"class":"implement","description":"Imp."},"arch2":{"class":"design","routes":"UI design work"}},"roster":{"route":"peer","members":[{"role":"coder"},{"role":"architect","model":"opus"}]}}'
+roles_json '{"version":1,"roles":{"coder":{"class":"implement","description":"Imp."},"arch2":{"class":"design","routes":"UI design work"}},"roster":{"route":"peer","members":[{"role":"coder","model":"inherit"},{"role":"architect","model":"opus"}]}}'
 agent arch2 arch2 "disallowedTools: Bash, NotebookEdit, advisor"
 R spawn-one coder --dry-run
 check "C10: spawn-one --dry-run of a valid custom role emits --agent coder" '[[ "$OUT" == *"--agent coder --name repo-coder"* ]]'
@@ -340,7 +340,7 @@ esac
 FAKE
 chmod +x "$SANDBOX/faketmux/tmux"
 printf -- '---\nname: coder\ndescription: Coder.\ntools: Read, SendMessage, Edit\n---\nB\n' > "$AG/coder.md"
-roles_json '{"version":1,"roles":{"coder":{"class":"implement","description":"C."}},"roster":{"route":"peer","members":[{"role":"coder"},{"role":"architect","model":"opus"}]}}'
+roles_json '{"version":1,"roles":{"coder":{"class":"implement","description":"C."}},"roster":{"route":"peer","members":[{"role":"coder","model":"inherit"},{"role":"architect","model":"opus"}]}}'
 OUT=$(env -u HERDR_ENV HOME="$FAKEHOME" SANDBOX_COUNTER="$SANDBOX/faketmux/n" PATH="$SANDBOX/faketmux:$(dirname "$(command -v node)"):/usr/bin:/bin" node "$H/roster.mjs" create --spawn --mode auto --cwd "$PROJ" 2>/dev/null)
 check "N8: create --spawn launches the valid member, refuses the broken one, and reports partial" 'echo "$OUT" | node -e "const o=JSON.parse(require(\"fs\").readFileSync(0,\"utf8\"));const c=o.members.find(m=>m.role===\"coder\"),a=o.members.find(m=>m.role===\"architect\");process.exit(o.partial===true&&c.launch_status===\"failed\"&&c.validation&&c.validation.refused&&a.launch_status!==\"failed\"?0:1)"'
 

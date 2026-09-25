@@ -80,8 +80,11 @@ HOME="$FAKEHOME" node --input-type=module -e "
 HOME="$FAKEHOME" HERDR_ENV=1 node "$H/roster.mjs" create --plan --cwd "$PROJ" 2>&1 | norm > "$OUTDIR/plan-herdr.json"
 env -u HERDR_ENV HOME="$FAKEHOME" PATH="$SANDBOX/bin:$NODE_DIR" node "$H/roster.mjs" create --plan --cwd "$PROJ" 2>&1 | norm > "$OUTDIR/plan-tmux.json"
 env -u HERDR_ENV HOME="$FAKEHOME" PATH="$NODE_DIR" node "$H/roster.mjs" create --plan --cwd "$PROJ" 2>&1 | norm > "$OUTDIR/plan-terminal.json"
+# each role's model as ROLE_DEFAULTS has it: an ad hoc member with no model is refused, not launched.
+# task-runner gets none — spawn-ad-hoc refuses that role before it looks at a model.
 for role in ultra-advisor architect reviewer implementor task-runner; do
-  HOME="$FAKEHOME" HERDR_ENV=1 node "$H/roster.mjs" spawn-ad-hoc "$role" --dry-run --cwd "$PROJ" 2>&1 | norm > "$OUTDIR/adhoc-$role.json"
+  case "$role" in ultra-advisor) model=fable ;; architect|reviewer) model=opus ;; implementor) model=inherit ;; task-runner) model= ;; esac
+  HOME="$FAKEHOME" HERDR_ENV=1 node "$H/roster.mjs" spawn-ad-hoc "$role" ${model:+--model "$model"} --dry-run --cwd "$PROJ" 2>&1 | norm > "$OUTDIR/adhoc-$role.json"
 done
 
 # ---- hooks: role-session notices (top-level --agent) and SubagentStart

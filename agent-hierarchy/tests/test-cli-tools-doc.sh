@@ -50,6 +50,7 @@ const readFlags = (src) =>
   new Set([
     ...[...src.matchAll(/opts\.([A-Za-z][A-Za-z0-9]*)/g)].map((m) => m[1]),
     ...[...src.matchAll(/opts\["([^"]+)"\]/g)].map((m) => m[1]),
+    ...[...src.matchAll(/repeatedFlag\("([^"]+)"\)/g)].map((m) => m[1]),
   ]);
 // a bool flag counts as accepted by being in BOOL_FLAGS even when the code never names it:
 // --open is the default for msg.mjs list, selected by the absence of --closed/--all

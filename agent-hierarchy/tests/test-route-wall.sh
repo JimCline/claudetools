@@ -56,8 +56,8 @@ roster_cfg() { printf "$ROSTER_ARCH" "$1" > "$CFG"; }
 # ---- 8: no roster, no route, none live -> spawn-ad-hoc command, denied every time, no route-ask
 reset; echo "$PLAIN" > "$CFG"
 gate "$(payload s8 ah:architect sonnet)"
-check "8: denied with the spawn-ad-hoc command (absolute path, --cwd, --model)" \
-  'denied && has_cmd spawn-ad-hoc && echo "$OUT" | grep -q -- "--model sonnet"'
+check "8: denied with the spawn-ad-hoc command (absolute path, --cwd), never the Agent call's --model" \
+  'denied && has_cmd spawn-ad-hoc && ! echo "$OUT" | grep -q -- "--model"'
 check "8b: names the send-after-spawn and the opt-in command" \
   'echo "$OUT" | grep -q "SendMessage the \`name\` the command prints" && echo "$OUT" | grep -q "route subagents --session s8"'
 gate "$(payload s8 ah:architect sonnet)"
@@ -195,7 +195,7 @@ payload orch17 ah:architect > "$SANDBOX/pl17.json"
 (
   ORCH=$BASHPID
   env -u HERDR_ENV -u CLAUDE_PID HOME="$FAKEHOME" HERDR_ENV=1 HERDR_PANE_ID=p0 PATH="$SANDBOX/bin:$NODE_DIR:/usr/bin:/bin" FAKE_STATE_DIR="$SANDBOX/state" \
-    node "$H/roster.mjs" spawn-ad-hoc architect --orchestrator-pid "$ORCH" --cwd "$PROJ" > "$SANDBOX/spawn17.out" 2>&1
+    node "$H/roster.mjs" spawn-ad-hoc architect --model opus --orchestrator-pid "$ORCH" --cwd "$PROJ" > "$SANDBOX/spawn17.out" 2>&1
   echo $? > "$SANDBOX/spawn17.rc"
   node -e 'const fs=require("fs"),p=require("path");const d=p.join(process.argv[1],"teams");for(const f of [p.join(process.argv[1],"team.json"),...(fs.existsSync(d)?fs.readdirSync(d).map(x=>p.join(d,x)):[])]){if(!fs.existsSync(f))continue;const t=JSON.parse(fs.readFileSync(f,"utf8"));const m=(t.members||[]).find(m=>m.role==="architect");if(m){process.stdout.write(m.name+" "+m.transport_id);break}}' "$HIER" > "$SANDBOX/spawned17"
   read -r SP_NAME SP_PANE < "$SANDBOX/spawned17"
