@@ -20,6 +20,7 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # user's tmux server.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; chmod +x "$SANDBOX/nolaunch/herdr"
 export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 FAKEHOME="$SANDBOX/home"
 mkdir -p "$FAKEHOME/.claude" "$SANDBOX/bin"
 NODE_DIR="$(dirname "$(command -v node)")"

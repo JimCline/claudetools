@@ -7,6 +7,7 @@
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 H="$PLUGIN/hooks"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/ah-role-contract-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -132,10 +133,11 @@ done
 # ---- C10: revalidation at spawn and at SessionStart
 roles_json '{"version":1,"roles":{"coder":{"class":"implement","description":"Imp."},"arch2":{"class":"design","routes":"UI design work"}},"roster":{"route":"peer","members":[{"role":"coder","model":"inherit"},{"role":"architect","model":"opus"}]}}'
 agent arch2 arch2 "disallowedTools: Bash, NotebookEdit, advisor"
-R spawn-one coder --dry-run
+# spawn-one needs an orchestrator pid; $PPID is live and owns no fixture, as CLAUDE_PID (an ancestor) is inside Claude
+CLAUDE_PID=$PPID R spawn-one coder --dry-run
 check "C10: spawn-one --dry-run of a valid custom role emits --agent coder" '[[ "$OUT" == *"--agent coder --name repo-coder"* ]]'
 agent coder coder "tools: Read, SendMessage, Edit"
-R spawn-one coder --dry-run
+CLAUDE_PID=$PPID R spawn-one coder --dry-run  # the same pid need as the check above
 check "C10: spawn-one refuses once the file breaks, with findings" '[ $RC -ne 0 ] && [[ "$ERR" == *"missing-tool:Write|Bash"* ]]'
 OUT=$(HOME="$FAKEHOME" HERDR_ENV=1 node "$H/roster.mjs" create --plan --cwd "$PROJ" 2>&1)
 check "C10: create plan refuses only the broken member; the Architect still has a launch" 'echo "$OUT" | node -e "const p=JSON.parse(require(\"fs\").readFileSync(0,\"utf8\"));const coder=p.members.find(m=>m.role===\"coder\"),a=p.members.find(m=>m.role===\"architect\");process.exit(coder.spawn.refuse&&coder.spawn.validation.refused&&a.spawn.launch.length===1&&!a.spawn.refuse?0:1)"'
@@ -243,7 +245,8 @@ OUT=$(HOME="$FAKEHOME" node --input-type=module -e "
   process.stdout.write(L.buildDirective(L.resolveConfig('$PROJ'), 's1', { hierDir: '/tmp/h', model: 'opus', route: null }));
 " 2>&1)
 check "C16: directive names architect (my-architect) as unavailable and keeps the Architect line" '[[ "$OUT" == *"Unavailable user-defined roles"*"architect (my-architect)"* && "$OUT" == *"- Architect — "* ]]'
-R spawn-one architect --dry-run
+# spawn-one needs an orchestrator pid; $PPID is live and owns no fixture, as CLAUDE_PID (an ancestor) is inside Claude
+CLAUDE_PID=$PPID R spawn-one architect --dry-run
 check "C16: spawn-one launches ah:architect in place of the failing override, with a notice" '[ $RC -eq 0 ] && [[ "$OUT" == *"--agent ah:architect "* && "$OUT" == *"in place of my-architect"* ]]'
 NOTICE() { printf '%s' '{"session_id":"n16","cwd":"'$PROJ'","agent_type":"'$1'","hook_event_name":"SessionStart","source":"startup"}' | HOME="$FAKEHOME" node "$H/sessionstart.mjs" 2>/dev/null; }
 OUT=$(NOTICE ah:architect)

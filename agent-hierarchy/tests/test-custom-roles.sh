@@ -13,6 +13,7 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # session's pane environment is dropped. The tmux transport case sets its own PATH to a fake.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
 export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/repo"
 AG="$PROJ/.claude/agents"
@@ -53,7 +54,8 @@ agentfile fetcher
 BASE='"ui-implementor":{"class":"implement","routes":"UI work: Control scenes, HUD, menus"},"auditor":{"class":"review","description":"Audits licences."},"ui-architect":{"class":"design"},"sage":{"class":"advise","model":"opus"},"fetcher":{"class":"legwork"}'
 
 # ---- T1 (I1): with no custom rows and no overrides every surface is byte-identical
-bash "$PLUGIN/tests/fixtures/0056-i1/render.sh" "$SANDBOX/i1" >/dev/null 2>&1
+# render.sh's spawn plans need an orchestrator pid; $PPID is live and owns no fixture, as CLAUDE_PID (an ancestor) is inside Claude
+CLAUDE_PID=$PPID bash "$PLUGIN/tests/fixtures/0056-i1/render.sh" "$SANDBOX/i1" >/dev/null 2>&1
 OUT=$(diff -r "$PLUGIN/tests/fixtures/0056-i1/golden" "$SANDBOX/i1" 2>&1 | head -20)
 check "T1: derived views, directives, notices, SubagentStart and spawn plans are byte-identical to the pre-0056 golden files" '[ -z "$OUT" ]'
 
@@ -242,7 +244,8 @@ check "T12: the missing contract file is logged" 'grep -q "contracts" "$FAKEHOME
 # ---- T13 (D1): overriding a built-in's agent
 agentfile my-architect "disallowedTools: Bash, NotebookEdit, advisor"
 cfg '{"version":1,"roles":{"architect":{"model":"opus","agent":"my-architect"}},"roster":{"route":"peer","members":[{"role":"architect","model":"opus"}]}}'
-R spawn-one architect --dry-run
+# spawn-one needs an orchestrator pid; $PPID is live and owns no fixture, as CLAUDE_PID (an ancestor) is inside Claude
+CLAUDE_PID=$PPID R spawn-one architect --dry-run
 check "T13: spawn uses the override agent" '[[ "$OUT" == *"--agent my-architect --name repo-architect"* ]]'
 js "const r = L.resolveConfig('$PROJ'); process.stdout.write([L.hierarchyRoleOf('my-architect', { resolved: r }), L.hierarchyRoleOf('ah:architect', { resolved: r })].join(' '))"
 check "T13: my-architect and ah:architect both resolve to Architect" '[ "$OUT" = "architect architect" ]'

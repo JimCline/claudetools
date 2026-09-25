@@ -873,6 +873,29 @@ export function normalizeRosterBlock(block, registry = null) {
   return { ...block, route: staleBlock ? "peer" : block.route, members };
 }
 
+/**
+ * Drops, in place, every roster `members` element of a parsed level file that is not a plain
+ * object — null, an array, a string, a number, a boolean — and returns what it dropped as
+ * `{label, index, type, value}`, `index` being the element's position in the file. Every reader of
+ * a level file calls this first, so each consumer sees only objects. The survivors keep their
+ * order, and a dropped element has no role, so same-role ordinals and derived names do not shift.
+ * Skipped rather than rejected: one bad row must not disable a team, and a hook must never crash
+ * on config — in the route gate a crash fails closed for the built-in chain refs.
+ */
+export function dropNonObjectMembers(data) {
+  const dropped = [];
+  for (const [label, , block] of rosterBlocksOf(data)) {
+    if (!block || typeof block !== "object" || Array.isArray(block) || !Array.isArray(block.members)) continue;
+    const kept = [];
+    block.members.forEach((m, index) => {
+      if (m && typeof m === "object" && !Array.isArray(m)) kept.push(m);
+      else dropped.push({ label, index, type: m === null ? "null" : Array.isArray(m) ? "array" : typeof m, value: m });
+    });
+    if (kept.length !== block.members.length) block.members = kept;
+  }
+  return dropped;
+}
+
 export function resolveRoster(cwd, rosterKey, namingPrefix = null, registry = null) {
   const candidates = rosterLevelCandidates(cwd);
   const prefix = typeof namingPrefix === "string" && namingPrefix ? namingPrefix : teamPrefix(cwd, null);
@@ -888,6 +911,7 @@ export function resolveRoster(cwd, rosterKey, namingPrefix = null, registry = nu
           continue;
         }
         if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+        dropNonObjectMembers(data);
         const r = teamKey ? pickTeamRoster(data, teamKey) : data.roster;
         if (!r || typeof r !== "object" || Array.isArray(r) || !Array.isArray(r.members) || r.members.length === 0) continue;
         const block = normalizeRosterBlock(r, registry);
@@ -934,7 +958,8 @@ export function namedRosterKeys(cwd) {
  * `teamAlias` (any level), a roster block's `layout`, and a `teamLayout` outside the global file.
  * Others opt a chain role into running as a subagent, which only legwork does now: a roster route
  * "subagent", onMissing "never"/"prompt", a chain role's dispatch "model", and a top-level route
- * other than "peers". They are reported only in CLI output a person reads (`status`, `doctor`,
+ * other than "peers". Roster `members` elements that are not objects are reported here too, and
+ * ignored by every reader (`dropNonObjectMembers`). They are reported only in CLI output a person reads (`status`, `doctor`,
  * `create`), never in hook-injected context, where they would repeat in every session; never acted
  * on; removed only by the next CLI write to their file. `registry` classifies custom roles. Returns
  * `{warnings, aliases}` — `aliases` are the stale names still configured, so a create can say how
@@ -953,6 +978,7 @@ export function staleTeamKeys(cwd, registry = null) {
       continue;
     }
     if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+    for (const d of dropNonObjectMembers(data)) warnings.push(`roster \`${path}\`: \`members[${d.index}]\` is not an object (\`${d.type}\`); ignored`);
     const alias = data.teamAlias;
     if (alias !== undefined) {
       warnings.push(`ah: teamAlias in ${path} is ignored — a team's name is chosen when it is created (\`roster.mjs create --team <name>\`). It has no effect; delete it from ${path} to drop this warning, or it is removed at the next CLI write to that file.`);
@@ -1417,6 +1443,33 @@ function readHead(path, cap = AGENT_READ_CAP) {
 
 function installedPluginsPath() {
   return join(homedir(), ".claude", "plugins", "installed_plugins.json");
+}
+
+export const TASK_GOPHER = "task-gopher:task-gopher";
+
+/** A claude-kind legwork member with no model is not launched while task-gopher is installed: its
+    legwork goes to task-gopher subagents instead. `handoff` answers whether task-gopher is
+    installed, and is asked last, only for such a member. */
+export function legworkHandedOff(m, registry, handoff) {
+  return resolveKind(m) === KIND_DEFAULT && !m.model && roleClass(m.role, registry) === "legwork" && handoff();
+}
+
+/**
+ * Whether a team is partial: some roster member that `create` would launch — a pane-route member,
+ * less one handed off to task-gopher — has no record, matched by its derived name or by a record's
+ * `renamed_from`. Derived from the team's recorded roster block at read time, so a roster edit
+ * changes the answer with no team write; records beyond the roster (ad hoc members) never change
+ * it. Null when that block no longer resolves: either answer would be a guess.
+ */
+export function teamIsPartial(dir, cwd, teamName, team, registry = null) {
+  if (!team || !Array.isArray(team.members) || !cwd) return null;
+  const rosterKey = teamRosterKey(dir, teamName);
+  const r = resolveRoster(cwd, rosterKey, teamPrefix(cwd, teamName), registry);
+  if (!r || (r.teamKey || null) !== (rosterKey || null)) return null;
+  let installed;
+  const handoff = () => (installed ??= Boolean(locateAgentFile(TASK_GOPHER, cwd).path));
+  const launched = r.members.filter((m) => routeHasPane(m.route || r.route) && !legworkHandedOff(m, registry, handoff));
+  return launched.some((m) => !team.members.some((rec) => rec && (rec.name === m.name || rec.renamed_from === m.name)));
 }
 
 /**
@@ -2156,7 +2209,7 @@ export function statusReport(cwd) {
   } catch {
     team = null;
   }
-  out.push(team ? `Team: ${team.team_id} (${team.transport}, ${team.members.length} member(s)${team.partial ? ", partial" : ""})` : "Team: none active — /agent-team create to instantiate the roster");
+  out.push(team ? `Team: ${team.team_id} (${team.transport}, ${team.members.length} member(s)${teamIsPartial(hierarchyDir(resolved.cwd), resolved.cwd, null, team, resolved) ? ", partial" : ""})` : "Team: none active — /agent-team create to instantiate the roster");
   if (resolved.shadowed.length) {
     out.push(`WARNING: project config shadows user-scope values for: ${resolved.shadowed.join(", ")}.`);
   }

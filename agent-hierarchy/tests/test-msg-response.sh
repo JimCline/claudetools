@@ -8,6 +8,7 @@
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 H="$PLUGIN/hooks"
 NUDGE="$H/subagentstop-msg-nudge.mjs"
 MSG="$H/msg.mjs"

@@ -5,6 +5,7 @@
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 LIB="$PLUGIN/hooks/lib-config.mjs"
 HOOK="$PLUGIN/hooks/pretooluse-ultra-gate.mjs"
 CLI="$PLUGIN/hooks/gate.mjs"

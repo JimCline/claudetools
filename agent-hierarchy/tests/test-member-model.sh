@@ -231,7 +231,15 @@ check "B6c: skipped_members is exactly [{name, role, handoff}], and the team is 
 check "B6c: the message sends the legwork to task-gopher and covers the not-dispatchable case" '[[ "$(jq_out o.message)" == *"task-gopher:task-gopher subagents"* ]] && [[ "$(jq_out o.message)" == *"not among your available agent types"* ]] && [[ "$(jq_out o.message)" == *"--no-legwork-handoff"* ]]'
 run_herdr create --commit --verified '["b6c-architect","b6c-reviewer","b6c-task-runner"]' --transport herdr --roster-level repo
 TF=$(team_files)
-check "B6c: the committed team has no task-runner, even when --verified names it, and is not partial" '[ "$RC" = 0 ] && [ "$(jq_file "$TF" "t.members.map(m=>m.role).join()")" = architect,reviewer ] && [ "$(jq_file "$TF" t.partial)" = false ]'
+# Whether the team in <team file> is partial, derived from its roster exactly as it is displayed.
+derived_partial() { HOME="$FAKEHOME" node --input-type=module -e '
+  const [H, cwd, f] = process.argv.slice(1);
+  const { teamIsPartial } = await import(H + "/lib-config.mjs");
+  const { readFileSync } = await import("node:fs");
+  const { basename, dirname } = await import("node:path");
+  const legacy = basename(f) === "team.json";
+  process.stdout.write(String(teamIsPartial(legacy ? dirname(f) : dirname(dirname(f)), cwd, legacy ? null : basename(f, ".json"), JSON.parse(readFileSync(f, "utf8")))));' "$H" "$PROJ" "$1"; }
+check "B6c: the committed team has no task-runner, even when --verified names it, and is not partial" '[ "$RC" = 0 ] && [ "$(jq_file "$TF" "t.members.map(m=>m.role).join()")" = architect,reviewer ] && [ "$(derived_partial "$TF")" = false ]'
 check "B6c: --commit lists skipped_members" '[ "$(jq_out "o.skipped_members[0].name")" = b6c-task-runner ]'
 check "B6c: the roster file is byte-identical" '[ "$(sum "$CFG")" = "$BEFORE" ]'
 new_repo b6c-plan

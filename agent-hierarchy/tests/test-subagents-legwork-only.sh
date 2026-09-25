@@ -45,6 +45,8 @@ jq_file() { node -e 'const t=JSON.parse(require("fs").readFileSync(process.argv[
 payload() { # <session> <tool> <subagent_type> [agent_id]
   node -e 'const[s,t,st,a,cwd]=process.argv.slice(1);const o={session_id:s,cwd,tool_name:t,tool_input:{subagent_type:st,prompt:"x"}};if(a)o.agent_id=a;process.stdout.write(JSON.stringify(o));' "$1" "$2" "$3" "$4" "$PROJ"; }
 gate() { OUT=$(echo "$1" | HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node "$GATE" 2>&1); RC=$?; }
+RESOLVE_THROWS="$PLUGIN/tests/fixtures/resolve-config-throws.mjs"
+gate_resolve_throws() { OUT=$(echo "$1" | HOME="$FAKEHOME" AGENT_HIERARCHY_DIR="$HD" node --import "$RESOLVE_THROWS" "$GATE" 2>&1); RC=$?; }
 denied() { echo "$OUT" | grep -q '"permissionDecision":"deny"'; }
 allowed() { [ $RC -eq 0 ] && [ -z "$OUT" ]; }
 spawn_reason() { denied && echo "$OUT" | grep -q "ah chain roles run as peers, never subagents" && echo "$OUT" | grep -qE "spawn-(one|ad-hoc) $1 --cwd"; }
@@ -131,8 +133,9 @@ check "G5: ...and no route subagents command, opt-in, or 'does not lead to the s
 
 # G6: an internal error in the gate fails closed for the five built-in chain refs, open for everything else.
 # Two injections, neither a test-only path in the hook: a plain file where the hierarchy dir's msgs/
-# belongs makes roster() throw ENOTDIR after role resolution; a null roster member makes
-# resolveConfig itself throw, before enabled or the ah:orchestrator deny is reached.
+# belongs makes roster() throw ENOTDIR after role resolution; a load-time rewrite of lib-config.mjs
+# (`node --import` of a test fixture) makes resolveConfig itself throw on entry, before enabled or
+# the ah:orchestrator deny is reached.
 ERRLOG="$FAKEHOME/.claude/hierarchy/hook-errors.jsonl"
 FC_HEAD="ah: the route gate hit an internal error and could not check this dispatch (logged to $ERRLOG)."
 fail_closed() { # <role> <Label>
@@ -170,18 +173,27 @@ BEFORE=$(errlines)
 gate "$(payload g6 Agent ah:architect)"
 check "G6: enabled:false with the same injection: Agent(ah:architect) passes, never reaching the throw" 'allowed && [ "$(errlines)" = "$BEFORE" ]'
 rm -f "$HD/msgs"
+write_cfg '{"version":1,"enabled":true,"roles":{}}'
+BEFORE=$(errlines)
+gate_resolve_throws "$(payload g6 Task ah:orchestrator)"
+check "G6: a throw inside config resolution: Task(ah:orchestrator) denied with the fail-closed Orchestrator text, and logged" 'orch_fail_closed && [ "$(errlines)" = $((BEFORE+1)) ]'
+check "G6: ...the logged throw is the injected one" 'tail -1 "$ERRLOG" | grep -q "injected by tests/fixtures/resolve-config-throws.mjs"'
+gate_resolve_throws "$(payload g6 Agent ah:architect)"
+check "G6: ...Agent(ah:architect) denied with the fail-closed text" 'fail_closed architect Architect'
+gate_resolve_throws "$(payload g6 Agent ah:task-runner)"
+check "G6: ...Agent(ah:task-runner) passes" 'allowed'
+gate_resolve_throws "$(send_payload g6)"
+check "G6: ...a SendMessage brief passes" 'allowed'
+gate_resolve_throws "$(payload g6 Read "")"
+check "G6: ...a non-dispatch tool passes" 'allowed'
+# R4: the input that used to be this injection, a null roster member, is now skipped at read and
+# takes the gate's normal path.
 write_cfg '{"version":1,"enabled":true,"roster":{"members":[null]}}'
 BEFORE=$(errlines)
 gate "$(payload g6 Task ah:orchestrator)"
-check "G6: a throw inside config resolution: Task(ah:orchestrator) denied with the fail-closed Orchestrator text, and logged" 'orch_fail_closed && [ "$(errlines)" = $((BEFORE+1)) ]'
+check "R4: members:[null]: Task(ah:orchestrator) gets the normal deny, not the fail-closed text, and nothing is logged" 'denied && echo "$OUT" | grep -q "never runs as a subagent" && ! orch_fail_closed && [ "$(errlines)" = "$BEFORE" ]'
 gate "$(payload g6 Agent ah:architect)"
-check "G6: ...Agent(ah:architect) denied with the fail-closed text" 'fail_closed architect Architect'
-gate "$(payload g6 Agent ah:task-runner)"
-check "G6: ...Agent(ah:task-runner) passes" 'allowed'
-gate "$(send_payload g6)"
-check "G6: ...a SendMessage brief passes" 'allowed'
-gate "$(payload g6 Read "")"
-check "G6: ...a non-dispatch tool passes" 'allowed'
+check "R4: ...Agent(ah:architect) gets the normal spawn reason, and nothing is logged" 'spawn_reason architect && ! fail_closed architect Architect && [ "$(errlines)" = "$BEFORE" ]'
 
 # ============================================================ D: the directive, in every golden scenario
 GOLD="$PLUGIN/tests/fixtures/0056-i1/golden"
@@ -216,7 +228,31 @@ check "K2: the declined-spawn question" 'echo "$SECTION" | grep -qF "\"Do the <R
 check "K1: agent-roster init has no Subagent only option" '! grep -q "Subagent only" "$PLUGIN/skills/agent-roster/SKILL.md"'
 check "K1: hooks.json no longer describes a route question or the prefer-peers default" '! grep -qE "prefer-peers|asks ONCE per session" "$H/hooks.json"'
 check "K1: comms-protocol.md no longer describes a route question or the prefer-peers default" '! grep -qE "Default when the user has not answered|ask ONCE per session|One routing question per session" "$PLUGIN/docs/comms-protocol.md"'
-check "K1: agents/*.md are byte-identical, and the size test's budgets are unchanged" '(cd "$PLUGIN" && git diff --quiet HEAD -- agents tests/test-directive-size.sh)'
+# K1: every budget the size test holds, pinned at its value. Raising one means editing this list
+# as well, so it is a deliberate, reviewed change; lowering one needs nothing here.
+K1_PINS="AUTO_MAX=14600 CONFIRM_MAX=16500 architect=9700 ultra-advisor=7300 reviewer=6500 implementor=5300 task-runner=5650 orchestrator=7350"
+k1_raised() { # <size test file>: each pinned budget it raises or no longer defines
+  local f=$1 pin name max got
+  for pin in $K1_PINS; do
+    name=${pin%%=*}; max=${pin#*=}
+    case $name in
+      AUTO_MAX|CONFIRM_MAX) got=$(sed -nE "s/^$name=([0-9]+).*/\1/p" "$f") ;;
+      *) got=$(sed -nE "s/^md_ceiling $name +([0-9]+).*/\1/p" "$f") ;;
+    esac
+    { [ -n "$got" ] && [ "$got" -le "$max" ]; } || echo "$name=${got:-missing}"
+  done
+}
+OUT=$(k1_raised "$PLUGIN/tests/test-directive-size.sh")
+check "K1: no directive or agents/*.md budget in the size test is raised above its pin" '[ -z "$OUT" ]'
+SIZE_COPY="$SANDBOX/size-copy.sh"
+for raise in 's/^AUTO_MAX=14600/AUTO_MAX=14601/' 's/^CONFIRM_MAX=16500/CONFIRM_MAX=17000/' 's/^md_ceiling orchestrator  7350/md_ceiling orchestrator  7351/' 's/^md_ceiling task-runner   5650/md_ceiling task-runner   9999/' 's/^md_ceiling architect .*//'; do
+  perl -pe "$raise" "$PLUGIN/tests/test-directive-size.sh" > "$SIZE_COPY"
+  OUT=$(k1_raised "$SIZE_COPY")
+  check "T-H0: K1 fails on a copy of the size test edited with $raise" '! cmp -s "$SIZE_COPY" "$PLUGIN/tests/test-directive-size.sh" && [ -n "$OUT" ]'
+done
+perl -pe 's/^AUTO_MAX=14600/AUTO_MAX=14000/' "$PLUGIN/tests/test-directive-size.sh" > "$SIZE_COPY"
+OUT=$(k1_raised "$SIZE_COPY")
+check "T-H0: a lowered budget passes K1" '[ -z "$OUT" ]'
 check "K1: commands/hierarchy.md has no plugins/cache/*/task-gopher glob" '! grep -qF "plugins/cache/*/task-gopher" "$PLUGIN/commands/hierarchy.md"'
 
 # ============================================================ M: migrate on write, ignored until then

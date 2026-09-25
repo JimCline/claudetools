@@ -21,7 +21,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realp
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { availabilityView, chainRoles, customTierText, hierarchyDir, PEER_ELIGIBLE_ROLES, registryRoles, resolveConfig, ROLES, ROLE_LABELS, ROUTE_VALUES, TIER, resolvedPeerTargets, roleFromName, routeHasPane, tierOf } from "./lib-config.mjs";
+import { availabilityView, chainRoles, customTierText, hierarchyDir, PEER_ELIGIBLE_ROLES, registryRoles, resolveConfig, ROLES, ROLE_LABELS, ROUTE_VALUES, TIER, resolvedPeerTargets, roleFromName, routeHasPane, teamIsPartial, tierOf } from "./lib-config.mjs";
 import { listTeamNames, paneResolver, readTeam, resolveMemberTeam, teamIsOrphaned, teamFileHome, teamMemberByName, teamPath } from "./lib-roster.mjs";
 
 export { hierarchyDir };
@@ -1061,7 +1061,7 @@ export function buildStateBlock(dir, resolved, repoBasename, model, sessionId = 
       const live = (ros[m.role] || []).find((i) => i.name === m.name);
       return `${m.role}=${m.name} ${live ? (live.busy ? "busy" : "idle") : "not-seen"}`;
     });
-    peersLine = `Team ${team.team_id} (authoritative)${team.partial ? " [partial]" : ""}: ${rows.join("; ")}`;
+    peersLine = `Team ${team.team_id} (authoritative)${teamIsPartial(dir, resolved ? resolved.cwd : null, (resolved && resolved.team) || null, team, resolved) ? " [partial]" : ""}: ${rows.join("; ")}`;
   } else {
     const ros = roster(dir, resolved, repoBasename, now);
     const anyPeer = chainRoles(resolved).some((r) => ros[r].length);

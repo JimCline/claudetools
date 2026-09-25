@@ -5,6 +5,7 @@
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 SKILL="$PLUGIN/skills/agent-team/SKILL.md"
 DOC="$PLUGIN/docs/cli-tools.md"
 PASS=0; FAIL=0

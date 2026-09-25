@@ -129,7 +129,8 @@ someone else's live Team.
 - `adopt [--orchestrator-pid <pid>] [--team <name>]` — re-stamps
   `orchestrator.pid` on an ORPHANED team. Recovery only; it refuses to hijack a live team.
 - `reap [--commit]` — lists orphaned team records, or removes them with
-  `--commit`.
+  `--commit`, except one that live sessions still depend on, which it keeps (`kept`). See
+  § An orphan that live sessions depend on.
 - `teams [--cwd <path>]` — read-only: every team file in this hierarchy dir (default plus every
   named team), with member count, orchestrator pid, whether that pid is alive, and whether it's
   this session's own. Use it to see a stale or a sibling orchestrator's Team before `create`. Also
@@ -482,16 +483,14 @@ check-in) apply unchanged. This capability is skill-only.
    `autoMode`, `transport_id` are already there) plus each member's
    `ref` from `ListAgents` — do not recompute the rest by hand. Run
    `roster.mjs create --commit --transport <t> --roster-level <L> --verified
-   '<json>'` with the same `--team`/`--roster`/`--mode` as the spawn (add
-   `--partial` if any peer-routed member never checked in). The
+   '<json>'` with the same `--team`/`--roster`/`--mode` as the spawn. The
    orchestrator pid it records comes from the `CLAUDE_PID` env var, the same
    source `sessionstart.mjs` uses for peer liveness records, so it is supplied
    automatically. `--orchestrator-pid <pid>` overrides it — pass it only to
    supply an identity `CLAUDE_PID` does not carry; with neither, the verb
    refuses rather than guessing.
    On a full success, report the Team id and every member. **On partial
-   success — the default per spec 0001 §13 — commit anyway with `--partial`,
-   and tell the user exactly which member(s) never checked in and that the
+   success — the default per spec 0001 §13 — commit anyway, and tell the user exactly which member(s) never checked in and that the
    Team is degraded**; do not silently pretend a missing member exists, and
    do not block or tear down on a partial check-in unless the user says to.
 
@@ -610,6 +609,30 @@ or the sweep deletes it (members, refs, `transport_id`s — everything) before
 `adopt` gets a chance to run. `adopt` refuses to touch a Team whose recorded
 owner is alive and different — it is recovery for an orphan, not a way to
 steal a live Team.
+
+**An orphan that live sessions depend on.** For an orphaned team, `teams` and
+`reap` list `live_members` (its records that are live sessions) and
+`attributed_live` (live sessions launched with its team file that match no
+record), each with a best-effort `last_brief_from`. `reap --commit` keeps such
+a team instead of clearing it.
+
+- **An orphaned team with `live_members` is adopted, never reaped.**
+  - **Adopt it yourself** when every live member's `last_brief_from` is you:
+    your session name, or your own reply-to. That is an Orchestrator restart
+    or resume, which changed its pid. Run `adopt --orchestrator-pid <your pid>
+    --team <t>` (`reap --commit` prints it as `next`).
+  - **Otherwise ask the user** with AskUserQuestion. Options:
+    - "Adopt it" (recommended when you are briefing those members);
+    - "Leave it" (nothing changes).
+    - Do not offer reaping: `reap` keeps the team anyway.
+- **An orphaned team with only `attributed_live` sessions: leave it.**
+  - Never adopt it: that would launch its dead records again, as duplicates
+    of the live sessions.
+  - Never `disband --close` it: read the plan's `sources`, and never close a
+    session that you or another Orchestrator is briefing.
+  - Tell the user in one line that you are leaving it. `reap` removes it after
+    those sessions exit.
+- Adopting never closes or launches anything.
 
 ### Plan came back empty — search before you say so
 

@@ -21,7 +21,7 @@
  *                       (--verified: JSON array of member objects from the spawn/check-in
  *                       cycle, OR a JSON array of member-name strings hydrated from the
  *                       --roster-level roster)
- *                       --roster-level <L> [--partial]
+ *                       --roster-level <L> [--partial (accepted, ignored: partial is derived)]
  *                       [--orchestrator-pid <pid>]] [--cwd <path>]
  *   roster.mjs create  --spawn [--roster-level <L>] [--cwd <path>]
  *                       (every create phase takes [--team <T>], the team's name — default the
@@ -112,11 +112,11 @@
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-import { AGENT_REF_RE, agentRefError, hierarchyNameParts as parseNameParts, chainRoles, checkCustomRow, CLASSES, classBuiltin, classProp, customRoleNames, defaultLabel, DISPATCH_MODES, formatFindings, hasContractErrors, isAlternative, isBuiltinRole, isOverride, locateAgentFile, registryRoles, roleAgent, roleClass, ROLE_LABELS, roleLabel, validateAgentContract, validateRole, CONFIG_VERSION, findGitRoot, hierarchyDir, mainHierarchyDir, peerName, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, ROLES, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, namedRosterKeys, normalizeRosterBlock, rosterBlocksOf, staleTeamKeys, STALE_ROUTE_VALUES, suggestTeamAlias, teamLayoutPreference, teamPrefix, teamPrefixInfo, tierOf, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
+import { AGENT_REF_RE, agentRefError, hierarchyNameParts as parseNameParts, chainRoles, checkCustomRow, CLASSES, classBuiltin, classProp, customRoleNames, defaultLabel, DISPATCH_MODES, formatFindings, hasContractErrors, isAlternative, isBuiltinRole, isOverride, locateAgentFile, registryRoles, roleAgent, roleClass, ROLE_LABELS, roleLabel, validateAgentContract, validateRole, CONFIG_VERSION, findGitRoot, hierarchyDir, mainHierarchyDir, peerName, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, ROLES, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, namedRosterKeys, normalizeRosterBlock, dropNonObjectMembers, legworkHandedOff, rosterBlocksOf, staleTeamKeys, TASK_GOPHER, STALE_ROUTE_VALUES, suggestTeamAlias, teamLayoutPreference, teamPrefix, teamPrefixInfo, tierOf, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
 import { ageSecOf, appendRosterRecord, attributedRoster, fmtAge, latestRoster, livePeerSlots, peersPath, readJsonl, newId, localIso, NO_TEAM_SCOPE, pidAlive, realCwd, recordLiveness, synthesizedPeerName } from "./lib-hier.mjs";
 import { readPeerRecords } from "./lib-peer.mjs";
 import { attributeSessionTeam, clearTeam, defaultTeamScope, envTeamFile, fingerprint, herdrOnPath, historyEntryIsActive, KIND_AUTO_MODE_ARGS, KIND_DEFAULT, kindAutoModeArgs, kindFieldErrors, listTeamNames, memberArgs, memberNamePrefix, normalizeMembers, readHistory, readTeam, resolveKind, resolveTeamByPane, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamFileState, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamOwnedBy, teamPath, teamRosterKey, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
@@ -897,7 +897,6 @@ function repeatedFlag(flag) {
   return values;
 }
 
-const TASK_GOPHER = "task-gopher:task-gopher";
 
 /**
  * This create's `--member-model <name>=<model>` values, checked against `members`, the members it
@@ -1005,7 +1004,7 @@ function taskGopherInstalled() {
 /** A claude-kind legwork member with no model is not launched while task-gopher is installed: its
     legwork goes to task-gopher subagents instead, and nobody is asked for a model. */
 function autoSkipped(m) {
-  return resolveKind(m) === KIND_DEFAULT && !m.model && roleClass(m.role, registry()) === "legwork" && taskGopherInstalled();
+  return legworkHandedOff(m, registry(), taskGopherInstalled);
 }
 
 /** A skipped member as reported. */
@@ -1191,11 +1190,18 @@ function containerLabel(teamKey) {
   return teamKey ? `rosters.${teamKey}` : "roster";
 }
 
+/** Roster rows each level file lost to `dropNonObjectMembers` when it was read, by path, so the
+    write that persists the cleaned file can list them under `migrated`. */
+const droppedAtRead = new Map();
+
 function readLevelFile(path) {
   if (!existsSync(path)) return { version: CONFIG_VERSION };
   try {
     const data = JSON.parse(readFileSync(path, "utf8"));
-    return data && typeof data === "object" && !Array.isArray(data) ? data : { version: CONFIG_VERSION };
+    if (!data || typeof data !== "object" || Array.isArray(data)) return { version: CONFIG_VERSION };
+    const dropped = dropNonObjectMembers(data);
+    if (dropped.length) droppedAtRead.set(path, dropped);
+    return data;
   } catch {
     return { version: CONFIG_VERSION };
   }
@@ -1208,12 +1214,15 @@ function readLevelFile(path) {
  * route "subagent", onMissing "never"/"prompt", and a block route "subagent", which becomes "peer"
  * while each legwork member that inherited it keeps "subagent" as its own. And the team keys a
  * roster no longer holds: `teamAlias`, a block's `layout`, and `teamLayout` outside the global file.
- * A member whose role cannot be classified is left as it is. Other keys and key order are kept.
+ * A member whose role cannot be classified is left as it is; a member that is not an object is
+ * dropped. Other keys and key order are kept.
  */
 function migrateStaleKeys(path, data) {
   const changes = [];
   const note = (key, from, to) => changes.push({ path, key, from: from === undefined ? null : from, to });
   const reg = registry();
+  for (const d of [...(droppedAtRead.get(path) || []), ...dropNonObjectMembers(data)]) note(`${d.label}.members[${d.index}]`, d.value, null);
+  droppedAtRead.delete(path);
   if (STALE_ROUTE_VALUES.includes(data.route)) {
     note("route", data.route, null);
     delete data.route;
@@ -1573,7 +1582,18 @@ function spawnShape(member, transport, agent = null) {
   // reference and --model/--effort/--permission-mode are Claude CLI flags (§F3, §1.8).
   // The member learns its team from its launch: settings `env` reaches its hooks and its Bash
   // children, and overrides whatever AH_TEAM_FILE the launching shell happens to carry.
-  const teamFileSetting = `--settings ${shQuote(JSON.stringify({ env: { AH_TEAM_FILE: teamPath(hierarchyDir(cwd), teamFile) } }))}`;
+  const teamFilePath = teamPath(hierarchyDir(cwd), teamFile);
+  // A member's name and the team file it is launched into must agree, or its session is silently
+  // attributed to a team it is not in. The prefix is read from the file name alone, so this check
+  // cannot race the name derivation. The legacy team.json keeps its prefix in its content, and is
+  // exempt.
+  if (isClaude && teamFile !== null) {
+    const expected = basename(teamFilePath, ".json");
+    if (memberNamePrefix(member.name, member.role) !== expected) {
+      fail(`member ${member.name} would be launched with AH_TEAM_FILE=${teamFilePath}, but a member of that team is named ${expected}-${member.role} or ${expected}-${member.role}-<n> (expected prefix "${expected}-") — nothing was launched`);
+    }
+  }
+  const teamFileSetting = `--settings ${shQuote(JSON.stringify({ env: { AH_TEAM_FILE: teamFilePath } }))}`;
   const agentFlags = isClaude
     ? [`--agent ${agentRef}`, `--name ${member.name}`, member.model && member.model !== "inherit" ? `--model ${member.model}` : null, member.effort ? `--effort ${member.effort}` : null, member.autoMode ? `--permission-mode ${member.autoMode}` : null, teamFileSetting].filter(Boolean)
     : [];
@@ -2977,6 +2997,56 @@ function untrackedLive(dir, scope, tracked) {
     .map((s) => ({ name: s.name, role: s.role, pane_id: s.pane_id, session_id: s.session_id, pid: s.pid, cwd: s.cwd, ...(s.source === "herdr" ? { source: "herdr" } : {}) }));
 }
 
+/** The latest obligation row any hook filed for a session, or null. Observed, not verified: a
+    plain cross-session message files none. */
+function lastBriefRow(sessionId) {
+  return sessionId ? readPeerRecords().filter((r) => r.session_id === sessionId && r.type !== "turn" && r.type !== "dispatch").at(-1) || null : null;
+}
+
+/** Who last briefed a session, best-effort: that row's `from_name`, else `from`, else null. */
+function lastBriefFrom(sessionId) {
+  const row = lastBriefRow(sessionId);
+  return row ? row.from_name || row.from || null : null;
+}
+
+/**
+ * What still depends on an orphaned team: `live_members`, its records that `memberLiveness` finds
+ * live or cannot rule out (an indeterminate one is listed as such, never dropped, since dropping it
+ * would read as not live); and `attributed_live`, the live sessions that claim the team through
+ * their launch environment or a `<t>-` Herdr name but match no record — its `untracked_live` rows,
+ * never for the legacy team.json. Each field is present
+ * only when non-empty. `untracked` is that team's `untracked_live` when the caller has it.
+ */
+function orphanDependents(dir, teamName, untracked = null) {
+  const t = readTeam(dir, teamName);
+  const members = t && Array.isArray(t.members) ? t.members.filter((m) => m && typeof m.name === "string") : [];
+  const records = attributedRoster(dir);
+  const live_members = members.flatMap((m) => {
+    const l = memberLiveness(dir, m);
+    if (!l.live && !l.indeterminate) return [];
+    const rec = records.find((r) => r.name === m.name);
+    return [{ name: m.name, role: m.role ?? null, last_brief_from: lastBriefFrom(rec && rec.session_id), ...(l.indeterminate ? { indeterminate: true } : {}) }];
+  });
+  // The legacy team.json claims nothing: an untagged row cannot be told apart from a session never
+  // launched with AH_TEAM_FILE, and its name prefix is the repo basename plain role sessions share.
+  // A named team's tag and its `<t>-` names are claims on it, and a non-Claude member writes no
+  // peers row, so its name is its only link.
+  const rows = teamName === null ? [] : untracked || untrackedLive(dir, teamName, new Set(members.map((m) => m.name)));
+  const attributed_live = rows.map((r) => ({ name: r.name, role: r.role, pane_id: r.pane_id, last_brief_from: lastBriefFrom(r.session_id) }));
+  return { ...(live_members.length ? { live_members } : {}), ...(attributed_live.length ? { attributed_live } : {}) };
+}
+
+/** The adopt command that makes the invoking session the owner of `teamName`, or null when no
+    invoking pid resolves. */
+function adoptCommand(teamName) {
+  const pid = ownOrchestratorPid();
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const words = ["node", fileURLToPath(import.meta.url), "adopt", "--orchestrator-pid", String(pid)];
+  if (teamName != null) words.push("--team", teamName);
+  words.push("--cwd", cwd);
+  return words.map(shellWord).join(" ");
+}
+
 function peerFallbackPlanEntry(m) {
   return { role: m.role, name: m.name, route: m.route, transport: "herdr", transport_id: m.transport_id, command: m.transport_id ? `herdr pane close ${m.transport_id}` : null, live: m.live, how: m.how, source: m.source || "peers" };
 }
@@ -3341,7 +3411,6 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
       transport,
       orchestrator: { session_id: null, pid: newTeamOrchestratorPid },
       members: [],
-      partial: resolved ? resolved.members.length > 1 : true,
       expected_root: realCwd(cwd),
       roster: resolved ? resolved.teamKey : null,
       layout: mode,
@@ -3858,7 +3927,6 @@ try {
           transport,
           orchestrator: { session_id: typeof opts.session === "string" ? opts.session : null, pid: orchestratorPid },
           members,
-          partial: opts.partial === true,
           expected_root: realCwd(cwd),
           roster: templateRoster ? templateRoster.teamKey : null,
           layout: layout.mode,
@@ -4521,6 +4589,7 @@ try {
         row.misplaced_members = flagged;
         row.misplaced_unattributed = unattributed;
         row.untracked_live = untrackedLive(dir, row.name, new Set(members.map((m) => m.name).filter(Boolean)));
+        if (row.orphaned) Object.assign(row, orphanDependents(dir, row.name, row.untracked_live));
       }
       // Spec 0046 §2.5: a briefed peer's row carries its team.json member NAME, so the top-level
       // list must exclude every tracked name in the whole hierarchy dir, not just one team's.
@@ -4606,7 +4675,7 @@ try {
       // Observed, not verified: the last obligation row any hook filed for this session. A plain
       // cross-session message files none, so null here is the ordinary case, not a fault.
       const mySessionId = process.env.CLAUDE_CODE_SESSION_ID || (myRow && myRow.session_id) || null;
-      const briefRow = mySessionId ? readPeerRecords().filter((r) => r.session_id === mySessionId && r.type !== "turn" && r.type !== "dispatch").at(-1) : null;
+      const briefRow = lastBriefRow(mySessionId);
       const last_observed_brief = briefRow ? { from: briefRow.from ?? null, from_name: briefRow.from_name || null, reply_to: briefRow.reply_to ?? null, ts: briefRow.ts ?? null } : null;
       // `answered_by` names the step that placed this session: the team file it was launched into
       // (`env`), or the member row holding its pane (`pane`). A rejected AH_TEAM_FILE is never
@@ -4639,7 +4708,10 @@ try {
       if (env && !env.invalid) {
         const team = readTeam(env.home, env.teamName);
         const member = paneId && team && Array.isArray(team.members) ? team.members.find((m) => m && m.transport_id === paneId) || null : null;
-        out(describe(env.home, env.teamName, team, member, "env"));
+        // The launch path alone names the team, whether or not its file exists: a member starts
+        // before `create --commit` writes it, and keeps running after reap, disband or untrack
+        // removes it. With no file there is no record, which is all that changes.
+        out({ ...describe(env.home, env.teamName, team, member, "env"), ...(team ? {} : { reason: "no-team" }) });
         break;
       }
       if (!paneId) {
@@ -4682,9 +4754,23 @@ try {
       const orphans = allTeamRows(dir, null).filter((t) => t.orphaned);
       // Spec 0046 §2.5: reported, never acted on — reap's contract stays orchestrator-dead teams only.
       const untracked_live = untrackedLive(dir, NO_TEAM_SCOPE, trackedNames(dir, allTeamRows(dir, null)));
+      for (const t of orphans) Object.assign(t, orphanDependents(dir, t.name));
       if (opts.commit === true) {
-        for (const t of orphans) clearTeam(dir, t.name);
-        out({ committed: true, reaped: orphans, untracked_live });
+        // An orphan that live sessions still depend on is kept: clearing it would forget the
+        // records of live sessions, and a later spawn-one could launch their duplicates.
+        const kept = orphans.filter((t) => t.live_members || t.attributed_live);
+        const reaped = orphans.filter((t) => !kept.includes(t));
+        for (const t of reaped) clearTeam(dir, t.name);
+        const keptRows = kept.map((t) => ({
+          team: t.name,
+          ...(t.live_members ? { live_members: t.live_members } : {}),
+          ...(t.attributed_live ? { attributed_live: t.attributed_live } : {}),
+          next: t.live_members ? adoptCommand(t.name) : null,
+          why: t.live_members
+            ? "its records are live sessions"
+            : `live sessions claim this team (through AH_TEAM_FILE or a \`${t.name}-\` Herdr name) but match no record. Adopting would relaunch its dead records beside them. Run reap again after those sessions exit.`,
+        }));
+        out({ committed: true, reaped, ...(keptRows.length ? { kept: keptRows } : {}), untracked_live });
       } else {
         out({ committed: false, orphans, untracked_live });
       }

@@ -11,6 +11,7 @@
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 HOOK="$PLUGIN/hooks/userpromptsubmit-peer-tracking.mjs"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-ups-cli-root-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
