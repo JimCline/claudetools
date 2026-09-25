@@ -144,6 +144,8 @@ correctness.
 
 ## 3. Fix 1 — per-team roster override (the primary ask)
 
+> Superseded in part by spec 0057 §2.5: `--team` no longer selects `rosters.<name>` — `--roster <r>` does, and a team records the block it was built from; the resolution and level rules below still hold for that key.
+
 ### 3.1 Schema
 
 A config file at any level may carry, alongside the existing `roster` key, an

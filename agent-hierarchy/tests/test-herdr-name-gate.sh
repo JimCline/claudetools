@@ -3,6 +3,7 @@
 # is denied before it runs; every other Bash call passes untouched. HOME-redirected.
 set -u
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
 GATE="$PLUGIN/hooks/pretooluse-herdr-name-gate.mjs"
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT

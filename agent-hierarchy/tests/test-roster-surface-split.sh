@@ -13,7 +13,7 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
 # the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude"
@@ -128,7 +128,7 @@ check "8: §1.3 refuses the roster edit whichever surface issued it" \
 # so it is asserted rather than eyeballed.
 ########################################################################
 LIFECYCLE="create spawn-one spawn-ad-hoc dismiss disband adopt move resync reap teams history checkin"
-TEMPLATE="init add edit remove layout alias"
+TEMPLATE="init add edit remove"
 for v in $LIFECYCLE; do
   check "9: /agent-roster's command surface does not list \`$v\`" \
     '! surface_verbs "$ROSTER_SKILL" | grep -qx "$v"'
@@ -142,9 +142,14 @@ for v in create spawn-one spawn-ad-hoc dismiss disband; do
   check "9: /agent-team's command surface DOES list \`$v\`" \
     'surface_verbs "$TEAM_SKILL" | grep -qx "$v"'
 done
-for v in init add edit remove layout alias show; do
+for v in init add edit remove show; do
   check "9: /agent-roster's command surface DOES list \`$v\`" \
     'surface_verbs "$ROSTER_SKILL" | grep -qx "$v"'
+done
+# Spec 0057: a team's name and layout are chosen at create, so the removed verbs are on neither surface.
+for v in layout alias; do
+  check "9: neither surface lists the removed \`$v\` verb" \
+    '! surface_verbs "$ROSTER_SKILL" | grep -qx "$v" && ! surface_verbs "$TEAM_SKILL" | grep -qx "$v"'
 done
 check "9: /agent-roster's description no longer advertises spawning or disbanding a team" \
   '! head -5 "$ROSTER_SKILL" | grep -qiE "spawn the team|spawn my team|disband the team|start the team"'

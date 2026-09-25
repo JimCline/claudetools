@@ -6,6 +6,7 @@
 # Usage: bash tests/test-doc-links.sh   (exits 0 iff all links resolve)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
 PASS=0; FAIL=0
 
 check_file() {

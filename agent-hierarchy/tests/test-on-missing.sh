@@ -5,6 +5,7 @@
 # Usage: bash tests/test-on-missing.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
 H="$PLUGIN/hooks"
 GATE="$H/pretooluse-route-gate.mjs"
 MSG="$H/msg.mjs"

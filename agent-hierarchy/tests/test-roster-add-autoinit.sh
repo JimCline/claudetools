@@ -13,7 +13,7 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
 # the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
 FAKEHOME="$SANDBOX/home"
 mkdir -p "$FAKEHOME/.claude"
 PASS=0; FAIL=0
@@ -64,18 +64,18 @@ check "T2: file created at the explicit (global) level" '[ -f "$GLOBAL_CFG" ] &&
 check "T2: not created at repo level" '[ ! -f "$T2/.claude/agent-hierarchy.json" ]'
 rm -f "$GLOBAL_CFG"
 
-# ---- T3: no config; `add reviewer --team X` -> exit non-zero, points at init — auto-init must NOT
-# extend to named teams (0032 §3.4b). Mutation: fails against an implementation that auto-vivifies
+# ---- T3: no config; `add reviewer --roster X` -> exit non-zero, points at init — auto-init must NOT
+# extend to named rosters (0032 §3.4b). Mutation: fails against an implementation that auto-vivifies
 # `rosters.X`. ----
 T3="$SANDBOX/t3"; new_repo "$T3"
-rcli "$T3" add --no-spawn --role reviewer --team X
-check "T3: add --team X with nothing anywhere exits non-zero" '[ "$RC" -ne 0 ]'
+rcli "$T3" add --no-spawn --role reviewer --roster X
+check "T3: add --roster X with nothing anywhere exits non-zero" '[ "$RC" -ne 0 ]'
 check "T3: error names init as the remedy" 'echo "$OUT" | grep -q "init"'
 check "T3: no roster file was created" '[ ! -f "$T3/.claude/agent-hierarchy.json" ]'
 # ...and with a default roster present but no rosters.X — still refused, nothing auto-vivified.
 rcli "$T3" add --no-spawn --role reviewer
-rcli "$T3" add --no-spawn --role architect --team X
-check "T3b: add --team X with a default roster but no rosters.X exits non-zero" '[ "$RC" -ne 0 ]'
+rcli "$T3" add --no-spawn --role architect --roster X
+check "T3b: add --roster X with a default roster but no rosters.X exits non-zero" '[ "$RC" -ne 0 ]'
 check "T3b: rosters.X was not auto-vivified" '[ "$(roles_in "$T3/.claude/agent-hierarchy.json" rosters.X)" = "<none>" ]'
 
 # ---- T4: roster already exists; `add implementor` -> byte-identical to today: no creation notice,

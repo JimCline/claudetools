@@ -2,6 +2,10 @@
   "level": "repo",
   "path": "<SANDBOX>/myrepo/.claude/agent-hierarchy.json",
   "transport": "terminal",
+  "layout": {
+    "mode": "auto",
+    "source": "default"
+  },
   "layout_plan": null,
   "members": [
     {
@@ -17,7 +21,7 @@
         "args": null,
         "layout": [],
         "launch": [
-          "claude --agent ah:architect --name myrepo-architect --model opus --bg"
+          "claude --agent ah:architect --name myrepo-architect --model opus --settings '{\"env\":{\"AH_TEAM_FILE\":\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\"}}' --bg"
         ],
         "launch_cwd": "<SANDBOX>/myrepo",
         "target_placeholder": null,
@@ -37,7 +41,7 @@
         "args": null,
         "layout": [],
         "launch": [
-          "claude --agent ah:implementor --name myrepo-implementor --bg"
+          "claude --agent ah:implementor --name myrepo-implementor --settings '{\"env\":{\"AH_TEAM_FILE\":\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\"}}' --bg"
         ],
         "launch_cwd": "<SANDBOX>/myrepo",
         "target_placeholder": null,
@@ -58,7 +62,7 @@
         "args": null,
         "layout": [],
         "launch": [
-          "claude --agent ah:reviewer --name myrepo-reviewer --model opus --bg"
+          "claude --agent ah:reviewer --name myrepo-reviewer --model opus --settings '{\"env\":{\"AH_TEAM_FILE\":\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\"}}' --bg"
         ],
         "launch_cwd": "<SANDBOX>/myrepo",
         "target_placeholder": null,
@@ -79,7 +83,7 @@
         "args": null,
         "layout": [],
         "launch": [
-          "claude --agent ah:ultra-advisor --name myrepo-ultra-advisor --model fable --bg"
+          "claude --agent ah:ultra-advisor --name myrepo-ultra-advisor --model fable --settings '{\"env\":{\"AH_TEAM_FILE\":\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\"}}' --bg"
         ],
         "launch_cwd": "<SANDBOX>/myrepo",
         "target_placeholder": null,
@@ -100,7 +104,7 @@
         "args": null,
         "layout": [],
         "launch": [
-          "claude --agent ah:task-runner --name myrepo-task-runner --model haiku --bg"
+          "claude --agent ah:task-runner --name myrepo-task-runner --model haiku --settings '{\"env\":{\"AH_TEAM_FILE\":\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\"}}' --bg"
         ],
         "launch_cwd": "<SANDBOX>/myrepo",
         "target_placeholder": null,
@@ -121,7 +125,7 @@
         "args": null,
         "layout": [],
         "launch": [
-          "claude --agent ah:implementor --name myrepo-implementor-2 --model opus --bg"
+          "claude --agent ah:implementor --name myrepo-implementor-2 --model opus --settings '{\"env\":{\"AH_TEAM_FILE\":\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\"}}' --bg"
         ],
         "launch_cwd": "<SANDBOX>/myrepo",
         "target_placeholder": null,

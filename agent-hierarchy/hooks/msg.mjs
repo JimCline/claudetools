@@ -54,7 +54,7 @@ import {
   sweep,
   SWEEP_DAYS,
 } from "./lib-hier.mjs";
-import { listTeamNames, readTeam, resolveMemberTeam } from "./lib-roster.mjs";
+import { listTeamNames, memberTeam, readTeam, resolveMemberTeam } from "./lib-roster.mjs";
 
 const BOOL_FLAGS = new Set(["plain", "json", "open", "closed", "all"]);
 
@@ -135,8 +135,22 @@ function resolveTeamArg() {
       // fail-open to default — 0009 §8.12 pattern extended to team resolution.
     }
   }
+  // A session that owns no team: the team it was launched into, else the live team holding its pane.
+  try {
+    const dir = hierarchyDir(cwd);
+    const member = memberTeam(dir, [dir, mainHierarchyDir(cwd)], process.env.HERDR_PANE_ID || process.env.TMUX_PANE || null);
+    if (member) {
+      teamHome = member.home;
+      return member.teamName;
+    }
+  } catch {
+    // fail-open to default, as above.
+  }
   return null;
 }
+/** The hierarchy dir holding the resolved team's file when it is not this cwd's — a worktree
+    peer's team belongs to the main checkout. Null means `hierarchyDir(cwd)`. */
+let teamHome = null;
 const teamArg = resolveTeamArg();
 
 /** The `team:` tag an exchange's request was written with (null = default team or untagged, §7.6). */
@@ -255,7 +269,7 @@ try {
     }
     case "roster": {
       const dir = hierarchyDir(cwd);
-      const resolved = resolveConfig(cwd, { team: teamArg, pid: Number(opts["orchestrator-pid"] ?? process.env.CLAUDE_PID) });
+      const resolved = resolveConfig(cwd, { team: teamArg, teamHome, pid: Number(opts["orchestrator-pid"] ?? process.env.CLAUDE_PID) });
       const ros = roster(dir, resolved, teamPrefix(resolved.cwd, resolved.team));
       if (plain) {
         const lines = [];

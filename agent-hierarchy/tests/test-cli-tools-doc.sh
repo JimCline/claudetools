@@ -11,6 +11,7 @@
 # Usage: bash tests/test-cli-tools-doc.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
 PASS=0; FAIL=0
 check() {
   local name=$1; shift

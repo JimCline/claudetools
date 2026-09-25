@@ -5,6 +5,7 @@
 # Usage: bash tests/test-msg-gate.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
 H="$PLUGIN/hooks"
 GATE="$H/pretooluse-msg-gate.mjs"
 MSG="$H/msg.mjs"

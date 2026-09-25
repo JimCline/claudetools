@@ -12,7 +12,7 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
 # the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 # Spec 0044 §1.1: a team with no `--team` lands at `teams/<effective-prefix>.json`, never the
@@ -174,26 +174,22 @@ check "create --commit: --orchestrator-pid <dead pid> -> refuses, exit 2" '[ "$R
 check "create --commit: dead --orchestrator-pid -> no team file written" '[ ! -e "$DERIVED_TEAM_FILE" ]'
 check "create --commit: missing-pid and dead-pid refusals have distinct messages" '[ "$OUT" != "$MISSING_PID_MSG" ]'
 
-# ---- 0004 §11.2: roster.layout validation and the `layout` subcommand
+# ---- spec 0057: layout belongs to a team, not a roster. A roster block's `layout` key is ignored
+# (reported by resolveConfig, never validated or acted on) and the `layout` verb is a signpost.
 cat > "$SANDBOX/validate-layout.mjs" <<EOF
 import { validateRosterBlock } from "$H/lib-roster.mjs";
-const bad = validateRosterBlock({ route: "peer", layout: "quadrant", members: [] });
+const stale = validateRosterBlock({ route: "peer", layout: "quadrant", members: [] });
 const okAbsent = validateRosterBlock({ route: "peer", members: [] });
-console.log(JSON.stringify({ bad, okAbsent }));
+console.log(JSON.stringify({ stale, okAbsent }));
 EOF
 OUT=$(node "$SANDBOX/validate-layout.mjs" 2>&1); RC=$?
-check "roster.layout: invalid value rejected, message names the allowed values" \
-  'echo "$OUT" | grep -q "auto, columns, grid"'
-check "roster.layout: absent key -> no validation error (contrast with roster.route, which must error)" \
-  'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>process.exit(JSON.parse(s).okAbsent.length===0?0:1))"'
+check "roster.layout: a stale layout key is not a validation error (the roster no longer has one)" \
+  'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const o=JSON.parse(s);process.exit(o.stale.length===0&&o.okAbsent.length===0?0:1)})"'
 
+CFG_BEFORE=$(cat "$PROJ/.claude/agent-hierarchy.json" 2>/dev/null)
 run layout --level repo --layout grid
-check "layout: writes the level file" 'echo "$OUT" | grep -q "\"layout\": \"grid\"" && [ "$RC" -eq 0 ]'
-run show --level repo
-check "layout: a subsequent show reports the new value" 'echo "$OUT" | grep -q "\"layout\": \"grid\""'
-
-run layout --level repo --layout bogus
-check "layout: invalid mode rejected" '[ "$RC" -ne 0 ]'
+check "layout: the verb exits non-zero naming create --mode" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "create --mode"'
+check "layout: and writes nothing" '[ "$(cat "$PROJ/.claude/agent-hierarchy.json" 2>/dev/null)" = "$CFG_BEFORE" ]'
 
 # a per-member "layout" field is a stray key that validation ignores (there is no per-member layout)
 ROSTER_PATH="$PROJ/.claude/agent-hierarchy.json"

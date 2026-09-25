@@ -10,6 +10,7 @@
 # Usage: bash tests/test-hook-error-log.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
 LIB="$PLUGIN/hooks/lib-config.mjs"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-hook-error-log-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT

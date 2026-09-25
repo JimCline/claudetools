@@ -14,7 +14,7 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
 # the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude" "$SANDBOX/bin"
@@ -112,6 +112,10 @@ init_geometry() {
 EOF
 }
 clear_hierarchy() { rm -rf "$PROJ/.claude/hierarchy"; }
+# A team's default layout is the stored global preference (`teamLayout`), not a roster setting.
+store_layout() {
+  node -e 'const fs=require("fs"),f=process.argv[1];let d={version:1};try{d=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}d.teamLayout=process.argv[2];fs.writeFileSync(f,JSON.stringify(d))' "$FAKEHOME/.claude/agent-hierarchy.json" "$1"
+}
 
 # Roster setup: N peer members via real roster.mjs calls, add-order is plan order.
 ROLES4=(ultra-advisor architect reviewer implementor)
@@ -424,7 +428,7 @@ split_directions() { # reads the fake herdr's call log, returns a JSON array of 
 # ==== A1 — spec 0023 §8.1 A1: sequential spawn-one tiles a grid, not a row (the reported bug). ====
 reset_state; clear_hierarchy; init_geometry 180 42
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" layout --level repo --layout grid --cwd "$PROJ" >/dev/null
+store_layout grid
 HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
 HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
 HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
@@ -441,7 +445,7 @@ for dims in "180 42" "200 50"; do
   set -- $dims
   reset_state; clear_hierarchy; init_geometry "$1" "$2"
   HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-  HOME="$FAKEHOME" node "$H/roster.mjs" layout --level repo --layout grid --cwd "$PROJ" >/dev/null
+  store_layout grid
   HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
   HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
   HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
@@ -461,7 +465,7 @@ done
 #           geometry filter (§3.3) is omitted — verified by hand against the pre-fix loop body. ====
 reset_state; clear_hierarchy; init_geometry 180 42
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" layout --level repo --layout grid --cwd "$PROJ" >/dev/null
+store_layout grid
 HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
 HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
 write_team "$(node -e '

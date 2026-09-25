@@ -7,6 +7,7 @@
 # Usage: bash tests/test-roster-multi-team.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
 H="$PLUGIN/hooks"
 NODE_BIN="$(command -v node)"
 PASS=0; FAIL=0
@@ -139,13 +140,10 @@ check "7a: bare create fails when a live default team already exists" '[ "$RC" -
 check "7b: refusal names the live team id" 'echo "$OUT" | grep -q "live-default"'
 check "7c: refusal names an auto-derived --team candidate (never the bare prefix)" 'echo "$OUT" | grep -qF -- "--team $BASE-2"'
 
-# ==== 8 — alias refusal: --set with an active team scope fails; the
-# read-only report names both the config-level alias and the team scope (§7.4). ====
+# ==== 8 — spec 0057: the alias verb is gone; a team's name is its --team. With a team scope
+# active it is still only a signpost (tests/test-team-identity.sh D2 covers every form). ====
 run_roster alias --set x --team alpha
-check "8a: alias --set with --team active fails" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -qi "team scope is active"'
-run_roster alias --team alpha
-check "8b: alias (read-only) --team alpha reports both the team scope and its prefix" \
-  'echo "$OUT" | grep -q "\"teamScope\": \"alpha\"" && echo "$OUT" | grep -q "\"prefix\": \"alpha\""'
+check "8: alias --set --team alpha exits non-zero naming create --team" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "create --team"'
 
 # ==== 9 — name validation: create --team architect is rejected by spec
 # 0010's exact role-token collision `why` text. ====

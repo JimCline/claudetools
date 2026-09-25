@@ -12,7 +12,7 @@ a template. This skill owns every process lifecycle operation — create, spawn,
 dismiss, disband, untrack, move, resync, adopt, reap — and writes only the team file.
 
 **It never edits the roster.** Changing WHO belongs on the roster is the
-`ah:agent-roster` skill's job (`init`/`add`/`edit`/`remove`/`layout`/`alias`),
+`ah:agent-roster` skill's job (`init`/`add`/`edit`/`remove`),
 and those commands edit a template for FUTURE teams — they do not touch the
 one that is running. `roster.mjs` refuses them outright while this session owns
 a live team (spec 0044 §1.3). To add a member to the RUNNING team, including
@@ -48,11 +48,12 @@ When the request names (or clearly implies) ONE role, skip everything below:
 - A subagent may spawn and brief a peer, but the reply is delivered to its
   parent session, never to the subagent — so the subagent must not wait for it.
 - When the user names the team, pass that name as `--team <name>`; it is the
-  member-name prefix. Do not run `alias --set` and do not ask a PEER NAME
-  CONFIRMATION for it. If the name fails validation, the CLI's error names a
-  legal suggestion; offer that to the user.
-- A repo whose name is refused as a team prefix needs one
-  `roster.mjs alias --level repo --set <suggested>`, which the refusal prints.
+  member-name prefix. Do not ask a PEER NAME CONFIRMATION for it.
+- If the command refuses with `refused: "team-name-unusable"`, the team name is
+  the user's choice: follow the refusal's `message` — ask with AskUserQuestion,
+  its `suggestion` first and marked "(Recommended)", then re-run its `rerun`
+  with `<TEAM>` replaced by their answer. Never pick or sanitize a name yourself,
+  and this is not a launch failure: do not offer the subagent opt-in.
 - The formal path (the rest of this skill) applies only when no single role is
   named, when a whole team is wanted, or for lifecycle ops.
 
@@ -65,16 +66,18 @@ cwd the absolute repo path. The plugin's own PreToolUse hook allows those calls
 without a permission prompt; a `--close` call still prompts, by design. Output is
 always JSON. Full verb/flag reference: `docs/cli-tools.md`.
 
-`--team <name>` (spec 0011) lets one repo host more than one Team, each owned
-by a distinct orchestrator session: it points every verb that reads or writes
-the team file at `teams/<name>.json`, and scopes the derived name-prefix to
-`<name>` instead of the repo's alias. **Omitted, a team no longer lands in a
-shared `team.json`** — spec 0044 §1.1 defaults the file to
-`teams/<repo-alias>.json`, so two orchestrators in one repo do not collide.
-A pre-0044 `team.json` keeps working, unmigrated. See § Create for what
-happens when a bare `create` collides with someone else's live Team.
+`--team <name>` (spec 0011) names a live Team, so one repo can host more than
+one, each owned by a distinct orchestrator session: it points every verb that
+reads or writes the team file at `teams/<name>.json`, and its members are named
+`<name>-<role>[-N]`. It never selects a roster block — `create --roster <r>`
+does. **Omitted**, a team verb run by a session that owns exactly one live Team
+acts on that Team; otherwise the default is `teams/<repo basename>.json` — never
+a shared `team.json` (spec 0044 §1.1), so two orchestrators in one repo do not
+collide. A pre-0044 `team.json` keeps working, unmigrated, named by its own
+members. See § Create for what happens when a bare `create` collides with
+someone else's live Team.
 
-- `create [--plan | --commit ... | --spawn --mode <m>]` — see § Create.
+- `create [--plan | --commit ... | --spawn] [--team <T>] [--roster <r>] [--mode <m>]` — see § Create.
 - `spawn-one <role> [--member <name>] [--team <T>] [--cwd <path>] [--dry-run] [--allow-global]` — stands up ONE missing or dead
   peer FROM THE ROSTER and persists it into the team file, without touching any other member. Prefer this over
   Create when a Team already exists and only one role needs (re)starting — Create refuses to run
@@ -195,22 +198,23 @@ files, offer to reuse a recent one: run `roster.mjs history --json`, and if it r
 **AskUserQuestion** (label, role list, active/idle, last-used) alongside a
 "start fresh from the roster" option. If the user picks an entry, run
 `roster.mjs create --from <id> --commit --spawn` (its own id, not the alias)
-in place of the roster-driven plan below — same downstream steps (layout
-confirmation, spawn, check-in) apply unchanged. This capability is skill-only.
+in place of the roster-driven plan below — same downstream steps (spawn,
+check-in) apply unchanged. This capability is skill-only.
 
-0. **Confirm the layout.** Read the roster's `layout` (via `roster.mjs show`;
-   it is `auto` unless set). Ask the user to confirm it for this Team with
-   AskUserQuestion, marking the stored value "(current default)": `auto` —
-   columns for 1-2 members, grid beyond; `columns` — one vertical column per
-   member; `grid` — balanced quadrants. **Always ask, every `create`** — a
-   persisted default is not a licence to apply it silently. If the user picks
-   something other than the stored value, ask once whether to make it the new
-   default, and only if yes run `roster.mjs layout --layout <mode>`. Never
-   persist a divergent choice without asking. This step applies to `auto` and
-   `manual` alike. Skip it entirely when the transport is not `herdr`.
-1. **Plan.** Run `roster.mjs create --plan`. It resolves the roster, refuses
-   if a live Team already exists (tell the user to `disband` first), clears
-   an already-stale one automatically, detects the transport (`herdr` if
+0. **Layout — ask nothing by default.** The Team's pane layout is `create`'s
+   `--mode`, which defaults to the stored global preference (`teamLayout`),
+   else `auto`; a plan reports what it will use as `layout: {mode, source}`.
+   Do not ask about it. When the user names a layout ("spawn a team in
+   grid"), pass it as `--mode` without asking. Only when the user asks to
+   change the layout, ask once with AskUserQuestion — `auto` (columns for 1-2
+   members, grid beyond), `columns` (one vertical column per member), `grid`
+   (balanced quadrants), the plan's current value marked "(current default)"
+   — and pass the answer as `--mode`. An explicit `--mode` on `--spawn` or
+   `--commit` becomes the default for future teams; say so when it changes.
+1. **Plan.** Run a bare `roster.mjs create --plan` (with `--team <name>` only
+   when the user already named the team). It resolves the roster, refuses if
+   a live Team already exists (tell the user to `disband` first), clears an
+   already-stale one automatically, detects the transport (`herdr` if
    `HERDR_ENV=1`, else `tmux` if a tmux server is reachable, else
    `terminal`), and returns each member's derived name, role, model,
    effort, route, and — for peer-routed members — a `spawn` shape (`layout`
@@ -218,33 +222,34 @@ confirmation, spawn, check-in) apply unchanged. This capability is skill-only.
    the target id from one to the other). If it errors because no roster
    resolves, hand off to § Init.
 
-   **The user named the team.** When the user names the team, pass that name
-   as `--team <name>`; it is the member-name prefix (`<name>-<role>[-N]`).
-   Do not run `alias --set` and do not ask a PEER NAME CONFIRMATION for it —
-   skip the naming confirmation below too. If the name fails validation, the
-   CLI's error names a legal suggestion; offer that to the user. The same
-   holds for `spawn-one` and `spawn-ad-hoc`. `alias --set` is the repo default
-   for the *unnamed* team only.
+   **Team name — one question, every create.** A Team's name is chosen here
+   and belongs to that Team only; nothing stores it for the next one. When the
+   user already named the team, skip this question. Otherwise ask with one
+   AskUserQuestion, built from the bare plan's result:
+   - The plan succeeded: first option is the plan's team name — show the
+     derived names it produces (`<name>-architect`, …), marked
+     "(Recommended)".
+   - The plan refused with `refused: "team-name-unusable"` and
+     `needs_user_choice: true`: first option is "Use `<suggestion>`
+     (Recommended)", the refusal's own `suggestion`. Never compute or
+     sanitize a name yourself.
+   - Then up to two recent names from `roster.mjs history` for this repo
+     (their `alias` field) that differ from the first; free text via Other.
 
-   **First-create naming confirmation (spec 0011 §5.3.1-§5.3.3, amendment
-   (c)).** Before the very first `create` in a fresh repo (no existing
-   `team.json` anywhere under this hierarchy dir), surface the repo-derived
-   candidate — the prefix `roster.mjs alias` (read-only) reports, itself the
-   repo basename or an existing 0010 alias — via **AskUserQuestion**, before
-   running `create --plan`. Offer:
-   - **Accept `<candidate>` (Recommended)** — proceed with `create` exactly
-     as below. Nothing is written that isn't written today; this is
-     byte-identical to not asking at all.
-   - **Use a different name** — run `roster.mjs alias --set <name>` first,
-     then proceed with `create`. This is 0010's existing alias verb,
-     unchanged, and the override **persists for the repo** (config-level,
-     not a one-off for this session) — say so when offering it.
+   A plan that refused with `needs_user_choice: false` has no name to offer:
+   tell the user its `message` and stop. If the user keeps a successful bare
+   plan's name, keep every later phase bare. Otherwise re-run the plan with
+   `--team <chosen>` and pass the same `--team` to `--spawn` and `--commit`;
+   a chosen name that is refused again gets the question again.
 
-   `roster.mjs create` itself never prompts, refuses, or reads stdin for
-   this — it runs the same in tests, CI, and scripts either way; asking is
-   entirely this skill's job, done once, here, before the first `create`. A
-   repo that already has a live default Team is past this trigger — do not
-   ask again; renaming later is `alias --set`, offered only if the user asks.
+   **Roster — only when the plan lists `named_rosters`.** A roster block other
+   than the default is picked with `--roster <r>` on every create phase; a
+   team is never built from `rosters.<name>` because of its `--team`. When the
+   bare plan carries `named_rosters`, ask which roster to build from as a
+   second question in the **same** AskUserQuestion call as the team name:
+   the default roster first, then up to three of the named keys, with Other
+   for the rest. A named choice adds `--roster <r>` to every later phase
+   (re-run the plan with it). Without `named_rosters`, do not ask.
 
    **Second-Team collision (spec 0011 §5.3).** A bare `create` (no `--team`)
    can fail because a *different*, live orchestrator already owns the default
@@ -258,8 +263,9 @@ confirmation, spawn, check-in) apply unchanged. This capability is skill-only.
    never applies unconfirmed. Every subsequent step (`--spawn`, `--commit`,
    `spawn-one`, `disband`, `resync`, `move`, `msg.mjs new`, `msg.mjs list`)
    then needs that same `--team <name>` to keep operating on this Team
-   instead of the default one. `roster.mjs` subcommands require the flag
-   explicitly. `msg.mjs new`/`msg.mjs list` also auto-resolve the active team
+   instead of the default one. Once committed, `roster.mjs` team verbs run by
+   this session resolve the Team it owns without the flag, but pass it when in
+   doubt. `msg.mjs new`/`msg.mjs list` also auto-resolve the active team
    (spec 0011 §4.4 rung 3) when run from this Team's own orchestrator process
    — `CLAUDE_PID`, `pidAlive`-guarded, matched against the Team's recorded
    `orchestrator.pid` — but pass `--team <name>` explicitly whenever you are
@@ -277,7 +283,9 @@ confirmation, spawn, check-in) apply unchanged. This capability is skill-only.
 
    **`auto` mode:** run one command:
 
-       roster.mjs create --spawn --mode <layout_plan.mode> [--roster-level <L>] --cwd <repo root>
+       roster.mjs create --spawn [--team <name>] [--roster <r>] [--mode <m>] [--roster-level <L>] --cwd <repo root>
+
+   with the same `--team`/`--roster` as the plan, and `--mode` only when § 0 gave one.
 
    It resolves the roster, runs the layout phase, asserts one distinct
    non-empty target id per peer-routed member before launching anything, then
@@ -402,7 +410,8 @@ confirmation, spawn, check-in) apply unchanged. This capability is skill-only.
    `autoMode`, `transport_id` are already there) plus each member's
    `ref` from `ListAgents` — do not recompute the rest by hand. Run
    `roster.mjs create --commit --transport <t> --roster-level <L> --verified
-   '<json>'` (add `--partial` if any peer-routed member never checked in). The
+   '<json>'` with the same `--team`/`--roster`/`--mode` as the spawn (add
+   `--partial` if any peer-routed member never checked in). The
    orchestrator pid it records comes from the `CLAUDE_PID` env var, the same
    source `sessionstart.mjs` uses for peer liveness records, so it is supplied
    automatically. `--orchestrator-pid <pid>` overrides it — pass it only to
@@ -629,10 +638,11 @@ gap; it is not a lighter-weight alternative to Create for a full team.
   - `--team <T>` names the team to join. A name that matches no existing team
     creates that scope as part of the same call — there is no separate create
     step and nothing to ask the user about. The AskUserQuestion mandates above
-    (layout, first-team name, second-team collision) are `create`'s, and none
-    of them apply here: a user who named a team has already answered the only
-    question, so `spawn-one <role> --team <what they said>` is the whole
-    command.
+    (team name, second-team collision) are `create`'s, and none of them apply
+    here: a user who named a team has already answered the only question, so
+    `spawn-one <role> --team <what they said>` is the whole command. The one
+    exception is a `team-name-unusable` refusal, which always goes back to the
+    user (§ One peer, zero ceremony).
 
   Prefer `spawn-one` over Create whenever a Team already (partially) exists —
   Create's whole-team flow is the `/agent-roster` skill's job for building a
@@ -769,8 +779,8 @@ has genuinely failed, never as a first resort, and never against a peer
 describe. Use it whenever one peer is wanted and the roster (if any) has no
 live member for it — a second implementor on a different model, a codex member,
 a role the roster never defined, or a repo with no roster at all. It reads the
-repo-level roster only (never the global one), for the team's route/layout
-defaults, and writes only the team file.
+repo-level roster only (never the global one), for the team's route
+default, and writes only the team file.
 
 1. **The name is derived, not chosen.** It uses the team's own prefix and the
    next free ordinal for that role, exactly as `create`/`spawn-one` do

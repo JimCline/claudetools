@@ -6,6 +6,7 @@
 # Usage: bash tests/test-sendmessage-response-nudge.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
 H="$PLUGIN/hooks"
 HOOK="$H/pretooluse-sendmessage-response.mjs"
 TRACK="$H/userpromptsubmit-peer-tracking.mjs"

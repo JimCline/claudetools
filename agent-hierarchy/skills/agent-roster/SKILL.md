@@ -1,7 +1,7 @@
 ---
 name: agent-roster
 description: Define, edit, or inspect the agent-hierarchy ROSTER — the template of which roles exist and their model/effort/route/kind. Use for /agent-roster, for "add a reviewer peer", "add a peer to the roster", "change the architect's model", "remove a role from the roster", "what's in my roster", or "set up a roster". Standing up, reshaping, or tearing down a LIVE Team is the agent-team skill, not this one.
-argument-hint: "[show|init|add|edit|remove|layout|alias]"
+argument-hint: "[show|init|add|edit|remove]"
 ---
 
 # agent-roster
@@ -46,13 +46,15 @@ losing level does not appear. To inspect the roster run `node ${CLAUDE_PLUGIN_RO
 with one, it prints that level's raw file and says if it's shadowed.
 The ah CLI is the only interface: every roster/team/message operation is a Bash call to `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs <verb> … --cwd <abs cwd>` or `node ${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs <verb> … --cwd <abs cwd>`. That placeholder reaches you resolved; if it is still literal, the `ah CLI root` line in your context is authoritative — when two disagree, the newest wins. Verb reference: `agent-hierarchy/docs/cli-tools.md`. Output is always JSON; a non-zero exit says why on stdout/stderr.
 
-Member names are **derived, never stored**: the first member of a role at the
-winning level is `<team-prefix>-<role>` (e.g. `claudetools-architect`) — the
-team-prefix is the repo's `teamAlias` if one is set, else the repo basename;
-see `roster.mjs alias`. A second, third, ... same-role member gets `-2`, `-3`
+Member names are **derived, never stored**: the first member of a role is
+`<team-name>-<role>` (e.g. `claudetools-architect`). The team name belongs to
+the live Team — chosen when `/agent-team` creates it, the repo basename by
+default — and a roster has no name of its own, so `show` displays members under
+the default team name. A second, third, ... same-role member gets `-2`, `-3`
 appended, in array order. Under Herdr the whole name must be `[a-z][a-z0-9_-]`,
-at most 32 characters, ordinal included; a longer one is refused at spawn, so
-pick a short alias up front.
+at most 32 characters, ordinal included; `create` checks that before any pane
+opens and, when the name cannot work, refuses with a suggested one for the user
+to confirm (`/agent-team` asks).
 Removing an earlier member re-ordinals the ones after it — names are only
 meaningful for a Team's lifetime, and a live Team's authoritative names are
 frozen in `team.json` at check-in time (§ Check-in registry), not recomputed
@@ -71,25 +73,19 @@ with `--cwd "$(pwd)"` (or the relevant repo path). Level may be given as
 `--level <L>` or as the first bare word: `roster.mjs add repo --role architect`
 ≡ `--level repo`.
 
-`--team <name>` (spec 0011) selects the `rosters.<name>` roster block instead
-of the default one, so a repo can keep more than one template. Omitted,
-everything is the default roster exactly as before — most sessions never pass
-it.
+`--roster <name>` selects the `rosters.<name>` roster block instead of the
+default one, so a repo can keep more than one template. Omitted, everything is
+the default roster — most sessions never pass it. A live Team's name is not a
+roster selector: these verbs refuse the team flag and point at `--roster`.
+A Team's name and pane arrangement belong to the Team, chosen when
+`/agent-team` creates it; the roster holds neither.
 
-- `show [--level global|repo|repo-user]` — resolved roster, or one level's raw file.
-- `init --level <L> --route <peer|subagent> [--layout auto|columns|grid]` — replaces that level's roster wholesale.
-- `add --role <R> [--level L] [--model M] [--effort E] [--route peer|subagent|pane] [--kind K] [--args '<json>'] [--auto-mode A]` — writes the template row and **spawns nothing** (spec 0044 §1.10, superseding 0039). To start the member afterwards, that is `/agent-team`'s job: `spawn-one <role>` for a roster-conforming one, `spawn-ad-hoc` for a divergent or ad hoc one.
-- `edit --member <NAME> [--level L] [--role R] [--model M] [--effort E] [--route ...] [--auto-mode A]`
-- `remove --member <NAME> [--level L]` — edits the
+- `show [--level global|repo|repo-user] [--roster <r>]` — resolved roster, or one level's raw file.
+- `init --level <L> --route <peer|subagent> [--roster <r>]` — replaces that level's block wholesale.
+- `add --role <R> [--level L] [--roster <r>] [--model M] [--effort E] [--route peer|subagent|pane] [--kind K] [--args '<json>'] [--auto-mode A]` — writes the template row and **spawns nothing** (spec 0044 §1.10, superseding 0039). To start the member afterwards, that is `/agent-team`'s job: `spawn-one <role>` for a roster-conforming one, `spawn-ad-hoc` for a divergent or ad hoc one.
+- `edit --member <NAME> [--level L] [--roster <r>] [--role R] [--model M] [--effort E] [--route ...] [--auto-mode A]`
+- `remove --member <NAME> [--level L] [--roster <r>]` — edits the
   roster **template**, not a live Team; `/agent-team`'s `dismiss` is the live-Team equivalent.
-- `layout [--level <L>] [--layout auto|columns|grid]` — show or set the team-wide pane layout.
-- `alias [--level global|repo|repo-user] [--set <name>] [--clear] [--cwd <path>]` — read, set, or
-  clear the repo's `teamAlias` (the team-prefix members are named under). No `--set`/`--clear`
-  reads the currently-effective alias; `--level` is required with `--set`/`--clear` when it can't
-  be inferred from an already-resolving roster. Never accepts `--level global` — an alias is
-  repo-scoped. `--set`/`--clear` refuse while `--team` is active (the team name already is
-  that team's prefix); `alias` (read-only) reports both the config alias and the active team
-  scope, distinguished.
 
 `add`/`edit`/`remove` with no `--level` operate on whichever level currently
 resolves (repo-user > repo > global) and print which level they picked — say
@@ -103,7 +99,7 @@ runs `create`, never a roster entry.
 **Everything that touches a LIVE Team lives in the `ah:agent-team` skill** —
 `create`, `spawn-one`, `spawn-ad-hoc`, `dismiss`, `disband`, `adopt`, `move`,
 `resync`, `reap`, `teams`, `history`, `checkin`. `/agent-roster <those>` still
-works and behaves identically (a permanent alias, spec 0044 §8.3), but this
+works and behaves identically (a permanent synonym, spec 0044 §8.3), but this
 skill does not document them: if the request is about a running Team rather
 than about which roles the template defines, invoke `ah:agent-team`.
 
@@ -122,27 +118,11 @@ configured at any level), say so and offer to run `init`.
    SendMessage'd from then on; "Subagent only" — always a fresh Agent-tool
    dispatch, never a standing session. A member can override this later via
    its own `--route`.
-3. **Layout.** If not given, ask the team-wide pane layout: `auto`
-   (Recommended) — columns for 1-2 members, grid beyond; `columns` — one
-   vertical column per member, narrow past three; `grid` — balanced
-   quadrants. Pass it as `--layout <mode>` to `roster.mjs init`. Only
-   meaningful for the `herdr` transport; harmless otherwise.
-4. **Destructive check.** If that level already has a roster (`show --level
+3. **Destructive check.** If that level already has a roster (`show --level
    <L>` returns members), confirm before replacing — `init` always replaces
    the whole level's block, never merges into it.
-4a. **Team name.** Ask via AskUserQuestion what prefix this repo's agent
-   names should use. Show the derived name it produces, not just the prefix:
-   offer `"<repo-basename>" — agents named <repo-basename>-architect,
-   <repo-basename>-reviewer, … (Recommended)` as the first option, and
-   `"Use a shorter alias"` as the second, which prompts for free text.
-   Whatever the user types is validated by `roster.mjs alias --set`; on
-   rejection, report the CLI's message and ask again rather than silently
-   correcting it. Skip this question entirely if `roster.mjs alias` already
-   reports an alias for this repo — say in one line what it is and move on.
-   If the user picks the alias option, run
-   `roster.mjs alias --level <L> --set <name>`.
-5. Run `roster.mjs init --level <L> --route <route> [--layout <mode>]`.
-6. **Pick the roles.** Ask a single AskUserQuestion call with
+4. Run `roster.mjs init --level <L> --route <route>`.
+5. **Pick the roles.** Ask a single AskUserQuestion call with
    `multiSelect: true` — one question ("Which roles should this roster
    include?"), one option per role with a one-line description:
    `architect` (design authority — specs, never implements), `implementor`
@@ -166,7 +146,7 @@ configured at any level), say so and offer to run `init`.
    spawn back, and none should be passed. A role can be added more than once —
    if the user wants multiple instances of a role, that's a follow-up ask,
    not part of the multiselect (its options must stay distinct picks).
-7. Run `show` and echo the result.
+6. Run `show` and echo the result.
 
 Whole-level replace is a *read* rule; `init` itself only ever writes the one
 level's file you asked for.
@@ -181,9 +161,9 @@ the exact result the CLI returns, including which level it defaulted to when
 `add` auto-creates a minimal roster when none exists (spec 0038) — repo level
 when inside a git repo, or the explicit `--level` — and says so with the
 file's path. `init` is for choosing a full role set interactively, not a
-prerequisite. The one exception is `--team <X>`: a named team's container is
-still created only by `init --team X` (0032 §3.4b), so `add --team X` against
-no such container keeps erroring.
+prerequisite. The one exception is `--roster <X>`: a named roster's container
+is still created only by `init --roster X` (0032 §3.4b), so `add --roster X`
+against no such container keeps erroring.
 
 **`add` writes the roster and stops** (spec 0044 §1.10, an explicit
 supersession of spec 0039's auto-spawn). It launches nothing, whatever the
@@ -205,10 +185,6 @@ get its call through.
 nothing at all — it is a no-op kept only so existing scripts do not break
 (§1.10 R1). Do not pass it, and do not read it as evidence that spawning is
 otherwise what happens.
-
-Layout (`roster.layout`) is team-wide, not a per-member field — there is no
-`--layout` on `add`/`edit`. Use `roster.mjs layout` (§ Command surface) to
-change it outside of `init`.
 
 `--on-missing auto|prompt|never` (spec 0021, peer-routed members only) sets
 what the route gate does when this role has no live peer: `auto` (default)
@@ -252,9 +228,11 @@ cannot slip past.
 There is no pre-screen for whether an `args` value keeps the agent
 interactive, and none is possible across 21 CLIs. A flag that makes the target
 run and exit produces a Herdr startup timeout; the failure names the args as
-the likely cause and reports the orphaned pane id with `herdr pane close` as
-the remedy. The pane is **not** closed automatically — it holds the agent's
-own output, which is usually the only explanation of what went wrong.
+the likely cause. When no agent registered under the member's name, the launch
+captures the pane's recent output into its report — usually the only
+explanation of what went wrong — and then closes that orphaned pane. A pane
+is left open, with `herdr pane close <id>` as the remedy, only when an agent
+may still be live in it or the close itself fails.
 
 A member's `role` still picks its derived name and its roster slot, but the
 role's `agents/*.md` contract is **not** loaded into a non-Claude agent. Put

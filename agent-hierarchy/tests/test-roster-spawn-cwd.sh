@@ -19,7 +19,7 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # case start their own private server (tmux -S <sandbox socket>) and kill it; nothing reaches the
 # user's tmux server.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; chmod +x "$SANDBOX/nolaunch/herdr"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
 FAKEHOME="$SANDBOX/home"
 mkdir -p "$FAKEHOME/.claude" "$SANDBOX/bin"
 NODE_DIR="$(dirname "$(command -v node)")"
@@ -57,9 +57,9 @@ spawn_terminal() {
   local runcwd=$1 cwdarg=$2 log=$3
   rm -f "$log"
   if [ -n "$cwdarg" ]; then
-    OUT=$(cd "$runcwd" && env -u HERDR_ENV HOME="$FAKEHOME" PATH="$SANDBOX/bin:$NODE_DIR" SPAWN_CWD_LOG="$log" CLAUDE_PID=$$ node "$H/roster.mjs" create --spawn --mode auto --cwd "$cwdarg" 2>&1)
+    OUT=$(cd "$runcwd" && env -u HERDR_ENV HOME="$FAKEHOME" PATH="$SANDBOX/bin:$NODE_DIR" SPAWN_CWD_LOG="$log" CLAUDE_PID=$$ node "$H/roster.mjs" create --spawn --mode auto $SPAWN_EXTRA --cwd "$cwdarg" 2>&1)
   else
-    OUT=$(cd "$runcwd" && env -u HERDR_ENV HOME="$FAKEHOME" PATH="$SANDBOX/bin:$NODE_DIR" SPAWN_CWD_LOG="$log" CLAUDE_PID=$$ node "$H/roster.mjs" create --spawn --mode auto 2>&1)
+    OUT=$(cd "$runcwd" && env -u HERDR_ENV HOME="$FAKEHOME" PATH="$SANDBOX/bin:$NODE_DIR" SPAWN_CWD_LOG="$log" CLAUDE_PID=$$ node "$H/roster.mjs" create --spawn --mode auto $SPAWN_EXTRA 2>&1)
   fi
   RC=$?
 }
@@ -103,10 +103,9 @@ T4_REPO="$SANDBOX/t4-repo with space"
 setup_repo "$T4_REPO"
 # Spec 0044 [9.1]: a basename that cannot name a team file refuses rather than falling back to the
 # shared team.json, and a space is exactly such a basename. This test is about the spawn cwd, not
-# about naming, so it pays the documented first-run cost the way a user would.
-HOME="$FAKEHOME" node "$H/roster.mjs" alias --level repo --set t4-repo-with-space --cwd "$T4_REPO" >/dev/null
+# about naming, so it names the team the way a user would after that refusal: with --team.
 T4_LOG="$SANDBOX/t4.log"
-spawn_terminal "$T4_ELSEWHERE" "$T4_REPO" "$T4_LOG"
+SPAWN_EXTRA="--team t4-repo-with-space" spawn_terminal "$T4_ELSEWHERE" "$T4_REPO" "$T4_LOG"
 check "T4: create --spawn succeeds with a spaced path" '[ "$RC" -eq 0 ]'
 check "T4: stub claude ran in the exact spaced path" \
   '[ -f "$T4_LOG" ] && [ "$(cat "$T4_LOG")" = "$T4_REPO" ]'

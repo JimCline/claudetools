@@ -13,9 +13,9 @@
  * teamIsLive/team-history — see the ponytail note at their definitions.)
  */
 
-import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { basename, delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { CLASSES, isValidTeamAlias, KIND_DEFAULT, KIND_RE, registryRoles, resolveKind, roleClass, routeHasPane, suggestTeamAlias } from "./lib-config.mjs";
 
@@ -294,9 +294,6 @@ export function validateRosterBlock(roster, resolved = null) {
   if (!ROSTER_ROUTE_VALUES.includes(roster.route)) {
     errors.push(`roster.route is required and must be one of ${ROSTER_ROUTE_VALUES.join(", ")}, got ${JSON.stringify(roster.route)}`);
   }
-  if (roster.layout !== undefined && roster.layout !== null && !ROSTER_LAYOUT_VALUES.includes(roster.layout)) {
-    errors.push(`roster.layout must be one of ${ROSTER_LAYOUT_VALUES.join(", ")}, got ${JSON.stringify(roster.layout)}`);
-  }
   if (!Array.isArray(roster.members)) {
     errors.push("roster.members must be an array");
   } else {
@@ -397,6 +394,40 @@ export function listTeamNames(dir) {
   }
 }
 
+/** The naming prefix of a derived member name `<prefix>-<role>[-N]`, or null when the name does not end in its role. */
+export function memberNamePrefix(name, role) {
+  if (typeof name !== "string" || typeof role !== "string" || !role) return null;
+  const m = new RegExp(`^(.+)-${role}(?:-\\d+)?$`).exec(name);
+  return m ? m[1] : null;
+}
+
+/**
+ * The prefix a legacy `team.json`'s members were named under, inferred from the first member whose
+ * name ends in its own role. The file has no stored name, and recomputing the prefix from current
+ * config would drift if that config changed while the team ran. Null when no file or no inferable member.
+ */
+export function legacyTeamPrefix(dir) {
+  const t = readTeam(dir, null);
+  if (!t) return null;
+  for (const m of t.members) {
+    const prefix = m && memberNamePrefix(m.name, m.role);
+    if (prefix) return prefix;
+  }
+  return null;
+}
+
+/**
+ * The roster block a live team was built from: the key its file records (null: the default block).
+ * A team file written before teams recorded it keeps the old rule, which keyed the block by the
+ * team's own name. No team file → null.
+ */
+export function teamRosterKey(dir, teamName) {
+  const t = readTeam(dir, teamName);
+  if (!t) return null;
+  if (!Object.prototype.hasOwnProperty.call(t, "roster")) return teamName || null;
+  return typeof t.roster === "string" && t.roster ? t.roster : null;
+}
+
 /** The member-name set of one team (default when `team` is omitted). */
 export function teamMemberNameSet(dir, team = null) {
   const t = readTeam(dir, team);
@@ -458,7 +489,7 @@ export function defaultTeamScope(dir, prefix) {
   // the directory. Spec 0044 [9.1]: a prefix that cannot name a file must not fall back to the
   // unscoped path, which would silently reinstate the shared default across a whole class of
   // repos. `unnamable` says so; the CLI refuses on it at the point a team would be CREATED, not
-  // here — refusing during scope resolution would also take out `alias --set`, the remedy.
+  // here — refusing during scope resolution would also take out every read of such a repo.
   if (bad) return { team: null, defaulted: true, ...bad };
   return { team: prefix, defaulted: true };
 }
@@ -475,13 +506,14 @@ export function defaultTeamScope(dir, prefix) {
  * tie to break, and it resolves to null. A wrong match here would let `teams` dismiss and respawn
  * a healthy session, so under-attribution is the only acceptable error direction.
  */
-export function resolveTeamByPane(dir, paneId) {
-  return paneId ? paneResolver(dir)(paneId) : null;
+export function resolveTeamByPane(dir, paneId, { liveOnly = false } = {}) {
+  return paneId ? paneResolver(dir, { liveOnly })(paneId) : null;
 }
 
-/** `resolveTeamByPane` with every team file read once up front, for callers resolving many panes. */
-export function paneResolver(dir) {
-  const teams = [null, ...listTeamNames(dir)].map((teamName) => ({ teamName, team: readTeam(dir, teamName) }));
+/** `resolveTeamByPane` with every team file read once up front, for callers resolving many panes.
+    `liveOnly` ignores teams whose orchestrator is gone. */
+export function paneResolver(dir, { liveOnly = false } = {}) {
+  const teams = [null, ...listTeamNames(dir)].map((teamName) => ({ teamName, team: readTeam(dir, teamName) })).filter(({ team }) => !liveOnly || (team && !teamIsOrphaned(team)));
   return (paneId) => {
     if (!paneId) return null;
     let match = null;
@@ -513,9 +545,67 @@ export function paneResolver(dir) {
  * of a role make it ambiguous, and ambiguous resolves to nothing. Reach it through
  * `attributeSessionTeam`, which asks `resolveTeamByPane` first, rather than calling it directly.
  */
-export function attributeSessionTeam(dir, role, { explicitTeam = null, paneId = null } = {}) {
+export function attributeSessionTeam(dir, role, { explicitTeam = null, paneId = null, homes = [dir] } = {}) {
   if (explicitTeam) return resolveSessionTeam(dir, role, explicitTeam);
-  return resolveTeamByPane(dir, paneId) || resolveSessionTeam(dir, role);
+  const env = envTeamFile(homes);
+  if (env && !env.invalid) return { teamName: env.teamName, team: readTeam(env.home, env.teamName), home: env.home, via: "env" };
+  const byPane = resolveTeamByPane(dir, paneId);
+  if (byPane) return { ...byPane, via: "pane" };
+  const byRole = resolveSessionTeam(dir, role);
+  return byRole ? { ...byRole, via: "role-scan" } : null;
+}
+
+/** `realpath` of the longest existing ancestor of `p`, with the rest appended as written — a team
+    file named at launch may not exist yet, and neither may its `teams/` dir. */
+function realPrefixPath(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    const parent = dirname(p);
+    return parent === p ? p : join(realPrefixPath(parent), basename(p));
+  }
+}
+
+/**
+ * The team file this session was launched into: `AH_TEAM_FILE`, set by the launcher on every
+ * member it starts. A path from the environment becomes a file path, so it is accepted only as
+ * `<H>/teams/<name>.json` with a valid team name, or `<H>/team.json`, where `<H>` is one of `homes`
+ * (compared by realpath). The file need not exist: SessionStart fires before the launcher writes it.
+ * Returns null when unset; `{invalid: why, kind, value}` when rejected, `kind` being `other-repo` for
+ * a well-formed team file of some other repo's hierarchy dir (a correctly launched peer running a
+ * command against another repo) and `malformed` for anything else; else `{home, teamName}` (null
+ * name: the legacy `team.json`).
+ */
+export function envTeamFile(homes, value = process.env.AH_TEAM_FILE) {
+  if (typeof value !== "string" || value === "") return null;
+  const malformed = (why) => ({ invalid: why, kind: "malformed", value });
+  if (!isAbsolute(value)) return malformed("it is not an absolute path");
+  if (value.split("/").includes("..")) return malformed("it climbs directories with `..`");
+  const path = resolve(value);
+  const home = teamFileHome(path);
+  if (!home) return malformed("it is not a team file path (<hierarchy dir>/teams/<name>.json or <hierarchy dir>/team.json)");
+  const legacy = basename(path) === "team.json";
+  const teamName = legacy ? null : basename(path).replace(/\.json$/, "");
+  if (!legacy && (!path.endsWith(".json") || !isValidTeamAlias(teamName))) return malformed("it does not name a team file with a valid team name");
+  const realHome = realPrefixPath(home);
+  const match = homes.filter(Boolean).find((h) => realPrefixPath(resolve(h)) === realHome);
+  if (match) return { home: match, teamName };
+  // A hierarchy dir is `<repo>/.claude/hierarchy`, or `~/.claude/hierarchy/<name>` outside a repo.
+  const isHierarchyDir = (h) => (basename(h) === "hierarchy" && basename(dirname(h)) === ".claude") || (basename(dirname(h)) === "hierarchy" && basename(dirname(dirname(h))) === ".claude");
+  if (!isHierarchyDir(home)) return malformed("it is not inside a hierarchy dir");
+  return { invalid: `it is a team file of another repo's hierarchy dir (${home}), not this one's`, kind: "other-repo", value };
+}
+
+/**
+ * The team a session that owns none belongs to: the team file it was launched into, else the one
+ * LIVE team whose member row holds its pane. Never inferred from role — a peer whose team file is
+ * not written yet would otherwise be attributed to some other team that has a member of its role.
+ */
+export function memberTeam(dir, homes, paneId) {
+  const env = envTeamFile(homes);
+  if (env && !env.invalid) return { teamName: env.teamName, home: env.home, via: "env" };
+  const byPane = resolveTeamByPane(dir, paneId, { liveOnly: true });
+  return byPane ? { teamName: byPane.teamName, home: dir, via: "pane" } : null;
 }
 
 export function resolveSessionTeam(dir, role, explicitTeam = null) {
@@ -539,9 +629,26 @@ export function resolveSessionTeam(dir, role, explicitTeam = null) {
 /** A team is "live" when its orchestrator pid is alive and it isn't past the stale-age cutoff. */
 export const TEAM_STALE_AGE_SEC = 24 * 3600;
 
-/** Same predicate sessionstart.mjs's stale-team sweep uses. */
-export function teamIsLive(t) {
+/**
+ * Whether `invoker` (`{pid, sessionId}`) owns team `t`: the recorded owner pid is the invoker's and
+ * is alive, and — when both the invocation and the team know a session id — the two agree. That
+ * session check is the only guard against a reused pid; without one, the pid alone decides.
+ */
+export function teamOwnedBy(t, invoker) {
+  if (!t || !invoker || !Number.isInteger(invoker.pid)) return false;
+  const orch = t.orchestrator || {};
+  if (Number(orch.pid) !== invoker.pid || !pidAlive(invoker.pid)) return false;
+  return !(invoker.sessionId && orch.session_id && orch.session_id !== invoker.sessionId);
+}
+
+/**
+ * Same predicate sessionstart.mjs's stale-team sweep uses. The age cap is an orphan heuristic for a
+ * team whose owner the reader cannot vouch for; given the `invoker`, a team it owns is live at any
+ * age, because an owner vouches for its team simply by being alive.
+ */
+export function teamIsLive(t, invoker = null) {
   if (!t) return false;
+  if (invoker && teamOwnedBy(t, invoker)) return true;
   const pid = t.orchestrator && t.orchestrator.pid;
   return pidAlive(pid) && ageSecOf(t.created) <= TEAM_STALE_AGE_SEC;
 }

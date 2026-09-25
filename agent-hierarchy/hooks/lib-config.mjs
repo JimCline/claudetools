@@ -35,7 +35,7 @@ import { fileURLToPath } from "node:url";
 // bodies called later (statusReport here; validateMember/validateRosterBlock there). Keep it that
 // way — a top-level use on either side would risk the top-level-await deadlock class documented
 // in lib-roster.mjs's header.
-import { listTeamNames, readTeam } from "./lib-roster.mjs";
+import { legacyTeamPrefix, listTeamNames, memberTeam, readTeam, ROSTER_LAYOUT_VALUES, teamRosterKey } from "./lib-roster.mjs";
 import { normalizeSessionId } from "./lib-gate.mjs";
 import { readSessionRole } from "./lib-session-role.mjs";
 
@@ -264,7 +264,7 @@ export function validateHerdrName(name) {
   if (!/^[a-z][a-z0-9_-]{0,31}$/.test(name)) {
     return {
       ok: false,
-      why: `derived name ${JSON.stringify(name)} (${name.length} chars) does not match Herdr's agent-name rule [a-z][a-z0-9_-]{0,31} (max 32 characters) — shorten the team alias or repo basename with \`roster.mjs alias --set <short>\`, or use a shorter role or --member name`,
+      why: `derived name ${JSON.stringify(name)} (${name.length} chars) does not match Herdr's agent-name rule [a-z][a-z0-9_-]{0,31} (max 32 characters) — create the team with a shorter \`--team <name>\`, or use a shorter role or --member name`,
     };
   }
   return { ok: true };
@@ -600,6 +600,33 @@ export function userConfigPath() {
   return join(homedir(), ".claude", CONFIG_BASENAME);
 }
 
+/**
+ * The layout a new team gets when its create names none: top-level `teamLayout` in the global
+ * config file. It is a user preference, not repo config — a repo-level copy is one of
+ * `staleTeamKeys` — and an invalid value is ignored. Returns `{layout, warnings}`; `layout` is null
+ * when nothing usable is stored.
+ */
+export function teamLayoutPreference() {
+  const warnings = [];
+  const globalPath = userConfigPath();
+  let data = null;
+  try {
+    const parsed = existsSync(globalPath) ? JSON.parse(readFileSync(globalPath, "utf8")) : null;
+    data = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    data = null;
+  }
+  if (!data || data.teamLayout === undefined) return { layout: null, warnings };
+  if (!ROSTER_LAYOUT_VALUES.includes(data.teamLayout)) {
+    warnings.push(`ah: teamLayout ${JSON.stringify(data.teamLayout)} in ${globalPath} is not a layout (allowed: ${ROSTER_LAYOUT_VALUES.join(", ")}) — ignoring it.`);
+    return { layout: null, warnings };
+  }
+  return { layout: data.teamLayout, warnings };
+}
+
+/** Keys a global config file holds when all it records is the stored team layout. */
+const PREFERENCE_ONLY_KEYS = new Set(["version", "teamLayout"]);
+
 export function projectConfigPath(cwd) {
   if (typeof cwd !== "string" || !cwd) return null;
   return join(resolve(cwd), ".claude", CONFIG_BASENAME);
@@ -731,7 +758,7 @@ export function rosterMemberNames(members, repoBasename) {
 }
 
 /**
- * Character-set + role-collision rule for a `teamAlias` (spec 0010 §4.4,
+ * Character-set + role-collision rule for a team name or roster key (spec 0010 §4.4,
  * amendment (d)): starts alphanumeric, 1-32 chars of letters/digits/`-`
  * thereafter, and must not derive a peer name that `roleFromName`'s
  * unanchored substring match resolves to the wrong role, for any chain-class
@@ -766,93 +793,85 @@ export function isValidTeamAlias(alias) {
 }
 
 /**
- * Spec 0044 §1.1/[9.1]: a `validateTeamAlias`-clean name to offer a user whose repo basename is
- * not one. The refusal it feeds has to be actionable — "this name is illegal" with nothing to
- * type next is how a user ends up back on the shared `team.json` the invariant forbids. Sanitize
- * first so the suggestion still resembles the repo; `team` is the last resort, which is also the
- * answer when the basename is legal characters but role-token-colliding (e.g. `architect`).
+ * A team name to OFFER when the one a create would use cannot be used — only ever offered: a team
+ * is created under it only when it comes back as an explicit `--team`. Without context, or for a
+ * transport other than herdr, the rule is sanitize-so-it-still-resembles-the-repo, `team` as the
+ * last resort (also the answer when the name is legal but role-token-colliding, e.g. `architect`).
+ *
+ * Under herdr (`{transport: "herdr", suffixes, resolved}`, where `suffixes` are the `-<role>[-N]`
+ * tails of every pane-routed member the team will derive), each `<name><suffix>` must also pass
+ * Herdr's agent-name rule, so the name is lowercased, reduced to `[a-z0-9-]` starting with a
+ * letter, and cut to leave room for the longest suffix. Null when no name can fit.
  */
-export function suggestTeamAlias(raw) {
-  const sanitized = String(raw == null ? "" : raw)
-    .replace(/[^A-Za-z0-9-]/g, "-")
-    .replace(/^[^A-Za-z0-9]+/, "")
-    .slice(0, 32)
-    .replace(/-+$/, "");
-  return [sanitized, `team-${sanitized}`.slice(0, 32).replace(/-+$/, "")].find((c) => validateTeamAlias(c).ok) || "team";
+export function suggestTeamAlias(raw, context = null) {
+  if (!context || context.transport !== "herdr") {
+    const sanitized = String(raw == null ? "" : raw)
+      .replace(/[^A-Za-z0-9-]/g, "-")
+      .replace(/^[^A-Za-z0-9]+/, "")
+      .slice(0, 32)
+      .replace(/-+$/, "");
+    return [sanitized, `team-${sanitized}`.slice(0, 32).replace(/-+$/, "")].find((c) => validateTeamAlias(c).ok) || "team";
+  }
+  const suffixes = context.suffixes || [];
+  if (suffixes.some((suffix) => !/^-[a-z0-9_-]+$/.test(suffix))) return null;
+  const budget = 32 - Math.max(0, ...suffixes.map((suffix) => suffix.length));
+  if (budget < 1) return null;
+  const fit = (name) => name.slice(0, budget).replace(/-+$/, "");
+  const base = fit(
+    String(raw == null ? "" : raw)
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^[^a-z]+/, "")
+  );
+  const candidates = [base, fit(`team-${base}`), ...(budget >= 4 ? ["team"] : [])];
+  return candidates.find((c) => validateTeamAlias(c, context.resolved || null).ok && suffixes.every((suffix) => validateHerdrName(`${c}${suffix}`).ok)) || null;
 }
 
 /**
- * Resolve the naming prefix for a repo (spec 0010 §4.1): the first of
- * repo-user, repo carrying a valid top-level `teamAlias` string wins; `global`
- * is never read (§4.3 — an alias is a property of one repo, not a
- * machine-wide default). An unreadable file, non-object root, absent key, or
- * a value failing `validateTeamAlias` falls through to the next level —
- * never throws. Nothing found → the git-root basename (or cwd basename when
- * not inside a git checkout), byte-identical to the pre-alias behavior.
- * `teamPrefix` is a thin wrapper over this — keep it that way, one
- * implementation.
- *
- * `team`, when a non-empty string, short-circuits everything below it: an
- * active named-team scope (spec 0011 §3.3) outranks repo-user/repo/default,
- * since the team name itself is the prefix members are dispatched-named
- * under.
+ * The prefix a team's members are named under (`<prefix>-<role>[-N]`). `team`, when a non-empty
+ * string, is that prefix — a named team's name is its identity. Otherwise the default team's: a
+ * legacy `team.json`'s frozen prefix, inferred from its own members so it cannot drift, else the
+ * git-root basename (cwd basename outside a checkout). Reads no config. Returns `{prefix, source}`
+ * with source `team`, `legacy-team` or `default`. `teamPrefix` is a thin wrapper over this — keep
+ * it that way, one implementation.
  */
 export function teamPrefixInfo(cwd, team) {
-  if (typeof team === "string" && team) return { prefix: team, alias: team, source: "team" };
+  if (typeof team === "string" && team) return { prefix: team, source: "team" };
   const resolvedCwd = resolve(typeof cwd === "string" && cwd ? cwd : process.cwd());
-  const repoRoot = findGitRoot(resolvedCwd) || resolvedCwd;
-  const paths = rosterLevelPaths(cwd);
-  for (const level of ROSTER_LEVELS) {
-    if (level === "global") continue;
-    const path = paths[level];
-    if (!existsSync(path)) continue;
-    let data;
-    try {
-      data = JSON.parse(readFileSync(path, "utf8"));
-    } catch {
-      continue;
-    }
-    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
-    const alias = data.teamAlias;
-    if (alias === undefined) continue;
-    if (isValidTeamAlias(alias)) return { prefix: alias, alias, source: level };
-    // Invalid hand-edited value — fall through; resolveConfig's warnings array
-    // is where the user learns why (it reads the same raw layers).
-  }
-  return { prefix: basename(repoRoot), alias: null, source: "default" };
+  const legacy = legacyTeamPrefix(hierarchyDir(resolvedCwd));
+  if (legacy) return { prefix: legacy, source: "legacy-team" };
+  return { prefix: basename(findGitRoot(resolvedCwd) || resolvedCwd), source: "default" };
 }
 
-/** The winning naming prefix for a repo — see `teamPrefixInfo`. */
+/** The naming prefix — see `teamPrefixInfo`. */
 export function teamPrefix(cwd, team) {
   return teamPrefixInfo(cwd, team).prefix;
 }
 
-/** The `rosters[team]` block at one level, or null. Invalid alias keys are skipped. */
-function pickTeamRoster(data, team) {
+/** The `rosters[key]` block at one level, or null. */
+function pickTeamRoster(data, key) {
   const map = data.rosters;
   if (!map || typeof map !== "object" || Array.isArray(map)) return null;
-  return Object.prototype.hasOwnProperty.call(map, team) ? map[team] : null;
+  return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
 }
 
 /**
- * Resolve the roster: repo-user → repo → global, first level whose `roster`
- * key is present with at least one member wins IN ITS ENTIRETY (no merging
- * across levels). Returns `{level, route, layout, members: [...withNames],
- * path, teamAlias, teamAliasSource, teamKey}` (`layout` defaults to "auto"
- * when absent — the sole default site, spec 0004 §4.3) or null when no level
- * has one.
+ * Resolve a roster block: repo-user → repo → global, first level whose block is present with at
+ * least one member wins IN ITS ENTIRETY (no merging across levels). Returns `{level, route,
+ * members: [...withNames], path, teamKey}` or null when no level has one.
  *
- * Two-pass (spec 0032 §3.2): when `team` is given, pass 1 walks every level
- * looking for a `rosters[team]` block (team-specificity outranks location);
- * pass 2, always run, is today's behaviour reading the default `roster` key.
- * `teamKey` on the result is the team the WINNING pass matched on — the
- * team name for a pass-1 hit, else null (including whenever `team` had no
- * matching override anywhere and pass 2 won).
+ * Two-pass (spec 0032 §3.2): with `rosterKey`, pass 1 walks every level for a `rosters[rosterKey]`
+ * block (key-specificity outranks location); pass 2, always run, reads the default `roster` block.
+ * `teamKey` is the key the WINNING pass matched on — `rosterKey` for a pass-1 hit, else null.
+ *
+ * Members are named under `namingPrefix`, which a caller takes from the TEAM, never from the key;
+ * absent, the default team's prefix. A roster has no name of its own.
  */
-export function resolveRoster(cwd, team) {
+export function resolveRoster(cwd, rosterKey, namingPrefix = null) {
   const candidates = rosterLevelCandidates(cwd);
-  const { prefix, alias, source } = teamPrefixInfo(cwd, team);
-  const passes = team ? [team, null] : [null];
+  const prefix = typeof namingPrefix === "string" && namingPrefix ? namingPrefix : teamPrefix(cwd, null);
+  const passes = rosterKey ? [rosterKey, null] : [null];
   for (const teamKey of passes) {
     for (const level of ROSTER_LEVELS) {
       for (const path of candidates[level]) {
@@ -866,20 +885,80 @@ export function resolveRoster(cwd, team) {
         if (!data || typeof data !== "object" || Array.isArray(data)) continue;
         const r = teamKey ? pickTeamRoster(data, teamKey) : data.roster;
         if (!r || typeof r !== "object" || Array.isArray(r) || !Array.isArray(r.members) || r.members.length === 0) continue;
-        return {
-          level,
-          route: r.route,
-          layout: r.layout || "auto",
-          members: rosterMemberNames(r.members, prefix),
-          path,
-          teamAlias: alias,
-          teamAliasSource: source,
-          teamKey,
-        };
+        return { level, route: r.route, members: rosterMemberNames(r.members, prefix), path, teamKey };
       }
     }
   }
   return null;
+}
+
+/** Every roster block one level file holds, as `[label, key, block]`: the default `roster` (key
+    null), then each `rosters.<key>`. */
+export function rosterBlocksOf(data) {
+  const map = data && data.rosters;
+  const named = map && typeof map === "object" && !Array.isArray(map) ? Object.entries(map).map(([key, block]) => [`rosters.${key}`, key, block]) : [];
+  return [["roster", null, data ? data.roster : undefined], ...named];
+}
+
+/**
+ * The `rosters.*` keys a create can be pointed at, across every level `resolveRoster` reads:
+ * sorted, de-duplicated, and only names that pass `validateTeamAlias` (no other can be selected).
+ */
+export function namedRosterKeys(cwd) {
+  const keys = new Set();
+  const candidates = rosterLevelCandidates(cwd);
+  for (const level of ROSTER_LEVELS) {
+    for (const path of candidates[level]) {
+      if (!existsSync(path)) continue;
+      let data;
+      try {
+        data = JSON.parse(readFileSync(path, "utf8"));
+      } catch {
+        continue;
+      }
+      if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+      for (const [, key] of rosterBlocksOf(data)) if (key !== null && isValidTeamAlias(key)) keys.add(key);
+    }
+  }
+  return [...keys].sort();
+}
+
+/**
+ * Config keys that name or lay out a team from the wrong place and so do nothing: `teamAlias` (any
+ * level), a roster block's `layout`, and a `teamLayout` outside the global file. They are reported
+ * only in CLI output a person reads (`status`, `doctor`, `create`), never in hook-injected context,
+ * where they would repeat in every session; never acted on; never rewritten. Returns
+ * `{warnings, aliases}` — `aliases` are the stale names still configured, so a create can say how
+ * to keep the member names they used to produce.
+ */
+export function staleTeamKeys(cwd) {
+  const warnings = [];
+  const aliases = [];
+  const candidates = rosterLevelCandidates(cwd);
+  for (const path of new Set([...candidates["repo-user"], ...candidates.repo, ...candidates.global])) {
+    if (!existsSync(path)) continue;
+    let data;
+    try {
+      data = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      continue;
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+    const alias = data.teamAlias;
+    if (alias !== undefined) {
+      warnings.push(`ah: teamAlias in ${path} is ignored — a team's name is chosen when it is created (\`roster.mjs create --team <name>\`). It has no effect; delete it from ${path} to drop this warning.`);
+      if (typeof alias === "string" && alias) aliases.push(alias);
+    }
+    for (const [label, , block] of rosterBlocksOf(data)) {
+      if (block && typeof block === "object" && block.layout !== undefined) {
+        warnings.push(`ah: ${label}.layout in ${path} is ignored — a team's layout is chosen when it is created (\`roster.mjs create --mode <auto|columns|grid>\`), and an explicit --mode becomes the default for future teams. It has no effect; delete it from ${path} to drop this warning.`);
+      }
+    }
+    if (path !== userConfigPath() && data.teamLayout !== undefined) {
+      warnings.push(`ah: teamLayout in ${path} is ignored — the default team layout is read from the global config (${userConfigPath()}) only, and an explicit \`create --mode <m>\` sets it. It has no effect; delete it from ${path} to drop this warning.`);
+    }
+  }
+  return { warnings, aliases };
 }
 
 /** Row keys a built-in cannot change: present in config → a warning, ignored. */
@@ -1027,7 +1106,10 @@ function loadScope(path, scope, warnings) {
  * `--team` after `create`; (3) the team whose `orchestrator.session_id` is
  * unset and whose `orchestrator.pid` is the calling Claude session's pid —
  * `spawn-one`/`spawn-ad-hoc` record only the pid, so without this the
- * session that spawned a team cannot see it; (4) `null`, the default team.
+ * session that spawned a team cannot see it; (4) for a session that owns none, the team it was
+ * launched into (`AH_TEAM_FILE`), else the live team whose member row holds its pane — the
+ * orchestrator steps come first so an owner always resolves to its own team; (5) `null`, the
+ * default team.
  * The caller pid is `opts.pid`, else `process.ppid` (a hook's parent is the
  * Claude process). A CLI's parent is a shell, so CLI callers pass the pid
  * spawn-* records (`--orchestrator-pid`, else `CLAUDE_PID`); a non-integer
@@ -1035,25 +1117,33 @@ function loadScope(path, scope, warnings) {
  * never adopted by pid. Any read failure (missing team file, unreadable
  * member list) degrades to `null` rather than throwing — 0009 §8.12's
  * fail-open catch, extended to team resolution.
+ *
+ * Returns `{name, home, via}`: `home` is the hierarchy dir holding that team's file (null when not
+ * known — an explicit `opts.team` without `opts.teamHome`, or no team); `via` is the step that
+ * answered — `team`, `session`, `pid` (the session's own team), `env` or `pane` (a team it was only
+ * attributed to, which may be read but never cleared or rewritten), or null.
  */
 function resolveTeamScope(cwd, opts) {
-  if (opts && typeof opts.team === "string" && opts.team) return opts.team;
+  if (opts && typeof opts.team === "string" && opts.team) return { name: opts.team, home: opts.teamHome || null, via: "team" };
   const pid = opts && opts.pid !== undefined ? opts.pid : process.ppid;
   try {
     const dir = hierarchyDir(cwd);
     const teams = [null, ...listTeamNames(dir)].map((name) => ({ name, orch: (readTeam(dir, name) || {}).orchestrator }));
     if (opts && opts.sessionId) {
       const hit = teams.find((t) => t.orch && t.orch.session_id === opts.sessionId);
-      if (hit) return hit.name;
+      if (hit) return { name: hit.name, home: dir, via: "session" };
     }
     if (Number.isInteger(pid) && pid > 0) {
       const hit = teams.find((t) => t.orch && !t.orch.session_id && t.orch.pid === pid);
-      if (hit) return hit.name;
+      if (hit) return { name: hit.name, home: dir, via: "pid" };
     }
+    // A session that owns no team: the team it was launched into, else the live team holding its pane.
+    const member = memberTeam(dir, [dir, mainHierarchyDir(cwd)], process.env.HERDR_PANE_ID || process.env.TMUX_PANE || null);
+    if (member) return { name: member.teamName, home: member.home, via: member.via };
   } catch {
     // fail-open to default — see doc comment above.
   }
-  return null;
+  return { name: null, home: null, via: null };
 }
 
 /**
@@ -1065,7 +1155,9 @@ function resolveTeamScope(cwd, opts) {
 export function resolveConfig(cwd, opts = {}) {
   const warnings = [];
   const resolvedCwd = resolve(typeof cwd === "string" && cwd ? cwd : process.cwd());
-  const team = resolveTeamScope(resolvedCwd, opts);
+  // `teamHome` is the hierarchy dir the team's file lives in — a worktree peer's team is the main
+  // checkout's, which is not `hierarchyDir(cwd)`.
+  const { name: team, home: teamHome, via: teamVia } = resolveTeamScope(resolvedCwd, opts);
   const userPath = userConfigPath();
   // Fix 2 (spec 0032 §4): worktree-aware candidate lists, matching resolveRoster — first
   // existing path per scope, never merged across candidates within a level (§4 rationale:
@@ -1082,20 +1174,11 @@ export function resolveConfig(cwd, opts = {}) {
   const project = !projectPath || projectPath === userPath ? null : loadScope(projectPath, "project", warnings);
   const repoUser = !repoUserPath || repoUserPath === userPath || repoUserPath === projectPath ? null : loadScope(repoUserPath, "repo-user", warnings);
 
-  // Least specific first: repo-user is the new highest-precedence layer.
-  const layers = [user, project, repoUser].filter(Boolean);
-
-  // teamAlias is read at repo/repo-user only (§4.3) — a hand-edited invalid
-  // value at global is simply never consulted, so it gets no warning either.
-  for (const layer of layers) {
-    if (layer.scope === "user") continue;
-    const rawAlias = layer.data.teamAlias;
-    if (rawAlias === undefined) continue;
-    const v = validateTeamAlias(rawAlias);
-    if (!v.ok) {
-      warnings.push(`ah: teamAlias ${JSON.stringify(rawAlias)} at ${layer.scope}-scope config (${layer.path}) is invalid (${v.why}) — ignoring it.`);
-    }
-  }
+  // Least specific first: repo-user is the new highest-precedence layer. A global file holding only
+  // the stored team layout is a create's side effect, not hierarchy config, so it configures nothing.
+  const preferenceOnly = (layer) => layer.scope === "user" && Object.keys(layer.data).every((k) => PREFERENCE_ONLY_KEYS.has(k));
+  const layers = [user, project, repoUser].filter(Boolean).filter((layer) => !preferenceOnly(layer));
+  warnings.push(...teamLayoutPreference().warnings);
 
   const roles = {};
   const sources = {};
@@ -1123,6 +1206,7 @@ export function resolveConfig(cwd, opts = {}) {
       roster: null,
       rosterLevel: null,
       team,
+      teamVia,
     };
   }
 
@@ -1260,7 +1344,9 @@ export function resolveConfig(cwd, opts = {}) {
     if (CLASSES[row.class].chain) normalizeDispatch(name, roles, warnings);
   }
 
-  const rosterResult = resolveRoster(cwd, team);
+  // The block is the team's recorded template (or an explicit `opts.roster`); the names are the team's own.
+  const rosterKey = opts.roster !== undefined ? opts.roster : teamRosterKey(teamHome || hierarchyDir(resolvedCwd), team);
+  const rosterResult = resolveRoster(cwd, rosterKey, teamPrefix(resolvedCwd, team));
   return {
     configured: true,
     enabled,
@@ -1279,6 +1365,7 @@ export function resolveConfig(cwd, opts = {}) {
     roster: rosterResult,
     rosterLevel: rosterResult ? rosterResult.level : null,
     team,
+    teamVia,
   };
 }
 
@@ -1983,8 +2070,7 @@ export function statusReport(cwd) {
   out.push("");
   out.push("Resolved effective table:");
   out.push(`  Orchestrator  ${"session model".padEnd(14)} fixed (this session's agent)`);
-  const aliasInfo = teamPrefixInfo(resolved.cwd, resolved.team);
-  const repoBasename = aliasInfo.prefix;
+  const repoBasename = teamPrefix(resolved.cwd, resolved.team);
   for (const role of ROLES) {
     const entry = resolved.roles[role];
     const model = entry.model === "inherit" ? "inherit*" : entry.model;
@@ -2035,11 +2121,9 @@ export function statusReport(cwd) {
   } else {
     out.push("Roster: none configured — /agent-roster init to define one (roles/route above stay in effect).");
   }
-  out.push(
-    aliasInfo.alias
-      ? `Team alias: ${aliasInfo.alias} (from ${aliasInfo.source}) — agents named ${aliasInfo.alias}-<role>`
-      : `Team alias: none — agents named ${aliasInfo.prefix}-<role>`
-  );
+  const nameSource = resolved.team ? "team" : teamPrefixInfo(resolved.cwd, null).source;
+  out.push(`Team name: ${repoBasename} (${nameSource}) — agents named ${repoBasename}-<role>`);
+  for (const w of staleTeamKeys(resolved.cwd).warnings) out.push(w);
   out.push(`Stand up one missing peer: node "${ROSTER_CLI}" spawn-one <role> --cwd ${resolved.cwd}. Full-team Create is the /agent-team skill's job — do not hand-assemble create calls.`);
   let team = null;
   try {

@@ -126,6 +126,7 @@ function spawnReason(role, resolved, member, cwd, model, sessionId) {
     `Run: ${spawnCommand(role, member, cwd, model)}`,
     "Then SendMessage the `name` the command prints, with the brief you gave this Agent call. The session takes a few seconds to boot: if the name is not in ListAgents yet, wait until it is (`roster.mjs teams` reports it live).",
     "If the command reports the member already exists or is already live, SendMessage the name it reports.",
+    'If the command refuses with `refused: "team-name-unusable"`, follow its `message`: ask the user for the team name, then re-run with `--team`. That is not a launch failure and does not lead to the subagent opt-in.',
     `If the command fails (no herdr or tmux, launch error), tell the user and ask whether to opt into subagents: ${optInCmd(sessionId)}. Re-issue this Agent call only after that is recorded; it is denied every time until then.`,
     ...paneLine(resolved, member),
   ].join("\n");

@@ -9,6 +9,7 @@
 # Usage: bash tests/test-subagentstart-cli-root.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
 HOOK="$PLUGIN/hooks/subagentstart-cli-root.mjs"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-subagentstart-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT

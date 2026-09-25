@@ -4,6 +4,7 @@
 # Usage: bash tests/test-skill-disband-search.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
 SKILL="$PLUGIN/skills/agent-team/SKILL.md"
 DOC="$PLUGIN/docs/cli-tools.md"
 PASS=0; FAIL=0

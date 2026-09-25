@@ -192,6 +192,7 @@ Four constraints on that refusal:
    unnamable basename is precisely the condition `teamAlias` exists for
    (`lib-config.mjs:521-523`), and setting it fixes every future invocation in that
    repo instead of one. The refusal should lead with it.
+   *Superseded by spec 0057: `teamAlias` and `alias --set` are gone; the refusal's remedy is `--team`.*
 
 The `unnamable` field may stay as the refusal's reason, but no code may branch on it
 to select a scope; if after this change nothing reads it, delete it.
@@ -819,6 +820,8 @@ the user has now described four times. The entry point is where the confusion is
 formed; the gate is where it is caught. This spec now does both.
 
 ### 8.1 The split
+
+> Superseded in part by spec 0057: `layout` and `alias` are no longer roster verbs — a team's name and layout are chosen at `create` (`--team`, `--mode`).
 
 **`/agent-roster` — the template. Reads and edits roster level files, never
 launches or terminates anything.**

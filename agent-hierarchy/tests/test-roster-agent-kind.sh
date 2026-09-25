@@ -23,7 +23,7 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
 # the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude" "$SANDBOX/bin"
@@ -224,24 +224,28 @@ jqnode() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{
 ########################################################################
 # Baseline strings are asserted literally rather than diffed against a
 # pre-change capture: they ARE the pre-change output, and pinning them here is
-# what makes a future edit to spawnShape's claude branch fail loudly.
+# what makes a future edit to spawnShape's claude branch fail loudly. The one
+# addition since (spec 0057 §2.10) is the trailing --settings that hands the
+# member its team file as AH_TEAM_FILE.
 reset_state; clear_hierarchy; init_geometry; init_roster
 r "" add --no-spawn --role architect --model opus
 r "" add --no-spawn --role implementor --model sonnet
+TEAM_SETTING=$(node -e 'process.stdout.write("--settings \x27" + JSON.stringify({ env: { AH_TEAM_FILE: process.argv[1] } }) + "\x27")' "$PROJ/.claude/hierarchy/teams/myrepo.json")
+TMUX_LAUNCH=$(TS="$TEAM_SETTING" node -e 'process.stdout.write("tmux send-keys -t <TARGET> " + JSON.stringify("claude --agent ah:architect --name myrepo-architect --model opus " + process.env.TS) + " Enter")')
 
 r "HERDR_ENV=1" spawn-one architect --dry-run
 check "4.1a: no kind key anywhere -> herdr launch string is byte-identical to pre-0043" \
-  '[ "$RC" -eq 0 ] && [ "$(launch_str)" = "herdr agent start myrepo-architect --kind claude --pane <TARGET> -- --agent ah:architect --name myrepo-architect --model opus" ]'
+  '[ "$RC" -eq 0 ] && [ "$(launch_str)" = "herdr agent start myrepo-architect --kind claude --pane <TARGET> -- --agent ah:architect --name myrepo-architect --model opus $TEAM_SETTING" ]'
 check "4.1a2: no --timeout leaked into the claude launch string" \
   '! launch_str | grep -q -- "--timeout"'
 
 r "" spawn-one architect --dry-run
 check "4.1b: tmux transport launch string byte-identical" \
-  '[ "$RC" -eq 0 ] && [ "$(launch_str)" = "tmux send-keys -t <TARGET> \"claude --agent ah:architect --name myrepo-architect --model opus\" Enter" ]'
+  '[ "$RC" -eq 0 ] && [ "$(launch_str)" = "$TMUX_LAUNCH" ]'
 
 rterm "" spawn-one architect --dry-run
 check "4.1c: terminal transport launch string byte-identical" \
-  '[ "$RC" -eq 0 ] && [ "$(launch_str)" = "claude --agent ah:architect --name myrepo-architect --model opus --bg" ]'
+  '[ "$RC" -eq 0 ] && [ "$(launch_str)" = "claude --agent ah:architect --name myrepo-architect --model opus $TEAM_SETTING --bg" ]'
 
 check "4.1d: reading the roster did NOT rewrite the config file with kind keys" \
   '! grep -q "\"kind\"" "$CFG"'
@@ -259,7 +263,7 @@ node -e '
 ' "$CFG"
 r "HERDR_ENV=1" spawn-one architect --dry-run
 check "4.1f: an explicit kind:\"claude\" in the file produces the identical launch string" \
-  '[ "$RC" -eq 0 ] && [ "$(launch_str)" = "herdr agent start myrepo-architect --kind claude --pane <TARGET> -- --agent ah:architect --name myrepo-architect --model opus" ]'
+  '[ "$RC" -eq 0 ] && [ "$(launch_str)" = "herdr agent start myrepo-architect --kind claude --pane <TARGET> -- --agent ah:architect --name myrepo-architect --model opus $TEAM_SETTING" ]'
 
 ########################################################################
 # §4.2 — VALIDATION

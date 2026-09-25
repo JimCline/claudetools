@@ -6,6 +6,7 @@
 # Usage: bash tests/test-roster-spawn.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
 H="$PLUGIN/hooks"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-roster-spawn-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -97,7 +98,7 @@ done
 # precise checks on the two implementors, herdr transport (exact spawn-step strings)
 HOME="$FAKEHOME" HERDR_ENV=1 node "$H/roster.mjs" create --plan --cwd "$PROJ" > "$SANDBOX/plan-precise.json" 2>&1
 check "create --plan (herdr): default implementor (model inherit) emits no --model flag at all" \
-  'grep -q "herdr agent start myrepo-implementor --kind claude --pane <TARGET> -- --agent ah:implementor --name myrepo-implementor\"" "$SANDBOX/plan-precise.json"'
+  'node -e "const p=JSON.parse(require(\"fs\").readFileSync(\"$SANDBOX/plan-precise.json\",\"utf8\"));const l=p.members.find(m=>m.name===\"myrepo-implementor\").spawn.launch[0];process.exit(l.startsWith(\"herdr agent start myrepo-implementor --kind claude --pane <TARGET> -- --agent ah:implementor --name myrepo-implementor \")&&!l.includes(\"--model\")?0:1)"'
 check "create --plan (herdr): explicit-model implementor still emits --model opus" \
   'grep -q "herdr agent start myrepo-implementor-2 --kind claude --pane <TARGET> -- --agent ah:implementor --name myrepo-implementor-2 --model opus" "$SANDBOX/plan-precise.json"'
 check "create --plan (herdr): spawn.layout is empty, target_from is null (0004 §11.1.1 — layout is no longer per-member)" \

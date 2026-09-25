@@ -8,6 +8,7 @@
 # Usage: bash tests/test-roster-team-override.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
 H="$PLUGIN/hooks"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-team-override-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -116,55 +117,55 @@ check "T9: unrelated/malformed rosters key -> no throw, default resolves" '[ "$R
 
 # ---- write-path tests (§3.4) ----
 
-# T10: roster add --team hotfix against a file with both keys -> rosters.hotfix grew, roster untouched
+# T10: roster add --roster hotfix against a file with both keys -> rosters.hotfix grew, roster untouched
 writeCfg "$REPO_CFG" <<'EOF'
 { "version": 1,
   "roster": { "route": "peer", "members": [ { "role": "reviewer", "model": "opus" } ] },
   "rosters": { "hotfix": { "route": "peer", "members": [] } } }
 EOF
 DEFAULT_BEFORE=$(cat "$REPO_CFG" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify(JSON.parse(d).roster)))")
-rcli add --no-spawn --team hotfix --level repo --role implementor
-check "T10a: add --team hotfix succeeds" '[ "$RC" -eq 0 ]'
+rcli add --no-spawn --roster hotfix --level repo --role implementor
+check "T10a: add --roster hotfix succeeds" '[ "$RC" -eq 0 ]'
 DEFAULT_AFTER=$(node -e "console.log(JSON.stringify(JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')).roster))")
-check "T10b: data.roster byte-identical after add --team hotfix" "[ '$DEFAULT_BEFORE' = '$DEFAULT_AFTER' ]"
+check "T10b: data.roster byte-identical after add --roster hotfix" "[ '$DEFAULT_BEFORE' = '$DEFAULT_AFTER' ]"
 check "T10c: data.rosters.hotfix.members grew" \
   "node -e \"process.exit(JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')).rosters.hotfix.members.length===1?0:1)\""
 
-# T11: roster add with no --team -> data.roster grew, rosters untouched
+# T11: roster add with no --roster -> data.roster grew, rosters untouched
 writeCfg "$REPO_CFG" <<'EOF'
 { "version": 1,
   "roster": { "route": "peer", "members": [] },
   "rosters": { "hotfix": { "route": "peer", "members": [ { "role": "reviewer", "model": "opus" } ] } } }
 EOF
 rcli add --no-spawn --level repo --role architect
-check "T11a: add (no --team) succeeds" '[ "$RC" -eq 0 ]'
+check "T11a: add (no --roster) succeeds" '[ "$RC" -eq 0 ]'
 check "T11b: data.roster.members grew, rosters.hotfix untouched" \
   "node -e \"const d=JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')); process.exit(d.roster.members.length===1 && d.rosters.hotfix.members.length===1 ? 0 : 1)\""
 
-# T12: roster init --team hotfix on a file holding only roster -> creates rosters.hotfix; roster untouched
+# T12: roster init --roster hotfix on a file holding only roster -> creates rosters.hotfix; roster untouched
 writeCfg "$REPO_CFG" <<'EOF'
 { "version": 1, "roster": { "route": "peer", "members": [ { "role": "reviewer", "model": "opus" } ] } }
 EOF
-rcli init --team hotfix --level repo --route peer
-check "T12a: init --team hotfix succeeds" '[ "$RC" -eq 0 ]'
+rcli init --roster hotfix --level repo --route peer
+check "T12a: init --roster hotfix succeeds" '[ "$RC" -eq 0 ]'
 check "T12b: creates rosters.hotfix, roster untouched" \
   "node -e \"const d=JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')); process.exit(d.rosters && d.rosters.hotfix && d.roster.members.length===1 ? 0 : 1)\""
 
-# T13: roster remove --team hotfix removing the last member -> members:[], block still present
+# T13: roster remove --roster hotfix removing the last member -> members:[], block still present
 writeCfg "$REPO_CFG" <<'EOF'
 { "version": 1,
   "roster": { "route": "peer", "members": [ { "role": "reviewer", "model": "opus" } ] },
   "rosters": { "hotfix": { "route": "peer", "members": [ { "role": "implementor", "model": "sonnet" } ] } } }
 EOF
-evalc "C.rosterMemberNames([{role:'implementor',model:'sonnet'}], C.teamPrefix('$PROJ','hotfix'))[0].name"
+evalc "C.rosterMemberNames([{role:'implementor',model:'sonnet'}], C.teamPrefix('$PROJ',null))[0].name"
 MNAME="$OUT"
-rcli remove --team hotfix --level repo --member "$MNAME"
-check "T13a: remove --team hotfix succeeds" '[ "$RC" -eq 0 ]'
+rcli remove --roster hotfix --level repo --member "$MNAME"
+check "T13a: remove --roster hotfix succeeds" '[ "$RC" -eq 0 ]'
 check "T13b: rosters.hotfix.members is [], block still present" \
   "node -e \"const d=JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')); process.exit(d.rosters && d.rosters.hotfix && Array.isArray(d.rosters.hotfix.members) && d.rosters.hotfix.members.length===0 ? 0 : 1)\""
 
-# T17 [r2, NEW] (spec 0032 §3.4a): rosters.hotfix at repo (members C). create --plan --team
-# hotfix, take the member names it reports, then create --commit --team hotfix --verified
+# T17 [r2, NEW] (spec 0032 §3.4a): rosters.hotfix at repo (members C). create --plan --team hotfix
+# --roster hotfix, take the member names it reports, then create --commit with the same flags --verified
 # '<those names>' --roster-level repo -> commit succeeds, committed members are C's. Fails
 # against a build where --plan reads rosters.hotfix and --commit hydrates from data.roster.
 writeCfg "$REPO_CFG" <<'EOF'
@@ -172,16 +173,16 @@ writeCfg "$REPO_CFG" <<'EOF'
   "roster": { "route": "peer", "members": [ { "role": "reviewer", "model": "opus" } ] },
   "rosters": { "hotfix": { "route": "peer", "members": [ { "role": "implementor", "model": "sonnet" } ] } } }
 EOF
-rcli create --plan --team hotfix
-check "T17a: create --plan --team hotfix succeeds" '[ "$RC" -eq 0 ]'
+rcli create --plan --team hotfix --roster hotfix
+check "T17a: create --plan --team hotfix --roster hotfix succeeds" '[ "$RC" -eq 0 ]'
 PLAN_NAMES=$(echo "$OUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify(JSON.parse(d).members.map(m=>m.name))))")
 check "T17b: --plan resolved the team-scoped implementor" 'echo "$PLAN_NAMES" | grep -q implementor'
-rcli create --commit --team hotfix --verified "$PLAN_NAMES" --roster-level repo --transport terminal --orchestrator-pid "$$"
+rcli create --commit --team hotfix --roster hotfix --verified "$PLAN_NAMES" --roster-level repo --transport terminal --orchestrator-pid "$$"
 check "T17c: --commit succeeds with --plan's own member names (§3.4a round trip)" '[ "$RC" -eq 0 ]'
 check "T17d: committed team's members are the team-scoped ones (implementor)" 'echo "$OUT" | grep -q implementor'
 
 # T18 [r3, REWRITTEN — was r2's auto-vivify assertion, now the opposite] (spec 0032 §3.4b):
-# file with roster (A,B) and NO rosters key. roster add --team hotfix --role implementor, no
+# file with roster (A,B) and NO rosters key. roster add --roster hotfix --role implementor, no
 # pre-existing rosters.hotfix -> FAILS (no auto-vivification: init is the only creation path).
 # data.roster byte-identical AND data.rosters stays absent entirely — "writes nothing anywhere"
 # is the stronger assertion than "writes to the right place" (Architect's ruling). Still guards
@@ -191,30 +192,29 @@ writeCfg "$REPO_CFG" <<'EOF'
 { "version": 1, "roster": { "route": "peer", "members": [ { "role": "reviewer", "model": "opus" }, { "role": "architect", "model": "opus" } ] } }
 EOF
 DEFAULT_BEFORE18=$(node -e "console.log(JSON.stringify(JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')).roster))")
-rcli add --no-spawn --team hotfix --role implementor
-check "T18a: add --team hotfix with no pre-existing rosters.hotfix FAILS" '[ "$RC" -ne 0 ]'
+rcli add --no-spawn --roster hotfix --role implementor
+check "T18a: add --roster hotfix with no pre-existing rosters.hotfix FAILS" '[ "$RC" -ne 0 ]'
 DEFAULT_AFTER18=$(node -e "console.log(JSON.stringify(JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')).roster))")
 check "T18b: data.roster byte-identical (A,B untouched)" "[ '$DEFAULT_BEFORE18' = '$DEFAULT_AFTER18' ]"
 check "T18c: data.rosters still absent entirely (nothing written anywhere)" \
   "node -e \"const d=JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')); process.exit(d.rosters === undefined ? 0 : 1)\""
 
-# T19 [r3, NEW] — pairs with T18: proves the guard is a guard, not a dead code path. init --team
-# hotfix first, then the SAME add --team hotfix succeeds.
-rcli init --team hotfix --level repo --route peer
-check "T19a: init --team hotfix succeeds" '[ "$RC" -eq 0 ]'
-rcli add --no-spawn --team hotfix --role implementor
-check "T19b: add --team hotfix (after init --team hotfix) succeeds" '[ "$RC" -eq 0 ]'
+# T19 [r3, NEW] — pairs with T18: proves the guard is a guard, not a dead code path. init --roster
+# hotfix first, then the SAME add --roster hotfix succeeds.
+rcli init --roster hotfix --level repo --route peer
+check "T19a: init --roster hotfix succeeds" '[ "$RC" -eq 0 ]'
+rcli add --no-spawn --roster hotfix --role implementor
+check "T19b: add --roster hotfix (after init --roster hotfix) succeeds" '[ "$RC" -eq 0 ]'
 check "T19c: rosters.hotfix has the new member" \
   "node -e \"const d=JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')); process.exit(d.rosters && d.rosters.hotfix && d.rosters.hotfix.members.length===1 ? 0 : 1)\""
 
-# T20 [r3, NEW] (Reviewer-found: init lost its block-reset): init --layout columns, then
-# re-init without --layout -> layout clears back to auto (default), not stale "columns".
-rcli init --level repo --route peer --layout columns
-check "T20a: init --layout columns succeeds" '[ "$RC" -eq 0 ]'
+# T20 [r3, NEW] (Reviewer-found: init lost its block-reset): init REPLACES the block wholesale, so
+# a stale key left in it by an older version (here the removed roster `layout`) does not survive.
+node -e "const f='$REPO_CFG',fs=require('fs');const d=JSON.parse(fs.readFileSync(f,'utf8'));d.roster.layout='columns';fs.writeFileSync(f,JSON.stringify(d))"
 rcli init --level repo --route peer
-check "T20b: re-init without --layout succeeds" '[ "$RC" -eq 0 ]'
-check "T20c: layout cleared back to auto (no stale columns)" \
-  "node -e \"const d=JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')); process.exit((d.roster.layout||'auto')==='auto'?0:1)\""
+check "T20b: re-init succeeds" '[ "$RC" -eq 0 ]'
+check "T20c: the stale layout key did not survive the re-init" \
+  "node -e \"const d=JSON.parse(require('fs').readFileSync('$REPO_CFG','utf8')); process.exit(d.roster.layout===undefined?0:1)\""
 
 # T21 [r3, NEW] (Reviewer-found: F1 fix over-corrected): --team names a team with NO override
 # in `rosters` -> create --plan --team hotfix2 hydrates from the default roster (unchanged

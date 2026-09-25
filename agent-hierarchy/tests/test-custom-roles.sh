@@ -12,7 +12,7 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # No test may reach the real herdr or tmux: stubs that fail every call sit first on PATH, and the
 # session's pane environment is dropped. The tmux transport case sets its own PATH to a fake.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/repo"
 AG="$PROJ/.claude/agents"
@@ -191,12 +191,17 @@ cfg '{"version":1,"roles":{"security-reviewer":{"class":"review","description":"
 agentfile security-reviewer "disallowedTools: Edit, Write, NotebookEdit, advisor"
 js "const r = L.resolveConfig('$PROJ'); process.stdout.write([L.roleFromName('repo-security-reviewer-2', r), L.roleFromName('repo-reviewer', r), L.roleFromName('repo-security-reviewer')].join(' '))"
 check "T10: custom names parse first, longest first; without the registry the built-in token wins" '[ "$OUT" = "security-reviewer reviewer reviewer" ]'
-cfg '{"version":1,"teamAlias":"team-ui"}'
+cfg '{"version":1}'
 agentfile ui-reviewer "disallowedTools: Edit, Write, NotebookEdit, advisor"
 js "process.stdout.write(JSON.stringify([L.validateTeamAlias('team-ui', { roles: { 'ui-reviewer': { class: 'review' } } }), L.validateTeamAlias('ui', { roles: { 'ui-reviewer': { class: 'review' } } })]))"
 check "T10: alias team-ui collides with custom role ui-reviewer (the Reviewer's peer name team-ui-reviewer would parse as it); alias ui does not" '[[ "$OUT" == *"[{\"ok\":false"*"{\"ok\":true}]"* ]]'
-R role set ui-reviewer --class review --description "UI review." --level repo
-check "T10: role set refuses the colliding role" '[ $RC -ne 0 ] && [[ "$ERR" == *"collides"* ]]'
+# role set checks against the prefix of the invoking session's own live team — team-ui here.
+js "process.stdout.write(L.hierarchyDir('$PROJ'))"; T10_HD="$OUT"
+mkdir -p "$T10_HD/teams"
+printf '{"version":1,"team_id":"T-ui","created":"%s","transport":"terminal","orchestrator":{"session_id":null,"pid":%s},"members":[]}' "$(node -e 'console.log(new Date().toISOString())')" $$ > "$T10_HD/teams/team-ui.json"
+CLAUDE_PID=$$ R role set ui-reviewer --class review --description "UI review." --level repo
+check "T10: role set refuses the colliding role" '[ $RC -ne 0 ] && [[ "$ERR" == *"collides"* ]] && [[ "$ERR" == *"team-ui"* ]]'
+rm -f "$T10_HD/teams/team-ui.json"
 
 # ---- T11 (I3): a live member whose role row is deleted is still torn down
 cfg '{"version":1,"roles":{'"$BASE"'}}'

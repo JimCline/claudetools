@@ -16,7 +16,7 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
 # the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude" "$SANDBOX/bin"
@@ -186,12 +186,12 @@ check "3i: §1.3 — the user's explicit override lets the edit through" \
 # early-return on "no identity" and would pass this check without ever comparing ownership.
 r "CLAUDE_PID=$PPID" add --level repo --role implementor --model opus
 check "3j: §1.3 — a live session that owns no live team is unaffected" '[ "$RC" -eq 0 ]'
-# r3 [9.2]: ownership is session-wide, not scope-local. `--team other` selects a different roster
+# r3 [9.2]: ownership is session-wide, not scope-local. `--roster other` selects a different roster
 # CONTAINER, but the roster is off limits for the duration of ownership — the earlier wording let
 # an owner edit the template just by naming a scope it does not own.
-r "CLAUDE_PID=$LIVE_PID" init --level repo --route peer --team other
+r "CLAUDE_PID=$LIVE_PID" init --level repo --route peer --roster other
 check "3k: §1.3/[9.2] — owning a live team refuses init for another scope too" '[ "$RC" -ne 0 ]'
-r "CLAUDE_PID=$LIVE_PID" add --level repo --role reviewer --model opus --team other
+r "CLAUDE_PID=$LIVE_PID" add --level repo --role reviewer --model opus --roster other
 check "3k2: ...and add for that other scope" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "spawn-ad-hoc"'
 
 # ================================================================= 3a — §4 item 3a (§1.10)
@@ -395,8 +395,8 @@ kill "$FOREIGN_PID" 2>/dev/null; wait "$FOREIGN_PID" 2>/dev/null
 # ================================================================= 6 — r3 [9.1]: an unnamable prefix
 # A repo whose basename cannot clear validateTeamAlias must NOT fall back to creating the shared
 # team.json — that reinstates §1.1's ownership problem across a whole class of repos, silently.
-# It refuses with a name the user can paste. The refusal is at the CREATE site, not at scope
-# resolution, so `alias --set` (the remedy the message names) still runs in such a repo.
+# It refuses with a name to offer the user (spec 0057 §2.8's structured refusal). The refusal is at
+# the CREATE site, not at scope resolution, so reads and roster edits still run in such a repo.
 BADPROJ="$SANDBOX/_badrepo"
 BADHIER="$BADPROJ/.claude/hierarchy"
 BADROSTER="$BADPROJ/.claude/agent-hierarchy.json"
@@ -424,15 +424,15 @@ check "6a2: [9.1] — and wrote nothing under the hierarchy dir" \
   '[ ! -f "$BADHIER/team.json" ] && [ "$(ls -A "$BADHIER" 2>/dev/null | wc -l | tr -d " ")" = "$r_before_count" ]'
 check "6a3: [9.1] — the message names a VALID suggested name" \
   'echo "$OUT" | grep -q "badrepo" && [ "$RC" -ne 0 ]'
-check "6a4: [9.1] — and names alias --set as the remedy, not just the rejection" \
-  'echo "$OUT" | grep -q -- "alias --level repo --set"'
+check "6a4: [9.1] — and it is the structured refusal, carrying a --team rerun, not just the rejection" \
+  'echo "$OUT" | grep -q "\"refused\": \"team-name-unusable\"" && echo "$OUT" | grep -q -- "--team <TEAM>"'
 
-# ---- 6b: the suggested remedy is real, not advice — setting the alias makes bare create work.
-rb "" alias --level repo --set badrepo
-check "6b: [9.1] — alias --set is reachable in the very repo the refusal fires in" '[ "$RC" -eq 0 ]'
-rb "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-one architect
-check "6b2: [9.1] — with the alias set, the bare create path succeeds" '[ "$RC" -eq 0 ]'
-check "6b3: [9.1] — and it landed at teams/<alias>.json, never team.json" \
+# ---- 6b: the suggested remedy is real, not advice — re-running with the suggested --team works.
+rb "" show
+check "6b: [9.1] — reads still work in the very repo the refusal fires in" '[ "$RC" -eq 0 ]'
+rb "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-one architect --team badrepo
+check "6b2: [9.1] — with the suggested --team, the create path succeeds" '[ "$RC" -eq 0 ]'
+check "6b3: [9.1] — and it landed at teams/<name>.json, never team.json" \
   '[ -f "$BADHIER/teams/badrepo.json" ] && [ ! -f "$BADHIER/team.json" ]'
 
 # ---- 6c: the same repo with a pre-existing legacy team.json behaves exactly as §1.7 promises —
@@ -451,16 +451,17 @@ check "6c2: §1.7 — reading it neither refused nor rewrote it" \
 
 # ---- 6d (R2): a legacy file must not MASK the unnamable check. Once that team is orphaned there
 # is no name left to fall back to, so the create paths refuse rather than deriving one from a
-# prefix validateTeamAlias rejects.
+# prefix validateTeamAlias rejects. The member's name does not end in its role, so the legacy file
+# yields no prefix of its own and the repo basename is the name in question.
 cat > "$BADHIER/team.json" <<EOF
-{"version":1,"team_id":"legacy-bad-dead","created":"2020-01-01T00:00:00+00:00","roster_level":"repo","transport":"herdr","orchestrator":{"session_id":null,"pid":$DEAD_PID},"members":[{"role":"architect","name":"legacy-architect","route":"peer","transport_id":"p9"}],"partial":false,"expected_root":"$BADPROJ"}
+{"version":1,"team_id":"legacy-bad-dead","created":"2020-01-01T00:00:00+00:00","roster_level":"repo","transport":"herdr","orchestrator":{"session_id":null,"pid":$DEAD_PID},"members":[{"role":"architect","name":"legacy-arch","route":"peer","transport_id":"p9"}],"partial":false,"expected_root":"$BADPROJ"}
 EOF
 rb "CLAUDE_PID=$LIVE_PID" create --plan
 check "6d: R2 — a legacy team.json does not mask the unnamable prefix" \
-  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q -- "alias --level repo --set"'
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "\"refused\": \"team-name-unusable\""'
 rb "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-ad-hoc architect --model opus
-check "6d2: R2 — and spawn-ad-hoc does not derive a member name from the rejected prefix" \
-  '[ "$RC" -ne 0 ] && ! echo "$OUT" | grep -q "_badrepo-architect"'
+check "6d2: R2 — and spawn-ad-hoc refuses the same way, recording and launching nothing under the rejected prefix" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "\"refused\": \"team-name-unusable\"" && [ ! -d "$BADHIER/teams" ]'
 BAD_DEAD_BEFORE="$(cat "$BADHIER/team.json")"
 rb "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-one architect
 check "6d3: R2 — spawn-one is guarded on the same shape, and leaves the orphan for reap" \
@@ -470,11 +471,13 @@ check "6d3: R2 — spawn-one is guarded on the same shape, and leaves the orphan
 # here (every `<prefix>-N` fails the same validator), so it must report the thing the user can act
 # on rather than an exhausted search.
 cat > "$BADHIER/team.json" <<EOF
-{"version":1,"team_id":"legacy-bad-live","created":"$(date +%Y-%m-%dT%H:%M:%S%z | sed 's/\(..\)$/:\1/')","roster_level":"repo","transport":"herdr","orchestrator":{"session_id":null,"pid":$LIVE_PID},"members":[{"role":"architect","name":"legacy-architect","route":"peer","transport_id":"p9"}],"partial":false,"expected_root":"$BADPROJ"}
+{"version":1,"team_id":"legacy-bad-live","created":"$(date +%Y-%m-%dT%H:%M:%S%z | sed 's/\(..\)$/:\1/')","roster_level":"repo","transport":"herdr","orchestrator":{"session_id":null,"pid":$LIVE_PID},"members":[{"role":"architect","name":"legacy-arch","route":"peer","transport_id":"p9"}],"partial":false,"expected_root":"$BADPROJ"}
 EOF
-rb "CLAUDE_PID=$LIVE_PID" create --plan
+# Run from a session that does not own that team: its owner's own bare create resolves to the team
+# it owns and is refused as a re-plan of it, which is a different rule.
+rb "CLAUDE_PID=$PPID" create --plan
 check "6e: an unnamable prefix reports [9.1], not an exhausted candidate search" \
-  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q -- "alias --level repo --set" && ! echo "$OUT" | grep -q "1000 attempts"'
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "\"refused\": \"team-name-unusable\"" && ! echo "$OUT" | grep -q "1000 attempts"'
 
 # ================================================================= 7 — r3 [9.2]: ownership is session-wide
 # A session owning teams/foo.json running a roster-mutating command with NO --team is refused: the

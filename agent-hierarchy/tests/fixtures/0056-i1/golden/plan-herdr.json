@@ -2,6 +2,10 @@
   "level": "repo",
   "path": "<SANDBOX>/myrepo/.claude/agent-hierarchy.json",
   "transport": "herdr",
+  "layout": {
+    "mode": "auto",
+    "source": "default"
+  },
   "layout_plan": {
     "mode": "auto",
     "computed_by": "roster.mjs layout-splits",
@@ -31,7 +35,7 @@
         "args": null,
         "layout": [],
         "launch": [
-          "herdr agent start myrepo-architect --kind claude --pane <TARGET> -- --agent ah:architect --name myrepo-architect --model opus"
+          "herdr agent start myrepo-architect --kind claude --pane <TARGET> -- --agent ah:architect --name myrepo-architect --model opus --settings '{\"env\":{\"AH_TEAM_FILE\":\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\"}}'"
         ],
         "launch_cwd": "<SANDBOX>/myrepo",
         "target_placeholder": "<TARGET>",
@@ -54,7 +58,7 @@
         "args": null,
         "layout": [],
         "launch": [
-          "herdr agent start myrepo-implementor --kind claude --pane <TARGET> -- --agent ah:implementor --name myrepo-implementor"
+          "herdr agent start myrepo-implementor --kind claude --pane <TARGET> -- --agent ah:implementor --name myrepo-implementor --settings '{\"env\":{\"AH_TEAM_FILE\":\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\"}}'"
         ],
         "launch_cwd": "<SANDBOX>/myrepo",
         "target_placeholder": "<TARGET>",
@@ -78,7 +82,7 @@
         "args": null,
         "layout": [],
         "launch": [
-          "herdr agent start myrepo-reviewer --kind claude --pane <TARGET> -- --agent ah:reviewer --name myrepo-reviewer --model opus"
+          "herdr agent start myrepo-reviewer --kind claude --pane <TARGET> -- --agent ah:reviewer --name myrepo-reviewer --model opus --settings '{\"env\":{\"AH_TEAM_FILE\":\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\"}}'"
         ],
         "launch_cwd": "<SANDBOX>/myrepo",
         "target_placeholder": "<TARGET>",
@@ -102,7 +106,7 @@
         "args": null,
         "layout": [],
         "launch": [
-          "herdr agent start myrepo-ultra-advisor --kind claude --pane <TARGET> -- --agent ah:ultra-advisor --name myrepo-ultra-advisor --model fable"
+          "herdr agent start myrepo-ultra-advisor --kind claude --pane <TARGET> -- --agent ah:ultra-advisor --name myrepo-ultra-advisor --model fable --settings '{\"env\":{\"AH_TEAM_FILE\":\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\"}}'"
         ],
         "launch_cwd": "<SANDBOX>/myrepo",
         "target_placeholder": "<TARGET>",
@@ -126,7 +130,7 @@
         "args": null,
         "layout": [],
         "launch": [
-          "herdr agent start myrepo-task-runner --kind claude --pane <TARGET> -- --agent ah:task-runner --name myrepo-task-runner --model haiku"
+          "herdr agent start myrepo-task-runner --kind claude --pane <TARGET> -- --agent ah:task-runner --name myrepo-task-runner --model haiku --settings '{\"env\":{\"AH_TEAM_FILE\":\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\"}}'"
         ],
         "launch_cwd": "<SANDBOX>/myrepo",
         "target_placeholder": "<TARGET>",
@@ -150,7 +154,7 @@
         "args": null,
         "layout": [],
         "launch": [
-          "herdr agent start myrepo-implementor-2 --kind claude --pane <TARGET> -- --agent ah:implementor --name myrepo-implementor-2 --model opus"
+          "herdr agent start myrepo-implementor-2 --kind claude --pane <TARGET> -- --agent ah:implementor --name myrepo-implementor-2 --model opus --settings '{\"env\":{\"AH_TEAM_FILE\":\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\"}}'"
         ],
         "launch_cwd": "<SANDBOX>/myrepo",
         "target_placeholder": "<TARGET>",
