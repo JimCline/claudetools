@@ -585,11 +585,14 @@ check "D13d: a bare create --plan carries both" '[ "$RC" -eq 0 ] && has_both "$O
 FN_START=$(grep -n '^export function staleTeamKeys' "$H/lib-config.mjs" | cut -d: -f1)
 FN_END=$(awk -v s="$FN_START" 'NR > s && /^}/ { print NR; exit }' "$H/lib-config.mjs")
 DOC_START=$(awk -v s="$FN_START" 'NR < s && /^\/\*\*/ { d = NR } END { print d }' "$H/lib-config.mjs")
+MIG_START=$(grep -n '^function migrateStaleKeys' "$H/roster.mjs" | cut -d: -f1)
+MIG_END=$(awk -v s="$MIG_START" 'NR > s && /^}/ { print NR; exit }' "$H/roster.mjs")
+MIG_DOC=$(awk -v s="$MIG_START" 'NR < s && /^\/\*\*/ { d = NR } END { print d }' "$H/roster.mjs")
 OUT=$(grep -n 'teamAlias' "$H"/*.mjs)
-check "D5: teamAlias appears in hooks/ only in lib-config's stale-key reporter" \
-  '[ -n "$OUT" ] && ! echo "$OUT" | grep -qv "/lib-config.mjs:" && echo "$OUT" | awk -F: -v a="$DOC_START" -v b="$FN_END" "{ if (\$2 < a || \$2 > b) bad = 1 } END { exit bad }"'
-OUT=$(grep -nE '\b(r|roster|container|resolved|rosterBlock|layoutSource|found|block|data\.roster)\.layout\b' "$H"/*.mjs | grep -v 'block\.layout !== undefined')
-check "D5b: no hooks/ file reads a roster block's layout (the stale-key report aside)" '[ -z "$OUT" ]'
+check "D5: teamAlias appears in hooks/ only in lib-config's stale-key reporter and roster.mjs's write-time migration" \
+  '[ -n "$OUT" ] && echo "$OUT" | awk -F: -v a="$DOC_START" -v b="$FN_END" -v c="$MIG_DOC" -v d="$MIG_END" "{ if (\$1 ~ /lib-config.mjs\$/) { if (\$2 < a || \$2 > b) bad = 1 } else if (\$1 ~ /roster.mjs\$/) { if (\$2 < c || \$2 > d) bad = 1 } else bad = 1 } END { exit bad }"'
+OUT=$(grep -nE '\b(r|roster|container|resolved|rosterBlock|layoutSource|found|block|data\.roster)\.layout\b' "$H"/*.mjs | grep -v 'block\.layout !== undefined' | awk -F: -v c="$MIG_DOC" -v d="$MIG_END" '!($1 ~ /roster.mjs$/ && $2 >= c && $2 <= d)')
+check "D5b: no hooks/ file reads a roster block's layout (the stale-key report and the write-time migration aside)" '[ -z "$OUT" ]'
 
 # D6: an unusable basename on tmux refuses with the structured refusal and writes nothing.
 fresh_home; new_repo my_repo; setup_roster architect

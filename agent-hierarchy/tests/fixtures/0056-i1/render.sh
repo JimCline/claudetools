@@ -97,15 +97,20 @@ for t in ah:architect task-gopher:task-gopher; do
     | HOME="$FAKEHOME" node "$H/subagentstart-cli-root.mjs" 2>&1 | norm > "$OUTDIR/subagentstart-${t%%:*}.json"
 done
 
-# ---- gate decisions per built-in: the tier rule (route gate, session model fable, subagents opted
-# in so the peer wall stays out of the way) and the message-file gate (no request file)
+# ---- gate decisions per built-in: the route gate on an Agent dispatch with no live peer (a
+# hierarchy dir of its own, so the peers the notices above registered are not seen), and the
+# message-file gate (no request file)
 cat > "$PROJ/.claude/agent-hierarchy.json" <<'JSON'
 {"version":1,"enabled":true,"roles":{}}
 JSON
 for role in ultra-advisor architect reviewer implementor task-runner; do
-  HOME="$FAKEHOME" node "$H/msg.mjs" route subagents --session "gate-$role" --cwd "$PROJ" >/dev/null 2>&1
   printf '{"session_id":"gate-%s","cwd":"%s","model":"claude-fable-5","tool_name":"Agent","tool_input":{"subagent_type":"ah:%s","prompt":"x"},"hook_event_name":"PreToolUse"}' "$role" "$PROJ" "$role" \
-    | env -u HERDR_ENV -u HERDR_PANE_ID HOME="$FAKEHOME" node "$H/pretooluse-route-gate.mjs" 2>&1 | norm > "$OUTDIR/gate-route-$role.json"
+    | env -u HERDR_ENV -u HERDR_PANE_ID AGENT_HIERARCHY_DIR="$SANDBOX/gate-no-peers" HOME="$FAKEHOME" node "$H/pretooluse-route-gate.mjs" 2>&1 | norm > "$OUTDIR/gate-route-$role.json"
   printf '{"session_id":"msg-%s","cwd":"%s","tool_name":"Agent","tool_input":{"subagent_type":"ah:%s","prompt":"x"},"hook_event_name":"PreToolUse"}' "$role" "$PROJ" "$role" \
     | env -u HERDR_ENV -u HERDR_PANE_ID HOME="$FAKEHOME" node "$H/pretooluse-msg-gate.mjs" 2>&1 | norm > "$OUTDIR/gate-msg-$role.json"
+done
+# ---- the tier rule on a peer brief: the Orchestrator (session model fable) SendMessages the role's peer
+for role in ultra-advisor architect reviewer implementor; do
+  printf '{"session_id":"send-%s","cwd":"%s","model":"claude-fable-5","tool_name":"SendMessage","tool_input":{"to":"myrepo-%s","message":"[hierarchy-peer-brief reply-to=\\"orch\\" task=\\"t\\"]\\nx"},"hook_event_name":"PreToolUse"}' "$role" "$PROJ" "$role" \
+    | env -u HERDR_ENV -u HERDR_PANE_ID HOME="$FAKEHOME" node "$H/pretooluse-route-gate.mjs" 2>&1 | norm > "$OUTDIR/gate-route-send-$role.json"
 done

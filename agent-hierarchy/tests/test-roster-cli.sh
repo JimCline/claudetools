@@ -67,10 +67,10 @@ run show
 check "edit --on-missing: a subsequent show reports it" 'echo "$OUT" | grep -q "\"onMissing\": \"auto\""'
 
 run edit --member myrepo-implementor --on-missing bogus
-check "edit --on-missing: invalid value rejected, listing the three values" \
-  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "auto" && echo "$OUT" | grep -q "prompt" && echo "$OUT" | grep -q "never"'
+check "edit --on-missing: invalid value rejected, listing the one value, auto" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "must be one of auto,"'
 
-run add --no-spawn --role reviewer --route subagent --on-missing auto
+run add --no-spawn --role task-runner --route subagent --on-missing auto
 check "add --on-missing with route subagent: rejected" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "on-missing applies only to peer-routed members"'
 
 run add --no-spawn --role reviewer --on-missing
@@ -100,7 +100,8 @@ run show
 check "12: the failed edit did not mutate the member (still peer, still onMissing auto)" \
   'echo "$OUT" | grep -q "\"name\": \"myrepo-implementor\"" && echo "$OUT" | grep -q "\"onMissing\": \"auto\""'
 
-# ---- 13: the trap — a route switch with NO --on-missing supplied must clear an inherited value
+# ---- 13: the trap — a route switch with NO --on-missing supplied must clear an inherited value.
+# Only a legwork member can be routed subagent, so the switch is made on a task-runner.
 # and warn, never carry it forward into an invalid route:subagent + onMissing:auto state, and never
 # hard-fail on a value the user did not type this time.
 #
@@ -112,19 +113,21 @@ check "12: the failed edit did not mutate the member (still peer, still onMissin
 # restore path, which is unsafe regardless of how careful the backup/restore bookkeeping is. A future
 # re-automation belongs in a $SANDBOX-copied, patched fixture — never a write to $PLUGIN — the way
 # 0020's hooks.json-matcher must-fail proofs already do it.
-run edit --member myrepo-implementor --route subagent
+run add --no-spawn --role task-runner --on-missing auto
+run edit --member myrepo-task-runner --route subagent
 check "13 (post-fix): exit 0" '[ "$RC" -eq 0 ]'
 check "13 (post-fix): stderr names the dropped value" 'echo "$OUT" | grep -q "dropped on-missing \"auto\""'
 run show
-check "13 (post-fix): member's route is now subagent" 'echo "$OUT" | grep -q "\"name\": \"myrepo-implementor\"" && echo "$OUT" | grep -q "\"route\": \"subagent\""'
+check "13 (post-fix): member's route is now subagent" 'echo "$OUT" | grep -q "\"name\": \"myrepo-task-runner\"" && echo "$OUT" | grep -q "\"route\": \"subagent\""'
 check "13 (post-fix): onMissing key is absent from the level file (not null, not retained)" \
-  '! (echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const m=JSON.parse(s).members.find(x=>x.name===\"myrepo-implementor\");process.exit(\"onMissing\" in m?0:1)})")'
+  '! (echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const m=JSON.parse(s).members.find(x=>x.name===\"myrepo-task-runner\");process.exit(\"onMissing\" in m?0:1)})")'
 
 # ---- 14: round-trip — the transition is not one-way
-run edit --member myrepo-implementor --route peer --on-missing prompt
+run edit --member myrepo-task-runner --route peer --on-missing auto
 check "14: switching back to peer + supplying on-missing again succeeds" '[ "$RC" -eq 0 ]'
 run show
-check "14: onMissing is back" 'echo "$OUT" | grep -q "\"onMissing\": \"prompt\""'
+check "14: onMissing is back" 'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const m=JSON.parse(s).members.find(x=>x.name===\"myrepo-task-runner\");process.exit(m&&m.onMissing===\"auto\"&&m.route===\"peer\"?0:1)})"'
+run remove --member myrepo-task-runner
 
 run show
 check "show: resolved roster lists 3 members" 'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>process.exit(JSON.parse(s).members.length===3?0:1))"'

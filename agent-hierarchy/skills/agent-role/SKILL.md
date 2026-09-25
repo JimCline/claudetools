@@ -15,7 +15,7 @@ its checks here.
 `R` below is `node "${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs"`, always with
 `--cwd <abs cwd>`. `R role set <name>` takes `--class <c>`, `--agent <ref>`,
 `--label <l>`, `--description <d>`, `--routes <r>`, `--model <m>`,
-`--dispatch peer|model`, `--level global|repo|repo-user`,
+`--dispatch peer|model` (`model` only for a legwork-class role — only legwork runs as a subagent), `--level global|repo|repo-user`,
 `--scaffold repo|user` and `--dry-run` (full reference: `docs/cli-tools.md`).
 
 ## What a class means

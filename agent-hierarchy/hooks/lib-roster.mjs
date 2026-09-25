@@ -83,8 +83,9 @@ export const EFFORT_VALUES = ["low", "medium", "high", "xhigh", "max"];
  */
 export const AUTO_MODE_VALUES = ["auto", "acceptEdits", "plan", "dontAsk", "manual", "bypassPermissions"];
 
-/** What the peer-fallback gate does when this member has no live instance (spec 0021). */
-export const ON_MISSING_VALUES = ["auto", "prompt", "never"];
+/** What the route gate does when this member has no live instance. Only "auto" — the spawn command —
+    exists, since a chain role never runs as a subagent. */
+export const ON_MISSING_VALUES = ["auto"];
 export const ON_MISSING_DEFAULT = "auto";
 
 /** `team.json` for the default team, or `teams/<team>.json` for a named one (spec 0011 §3). */
@@ -238,12 +239,15 @@ export function validateMember(m, resolved = null) {
   }
   if (m.route !== undefined && m.route !== null && !ROSTER_ROUTE_VALUES.includes(m.route)) {
     errors.push(`route must be one of ${ROSTER_ROUTE_VALUES.join(", ")}, got ${JSON.stringify(m.route)}`);
+  } else if (m.route === "subagent" && cls && cls !== "legwork") {
+    errors.push(`route "subagent" is not allowed for role ${JSON.stringify(m.role)} — only legwork roles run as subagents`);
   }
   if (m.autoMode !== undefined && m.autoMode !== null && !AUTO_MODE_VALUES.includes(m.autoMode)) {
     errors.push(`auto-mode must be one of ${AUTO_MODE_VALUES.join(", ")}, got ${JSON.stringify(m.autoMode)}`);
   }
   if (m.onMissing !== undefined && m.onMissing !== null && !ON_MISSING_VALUES.includes(m.onMissing)) {
-    errors.push(`on-missing must be one of ${ON_MISSING_VALUES.join(", ")}, got ${JSON.stringify(m.onMissing)}`);
+    const why = m.onMissing === "never" || m.onMissing === "prompt" ? " — only legwork roles run as subagents" : "";
+    errors.push(`on-missing must be one of ${ON_MISSING_VALUES.join(", ")}, got ${JSON.stringify(m.onMissing)}${why}`);
   }
   if (m.name !== undefined) errors.push('member must not carry a stored "name" — it is derived at resolve time (spec §3.4)');
   for (const e of kindFieldErrors(m)) errors.push(e);

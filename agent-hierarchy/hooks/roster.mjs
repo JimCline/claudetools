@@ -114,7 +114,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-import { AGENT_REF_RE, agentRefError, hierarchyNameParts as parseNameParts, chainRoles, checkCustomRow, CLASSES, classBuiltin, classProp, customRoleNames, defaultLabel, DISPATCH_MODES, formatFindings, hasContractErrors, isAlternative, isBuiltinRole, isOverride, locateAgentFile, registryRoles, roleAgent, roleClass, ROLE_LABELS, roleLabel, validateAgentContract, validateRole, CONFIG_VERSION, findGitRoot, hierarchyDir, mainHierarchyDir, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, ROLES, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, namedRosterKeys, rosterBlocksOf, staleTeamKeys, suggestTeamAlias, teamLayoutPreference, teamPrefix, teamPrefixInfo, tierOf, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
+import { AGENT_REF_RE, agentRefError, hierarchyNameParts as parseNameParts, chainRoles, checkCustomRow, CLASSES, classBuiltin, classProp, customRoleNames, defaultLabel, DISPATCH_MODES, formatFindings, hasContractErrors, isAlternative, isBuiltinRole, isOverride, locateAgentFile, registryRoles, roleAgent, roleClass, ROLE_LABELS, roleLabel, validateAgentContract, validateRole, CONFIG_VERSION, findGitRoot, hierarchyDir, mainHierarchyDir, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, ROLES, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, namedRosterKeys, normalizeRosterBlock, rosterBlocksOf, staleTeamKeys, STALE_ROUTE_VALUES, suggestTeamAlias, teamLayoutPreference, teamPrefix, teamPrefixInfo, tierOf, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
 import { ageSecOf, appendRosterRecord, attributedRoster, fmtAge, latestRoster, livePeerSlots, peersPath, readJsonl, newId, localIso, NO_TEAM_SCOPE, pidAlive, realCwd, recordLiveness, synthesizedPeerName } from "./lib-hier.mjs";
 import { readPeerRecords } from "./lib-peer.mjs";
 import { attributeSessionTeam, clearTeam, defaultTeamScope, envTeamFile, fingerprint, herdrOnPath, historyEntryIsActive, KIND_AUTO_MODE_ARGS, KIND_DEFAULT, kindAutoModeArgs, kindFieldErrors, listTeamNames, memberArgs, memberNamePrefix, normalizeMembers, readHistory, readTeam, resolveKind, resolveTeamByPane, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamFileState, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamOwnedBy, teamPath, teamRosterKey, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
@@ -170,8 +170,13 @@ function fail(msg) {
   process.exit(2);
 }
 
+/** Every stale key this invocation's config writes migrated: `{path, key, from, to}`, `to` null
+    for a deletion. The verb's output carries it. */
+const migratedKeys = [];
+
 function out(obj) {
-  process.stdout.write(JSON.stringify(obj, null, 2) + "\n");
+  const payload = migratedKeys.length && obj && typeof obj === "object" && !Array.isArray(obj) ? { ...obj, migrated: migratedKeys } : obj;
+  process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
 }
 
 /** A partial layout-splits result: real work happened, but not all of it. Bypasses the outer try/catch. */
@@ -368,6 +373,7 @@ function roleSet(name) {
     cls = row.class;
     checked = c.row;
   }
+  if (given.dispatch === "model" && cls !== "legwork") fail(`role set ${name}: --dispatch model is not allowed for a ${cls} role — only legwork roles run as subagents`);
   const agent = builtin ? roleAgent(name, row) : checked.agent;
   const owner = registryRoles(reg).find((r) => r !== name && roleAgent(r, reg.roles[r]) === agent);
   if (owner) fail(`role set ${name}: agent ${JSON.stringify(agent)} is already the ${owner} role's agent — an agent maps to exactly one role`);
@@ -630,7 +636,7 @@ function doctorReport(cwd) {
 
   // Keys that name or lay out a team from config do nothing; this is one of the places a person
   // reading output learns so, and only when there is something to say.
-  const stale = staleTeamKeys(cwd).warnings;
+  const stale = staleTeamKeys(cwd, registry()).warnings;
   if (stale.length) rows.push({ name: "stale-config-keys", status: "warn", detail: stale.join(" ") });
   return { cwd, rows, red: rows.filter((r) => r.status === "red").map((r) => r.name) };
 }
@@ -782,7 +788,7 @@ function newTeamBlock(dir) {
     const members = validateHistoryMembers(resolveHistoryEntry(dir));
     return { route: (members[0] && members[0].route) || "peer", members };
   }
-  const found = resolveRoster(cwd, cmd === "create" ? rosterArg : null);
+  const found = resolveRoster(cwd, cmd === "create" ? rosterArg : null, null, registry());
   const resolved = cmd === "spawn-ad-hoc" ? adHocRoster(found) : found;
   const block = resolved ? { route: resolved.route, members: resolved.members } : { route: null, members: [] };
   if (cmd === "spawn-ad-hoc" && adHocForNameCheck) block.members = [...block.members, adHocForNameCheck];
@@ -870,7 +876,7 @@ function refuseTeamName(name, nameSource, problem, transport, block) {
   const needsUserChoice = suggestion !== null;
   const rerun = needsUserChoice ? rerunWithTeamPlaceholder() : null;
   const message = needsUserChoice
-    ? `Team name "${name}" (${nameSource}) can't be used: ${problem.why}. Do not pick a name yourself. Ask the user with AskUserQuestion — first option "Use ${suggestion} (Recommended)", and let them type another name. Then re-run ${rerun} with <TEAM> replaced by their answer. This is not a launch failure: do not offer the subagent opt-in.`
+    ? `Team name "${name}" (${nameSource}) can't be used: ${problem.why}. Do not pick a name yourself. Ask the user with AskUserQuestion — first option "Use ${suggestion} (Recommended)", and let them type another name. Then re-run ${rerun} with <TEAM> replaced by their answer. This is not a launch failure.`
     : `No team name can make member names valid under ${transport}: ${suggestionWhy}. Tell the user; the fix is a shorter or renamed role or --member name. Do not retry with a name of your own.`;
   refuse({ refused: "team-name-unusable", needs_user_choice: needsUserChoice, verb: cmd, name, name_source: nameSource, transport, why: problem.why, failing_member: problem.failing_member, suggestion, suggestion_why: suggestionWhy, rerun, message });
 }
@@ -1020,7 +1026,7 @@ function refuseMemberModels(needing) {
       ? `Only a top-level session that cannot ask the user (a non-interactive run: claude -p, the SDK, headless) runs the fallback rerun instead: ${rerunFallback}. `
       : `rerun_fallback is null — there is no fallback for ${needing.filter((m) => !m.fallback).map((m) => m.name).join(", ")} — so a session that cannot ask the user stops and reports these members. `) +
     "A subagent never runs rerun_fallback: it returns this refusal to its caller. Never choose a model any other way. " +
-    "This is not a launch failure: do not offer the subagent opt-in.";
+    "This is not a launch failure.";
   refuse({ refused: "member-model-undefined", verb: cmd, members: needing, rerun, rerun_fallback: rerunFallback, message });
 }
 
@@ -1073,7 +1079,7 @@ const AUTO_INIT_ROUTE = "peer";
 function targetLevel({ allowMissing = false, key = rosterArg } = {}) {
   const explicit = levelArg();
   if (explicit) return { level: requireLevel(explicit), wasDefaulted: false, teamKey: key };
-  const resolved = resolveRoster(cwd, key, repoBasename);
+  const resolved = resolveRoster(cwd, key, repoBasename, registry());
   if (resolved) return { level: resolved.level, wasDefaulted: true, teamKey: key };
   // Spec 0038 §1.1: with nothing resolving anywhere, `add` (only) may bootstrap at the same
   // default `targetLevel` would otherwise have picked — repo level when cwd is inside a git
@@ -1127,9 +1133,95 @@ function readLevelFile(path) {
   }
 }
 
+/**
+ * Rewrites, in place, the keys in a level file's `data` that no longer do anything, so a write the
+ * user started leaves the file current. Opt-ins that ran a chain role as a subagent — only legwork
+ * does now: a top-level route other than "peers", a chain role's dispatch "model", a chain member's
+ * route "subagent", onMissing "never"/"prompt", and a block route "subagent", which becomes "peer"
+ * while each legwork member that inherited it keeps "subagent" as its own. And the team keys a
+ * roster no longer holds: `teamAlias`, a block's `layout`, and `teamLayout` outside the global file.
+ * A member whose role cannot be classified is left as it is. Other keys and key order are kept.
+ */
+function migrateStaleKeys(path, data) {
+  const changes = [];
+  const note = (key, from, to) => changes.push({ path, key, from: from === undefined ? null : from, to });
+  const reg = registry();
+  if (STALE_ROUTE_VALUES.includes(data.route)) {
+    note("route", data.route, null);
+    delete data.route;
+  }
+  if (data.teamAlias !== undefined) {
+    note("teamAlias", data.teamAlias, null);
+    delete data.teamAlias;
+  }
+  if (data.teamLayout !== undefined && path !== rosterLevelPaths(cwd).global) {
+    note("teamLayout", data.teamLayout, null);
+    delete data.teamLayout;
+  }
+  const roles = data.roles && typeof data.roles === "object" && !Array.isArray(data.roles) ? data.roles : {};
+  // A custom role's class is the one this file now holds: the registry was resolved before the
+  // write, so a write that reclassifies a role would otherwise be judged by its old class.
+  const classOf = (role) => {
+    const row = roles[role];
+    return !isBuiltinRole(role) && row && typeof row === "object" && CLASSES[row.class] ? row.class : roleClass(role, reg);
+  };
+  for (const [role, row] of Object.entries(roles)) {
+    if (!row || typeof row !== "object" || row.dispatch !== "model") continue;
+    const cls = classOf(role);
+    if (cls && cls !== "legwork") {
+      note(`roles.${role}.dispatch`, "model", null);
+      delete row.dispatch;
+    }
+  }
+  for (const [label, , block] of rosterBlocksOf(data)) {
+    if (!block || typeof block !== "object" || Array.isArray(block)) continue;
+    if (block.layout !== undefined) {
+      note(`${label}.layout`, block.layout, null);
+      delete block.layout;
+    }
+    const staleBlock = block.route === "subagent";
+    if (staleBlock) {
+      note(`${label}.route`, "subagent", "peer");
+      block.route = "peer";
+    }
+    (Array.isArray(block.members) ? block.members : []).forEach((m, i) => {
+      const cls = m && typeof m === "object" ? classOf(m.role) : null;
+      if (!cls) return;
+      const at = `${label}.members[${i}]`;
+      if (m.onMissing === "never" || m.onMissing === "prompt") {
+        note(`${at}.onMissing`, m.onMissing, null);
+        delete m.onMissing;
+      }
+      if (cls === "legwork") {
+        if (staleBlock && m.route === undefined) {
+          note(`${at}.route`, null, "subagent");
+          m.route = "subagent";
+        }
+      } else if (m.route === "subagent") {
+        note(`${at}.route`, "subagent", null);
+        delete m.route;
+      }
+    });
+  }
+  return changes;
+}
+
 function writeLevelFile(path, data) {
+  const changes = migrateStaleKeys(path, data);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(data, null, 2) + "\n", "utf8");
+  if (changes.length) {
+    migratedKeys.push(...changes);
+    process.stderr.write(`roster.mjs: migrated ${changes.length} stale key(s) in ${path}: ${changes.map((c) => c.key).join(", ")} (listed under \`migrated\`)\n`);
+  }
+}
+
+/** The route `member` of `block` is checked against. A route or role given by this invocation is
+    checked as given; anything left from before reads as `normalizeRosterBlock` reads it. */
+function checkedRoute(member, block, givenNow) {
+  if (givenNow && member.route !== undefined) return member.route;
+  const view = normalizeRosterBlock({ route: block.route, members: [member] }, registry());
+  return view.members[0].route || view.route;
 }
 
 function namedMembers(members) {
@@ -1208,7 +1300,7 @@ function memberFromFlags(role, cmdLabel) {
     const parsed = parseArgsFlag(opts.args, cmdLabel);
     if (parsed !== null) member.args = parsed;
   }
-  if (opts["on-missing"] === true) fail(`${cmdLabel}: --on-missing requires a value (auto, prompt, or never)`);
+  if (opts["on-missing"] === true) fail(`${cmdLabel}: --on-missing requires a value (auto)`);
   if (typeof opts["on-missing"] === "string") member.onMissing = opts["on-missing"];
   return member;
 }
@@ -1328,7 +1420,7 @@ function untrackLiveGuard(dir, members, verb) {
  */
 function teamTemplateKey(dir) {
   const key = teamRosterKey(dir, teamFile);
-  const resolved = resolveRoster(cwd, key, repoBasename);
+  const resolved = resolveRoster(cwd, key, repoBasename, registry());
   return resolved ? resolved.teamKey : key;
 }
 
@@ -2226,7 +2318,7 @@ function settleWritableTeamScope(dir, { replacing, committing }) {
 /** Shared by `create --plan` and `create --spawn` (spec 0005 §9 item 1): resolve the roster, refuse/clear a stale Team, compute members[] + spawn shapes. */
 function resolveMembersPlan(dir) {
   refuseOrClearExistingTeam(dir);
-  const resolved = resolveRoster(cwd, rosterArg, repoBasename);
+  const resolved = resolveRoster(cwd, rosterArg, repoBasename, registry());
   if (!resolved) fail("no roster resolves at any level — hand off to `roster.mjs init`");
   const transport = detectTransport();
   const models = memberModelOverrides(resolved.members);
@@ -2267,7 +2359,7 @@ function validateHistoryMembers(entry) {
     if (m.auto_mode !== undefined) out.autoMode = m.auto_mode;
     return out;
   });
-  const rosterBlock = { route: (renamed[0] && renamed[0].route) || "peer", members: renamed };
+  const rosterBlock = normalizeRosterBlock({ route: (renamed[0] && renamed[0].route) || "peer", members: renamed }, registry());
   const errors = validateRosterBlock(rosterBlock, registry());
   if (errors.length) fail(errors.join("; "));
   return renamed;
@@ -2281,9 +2373,9 @@ function validateHistoryMembers(entry) {
 function planMembersFromHistory(entry, dir) {
   refuseOrClearExistingTeam(dir);
   const renamed = validateHistoryMembers(entry);
-  const rosterBlock = { route: (renamed[0] && renamed[0].route) || "peer", members: renamed };
+  const rosterBlock = normalizeRosterBlock({ route: (renamed[0] && renamed[0].route) || "peer", members: renamed }, registry());
   const transport = detectTransport();
-  const named = namedMembers(renamed);
+  const named = namedMembers(rosterBlock.members);
   const models = memberModelOverrides(named);
   const rows = named.map((row) => withModel(row, models.get(row.name)));
   const skipped = rows.filter((m) => routeHasPane(m.route || rosterBlock.route) && autoSkipped(m));
@@ -2301,10 +2393,10 @@ function planMembersFromHistory(entry, dir) {
 function createSourceMembers(dir) {
   if (typeof opts.from === "string") {
     const renamed = validateHistoryMembers(resolveHistoryEntry(dir));
-    const route = (renamed[0] && renamed[0].route) || "peer";
-    return namedMembers(renamed).map((m) => ({ ...m, route: m.route || route }));
+    const block = normalizeRosterBlock({ route: (renamed[0] && renamed[0].route) || "peer", members: renamed }, registry());
+    return namedMembers(block.members).map((m) => ({ ...m, route: m.route || block.route }));
   }
-  const resolved = resolveRoster(cwd, rosterArg, repoBasename);
+  const resolved = resolveRoster(cwd, rosterArg, repoBasename, registry());
   return resolved ? resolved.members.map((m) => ({ ...m, route: m.route || resolved.route })) : [];
 }
 
@@ -2980,7 +3072,7 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
   resolveWritableTeamScope(hierarchyDir(cwd));
   if (!readTeam(hierarchyDir(cwd), teamFile)) checkNewTeamName(hierarchyDir(cwd));
   if (!chainRoles(registry()).includes(role)) fail(`${callerLabel}: role must be one of ${chainRoles(registry()).join(", ")}, got ${JSON.stringify(role)}`);
-  const found = resolveRoster(cwd, teamRosterKey(hierarchyDir(cwd), teamFile), repoBasename);
+  const found = resolveRoster(cwd, teamRosterKey(hierarchyDir(cwd), teamFile), repoBasename, registry());
   const resolved = adHocMember ? adHocRoster(found) : found;
   // An ad hoc member need not exist in the roster, and need not have a
   // roster to exist in. A repo-level roster is still read when there IS one — for the layout
@@ -3221,7 +3313,7 @@ try {
         const path = rosterLevelPaths(cwd)[level];
         const data = readLevelFile(path);
         const container = rosterContainer(data, rosterArg);
-        const resolved = resolveRoster(cwd, rosterArg, repoBasename);
+        const resolved = resolveRoster(cwd, rosterArg, repoBasename, registry());
         const shown = container && Array.isArray(container.members) ? { route: container.route, members: namedMembers(container.members) } : null;
         out({
           level,
@@ -3232,7 +3324,7 @@ try {
           ...showNameNote(shown),
         });
       } else {
-        const resolved = resolveRoster(cwd, rosterArg, repoBasename);
+        const resolved = resolveRoster(cwd, rosterArg, repoBasename, registry());
         out(
           resolved
             ? { ...resolved, ...showNameNote(resolved) }
@@ -3249,6 +3341,7 @@ try {
       const level = requireLevel(levelArg() || fail("init needs --level global|repo|repo-user (or the level as the first word)"));
       const route = opts.route;
       if (!ROSTER_ROUTE_VALUES.includes(route)) fail(`--route must be "peer" or "subagent", got ${JSON.stringify(route)}`);
+      if (route === "subagent") fail("init: --route subagent is not allowed — only legwork roles run as subagents. Init with --route peer, then route individual legwork members with `add --role <legwork role> --route subagent`.");
       const path = rosterLevelPaths(cwd)[level];
       const data = readLevelFile(path);
       // Spec 0032 §3.4 point 3: `init --team X` creates `rosters.X`, never `roster`; `init`
@@ -3279,7 +3372,7 @@ try {
       }
       const created = !container;
       if (created) {
-        container = freshRosterBlock(typeof opts.route === "string" ? opts.route : AUTO_INIT_ROUTE);
+        container = freshRosterBlock(typeof opts.route === "string" && opts.route !== "subagent" ? opts.route : AUTO_INIT_ROUTE);
         installRosterBlock(data, teamKey, container);
       }
       if (!Array.isArray(container.members)) container.members = [];
@@ -3287,20 +3380,21 @@ try {
       if (role === "orchestrator") fail('role "orchestrator" is not a roster member — the Orchestrator is whatever session runs /agent-team create');
       if (!registryRoles(registry()).includes(role)) fail(`--role must be one of ${registryRoles(registry()).join(", ")}, got ${JSON.stringify(role)}`);
       const member = memberFromFlags(role, "add");
-      if (member.onMissing !== undefined && (member.route || container.route) === "subagent") {
+      const addRoute = checkedRoute(member, container, true);
+      if (member.onMissing !== undefined && addRoute === "subagent") {
         fail('on-missing applies only to peer-routed members (this member\'s route is "subagent")');
       }
       // Spec 0043 §1.3's route rule is about the member's EFFECTIVE route, and a member with no
       // route of its own inherits the block's — the same `member.route || container.route` the
       // on-missing check above already uses. Validating the bare member instead would reject
       // `add --kind codex` under a `route: pane` roster block, which is the one place it belongs.
-      const memberErrors = validateMember({ ...member, route: member.route || container.route }, registry());
+      const memberErrors = validateMember({ ...member, route: addRoute }, registry());
       if (memberErrors.length) fail(memberErrors.join("; "));
-      if (member.autoMode === "bypassPermissions" && (member.route || container.route) === "peer") {
+      if (member.autoMode === "bypassPermissions" && addRoute === "peer") {
         process.stderr.write('roster.mjs: warning — auto-mode "bypassPermissions" can leave a headless peer stuck at a startup confirmation screen; use --auto-mode auto for hands-off runs\n');
       }
       container.members.push(member);
-      const blockErrors = validateRosterBlock(container, registry());
+      const blockErrors = validateRosterBlock(normalizeRosterBlock(container, registry()), registry());
       if (blockErrors.length) fail(blockErrors.join("; "));
       warnRoleVisibility(role, level);
       const addedNamed = namedMembers(container.members).at(-1);
@@ -3317,7 +3411,7 @@ try {
       // for it and wrote the roster on the way, which is the whole defect this spec closes.
       // Saying nothing here would silently strand anyone who relied on the old behaviour, so the
       // next step is named rather than left to be discovered.
-      const effectiveRoute = member.route || container.route;
+      const effectiveRoute = addRoute;
       result.spawned = false;
       result.next_step = routeHasPane(effectiveRoute) && classProp(role, registry(), "chain") === true
         ? `config only — nothing was launched. To start this member: roster.mjs spawn-one ${role} --member ${added.name}`
@@ -3383,13 +3477,15 @@ try {
         if (parsedArgs === null) delete updated.args;
         else updated.args = parsedArgs;
       }
-      if (opts["on-missing"] === true) fail("edit: --on-missing requires a value (auto, prompt, or never)");
+      if (opts["on-missing"] === true) fail("edit: --on-missing requires a value (auto)");
       // §3.2.1: supplied-ness must be read from `opts`, never from `updated` — `updated` already
       // carries a value merged in via {...existing}, so once merged, "supplied now" and "was already
       // there" are indistinguishable on `updated` alone. That conflation is the trap amendment (c) fixes.
       const onMissingSupplied = typeof opts["on-missing"] === "string";
       if (onMissingSupplied) updated.onMissing = opts["on-missing"];
-      if (onMissingSupplied && (updated.route || container.route) === "subagent") {
+      const routeOrRoleGiven = typeof opts.route === "string" || typeof opts.role === "string";
+      const editRoute = checkedRoute(updated, container, routeOrRoleGiven);
+      if (onMissingSupplied && editRoute === "subagent") {
         // §3.2(i): both supplied in one invocation — a contradiction, never guess which one wins.
         fail('on-missing applies only to peer-routed members (this member\'s route is "subagent")');
       }
@@ -3401,10 +3497,13 @@ try {
         process.stderr.write(`roster.mjs: ah: dropped on-missing "${dropped}" — it applies only to peer-routed members, and this member is now route "subagent"\n`);
       }
       if (updated.role === "orchestrator") fail('role "orchestrator" is not a roster member');
-      const errors = validateMember({ ...updated, route: updated.route || container.route }, registry());
+      // A stale onMissing left from before is not this edit's to reject: the write migrates it.
+      const checked = { ...updated, route: editRoute };
+      if (!onMissingSupplied && (checked.onMissing === "never" || checked.onMissing === "prompt")) delete checked.onMissing;
+      const errors = validateMember(checked, registry());
       if (errors.length) fail(errors.join("; "));
       warnRoleVisibility(updated.role, level);
-      if (updated.autoMode === "bypassPermissions" && (updated.route || container.route) === "peer") {
+      if (updated.autoMode === "bypassPermissions" && editRoute === "peer") {
         process.stderr.write('roster.mjs: warning — auto-mode "bypassPermissions" can leave a headless peer stuck at a startup confirmation screen; use --auto-mode auto for hands-off runs\n');
       }
       container.members[idx] = updated;
@@ -3531,7 +3630,7 @@ try {
       // An explicit selector that silently fell back to the default block would look applied and
       // never be, so a missing block refuses before anything is cleared, launched, or written.
       if (rosterArg) {
-        const named = resolveRoster(cwd, rosterArg, repoBasename);
+        const named = resolveRoster(cwd, rosterArg, repoBasename, registry());
         if (!named || named.teamKey !== rosterArg) {
           fail(`create --roster ${rosterArg}: no rosters.${rosterArg} block with members at any level — nothing was launched or written. Define it with \`roster.mjs init --roster ${rosterArg}\` and \`roster.mjs add --roster ${rosterArg} --role <R>\``);
         }
@@ -3540,19 +3639,19 @@ try {
       // have been picked by that name is pointed out rather than silently passed over.
       const createWarnings = [];
       if (teamArg && !rosterArg && typeof opts.from !== "string") {
-        const named = resolveRoster(cwd, teamArg, repoBasename);
+        const named = resolveRoster(cwd, teamArg, repoBasename, registry());
         if (named && named.teamKey === teamArg) {
           createWarnings.push(`a rosters.${teamArg} block exists, but --team names only the team: this team is built from the default roster. To build it from rosters.${teamArg}, pass --roster ${teamArg}.`);
         }
       }
       if (!teamArg) {
         const teamName = teamFile ?? teamPrefix(cwd, null);
-        for (const alias of staleTeamKeys(cwd).aliases) {
+        for (const alias of staleTeamKeys(cwd, registry()).aliases) {
           if (alias === teamName) continue;
           createWarnings.push(`this repo's config still sets a team alias, "${alias}", which no longer names teams: this team is named "${teamName}". To keep the old member names (${alias}-<role>), pass --team ${alias}.`);
         }
       }
-      createWarnings.push(...staleTeamKeys(cwd).warnings);
+      createWarnings.push(...staleTeamKeys(cwd, registry()).warnings);
       for (const w of createWarnings) process.stderr.write(`roster.mjs: warning — ${w}\n`);
       const withWarnings = (obj) => (createWarnings.length ? { ...obj, warnings: createWarnings } : obj);
       // Spec 0044 §1.1: all three modes settle the scope here, together. `--commit` creates a team
@@ -3596,7 +3695,7 @@ try {
           // hand-rolled predicate drifted from resolveRoster's (`!members.length` vs null-only),
           // so an override with `members: []` was picked here while --plan correctly fell
           // through to the default. resolveRoster is exactly what --plan itself calls.
-          const resolved = resolveRoster(cwd, rosterArg, repoBasename);
+          const resolved = resolveRoster(cwd, rosterArg, repoBasename, registry());
           const rosterMembers = resolved ? resolved.members : [];
           const rosterRoute = resolved ? resolved.route : undefined;
           members = verified.filter((name) => !skipNames.has(name)).map((name) => {
@@ -3646,7 +3745,7 @@ try {
         }
         // Every team-creating write records the roster block it was built from (null: the default
         // block, or a history entry, which carries its own members) and its layout.
-        const templateRoster = typeof opts.from === "string" ? null : resolveRoster(cwd, rosterArg, repoBasename);
+        const templateRoster = typeof opts.from === "string" ? null : resolveRoster(cwd, rosterArg, repoBasename, registry());
         const layout = createLayout();
         const team = {
           version: 1,

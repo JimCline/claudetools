@@ -122,7 +122,7 @@ check "roster: down supersedes up (instance dropped)" '[ "$OUT" = false ]'
 
 # ---- 5: array peer config resolves all; single string still one; ultra gate matches any
 eval_hier "C.resolvedPeerTargets('reviewer', resolved.roles.reviewer, 'myrepo').join(',')+'|'+C.resolvedPeerTarget('reviewer', resolved.roles.reviewer, 'myrepo')+'|'+C.resolvedPeerTargets('implementor', resolved.roles.implementor, 'myrepo').join(',')+'|'+C.resolvedPeerTargets('architect', resolved.roles.architect, 'myrepo').length"
-check "resolvedPeerTargets: array -> all; wrapper -> first; auto -> convention; model -> none" '[ "$OUT" = "rev-a,rev-b|rev-a|myrepo-implementor|0" ]'
+check "resolvedPeerTargets: array -> all; wrapper -> first; auto -> convention; a chain role's stale model -> read as peer, the convention" '[ "$OUT" = "rev-a,rev-b|rev-a|myrepo-implementor|1" ]'
 cat > "$PROJ/.claude/agent-hierarchy.json" <<EOF
 { "version": 1, "enabled": true, "roles": { "reviewer": { "model": "opus", "dispatch": "peer", "peer": [] } } }
 EOF

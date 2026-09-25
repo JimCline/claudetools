@@ -53,7 +53,7 @@ When the request names (or clearly implies) ONE role, skip everything below:
   the user's choice: follow the refusal's `message` — ask with AskUserQuestion,
   its `suggestion` first and marked "(Recommended)", then re-run its `rerun`
   with `<TEAM>` replaced by their answer. Never pick or sanitize a name yourself,
-  and this is not a launch failure: do not offer the subagent opt-in.
+  and this is not a launch failure.
 - If it refuses with `refused: "member-model-undefined"`, the member has no
   model and its model is the user's choice: follow the refusal's `message` —
   ask with AskUserQuestion, the member's `fallback` first when it has one (not
@@ -61,7 +61,9 @@ When the request names (or clearly implies) ONE role, skip everything below:
   with `<MODEL>` replaced by the answer. Only a top-level session that cannot
   ask the user runs `rerun_fallback`; a subagent returns the refusal to its
   caller; with no fallback, stop and report. Never choose a model any other
-  way, and this is not a launch failure: do not offer the subagent opt-in.
+  way, and this is not a launch failure.
+- If the launch itself fails (exit 2 with a launch error, not a structured
+  `refused`), follow § When a role can't take the work.
 - The formal path (the rest of this skill) applies only when no single role is
   named, when a whole team is wanted, or for lifecycle ops.
 
@@ -347,7 +349,8 @@ check-in) apply unchanged. This capability is skill-only.
    `launch_status` is `failed` — a `dispatched` member (tmux only) is not
    partial, see step 4. Skip straight to step 4 with this `members[]` — do not
    recompute placements or drive `layout-splits`/`layout` commands yourself in
-   `auto` mode.
+   `auto` mode. A member whose launch `failed` is a launch failure: its role
+   follows § When a role can't take the work.
 
    **`manual` mode:** spawn every peer-routed member in two batched phases
    yourself, exactly as below. Do not run one member's full sequence before
@@ -699,19 +702,17 @@ gap; it is not a lighter-weight alternative to Create for a full team.
 existing command strings keep running; a roster at the `global` level needs
 no flag and no confirm. `spawn-ad-hoc` never reads the global roster.
 
-**When the `route` is `peers` (the default) and no live peer exists for a
-role**, the route gate denies every Agent call for that role — a wall, not a
-reminder — and the deny carries the whole instruction:
+**Chain roles run only as peers.** The route gate denies every Agent call for
+one — a wall, not a reminder — and the deny carries the whole instruction:
 
 | state | the deny carries |
 |---|---|
 | a live instance exists | `SendMessage "<name>"` (a free one first), with the brief the Agent call carried |
-| none live; roster member for the role; `onMissing` `auto` or unset | the exact `spawn-one <role> --cwd <cwd>` command |
-| none live; roster member with explicit `onMissing: "prompt"` | a one-shot AskUserQuestion, "Spawn the peer" first and Recommended; the re-issue passes |
+| none live; roster member for the role | the exact `spawn-one <role> --cwd <cwd>` command |
 | none live; no roster member for the role | the exact `spawn-ad-hoc <role> --cwd <cwd>` command |
 
-Run the command, then SendMessage the name it prints. A subagent only when the
-user opts in (`msg.mjs route subagents --session <id>`).
+Run the command, then SendMessage the name it prints. If it fails to launch,
+follow § When a role can't take the work.
 
 ## `dismiss`
 
@@ -847,3 +848,111 @@ default, and writes only the team file.
 
 Report the derived name back to the user in one line — they did not choose it,
 and they need it for a later `dismiss`.
+
+## When a role can't take the work
+
+A chain role never runs as a subagent: the route gate denies it. When a role's
+peer can't take the work, follow the ladder for its class. Each step runs only
+if the one before it fails. Taking a role over covers the work at hand only;
+the next time that role is needed, start again from the top.
+
+**A launch failure** is the only thing that makes a role unreachable:
+
+- `spawn-one` or `spawn-ad-hoc` exited 2 with a launch error, not a structured
+  `refused`;
+- `create --spawn` reported that member `launch_status: "failed"`;
+- a layout break (`layout-splits` exit 3) left that member without a pane.
+
+These are **not** launch failures; handle each as its own rule says:
+
+- `refused: "team-name-unusable"` and `refused: "member-model-undefined"`;
+- a legwork member in `skipped_members`;
+- a spawn command the user declined at its permission prompt (§ Declined spawn).
+
+### Design, review and implement roles (custom included)
+
+1. **Live instance.** SendMessage it the brief.
+2. **Spawn it.** `spawn-one <role>`, or `spawn-ad-hoc <role>` when the roster
+   has no member for the role. A `member-model-undefined` refusal is not a
+   failure: handle it (ask for the model, or take its fallback), then retry
+   the spawn.
+3. **Paneless.** Only when that launch physically fails, do the work yourself,
+   in this session, under that role's contract (item 0's "do it inline").
+   First tell the user one line: "<Role> could not be launched (<reason>);
+   doing its work here."
+
+There is no cross-role step: never hand one role's work to another role, such
+as implementation to an Architect.
+
+### Ultra-Advisor escalation (advise class, custom included)
+
+**Approval comes first, once per escalation.** Read
+`node ${CLAUDE_PLUGIN_ROOT}/hooks/gate.mjs status --session <id>` before step 1:
+
+| Recorded decision | What happens |
+|---|---|
+| none | Ask the gate's first-use question: AskUserQuestion, header "Ultra-Advisor", with exactly these three options in this order — "Yes, rest of session" (Escalate now, and allow every later Ultra-Advisor dispatch this session without asking again.), "Ask me each time" (Escalate now, but prompt again at every later escalation.), "No, not this session" (Do not escalate; block Ultra-Advisor for the rest of this session.). Record the answer with `gate.mjs set --session <id> --choice session\|each\|off`, then continue by the answer. |
+| `off` | No ladder. Handle the question with the Architect or inline, and state plainly what that leaves unadjudicated. |
+| `session` | Run the ladder. Nothing more is asked. |
+| `each` | Run the ladder. At steps 1–2 the gate's own prompt fires when the brief reaches the Ultra-Advisor peer. If the ladder reaches step 3 or 4 before that prompt was answered for this escalation, ask once with AskUserQuestion — "Escalate this to <role> (<model>)" or "Adjudicate here", since no Ultra-Advisor could be launched — before delivering. One answer covers the rest of the escalation. |
+
+**The ladder.** Each step runs only if the one before it fails.
+
+1. **An Ultra-Advisor that can be reached.** A live Ultra-Advisor peer gets the
+   brief by SendMessage, gated by the ultra-gate as always. Otherwise, if a
+   roster Ultra-Advisor member is defined with a model, `spawn-one
+   ultra-advisor`, then SendMessage it.
+2. **Ask the user to spawn one.** For a member with no model, or no member at
+   all (`spawn-ad-hoc ultra-advisor`), the `member-model-undefined` refusal
+   drives the ask. Its question carries the refusal's options plus
+   **"Don't spawn an Ultra-Advisor"**, which goes to step 3. Unattended, take the
+   refusal's advise fallback (a borrowed fable/opus chain model) if there is
+   one; otherwise go to step 3. A physical launch failure of the spawned
+   member also goes to step 3.
+3. **The highest-reasoning chain role.** Rank the design, review and implement
+   members (custom included) you can see — your live team's members by their
+   recorded model, and your roster's members by their stored model — by model
+   tier (haiku < sonnet < opus < fable). An `inherit` model, or none, ranks
+   below every tiered model. Ties go to a live member first, then design before
+   review before implement, then roster order. Give the top member the **same
+   escalation brief**: the spec path, the specific question, and a request to
+   adjudicate and advise within its own contract. SendMessage it if it is live;
+   otherwise spawn it, then SendMessage it. No such member, or its launch
+   physically fails → step 4.
+4. **Adjudicate yourself**, on this session's model. First tell the user one
+   line: "No Ultra-Advisor or <role> could take this (<reasons>); adjudicating
+   here on this session's model."
+
+### A stalled peer: three pings, then take over
+
+- **Stalled** means both: the peer **owes you a reply** (your brief or last
+  message is the latest in that exchange, so a peer waiting on your answer to
+  its own question is not stalled), and its ListAgents row shows it **idle**.
+  A **busy** peer is working: never ping it, and it never counts toward the
+  three.
+- **A ping** is one SendMessage to that peer with `notify_when_idle: true`:
+  "Ping n/3: you owe a report on task <slug> — SendMessage it back to the
+  sender." Send the next ping only when that idle notice arrives with no
+  reply. A subscription that expires without a notice means the peer stayed
+  busy: keep waiting, without adding to the count. A peer that has left
+  ListAgents is **gone**, not stalled: treat it as missing and use the ladder
+  above.
+- **A response** is any SendMessage from that peer to you, or a response file
+  for the brief's request id. The report itself ends this. A non-report reply,
+  such as an acknowledgement, means the peer is not stalled at that moment.
+  The count is **per brief and never resets**: at most three pings per brief.
+- **Take over** after the third ping's idle notice arrives with no reply:
+  design, review or implement → do the work yourself as in step 3 of its
+  ladder, with the same one-line notice; Ultra-Advisor → continue the
+  escalation ladder **from step 3**, never spawning a second Ultra-Advisor
+  beside the stalled one.
+- **Leave the stalled pane running**; do not close it. Tell the user it is
+  still up and can be closed with `dismiss`.
+- **Surface a late report**: a report that arrives after you took over is shown
+  to the user, not dropped.
+
+### Declined spawn
+
+When the user declines a spawn command's permission prompt, that is their
+decision, not a launch failure. Ask with AskUserQuestion: "Do the <Role> work
+here" or "Stop".

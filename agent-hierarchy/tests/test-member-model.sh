@@ -368,7 +368,7 @@ TF=$(team_files)
 check "B12c: ...and keeps one that carries a model" '[ "$RC" = 0 ] && [ "$(jq_file "$TF" "t.members.map(m=>m.name+\":\"+m.model).join()")" = b12d-architect:opus,b12d-task-runner:haiku ] && [ "$(jq_out "\"skipped_members\" in o")" = false ]'
 
 new_repo b13
-roster_json '[{"role":"architect","model":"opus"},{"role":"implementor","kind":"codex","route":"pane"},{"role":"reviewer","route":"subagent"}]'
+roster_json '[{"role":"architect","model":"opus"},{"role":"implementor","kind":"codex","route":"pane"},{"role":"task-runner","route":"subagent"}]'
 run_herdr create --plan
 check "B13: a non-claude member and a subagent-routed member are never listed" '[ "$RC" = 0 ] && [ "$(jq_out "\"members_needing_model\" in o")" = false ]'
 run_herdr create --spawn

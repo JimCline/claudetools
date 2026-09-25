@@ -19,7 +19,7 @@ Config shape (`version` is the schema version, always `1`):
   "enabled": true,
   "roles": {
     "ultra-advisor": { "model": "fable", "dispatch": "peer", "peer": "auto" },
-    "architect":     { "model": "opus", "dispatch": "model" },
+    "architect":     { "model": "opus" },
     "reviewer":      { "model": "opus", "dispatch": "peer", "peer": "custom-reviewer-peer" },
     "implementor":   { "model": "inherit" },
     "task-runner":   { "model": "haiku", "delegate": "task-gopher" }
@@ -33,9 +33,12 @@ so `version` stays `1`. Same for `dispatch`/`peer`, added later: a role with
 neither key (every config written before this feature existed) resolves to
 `"dispatch": "peer", "peer": "auto"` — the named-peer-session route via the
 `<repo>-<role>` convention, exactly what every role already did by default
-before `dispatch` existed. `dispatch: "model"` (see `architect` above) opts a
-role out of peer routing entirely — always a fresh subagent, never
-SendMessage to a peer even if one with a matching name is running. `peer` is
+before `dispatch` existed. `dispatch: "model"` is for a legwork-class role
+only: a chain role (Ultra-Advisor, Architect, Reviewer, Implementor, or a
+custom chain role) runs only as a peer, so never write `"model"` for one — a
+`"model"` already there is ignored, reported by `status` and `doctor`, and
+removed at the next `roster.mjs` write to that file. There is no route opt-in
+either: never write a top-level `route` other than `"peers"`. `peer` is
 only consulted when `dispatch` is `"peer"`: `"auto"` uses the `<repo>-<role>`
 convention name; any other string (see `reviewer` above) is an explicit peer
 session name. `task-runner` has no `dispatch`/`peer` concept — it keeps its
@@ -73,7 +76,8 @@ Resolution rules you must respect in everything below:
   gate and the model allowlist above (advise = the ultra-advisor list, design /
   review / implement = the reasoning list, legwork = + `haiku`). Optional keys:
   `agent` (default: the name), `label`, `description`, `model` (default
-  `inherit`; advise needs `fable` or `opus`), `dispatch`, `peer`, and `routes`,
+  `inherit`; advise needs `fable` or `opus`), `dispatch` (`model` only for
+  legwork), `peer`, and `routes`,
   which makes a chain-class role an in-chain **alternative** to its step's
   built-in for that work (without it, a side role). A built-in row may set
   `agent` to override the agent it launches. Every custom or overridden agent
@@ -109,7 +113,7 @@ roster assignment (which roles exist, their model/effort/route) lives in
    whatever model the session runs on.
 2. Check for existing config: read `~/.claude/agent-hierarchy.json` and
    `<cwd>/.claude/agent-hierarchy.json` (either may be absent). Also check
-   whether task-gopher is installed — `ls -d ~/.claude/plugins/cache/*/task-gopher 2>/dev/null` or the presence of a `task-gopher:task-gopher` agent type.
+   whether task-gopher is installed — the presence of a `task-gopher:task-gopher` agent type.
 3. **Task-Runner is decided by the task-gopher check, not by a question:**
    - **task-gopher installed** → do NOT ask about Task-Runner. Auto-assign
      `roles.task-runner`: `{ "model": "haiku", "delegate": "task-gopher" }`
@@ -148,7 +152,7 @@ roster assignment (which roles exist, their model/effort/route) lives in
 6. **Initial Setup trigger.** Run `resolveRoster(cwd)` (or read `.roster`/
    `.rosterLevel` off the resolver output). If it is `null` at all three
    levels (global, repo, repo-user — no roster configured anywhere), hand off
-   directly into `/agent-roster init`'s flow now: its route question first,
+   directly into `/agent-roster init`'s flow now: its level question first,
    then its per-role walk. If a roster already resolves, just say so and
    point at `/agent-roster show` — do not re-run its wizard.
 
@@ -319,12 +323,12 @@ SendMessage observations.
 
 ## `route` — moved
 
-The `/hierarchy route` command surface is gone; the machinery it drove
-(the per-session dispatch-route answer, and the `pretooluse-route-gate.mjs`
-gate that asks once per session and enforces it silently) is unchanged and
-still runs. Team-wide route now lives in the roster (`roster.route`, with an
-optional per-member override) — set it via `/agent-roster init`/`edit`. This
-session's own route answer can still be inspected directly:
+The `/hierarchy route` command surface is gone, and so are route opt-ins:
+chain roles run only as peers, and `pretooluse-route-gate.mjs` denies every
+Agent dispatch of one, naming the live peer or the spawn command. Team-wide
+route lives in the roster (`roster.route`: `peer` or `pane`); only a legwork
+member can be routed `subagent`, with its own route (`/agent-roster
+add`/`edit`). The session route always reads `peers`:
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/hooks/msg.mjs" route --session "$CLAUDE_SESSION_ID" --plain --cwd "$(pwd)"

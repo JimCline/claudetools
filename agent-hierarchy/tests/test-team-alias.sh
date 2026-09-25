@@ -71,14 +71,13 @@ ROUTE_PAYLOAD=$(HOME="$FAKEHOME" "$NODE_BIN" -e '
   const [cwd, to, msg] = process.argv.slice(1);
   process.stdout.write(JSON.stringify({
     session_id: "team-alias-test-13b",
-    cwd, tool_name: "SendMessage",
+    cwd, model: "claude-opus-4-1", tool_name: "SendMessage",
     tool_input: { to, message: msg },
   }));
-' "$PROJ/sub/dir" "$BASE-reviewer" '[hierarchy-peer-brief reply-to="me" task="x"]
+' "$PROJ/sub/dir" "$BASE-architect" '[hierarchy-peer-brief reply-to="me" task="x"]
 plain')
-HOME="$FAKEHOME" "$NODE_BIN" "$H/msg.mjs" route subagents --session team-alias-test-13b --cwd "$PROJ/sub/dir" >/dev/null
 OUT=$(echo "$ROUTE_PAYLOAD" | HOME="$FAKEHOME" "$NODE_BIN" "$ROUTE_GATE" 2>&1); RC=$?
-check "13b: route-gate's derived prefix (subdir cwd) agrees with resolveRoster's" \
+check "13b: route-gate's derived prefix (subdir cwd) agrees with resolveRoster's (the tier rule denies an architect brief)" \
   'echo "$OUT" | grep -q "\"permissionDecision\":\"deny\""'
 
 # ==== 27 — inventory completeness guard (amendment (c)): no hooks/ file

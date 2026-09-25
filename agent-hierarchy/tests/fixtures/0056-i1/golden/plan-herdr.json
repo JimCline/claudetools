@@ -1,3 +1,4 @@
+roster.mjs: warning — ah: roles.reviewer.dispatch "model" in <SANDBOX>/myrepo/.claude/agent-hierarchy.json is ignored — only legwork roles run as subagents. It is migrated at the next CLI write to that file, or delete it by hand.
 {
   "level": "repo",
   "path": "<SANDBOX>/myrepo/.claude/agent-hierarchy.json",
@@ -165,6 +166,9 @@
         }
       }
     }
+  ],
+  "warnings": [
+    "ah: roles.reviewer.dispatch \"model\" in <SANDBOX>/myrepo/.claude/agent-hierarchy.json is ignored — only legwork roles run as subagents. It is migrated at the next CLI write to that file, or delete it by hand."
   ],
   "members_needing_model": [
     {

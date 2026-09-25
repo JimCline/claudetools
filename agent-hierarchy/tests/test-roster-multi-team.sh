@@ -190,12 +190,11 @@ EOF
 node --input-type=module -e "
   const R = await import('$H/lib-roster.mjs');
   R.writeTeam('$S12HD', { version: 1, team_id: 'epsilon', created: new Date().toISOString(), roster_level: 'global', transport: 'terminal',
-    orchestrator: { session_id: 's12-epsilon', pid: $$ }, members: [{ name: 'epsilon-reviewer', role: 'reviewer' }], partial: false }, 'epsilon');
+    orchestrator: { session_id: 's12-epsilon', pid: $$ }, members: [{ name: 'epsilon-architect', role: 'architect' }], partial: false }, 'epsilon');
 "
-S12_PAYLOAD=$(S12PROJ="$S12PROJ" node -e 'const[s,t,m]=process.argv.slice(1);process.stdout.write(JSON.stringify({session_id:s,cwd:process.env.S12PROJ,tool_name:"SendMessage",tool_input:{to:t,message:m}}));' "s12-epsilon" "epsilon-reviewer" '[hierarchy-peer-brief reply-to="x" task="t"]')
-echo '{"type":"route","session_id":"s12-epsilon","value":"subagents"}' >> "$S12HD/gates.jsonl"
+S12_PAYLOAD=$(S12PROJ="$S12PROJ" node -e 'const[s,t,m]=process.argv.slice(1);process.stdout.write(JSON.stringify({session_id:s,cwd:process.env.S12PROJ,model:"claude-opus-4-1",tool_name:"SendMessage",tool_input:{to:t,message:m}}));' "s12-epsilon" "epsilon-architect" '[hierarchy-peer-brief reply-to="x" task="t"]')
 OUT=$(echo "$S12_PAYLOAD" | HOME="$S12HOME" AGENT_HIERARCHY_DIR="$S12HD" "$NODE_BIN" "$H/pretooluse-route-gate.mjs" 2>&1); RC=$?
-check "12: named-team SendMessage to its own member resolves a role and reaches the route gate (subagents denies a brief) — POSITIVE deny, not silence" \
+check "12: named-team SendMessage to its own member resolves a role and reaches the route gate (the tier rule denies an architect brief) — POSITIVE deny, not silence" \
   'echo "$OUT" | grep -q "\"permissionDecision\":\"deny\""'
 rm -rf "$S12"
 
@@ -273,10 +272,9 @@ EOF
 node --input-type=module -e "
   const R = await import('$H/lib-roster.mjs');
   R.writeTeam('$S16HD', { version: 1, team_id: 'theta', created: new Date().toISOString(), roster_level: 'global', transport: 'terminal',
-    orchestrator: { session_id: 's16-theta', pid: $$ }, members: [{ name: 'quill', role: 'reviewer' }], partial: false }, 'theta');
+    orchestrator: { session_id: 's16-theta', pid: $$ }, members: [{ name: 'quill', role: 'architect' }], partial: false }, 'theta');
 "
-S16_PAYLOAD=$(S16PROJ="$S16PROJ" node -e 'const[s,t,m]=process.argv.slice(1);process.stdout.write(JSON.stringify({session_id:s,cwd:process.env.S16PROJ,tool_name:"SendMessage",tool_input:{to:t,message:m}}));' "" "quill" '[hierarchy-peer-brief reply-to="x" task="t"]')
-echo '{"type":"route","session_id":"__nosession__","value":"subagents"}' >> "$S16HD/gates.jsonl"
+S16_PAYLOAD=$(S16PROJ="$S16PROJ" node -e 'const[s,t,m]=process.argv.slice(1);process.stdout.write(JSON.stringify({session_id:s,cwd:process.env.S16PROJ,model:"claude-opus-4-1",tool_name:"SendMessage",tool_input:{to:t,message:m}}));' "" "quill" '[hierarchy-peer-brief reply-to="x" task="t"]')
 OUT=$(echo "$S16_PAYLOAD" | HOME="$S16HOME" AGENT_HIERARCHY_DIR="$S16HD" "$NODE_BIN" "$H/pretooluse-route-gate.mjs" 2>&1); RC=$?
 check "16: resolveMemberTeam finds a named team's member with no session_id available — POSITIVE deny, not silence" \
   'echo "$OUT" | grep -q "\"permissionDecision\":\"deny\""'

@@ -8,7 +8,7 @@ Resolved effective table:
   Orchestrator  session model  fixed (this session's agent)
   Ultra-Advisor fable          from default  -> ah:ultra-advisor  [dispatch: peer "myrepo-ultra-advisor"]
   Architect     opus           from project  -> ah:architect  [dispatch: peer "a1" / "a2"]
-  Reviewer      sonnet         from project  -> ah:reviewer  [dispatch: subagent-only]
+  Reviewer      sonnet         from project  -> ah:reviewer  [dispatch: peer "myrepo-reviewer"]
   Implementor   inherit*       from default  -> ah:implementor  [dispatch: peer "myrepo-implementor"]
   Task-Runner   haiku          from project  -> ah:task-runner
 
@@ -22,6 +22,7 @@ Roster: level=repo route=peer path=<SANDBOX>/myrepo/.claude/agent-hierarchy.json
   myrepo-task-runner       Task-Runner kind=claude model=haiku effort=- route=peer auto-mode=- on-missing=auto (inert: role is not peer-eligible)
   myrepo-implementor-2     Implementor kind=claude model=opus effort=- route=peer auto-mode=- on-missing=auto (default)
 Team name: myrepo (default) — agents named myrepo-<role>
+ah: roles.reviewer.dispatch "model" in <SANDBOX>/myrepo/.claude/agent-hierarchy.json is ignored — only legwork roles run as subagents. It is migrated at the next CLI write to that file, or delete it by hand.
 Stand up one missing peer: node "<PLUGIN>/hooks/roster.mjs" spawn-one <role> --cwd <SANDBOX>/myrepo. Full-team Create is the /agent-team skill's job — do not hand-assemble create calls.
 Team: none active — /agent-team create to instantiate the roster
 Changes apply to this session now; other live sessions pick them up at their next start, clear, or compaction.

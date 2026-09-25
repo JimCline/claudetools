@@ -81,8 +81,8 @@ A Team's name and pane arrangement belong to the Team, chosen when
 `/agent-team` creates it; the roster holds neither.
 
 - `show [--level global|repo|repo-user] [--roster <r>]` — resolved roster, or one level's raw file.
-- `init --level <L> --route <peer|subagent> [--roster <r>]` — replaces that level's block wholesale.
-- `add --role <R> [--level L] [--roster <r>] [--model M] [--effort E] [--route peer|subagent|pane] [--kind K] [--args '<json>'] [--auto-mode A]` — writes the template row and **spawns nothing** (spec 0044 §1.10, superseding 0039). To start the member afterwards, that is `/agent-team`'s job: `spawn-one <role>` for a roster-conforming one, `spawn-ad-hoc` for a divergent or ad hoc one.
+- `init --level <L> --route peer [--roster <r>]` — replaces that level's block wholesale. `--route subagent` is refused: only legwork roles run as subagents.
+- `add --role <R> [--level L] [--roster <r>] [--model M] [--effort E] [--route peer|subagent|pane] [--kind K] [--args '<json>'] [--auto-mode A]` — `--route subagent` only for a legwork role. Writes the template row and **spawns nothing** (spec 0044 §1.10, superseding 0039). To start the member afterwards, that is `/agent-team`'s job: `spawn-one <role>` for a roster-conforming one, `spawn-ad-hoc` for a divergent or ad hoc one.
 - `edit --member <NAME> [--level L] [--roster <r>] [--role R] [--model M] [--effort E] [--route ...] [--auto-mode A]` — `--model ""` and `--effort ""` clear the field, leaving the model to be chosen at each spawn.
 - `remove --member <NAME> [--level L] [--roster <r>]` — edits the
   roster **template**, not a live Team; `/agent-team`'s `dismiss` is the live-Team equivalent.
@@ -113,16 +113,13 @@ configured at any level), say so and offer to run `init`.
 1. **Level.** If not given, ask via AskUserQuestion: `global` (all repos),
    `repo` (this repo, committable), `repo-user` (this repo, this machine
    only — not committed). One line each on what the level means.
-2. **Route.** If not given, ask peer-vs-subagent as the roster's team-wide
-   default: "Peer agent (Recommended)" — spawned as a named live session,
-   SendMessage'd from then on; "Subagent only" — always a fresh Agent-tool
-   dispatch, never a standing session. A member can override this later via
-   its own `--route`.
-3. **Destructive check.** If that level already has a roster (`show --level
+2. **Destructive check.** If that level already has a roster (`show --level
    <L>` returns members), confirm before replacing — `init` always replaces
    the whole level's block, never merges into it.
-4. Run `roster.mjs init --level <L> --route <route>`.
-5. **Pick the roles.** Ask a single AskUserQuestion call with
+3. Run `roster.mjs init --level <L> --route peer`. Chain roles run only as
+   peers; only a legwork member (task-runner, or a custom legwork role) can be
+   routed `subagent`, with its own `add --route subagent`.
+4. **Pick the roles.** Ask a single AskUserQuestion call with
    `multiSelect: true` — one question ("Which roles should this roster
    include?"), one option per role with a one-line description:
    `architect` (design authority — specs, never implements), `implementor`
@@ -149,7 +146,7 @@ configured at any level), say so and offer to run `init`.
    spawn back, and none should be passed. A role can be added more than once —
    if the user wants multiple instances of a role, that's a follow-up ask,
    not part of the multiselect (its options must stay distinct picks).
-6. Run `show` and echo the result.
+5. Run `show` and echo the result.
 
 Whole-level replace is a *read* rule; `init` itself only ever writes the one
 level's file you asked for.
@@ -189,12 +186,11 @@ nothing at all — it is a no-op kept only so existing scripts do not break
 (§1.10 R1). Do not pass it, and do not read it as evidence that spawning is
 otherwise what happens.
 
-`--on-missing auto|prompt|never` (spec 0021, peer-routed members only) sets
-what the route gate does when this role has no live peer: `auto` (default)
-denies every time naming the `spawn-one` command — **spawn without asking**,
-still one orchestrator turn, never a zero-turn spawn; `prompt` asks once,
-spawn-the-peer first, and the re-issue passes; `never` is a user opt-in to a
-subagent, no prompt.
+`--on-missing auto` (spec 0021, peer-routed members only) is what the route
+gate does when this role has no live peer: it denies every time naming the
+`spawn-one` command — **spawn without asking**, still one orchestrator turn,
+never a zero-turn spawn. It is the default and the only value: `prompt` and
+`never`, which let a chain role run as a subagent, are refused (spec 0059).
 
 ### `--kind`: non-Claude members (spec 0043)
 

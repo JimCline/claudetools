@@ -63,7 +63,7 @@ DOC="$PLUGIN/commands/hierarchy.md"
 check "hierarchy.md: no 'set <role> <model>' command heading remains" '! grep -q "^## .set <role> <model>.$" "$DOC"'
 check "hierarchy.md: no '/hierarchy route [...]' command heading remains" '! grep -q "^## .route \[peers" "$DOC"'
 check "hierarchy.md: set is documented as moved to /agent-roster edit" 'grep -q "/agent-roster edit" "$DOC"'
-check "hierarchy.md: route machinery documented as kept, surface moved" 'grep -q "roster.route" "$DOC"'
+check "hierarchy.md: the roster's route documented, the /hierarchy route surface gone" 'grep -q "roster.route" "$DOC"'
 check "hierarchy.md: status section documents the Roster/Team sections" 'grep -qi "Team.*section" "$DOC"'
 check "hierarchy.md: init hands off to /agent-roster init per §7" 'grep -q "/agent-roster init" "$DOC"'
 check "hierarchy.md: kept surfaces (status/on/off/flow/gate/usage/msgs/peers/sweep) still present" \

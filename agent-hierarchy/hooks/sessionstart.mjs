@@ -202,7 +202,7 @@ try {
         } catch {
           // state block is best-effort; the directive still goes out
         }
-        context = buildDirective(resolved, input.session_id, { hierDir: dir, model, route });
+        context = buildDirective(resolved, input.session_id, { hierDir: dir, model });
         if (teamSweepNote) context += "\n\n" + teamSweepNote;
         if (state) context += "\n\n" + state;
         const herdrNote = herdrWarning();

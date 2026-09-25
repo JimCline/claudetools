@@ -143,12 +143,12 @@ OUT=$(HOME="$FAKEHOME" HERDR_ENV=1 node "$H/roster.mjs" create --plan --cwd "$BA
 check "create --plan: pre-0004 roster (no layout key) resolves layout_plan.mode 'auto'" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>process.exit(JSON.parse(s).layout_plan.mode===\"auto\"?0:1))"'
 
-# ---- 0004 §11.1.6: an all-subagent roster yields layout_plan === null
+# ---- 0004 §11.1.6: an all-subagent roster yields layout_plan === null (only legwork runs as a subagent)
 ALLSUBAGENT="$SANDBOX/allsubagent"
 mkdir -p "$ALLSUBAGENT/.claude"
 (cd "$ALLSUBAGENT" && git init -q)
 cat > "$ALLSUBAGENT/.claude/agent-hierarchy.json" <<'EOF'
-{"roster":{"route":"subagent","members":[{"role":"architect","model":"opus"}]}}
+{"roster":{"route":"peer","members":[{"role":"task-runner","model":"haiku","route":"subagent"}]}}
 EOF
 OUT=$(HOME="$FAKEHOME" HERDR_ENV=1 node "$H/roster.mjs" create --plan --cwd "$ALLSUBAGENT" 2>&1); RC=$?
 check "create --plan: all-subagent roster yields layout_plan null" \

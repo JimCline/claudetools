@@ -14,7 +14,7 @@
  *
  * Every subcommand also accepts `--orchestrator-pid <pid>`, which overrides `CLAUDE_PID` when
  * resolving which team this session owns (spec 0048 §2.3).
- *   msg.mjs route [peers|subagents|prefer-peers] --session <id>
+ *   msg.mjs route [peers] --session <id>     (chain roles run only as peers)
  *
  * Every subcommand takes `--cwd <path>` (default process.cwd()) and resolves
  * the runtime dir via lib-hier.mjs; output is JSON unless `--plain`. Writers
@@ -298,7 +298,7 @@ try {
         const eff = effectiveRoute(dir, resolved, sessionId);
         out(plain ? `${eff.value} (${eff.source})` : eff, plain);
       } else {
-        if (!ROUTE_VALUES.includes(value)) fail(`route must be one of ${ROUTE_VALUES.join("|")}, got ${JSON.stringify(value)}`);
+        if (!ROUTE_VALUES.includes(value)) fail(`route must be one of ${ROUTE_VALUES.join("|")}, got ${JSON.stringify(value)} — only legwork roles run as subagents`);
         recordRoute(dir, sessionId, value);
         out(plain ? value : { recorded: value, session_id: sessionId }, plain);
       }

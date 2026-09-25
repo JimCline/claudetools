@@ -162,10 +162,10 @@ check "T2: R1 — produces the byte-identical roster the flagless form did" '[ "
 check "T2: R1 — no spawn attempt, no team file" '[ "$(starts)" -eq 0 ] && no_team_file'
 check "T2: R1 — the flag is not echoed back as a reason for anything" '! echo "$OUT" | grep -q -- "--no-spawn"'
 
-# ==== T3 — --route subagent: config only, and the notice names why there is nothing to launch. ====
+# ==== T3 — --route subagent (legwork only): config only, and the notice names why there is nothing to launch. ====
 fresh
-run_add "" --role reviewer --route subagent
-check "T3: subagent-route add exits 0 with the row written" '[ "$RC" -eq 0 ] && [ "$(roles_in_cfg)" = "reviewer" ]'
+run_add "" --role task-runner --route subagent
+check "T3: subagent-route add exits 0 with the row written" '[ "$RC" -eq 0 ] && [ "$(roles_in_cfg)" = "task-runner" ]'
 check "T3: notice names the route and says nothing was launched" 'echo "$OUT" | grep -q "route subagent" && echo "$OUT" | grep -q "config only"'
 check "T3: no spawn attempt, no team file" '[ "$(starts)" -eq 0 ] && no_team_file'
 

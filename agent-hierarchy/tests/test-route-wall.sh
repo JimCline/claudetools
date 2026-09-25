@@ -44,6 +44,7 @@ denied() { echo "$OUT" | grep -q '"permissionDecision":"deny"'; }
 allowed() { [ $RC -eq 0 ] && [ -z "$OUT" ]; }
 allowed_with_note() { [ $RC -eq 0 ] && echo "$OUT" | grep -q '"systemMessage"' && ! echo "$OUT" | grep -q '"permissionDecision"'; }
 set_route() { HOME="$FAKEHOME" node "$MSG" route "$2" --session "$1" --cwd "$PROJ" >/dev/null; }
+stale_route() { echo "{\"type\":\"route\",\"session_id\":\"$1\",\"value\":\"$2\"}" >> "$GATES"; }  # written before only "peers" existed
 seed_live() { # <name> <role> [busy]
   node -e 'const fs=require("fs");const[f,n,r,b]=process.argv.slice(1);fs.appendFileSync(f,JSON.stringify({type:"peer",status:"seen",name:n,role:r,busy:b==="1",ts:new Date().toISOString()})+"\n");' "$PEERS" "$1" "$2" "${3:-}"; }
 no_ask() { ! echo "$OUT" | grep -q "AskUserQuestion"; }
@@ -58,8 +59,8 @@ reset; echo "$PLAIN" > "$CFG"
 gate "$(payload s8 ah:architect sonnet)"
 check "8: denied with the spawn-ad-hoc command (absolute path, --cwd), never the Agent call's --model" \
   'denied && has_cmd spawn-ad-hoc && ! echo "$OUT" | grep -q -- "--model"'
-check "8b: names the send-after-spawn and the opt-in command" \
-  'echo "$OUT" | grep -q "SendMessage the \`name\` the command prints" && echo "$OUT" | grep -q "route subagents --session s8"'
+check "8b: names the send-after-spawn and the launch-failure pointer, never an opt-in command" \
+  'echo "$OUT" | grep -q "SendMessage the \`name\` the command prints" && echo "$OUT" | grep -q "When a role can.t take the work" && ! echo "$OUT" | grep -q "route subagents"'
 gate "$(payload s8 ah:architect sonnet)"
 check "8c: the identical re-issue is denied again" 'denied && has_cmd spawn-ad-hoc'
 check "8d: no route-ask record" '! grep -q "\"type\":\"route-ask\"" "$GATES" 2>/dev/null'
@@ -85,29 +86,29 @@ echo '{ "version": 1, "enabled": true, "roster": { "route": "peer", "members": [
 gate "$(payload s10 ah:architect)"
 check "10: roster lacking the role -> spawn-ad-hoc command" 'denied && has_cmd spawn-ad-hoc'
 
-# ---- 11: each opt-in passes; the built-in default does not
+# ---- 11: no former opt-in lets a chain role through; each gets the same wall as the default
 reset; echo "$PLAIN" > "$CFG"
-set_route s11a subagents
-gate "$(payload s11a ah:architect)"; check "11a: session route subagents passes" 'allowed'
-set_route s11b prefer-peers
-gate "$(payload s11b ah:architect)"; check "11b: session route prefer-peers, none free, passes" 'allowed'
+stale_route s11a subagents
+gate "$(payload s11a ah:architect)"; check "11a: a stale session route subagents record is denied" 'denied && has_cmd spawn-ad-hoc'
+stale_route s11b prefer-peers
+gate "$(payload s11b ah:architect)"; check "11b: a stale session route prefer-peers, none free, is denied" 'denied && has_cmd spawn-ad-hoc'
 seed_live busy-only architect 1
-gate "$(payload s11b ah:architect)"; check "11b2: prefer-peers, the only live one busy, passes" 'allowed'
+gate "$(payload s11b ah:architect)"; check "11b2: stale prefer-peers, the only live one busy: denied, naming it" 'denied && echo "$OUT" | grep -q "busy-only"'
 reset; echo '{ "version": 1, "enabled": true, "route": "subagents", "roles": { "architect": { "model": "opus" } } }' > "$CFG"
-gate "$(payload s11c ah:architect)"; check "11c: config route subagents passes" 'allowed'
+gate "$(payload s11c ah:architect)"; check "11c: a stale config route subagents is denied" 'denied && has_cmd spawn-ad-hoc'
 reset; echo '{ "version": 1, "enabled": true }' > "$CFG"
 echo '{ "version": 1, "enabled": true, "roles": { "architect": { "model": "opus", "dispatch": "model" } } }' > "$UCFG"
-gate "$(payload s11d ah:architect)"; check "11d: user-level roles.architect.dispatch model passes" 'allowed'
+gate "$(payload s11d ah:architect)"; check "11d: a stale user-level roles.architect.dispatch model is denied" 'denied && has_cmd spawn-ad-hoc'
 reset; roster_cfg ', "route": "subagent"'
-gate "$(payload s11e ah:architect)"; check "11e: roster member route subagent passes" 'allowed'
+gate "$(payload s11e ah:architect)"; check "11e: a stale roster member route subagent is denied" 'denied && has_cmd spawn-one'
 reset; roster_cfg ', "onMissing": "never"'
-gate "$(payload s11f ah:architect)"; check "11f: onMissing never with none live passes" 'allowed'
+gate "$(payload s11f ah:architect)"; check "11f: a stale onMissing never with none live is denied" 'denied && has_cmd spawn-one'
 reset; echo '{ "version": 1, "enabled": true }' > "$CFG"
 gate "$(payload s11g ah:architect)"; check "11g: the built-in default config does not pass" 'denied && has_cmd spawn-ad-hoc'
 reset; roster_cfg ', "route": "subagent"'; set_route s11h peers
-gate "$(payload s11h ah:architect)"; check "11h: a roster route subagent member passes even under an explicit session route peers" 'allowed'
+gate "$(payload s11h ah:architect)"; check "11h: a stale roster route subagent member under session route peers is denied" 'denied && has_cmd spawn-one'
 reset; echo '{ "version": 1, "enabled": true, "roles": { "architect": { "model": "opus", "dispatch": "model" } } }' > "$CFG"; set_route s11i peers
-gate "$(payload s11i ah:architect)"; check "11i: a user-written dispatch model passes even under an explicit session route peers" 'allowed'
+gate "$(payload s11i ah:architect)"; check "11i: a stale dispatch model under session route peers is denied" 'denied && has_cmd spawn-ad-hoc'
 
 # ---- 12/13: the SessionStart directive
 directive() { # <session> -> OUT
@@ -122,19 +123,18 @@ check "12: no route-question / fallback wording" \
   '! echo "$OUT" | grep -qE "will ask|choose this session.s dispatch route|one-shot per role|else the subagent|one-off subagent dispatch"'
 check "12b: carries the spawn command form for a peer-eligible role" 'echo "$OUT" | grep -qF "spawn-ad-hoc architect --cwd $PROJ"'
 check "13: no peer-name ceremony" '! echo "$OUT" | grep -qE "PEER NAME CONFIRMATION|not yet confirmed"'
-check "13b: no \"else Agent\"; the role line is SendMessage / spawn / opt-in" \
-  '! echo "$OUT" | grep -q "else Agent" && echo "$OUT" | grep "^- Architect" | grep -q "SendMessage its live teammate" && echo "$OUT" | grep "^- Architect" | grep -q "Subagent only if the user opts in"'
+check "13b: no \"else Agent\"; the role line is SendMessage / spawn / the can't-launch pointer, no opt-in" \
+  '! echo "$OUT" | grep -q "else Agent" && echo "$OUT" | grep "^- Architect" | grep -q "SendMessage its live teammate" && echo "$OUT" | grep "^- Architect" | grep -q "Can.t launch → agent-team" && ! echo "$OUT" | grep -q "opts in"'
 echo '{ "version": 1, "enabled": true, "roles": { "architect": { "model": "opus", "dispatch": "model" } } }' > "$CFG"
 directive
-check "13c: an opted-in role still renders its Agent call" 'echo "$OUT" | grep "^- Architect" | grep -q "Agent(subagent_type:\"ah:architect\""'
+check "13c: a stale dispatch model no longer renders an Agent call for the role" 'echo "$OUT" | grep "^- Architect" | grep -q "SendMessage" && ! echo "$OUT" | grep "^- Architect" | grep -q "Agent(subagent_type"'
 
-# ---- 14: explicit onMissing prompt, none live -> one ask, spawn first + Recommended; re-issue passes
+# ---- 14: a stale onMissing prompt, none live -> no ask: the spawn-one wall, and the re-issue too
 reset; roster_cfg ', "onMissing": "prompt"'
 gate "$(payload s14 ah:architect)"
-check "14: asks once, spawning the peer first and Recommended" \
-  'denied && case "$OUT" in *AskUserQuestion*"Spawn the Architect peer (Recommended)"*"Use a subagent"*) true;; *) false;; esac && has_cmd spawn-one'
+check "14: no ask; denied with the spawn-one command" 'denied && has_cmd spawn-one && ! echo "$OUT" | grep -q "AskUserQuestion"'
 gate "$(payload s14 ah:architect)"
-check "14b: the re-issue passes" 'allowed_with_note'
+check "14b: the re-issue is denied again" 'denied && has_cmd spawn-one'
 
 # ---- 15: D4 — a global roster confirms nothing, and the CLI needs no --allow-global
 reset; echo '{ "version": 1, "enabled": true }' > "$CFG"

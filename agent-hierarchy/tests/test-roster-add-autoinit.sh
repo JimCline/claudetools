@@ -82,12 +82,12 @@ check "T3b: rosters.X was not auto-vivified" '[ "$(roles_in "$T3/.claude/agent-h
 # normal append. ----
 T4="$SANDBOX/t4"; new_repo "$T4"
 T4_CFG="$T4/.claude/agent-hierarchy.json"
-HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route subagent --cwd "$T4" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route pane --cwd "$T4" >/dev/null
 rcli "$T4" add --no-spawn --role implementor
 check "T4: add against an existing roster exits 0" '[ "$RC" -eq 0 ]'
 check "T4: no creation notice" '! echo "$OUT" | grep -q "created a minimal one"'
-check "T4: appended to the existing (subagent-route) block, route untouched" \
-  '[ "$(roles_in "$T4_CFG" roster)" = "implementor" ] && grep -q "\"route\": \"subagent\"" "$T4_CFG"'
+check "T4: appended to the existing (pane-route) block, route untouched" \
+  '[ "$(roles_in "$T4_CFG" roster)" = "implementor" ] && grep -q "\"route\": \"pane\"" "$T4_CFG"'
 
 # ---- T5 (structural): add's creation path routes through the same writer init uses — no second
 # serialization of the roster shape. ----

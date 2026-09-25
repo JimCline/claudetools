@@ -43,15 +43,16 @@ BASE='"version":1,"enabled":true'
 #         feature existed) -> resolves to dispatch:"peer", peer:"auto",
 #         reproducing today's RESOLVED VALUES exactly. Load-bearing regression
 #         guard for the config-resolution rule. The directive line for it names
-#         the live teammate, the spawn command for when none is live, and the
-#         subagent opt-in — never an Agent call and never a peer-name ceremony.
+#         the live teammate, the spawn command for when none is live, and where to
+#         turn when it cannot be launched — never an Agent call and never a
+#         peer-name ceremony.
 clear_cfgs
 proj_cfg "{$BASE,\"roles\":{\"architect\":{\"model\":\"opus\"}}}"
 eval_js "r.roles.architect.dispatch + '|' + r.roles.architect.peer"
 check "no dispatch/peer keys -> peer/auto" '[ "$OUT" = "peer|auto" ]'
 eval_js "L.buildDirective(r)"
-check "no dispatch/peer keys -> directive line: live teammate, spawn command, opt-in" \
-  'printf "%s" "$OUT" | grep "^- Architect" | grep -qF "SendMessage its live teammate (names: \`ListAgents\` / \`roster.mjs teams\`); none live → " && printf "%s" "$OUT" | grep "^- Architect" | grep -qF "spawn-ad-hoc architect --cwd" && printf "%s" "$OUT" | grep "^- Architect" | grep -qF "Subagent only if the user opts in: \`node "'
+check "no dispatch/peer keys -> directive line: live teammate, spawn command, can't-launch pointer" \
+  'printf "%s" "$OUT" | grep "^- Architect" | grep -qF "SendMessage its live teammate (names: \`ListAgents\` / \`roster.mjs teams\`); none live → " && printf "%s" "$OUT" | grep "^- Architect" | grep -qF "spawn-ad-hoc architect --cwd" && printf "%s" "$OUT" | grep "^- Architect" | grep -qF "launch → agent-team" && ! printf "%s" "$OUT" | grep -q "opts in"'
 check "no dispatch/peer keys -> no Agent call and no else-subagent on the line" '! printf "%s" "$OUT" | grep "^- Architect" | grep -qE "Agent\(|else Agent|else the subagent"'
 check "no dispatch/peer keys -> no PEER NAME CONFIRMATION section" '! printf "%s" "$OUT" | grep -qE "PEER NAME CONFIRMATION|not yet confirmed"'
 check "item 13 no longer routes spawning one member through the skill" \
@@ -69,15 +70,16 @@ eval_js "L.buildDirective(r)"
 EXPECTED='- Architect — SendMessage peer "proj-architect"; none live → '
 check "recorded peer name -> directive line names that peer" 'printf "%s" "$OUT" | grep -qF -- "$EXPECTED"'
 
-# ---- 2. dispatch:"model" -> no peer mention at all on that role's line,
-#         same shape as a non-peer-eligible role (e.g. task-runner).
+# ---- 2. dispatch:"model" on a chain role is ignored — a chain role runs only as a peer, so its
+#         line is the peer line, never an Agent() call.
 clear_cfgs
 proj_cfg "{$BASE,\"roles\":{\"architect\":{\"model\":\"opus\",\"dispatch\":\"model\"}}}"
+eval_js "r.roles.architect.dispatch"
+check "dispatch:model on a chain role reads as peer" '[ "$OUT" = peer ]'
 eval_js "L.buildDirective(r)"
-check "dispatch:model -> Architect line has no peer mention" \
-  '! printf "%s" "$OUT" | grep "^- Architect" | grep -q "peer"'
-EXPECTED='- Architect — Agent(subagent_type:"ah:architect", model:"opus")'
-check "dispatch:model -> Architect line is bare Agent() call" 'printf "%s" "$OUT" | grep -qF -- "$EXPECTED"'
+check "dispatch:model -> Architect line still names its live teammate" \
+  'printf "%s" "$OUT" | grep "^- Architect" | grep -q "SendMessage its live teammate"'
+check "dispatch:model -> no Agent() call on the Architect line" '! printf "%s" "$OUT" | grep "^- Architect" | grep -q "Agent("'
 
 # ---- 3. dispatch:"peer", explicit peer name -> that name is used instead of
 #         the "<repo>-<role>" convention.
@@ -104,7 +106,7 @@ check "empty peer value -> auto with a warning" '[ "$OUT" = "auto|warned" ]'
 clear_cfgs
 proj_cfg "{$BASE,\"roles\":{\"architect\":{\"model\":\"opus\",\"dispatch\":\"model\"},\"reviewer\":{\"model\":\"opus\",\"dispatch\":\"peer\",\"peer\":\"custom-name\"}}}"
 OUT=$(cd "$PROJ" && HOME="$FAKEHOME" node "$LIB" 2>&1); RC=$?
-check "status: subagent-only role shown" 'printf "%s" "$OUT" | grep "Architect" | grep -q "dispatch: subagent-only"'
+check "status: a chain role's stale dispatch:model shows its peer route" 'printf "%s" "$OUT" | grep "Architect" | grep -q "dispatch: peer \"proj-architect\""'
 check "status: explicit-peer role shown" 'printf "%s" "$OUT" | grep "Reviewer" | grep -q "dispatch: peer \"custom-name\""'
 
 # ---- task-runner is unaffected: no dispatch/peer concept, line unchanged
