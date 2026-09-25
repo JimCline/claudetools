@@ -18,9 +18,16 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
 export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
 unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
+# After a non-claude launch spawn waits for Herdr to report the agent ready before reading its
+# screen; this stub's agents never report ready, and the wait is not under test here.
+export AH_HERDR_READY_WAIT_MS=0
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude" "$SANDBOX/bin"
+# A non-claude member's standing instructions carry its role's agent body, found through
+# installed_plugins.json as role validation finds it; this plugin is the one installed.
+mkdir -p "$FAKEHOME/.claude/plugins"
+echo "{\"version\":2,\"plugins\":{\"ah@local\":[{\"installPath\":\"$PLUGIN\"}]}}" > "$FAKEHOME/.claude/plugins/installed_plugins.json"
 (cd "$PROJ" && git init -q)
 NODE_DIR="$(dirname "$(command -v node)")"
 HIER="$PROJ/.claude/hierarchy"
@@ -134,7 +141,7 @@ check "1d: §4 item 4 — derived name is byte-identical to the pre-change defau
 reset_state; clear_all; init_geometry; setup_roster architect
 ROSTER_BEFORE="$(cat "$REPO_ROSTER")"
 GLOBAL_BEFORE_EXISTS="$([ -f "$FAKEHOME/.claude/agent-hierarchy.json" ] && echo yes || echo no)"
-r "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-ad-hoc reviewer --kind codex --route pane --args "'[\"--profile\",\"fast\"]'"
+r "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-ad-hoc reviewer --kind codex --route pane --model gpt-6-astra --args "'[\"--profile\",\"fast\"]'"
 check "2a: spawn-ad-hoc exits 0 and spawned the divergent member" '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"spawned\": true"'
 check "2b: §4.1 — every roster level file is byte-identical after the divergent spawn" \
   '[ "$(cat "$REPO_ROSTER")" = "$ROSTER_BEFORE" ] && [ "$([ -f "$FAKEHOME/.claude/agent-hierarchy.json" ] && echo yes || echo no)" = "$GLOBAL_BEFORE_EXISTS" ]'
@@ -156,7 +163,7 @@ check "2g: §1.4 point 5 — the second architect got the next ordinal, not the 
 # ---- 2h: §1.4 point 5 — a derived name that IS taken refuses rather than overwriting.
 #      Two same-role members exist, so a third derives -3; force the collision by asking
 #      for a role whose sole derived name is already present.
-r "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-ad-hoc reviewer --kind codex --route pane
+r "HERDR_ENV=1 CLAUDE_PID=$LIVE_PID" spawn-ad-hoc reviewer --kind codex --route pane --model gpt-6-astra
 check "2h: a second reviewer derives -2 rather than colliding with the first" \
   '[ "$RC" -eq 0 ] && [ "$(cat "$SCOPED_TEAM" | jq_node "j.members.filter(m=>m.role===\"reviewer\").length")" = "2" ]'
 

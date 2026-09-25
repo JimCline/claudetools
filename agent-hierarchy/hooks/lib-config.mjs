@@ -286,6 +286,61 @@ export function tierOf(model) {
 }
 
 /**
+ * The tiers the user declared for non-Claude models: top-level `modelTiers` in the global config
+ * only, `{"<kind>": {"<model>": "<haiku|sonnet|opus|fable>"}}`, because a model's strength does not
+ * vary by repo. An entry for kind `claude`, or one naming no tier on `TIER`'s scale, is ignored with
+ * a warning: a Claude model carries its own tier. Returns `{tiers, warnings}`.
+ */
+export function declaredModelTiers() {
+  const warnings = [];
+  const tiers = {};
+  const path = userConfigPath();
+  let data = null;
+  try {
+    const parsed = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : null;
+    data = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    data = null;
+  }
+  const raw = data ? data.modelTiers : undefined;
+  if (raw === undefined || raw === null) return { tiers, warnings };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    warnings.push(`ah: modelTiers in ${path} is not an object of {"<kind>": {"<model>": "<tier>"}} — ignoring it.`);
+    return { tiers, warnings };
+  }
+  for (const [kind, models] of Object.entries(raw)) {
+    if (kind === KIND_DEFAULT) {
+      warnings.push(`ah: modelTiers.claude in ${path} is ignored — a Claude model carries its own tier.`);
+      continue;
+    }
+    if (!KIND_RE.test(kind) || !models || typeof models !== "object" || Array.isArray(models)) {
+      warnings.push(`ah: modelTiers.${kind} in ${path} is not an object of {"<model>": "<tier>"} — ignoring it.`);
+      continue;
+    }
+    for (const [model, tier] of Object.entries(models)) {
+      if (typeof tier !== "string" || !Object.hasOwn(TIER, tier)) {
+        warnings.push(`ah: modelTiers.${kind}.${model} in ${path} is ${JSON.stringify(tier)}, not a tier (${Object.keys(TIER).join(", ")}) — ignoring it.`);
+        continue;
+      }
+      (tiers[kind] ||= {})[model] = tier;
+    }
+  }
+  return { tiers, warnings };
+}
+
+/** The tier name declared for `model` of `kind`, or null. Never read from the model's name. */
+export function declaredTier(kind, model) {
+  const byModel = declaredModelTiers().tiers[kind];
+  return byModel && typeof model === "string" && Object.hasOwn(byModel, model) ? byModel[model] : null;
+}
+
+/** A non-Claude member's model as status shows it: `<kind>:<model>(<declared tier>|?)`. */
+export function nonClaudeModelText(m) {
+  const kind = resolveKind(m);
+  return `${kind}:${(m && m.model) || "?"}(${declaredTier(kind, m && m.model) || "?"})`;
+}
+
+/**
  * Flow control: who advances the chain. `auto` (default) — the Orchestrator
  * performs handoffs itself and reports. `confirm` — the Orchestrator asks the
  * user before each reasoning-role dispatch, so every handoff is a decision the
@@ -605,8 +660,9 @@ export function teamLayoutPreference() {
   return { layout: data.teamLayout, warnings };
 }
 
-/** Keys a global config file holds when all it records is the stored team layout. */
-const PREFERENCE_ONLY_KEYS = new Set(["version", "teamLayout"]);
+/** Keys a global config file holds when all it records is user preferences: the stored team
+    layout and declared model tiers. Such a file configures no hierarchy. */
+const PREFERENCE_ONLY_KEYS = new Set(["version", "teamLayout", "modelTiers"]);
 
 export function projectConfigPath(cwd) {
   if (typeof cwd !== "string" || !cwd) return null;
@@ -651,6 +707,15 @@ export function mainHierarchyDir(cwd) {
   const root = findGitRoot(typeof cwd === "string" && cwd ? cwd : process.cwd());
   const main = root ? mainCheckoutRoot(root) : null;
   return main ? join(main, ".claude", "hierarchy") : null;
+}
+
+/**
+ * The checkout `cwd` is in: a linked worktree's main checkout, else the enclosing git checkout,
+ * else null. The same resolution `mainHierarchyDir` uses, read from the filesystem with no git call.
+ */
+export function checkoutRoot(cwd) {
+  const root = findGitRoot(typeof cwd === "string" && cwd ? cwd : process.cwd());
+  return root ? mainCheckoutRoot(root) || root : null;
 }
 
 /** `"-Users-jimcline-git-repos-claudetools"` style slug of an absolute path — every `/` becomes `-`, leading `-` preserved. */
@@ -958,7 +1023,7 @@ export function namedRosterKeys(cwd) {
  * `teamAlias` (any level), a roster block's `layout`, and a `teamLayout` outside the global file.
  * Others opt a chain role into running as a subagent, which only legwork does now: a roster route
  * "subagent", onMissing "never"/"prompt", a chain role's dispatch "model", and a top-level route
- * other than "peers". Roster `members` elements that are not objects are reported here too, and
+ * other than "peers". Invalid global `modelTiers` entries, and roster `members` elements that are not objects, are reported here too; the latter are
  * ignored by every reader (`dropNonObjectMembers`). They are reported only in CLI output a person reads (`status`, `doctor`,
  * `create`), never in hook-injected context, where they would repeat in every session; never acted
  * on; removed only by the next CLI write to their file. `registry` classifies custom roles. Returns
@@ -966,7 +1031,7 @@ export function namedRosterKeys(cwd) {
  * to keep the member names they used to produce.
  */
 export function staleTeamKeys(cwd, registry = null) {
-  const warnings = [];
+  const warnings = [...declaredModelTiers().warnings];
   const aliases = [];
   const candidates = rosterLevelCandidates(cwd);
   for (const path of new Set([...candidates["repo-user"], ...candidates.repo, ...candidates.global])) {
@@ -2015,7 +2080,7 @@ function protocolItems1214(resolved, hierDir, model) {
       : `TIER RULE — read your own model from your environment line and rank haiku<sonnet<opus<fable; ${roleTierText}.`;
   return [
     `12. MESSAGE FILES — every role dispatch (Agent spawn of architect/implementor/reviewer/ultra-advisor, or a peer brief via SendMessage) carries its brief as a file, not inline prose; a PreToolUse gate denies the dispatch otherwise. Writer: \`node "${MSG_CLI}" new --to <role> --from orchestrator --slug <slug> [--to-name <peer-or-agent name>] [--parent <id>] [--reason context|second-opinion|parallel]\` (never hand-roll ids or skeletons), then fill EVERY section of the skeleton it prints — request keys [0] tldr [1] goal [2] context [3] constraints [4] files [5] acceptance [6] want_back; \`[0] tldr\` = one bullet per section, \`- [N] key: <≤10-word gist>\`. Style: bullets, imperative, no prose, no restating what the reader can see; every constraint / negative / acceptance criterion survives verbatim — brevity is the tie-breaker, never the goal. In-band pointer: the Agent prompt / SendMessage body opens with \`[hierarchy-msg <abs request path>]\` then ≤3 TL;DR lines (peer briefs keep the [hierarchy-peer-brief ...] sentinel line first). Reader: \`grep -n '^## \\\\[' <path>\` = the index; Read(offset,limit) only the sections the tldr says matter (whole-file Read fine when small). The role replies \`[hierarchy-msg <abs response path>]\` + its [1] status bullet; a response file closes the exchange — new work is a new id (\`--parent <id>\` links it), never an append. Files under ${dirText}/msgs/; \`node "${MSG_CLI}" list|index|sweep|roster\` (or /hierarchy msgs|peers|sweep). Multiple instances per role are normal — roles are categories; \`to_name:\`/\`from_name:\` name the instance.`,
-    `13. PEER ROSTER — ${dirText}/peers.jsonl is ground truth for which role peers are up, seen, or briefed; after compaction trust the HIERARCHY STATE block over memory. A PreToolUse gate denies EVERY Agent call for Ultra-Advisor/Architect/Reviewer/Implementor: the deny names the live peer to SendMessage, or carries the exact spawn command to run. Standing up, reshaping, or tearing down a live Team — create/spawn a Team, dismiss one member, disband, resync/move — goes through the \`ah:agent-team\` skill (\`Skill(skill:"ah:agent-team")\`, or \`/agent-team\`); editing the roster TEMPLATE — add/edit/remove a role — through \`ah:agent-roster\`; neither is a raw roster MCP call. Spawning one session is a direct call, not a skill: a roster member is \`node "${ROSTER_CLI}" spawn-one <role> [--member <n>] --cwd <abs cwd>\`; with no roster, or for a role the roster does not carry, \`… spawn-ad-hoc <role> [--kind pi|codex|claude] [--route peer|pane] --cwd <abs cwd>\`. A non-\`claude\` \`--kind\` is route \`pane\`: drive it with \`herdr agent prompt\`, never SendMessage. Under Herdr a session name (the team prefix + role, or \`--member\`) must be \`[a-z][a-z0-9_-]\`, at most 32 characters — spawn refuses a longer one before opening a pane.`,
+    `13. PEER ROSTER — ${dirText}/peers.jsonl is ground truth for which role peers are up, seen, or briefed; after compaction trust the HIERARCHY STATE block over memory. A PreToolUse gate denies EVERY Agent call for Ultra-Advisor/Architect/Reviewer/Implementor: the deny names the live peer to SendMessage, or carries the exact spawn command to run. Standing up, reshaping, or tearing down a live Team — create/spawn a Team, dismiss one member, disband, resync/move — goes through the \`ah:agent-team\` skill (\`Skill(skill:"ah:agent-team")\`, or \`/agent-team\`); editing the roster TEMPLATE — add/edit/remove a role — through \`ah:agent-roster\`; neither is a raw roster MCP call. Spawning one session is a direct call, not a skill: a roster member is \`node "${ROSTER_CLI}" spawn-one <role> [--member <n>] --cwd <abs cwd>\`; with no roster, or for a role the roster does not carry, \`… spawn-ad-hoc <role> [--kind pi|codex|claude] [--route peer|pane] --cwd <abs cwd>\`. A non-\`claude\` \`--kind\` is route \`pane\`: brief it with \`roster.mjs deliver\` in the background, never SendMessage. Under Herdr a session name (the team prefix + role, or \`--member\`) must be \`[a-z][a-z0-9_-]\`, at most 32 characters — spawn refuses a longer one before opening a pane.`,
     `14. ${tierOpen} Do not dispatch Architect or Ultra-Advisor for REASONING when its tier ≤ yours — take that role's contract inline (write the spec at the spec path yourself; adjudicate yourself). Same-or-lower-tier dispatch only for: context — the design is large and belongs out of your window; second-opinion — the user asked, or you want a fresh-context check; parallel — other work runs meanwhile. Put the reason in the request file's reason: field and one tldr line. Ultra-Advisor: escalate only when strictly higher than you; same tier → decide it yourself and say so. Reviewer is exempt — review buys independence, not tier. A PreToolUse gate denies ONCE per role per session when your model is known, the role's tier ≤ yours, and the request file carries no reason:.`,
   ];
 }
@@ -2193,7 +2258,7 @@ export function statusReport(cwd) {
               ? " (default)"
               : "";
       out.push(
-        `  ${m.name.padEnd(24)} ${ROLE_LABELS[m.role] || m.role} kind=${resolveKind(m)} model=${m.model || "?"} effort=${m.effort || "-"} route=${effRoute} auto-mode=${m.autoMode || "-"} on-missing=${onMissingEffective}${onMissingTag}`
+        `  ${m.name.padEnd(24)} ${ROLE_LABELS[m.role] || m.role} kind=${resolveKind(m)} model=${resolveKind(m) === KIND_DEFAULT ? m.model || "?" : nonClaudeModelText(m)} effort=${m.effort || "-"} route=${effRoute} auto-mode=${m.autoMode || "-"} on-missing=${onMissingEffective}${onMissingTag}`
       );
     }
   } else {

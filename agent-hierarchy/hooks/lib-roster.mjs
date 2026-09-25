@@ -17,7 +17,9 @@ import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync
 import { createHash, randomBytes } from "node:crypto";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 
-import { CLASSES, isValidTeamAlias, KIND_DEFAULT, KIND_RE, registryRoles, resolveKind, roleClass, routeHasPane, suggestTeamAlias } from "./lib-config.mjs";
+import { homedir } from "node:os";
+
+import { checkoutRoot, CLASSES, declaredTier, isValidTeamAlias, KIND_DEFAULT, KIND_RE, registryRoles, resolveKind, roleClass, routeHasPane, suggestTeamAlias } from "./lib-config.mjs";
 
 // Spec 0043 §1.1/§1.5: `kind`/`route`-shape helpers are DEFINED in lib-config.mjs (the leaf) and
 // re-exported here so the member schema still reads as one module. Defining them here instead
@@ -149,6 +151,386 @@ export function kindAutoModeArgs(m) {
   return args ? [...args] : null;
 }
 
+/** A TOML basic string holding `s`, quotes included. */
+function tomlString(s) {
+  const escape = (c) => (c === "\\" ? "\\\\" : c === '"' ? '\\"' : `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  return `"${String(s).replace(/[\\"\u0000-\u001f\u007f]/g, escape)}"`;
+}
+
+/** A TOML basic string's body with its escapes decoded, or null for an escape this reader does not know. */
+function tomlUnescape(body) {
+  const simple = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", '"': '"', "\\": "\\" };
+  let out = "";
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] !== "\\") {
+      out += body[i];
+      continue;
+    }
+    const c = body[++i];
+    if (c !== undefined && Object.hasOwn(simple, c)) {
+      out += simple[c];
+      continue;
+    }
+    const len = c === "u" ? 4 : c === "U" ? 8 : 0;
+    const hex = body.slice(i + 1, i + 1 + len);
+    if (!len || hex.length !== len || !/^[0-9a-fA-F]+$/.test(hex)) return null;
+    const code = parseInt(hex, 16);
+    if (code > 0x10ffff) return null;
+    out += String.fromCodePoint(code);
+    i += len;
+  }
+  return out;
+}
+
+/**
+ * The directories Codex's own config records as trusted, read line by line and never written. Only
+ * `[projects."<abs path>"]` tables and their `trust_level` are read. Any other way of writing
+ * `projects` (a `[projects]` or literal-string header, a dotted key, an inline table), a header or
+ * value it cannot decode, or a missing or unreadable file gives null: the answer is unknown.
+ */
+function codexTrustedProjects(configPath) {
+  let text;
+  try {
+    text = readFileSync(configPath, "utf8");
+  } catch {
+    return null;
+  }
+  const trusted = new Set();
+  let current = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("[")) {
+      const header = /^\[projects\."((?:[^"\\]|\\.)*)"\]\s*(?:#.*)?$/.exec(line);
+      if (header) {
+        current = tomlUnescape(header[1]);
+        if (current === null) return null;
+        continue;
+      }
+      if (/^\[\[?\s*["']?projects\b/.test(line)) return null;
+      current = null;
+      continue;
+    }
+    if (current === null) {
+      if (/^["']?projects["']?\s*[.=]/.test(line)) return null;
+      continue;
+    }
+    const kv = /^trust_level\s*=\s*(.*)$/.exec(line);
+    if (!kv) continue;
+    const value = /^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$/.exec(kv[1]);
+    const decoded = value ? tomlUnescape(value[1]) : null;
+    if (decoded === null) return null;
+    if (decoded === "trusted") trusted.add(current);
+  }
+  return trusted;
+}
+
+/** `p` and every directory above it, nearest first. */
+function selfAndAncestors(p) {
+  const out = [];
+  for (let d = resolve(p); ; d = dirname(d)) {
+    out.push(d);
+    if (dirname(d) === d) return out;
+  }
+}
+
+const realOr = (p) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+};
+
+/** Where Codex saves a trust answer given in `cwd`: the checkout's root (a worktree's main checkout), else `cwd`. */
+export function codexTrustRoot(cwd) {
+  return checkoutRoot(cwd) || resolve(cwd);
+}
+
+/**
+ * Whether Codex has been told to trust `cwd`, read before a launch: `{verdict, configPath,
+ * codexHome, trustRoot}`, verdict "trusted", "untrusted" or "unknown". It reads
+ * `$CODEX_HOME/config.toml` when that is set, else `~/.codex/config.toml`. A trusted entry for the
+ * cwd, the trust root, or any directory above either counts, each compared as given and resolved.
+ * A wrong "trusted" is caught by the screen check after launch, so every doubt resolves that way.
+ */
+export function codexTrust(cwd, env = process.env) {
+  const codexHome = typeof env.CODEX_HOME === "string" && env.CODEX_HOME ? env.CODEX_HOME : join(homedir(), ".codex");
+  const configPath = join(codexHome, "config.toml");
+  const trustRoot = codexTrustRoot(cwd);
+  const info = { configPath, codexHome, trustRoot };
+  const trusted = codexTrustedProjects(configPath);
+  if (!trusted) return { verdict: "unknown", ...info };
+  const entries = new Set([...trusted].flatMap((p) => [p, realOr(p)]));
+  const candidates = [cwd, trustRoot].flatMap((p) => [...selfAndAncestors(p), ...selfAndAncestors(realOr(p))]);
+  return { verdict: candidates.some((c) => entries.has(c)) ? "trusted" : "untrusted", ...info };
+}
+
+/**
+ * The model spellings Codex accepts on its command line: `--model`, `-m`, and a `model` config
+ * override (`-c model=…`). A member whose `model` is set may not also carry one of these in `args`.
+ */
+function codexArgsSetModel(args) {
+  const configModel = (v) => typeof v === "string" && /^\s*model\s*=/.test(v);
+  return args.some((a, i) => {
+    if (typeof a !== "string") return false;
+    if (a === "--model" || a.startsWith("--model=") || a === "-m" || /^-m[^-]/.test(a)) return true;
+    if ((a === "-c" || a === "--config") && configModel(args[i + 1])) return true;
+    return (a.startsWith("-c") && a.length > 2 && configModel(a.slice(2))) || (a.startsWith("--config=") && configModel(a.slice("--config=".length)));
+  });
+}
+
+const TRUST_ROOT_TEXT =
+  "Codex saves `trust_level = \"trusted\"` for `<trust root>` in `<config path>`. That is the whole repository, not only `<cwd>`. From then on, every Codex session anywhere under `<trust root>`, yours included, skips this question and loads that repository's own Codex config, hooks and exec policies.";
+const TRUST_CWD_TEXT =
+  "Codex saves `trust_level = \"trusted\"` for `<cwd>` in `<config path>`. From then on, every Codex session anywhere under `<cwd>`, yours included, skips this question and loads that directory's own Codex config, hooks and exec policies.";
+
+/**
+ * What the hierarchy knows about launching and driving a non-Claude harness, per kind: how a
+ * member's model, standing-instructions file, extra writable directory and approvals reviewer reach
+ * its command line; its idle composer, the one screen a brief may be typed into; the prompts it can
+ * stop on, each by the layout Codex draws it in; and, per prompt, the answers that may be relayed.
+ *
+ * An answer row is offered only while an option of the recognised block reads its `onScreen` label
+ * (under its digit key's number, when it has one), and its `keys` pick it explicitly whatever the
+ * highlight is. Every row was checked against codex-cli
+ * 0.154.0-alpha.6.2 (tag rust-v0.154.0-alpha.6.2): digits cannot be remapped, while Codex's letter
+ * hotkeys come from the user's keymap, so no row uses one. `grants` marks an answer that gives
+ * something away. Deliberately absent: approval's "Yes, and don't ask again" (it pre-approves the
+ * rest of the member's session with no human) and every login method but ChatGPT sign-in; the user
+ * can pick those in the pane. Codex's other approval screens (edits, permissions, network access,
+ * terminal input, MCP) are not patterns: their option order is decided at run time.
+ */
+export const KIND_HARNESS = {
+  codex: {
+    label: "Codex",
+    modelArgs: (model) => ["--model", model],
+    argsSetModel: codexArgsSetModel,
+    modelsCommand: "codex debug models",
+    instructionsArgs: (path) => ["-c", `model_instructions_file=${tomlString(path)}`],
+    writableDirArgs: (dir) => ["--add-dir", dir],
+    approvalsArgs: ["-c", 'approvals_reviewer="user"'],
+    approvalsKey: "approvals_reviewer",
+    trust: codexTrust,
+    // Idle and empty, the bottom band is padding, the prompt row, padding and a one-line footer; the
+    // placeholder is drawn only while the input is empty.
+    composer: { glyphs: ["›", "»"], placeholders: ["Ask Codex to do anything", "Ask a follow-up question"] },
+    // Each prompt as Codex draws it: its footer is the last line on screen, and its option block sits
+    // directly above it. `herdr` is the status Herdr reports while it is up. Approval's second label
+    // has a free slot for the member's command prefix; its hotkeys come from the user's keymap.
+    prompts: {
+      approval: {
+        heading: "Would you like to run the following command?",
+        marker: "›",
+        footer: /^\s*Press .+ to confirm or .+ to cancel(?: or .+ to open thread)?$/,
+        herdr: "blocked",
+        onboarding: false,
+        joinLabels: true,
+        labels: [/^Yes, proceed \([^()]+\)$/, /^Yes, and don't ask again for commands that start with `.+` \([^()]+\)$/, /^No, and tell Codex what to do differently \([^()]+\)$/],
+      },
+      "trust-dialog": {
+        heading: "Do you trust the contents of this directory",
+        marker: "›",
+        footer: /^\s*Press enter to continue$/,
+        herdr: "idle",
+        onboarding: true,
+        joinLabels: true,
+        labels: ["Yes, continue", "No, quit"],
+      },
+      login: {
+        heading: "Sign in with ChatGPT",
+        marker: ">",
+        footer: /^\s*Press enter to continue$/,
+        herdr: "idle",
+        onboarding: true,
+        joinLabels: false,
+        optionsSpaced: true,
+        labels: ["Sign in with ChatGPT", "Sign in with Device Code", "Provide your own API key", "Use Amazon Bedrock"],
+      },
+    },
+    // The headings of Codex's approval screens that are not relayed: on screen, no prompt is named.
+    otherHeadings: ["Would you like to make the following edits?", "Would you like to grant these permissions?", "Do you want to approve network access to", "Would you like to send input to", "needs your approval."],
+    options: {
+      approval: [
+        {
+          id: "approve",
+          label: "Yes, once",
+          grants: true,
+          keys: ["1"],
+          onScreen: /^Yes, proceed \([^()]+\)$/,
+          description: "Codex runs the command shown above outside the member's sandbox, this one time. Its next command that needs approval asks again.",
+        },
+        {
+          id: "deny",
+          label: "No",
+          grants: false,
+          keys: ["esc"],
+          onScreen: "No, and tell Codex what to do differently (esc)",
+          description: "Codex does not run the command, and the member's turn ends. It then waits for its next brief.",
+        },
+      ],
+      "trust-dialog": [
+        { id: "trust", label: "Yes, trust", grants: true, keys: ["1", "Enter"], onScreen: "Yes, continue", description: (ctx) => (ctx.trustRoot !== ctx.cwd ? TRUST_ROOT_TEXT : TRUST_CWD_TEXT) },
+        {
+          id: "distrust",
+          label: "No, quit",
+          grants: false,
+          keys: ["2"],
+          onScreen: "No, quit",
+          description: "Codex quits and saves nothing. The member doesn't start, and its pane is left at a shell. Nothing is written to `<config path>`, so the next Codex launch in `<cwd>` asks again.",
+        },
+      ],
+      login: [
+        {
+          id: "sign-in",
+          label: "Start ChatGPT sign-in",
+          grants: false,
+          keys: ["1"],
+          onScreen: "Sign in with ChatGPT",
+          description: "Codex opens a ChatGPT sign-in in your browser. You finish it there, and the member waits until you do. The sign-in is saved for every Codex session that uses `<CODEX_HOME>`.",
+        },
+      ],
+    },
+  },
+};
+
+/** A screen read as lines, trailing whitespace cut from each and trailing blank lines dropped. */
+function screenLines(screen) {
+  const lines = String(screen ?? "").split("\n").map((l) => l.replace(/\s+$/, ""));
+  while (lines.length && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+/**
+ * Whether `screen` is the kind's idle, empty composer: its last four lines, once braille cells are
+ * blanked, are a blank padding row, the prompt row (a composer glyph at column 0, a space, then a
+ * placeholder and only spaces), a blank padding row and a one-line footer of any content. Codex's
+ * sparkle animation draws braille only into blank cells of those rows.
+ */
+export function isComposer(kind, screen) {
+  const c = KIND_HARNESS[kind] && KIND_HARNESS[kind].composer;
+  if (!c) return false;
+  const lines = String(screen ?? "").split("\n");
+  while (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
+  if (lines.length < 4) return false;
+  const [padTop, row, padBottom, footer] = lines.slice(-4).map((l) => l.replace(/[\u2800-\u28FF]/g, " "));
+  const blank = (l) => l.trim() === "";
+  return blank(padTop) && blank(padBottom) && !blank(footer) && c.glyphs.includes(row[0]) && row[1] === " " && c.placeholders.includes(row.slice(2).replace(/ +$/, ""));
+}
+
+/** `{n, marked, text}` when `line` starts an option: the marker or a space, a space, then `<n>. `. */
+function optionStart(line, marker) {
+  const m = /^(.) (\d+)\. (.*)$/u.exec(line);
+  return m && (m[1] === marker || m[1] === " ") ? { n: Number(m[2]), marked: m[1] === marker, text: m[3] } : null;
+}
+
+/**
+ * The option block of prompt `spec` when it is what `lines` end with, as `[{n, marked, label}]`, or
+ * null. The footer is the last line; above it, past blank lines, is a block whose first line is
+ * option 1 with a blank line directly above it, and a blank line inside it (login only) must be
+ * followed by the next option's start. In the block, a line indented 5 or more spaces continues the
+ * option above; on an onboarding screen a line starting at column 0 is a terminal soft wrap, which
+ * the blank-line rule leaves only straight after another block line. Options are numbered from 1 with no gaps,
+ * exactly one carries the marker, and each label is one the prompt draws.
+ */
+function promptBlock(spec, lines, agentStatus) {
+  const herdrAgrees = spec.herdr === "blocked" ? agentStatus === "blocked" : agentStatus !== "blocked" && agentStatus !== "working";
+  if (!herdrAgrees || !lines.length || !spec.footer.test(lines[lines.length - 1])) return null;
+  let end = lines.length - 2;
+  while (end >= 0 && lines[end] === "") end--;
+  let top = -1;
+  for (let j = end; j >= 0; j--) {
+    if (lines[j] !== "") continue;
+    const below = optionStart(lines[j + 1], spec.marker);
+    if (below && below.n === 1) {
+      top = j + 1;
+      break;
+    }
+    // Login leaves a blank line between one method's lines and the next.
+    if (!(spec.optionsSpaced && below)) return null;
+  }
+  if (top < 0) return null;
+  const options = [];
+  for (let k = top; k <= end; k++) {
+    const line = lines[k];
+    const start = optionStart(line, spec.marker);
+    if (start) options.push({ n: start.n, marked: start.marked, parts: [start.text] });
+    else if (line === "") continue;
+    else if (/^ {5,}\S/.test(line)) options[options.length - 1].parts.push(line.trim());
+    else if (spec.onboarding && /^\S/.test(line)) options[options.length - 1].parts.push(line.trim());
+    else return null;
+  }
+  if (options.some((o, i) => o.n !== i + 1) || options.filter((o) => o.marked).length !== 1) return null;
+  const block = options.map((o) => ({ n: o.n, marked: o.marked, label: (spec.joinLabels ? o.parts.join(" ") : o.parts[0]).trim() }));
+  const known = (label) => spec.labels.some((l) => (typeof l === "string" ? l === label : l.test(label)));
+  if (!block.every((o) => known(o.label))) return null;
+  if (!lines.slice(0, top).some((l) => l.includes(spec.heading))) return null;
+  return block;
+}
+
+/**
+ * What a kind's screen shows, given Herdr's status for it: `composer`, true when it is the idle,
+ * empty composer (and Herdr says neither working nor blocked); `prompt`, the one prompt whose layout
+ * it ends with, when no other known prompt's heading is anywhere on it; and `block`, that prompt's
+ * options. Anything else names no prompt. Spawn, `deliver` and `answer` all read screens here.
+ */
+export function recognizeScreen(kind, screen, agentStatus) {
+  const h = KIND_HARNESS[kind];
+  const composer = isComposer(kind, screen) && agentStatus !== "working" && agentStatus !== "blocked";
+  const none = { composer, prompt: null, block: [] };
+  if (!h || !h.prompts) return none;
+  const lines = screenLines(screen);
+  const matched = Object.entries(h.prompts)
+    .map(([name, spec]) => ({ name, block: promptBlock(spec, lines, agentStatus) }))
+    .filter((m) => m.block);
+  if (matched.length !== 1) return none;
+  const [{ name, block }] = matched;
+  const text = String(screen ?? "");
+  const others = [...Object.entries(h.prompts).filter(([n]) => n !== name).map(([, spec]) => spec.heading), ...(h.otherHeadings || [])];
+  if (others.some((heading) => text.includes(heading))) return none;
+  return { composer, prompt: name, block };
+}
+
+/** Whether a recognised option block offers answer `row`: an option reads its label, under its digit key's number if it has one. */
+export function rowOffered(row, block) {
+  const digit = row.keys.find((k) => /^\d$/.test(k));
+  const reads = (label) => (typeof row.onScreen === "string" ? label === row.onScreen : row.onScreen.test(label));
+  return (block || []).some((o) => (digit === undefined || o.n === Number(digit)) && reads(o.label));
+}
+
+/** SHA-256 hex of a screen read, with trailing whitespace cut from each line and trailing blank lines dropped. */
+export function screenHash(screen) {
+  const lines = String(screen ?? "").split("\n").map((l) => l.replace(/\s+$/, ""));
+  while (lines.length && lines[lines.length - 1] === "") lines.pop();
+  return createHash("sha256").update(lines.join("\n")).digest("hex");
+}
+
+/** The answer rows a kind's table holds for prompt `blockedBy`, or null when it has none by that name. */
+export function promptRows(kind, blockedBy) {
+  const h = KIND_HARNESS[kind];
+  const rows = h && h.options && Object.hasOwn(h.options, blockedBy) ? h.options[blockedBy] : null;
+  return Array.isArray(rows) ? rows : null;
+}
+
+/**
+ * The answers to offer for `blockedBy` while its option block is `block`: each row the block offers,
+ * as `{id, label, description, grants}` with `<cwd>`, `<config path>`, `<CODEX_HOME>` and
+ * `<trust root>` filled from `ctx`.
+ */
+export function promptOptions(kind, blockedBy, block, ctx) {
+  return (promptRows(kind, blockedBy) || [])
+    .filter((row) => rowOffered(row, block))
+    .map((row) => {
+      const template = typeof row.description === "function" ? row.description(ctx) : row.description;
+      const description = template
+        .split("<cwd>").join(ctx.cwd)
+        .split("<config path>").join(ctx.configPath)
+        .split("<CODEX_HOME>").join(ctx.codexHome)
+        .split("<trust root>").join(ctx.trustRoot);
+      return { id: row.id, label: row.label, description, grants: row.grants };
+    });
+}
+
 /**
  * Spec 0043 §1.9: a member's `args` as an actual list, with absent and `[]`
  * treated as the same thing (the spec makes them equivalent, so nothing
@@ -170,7 +552,7 @@ export function memberArgs(m) {
  * `--permission-mode` Claude CLI flags (§F3), so silently dropping them would
  * make `show` display a model that affects nothing.
  */
-export function kindFieldErrors(m) {
+export function kindFieldErrors(m, resolved = null) {
   const errors = [];
   if (!m || typeof m !== "object") return errors;
 
@@ -180,6 +562,7 @@ export function kindFieldErrors(m) {
   }
   const kind = resolveKind(m);
   const nonClaude = kind !== KIND_DEFAULT;
+  const harness = nonClaude ? KIND_HARNESS[kind] || null : null;
 
   if (nonClaude) {
     const mapped = KIND_AUTO_MODE_ARGS[kind];
@@ -191,6 +574,17 @@ export function kindFieldErrors(m) {
         // A value outside AUTO_MODE_VALUES is already reported by validateMember; saying it twice
         // helps nobody. This fires only for a real gap in a kind's table.
         if (!mapped[m.autoMode] && AUTO_MODE_VALUES.includes(m.autoMode)) errors.push(`auto-mode ${JSON.stringify(m.autoMode)} has no ${kind} equivalent — use one of ${Object.keys(mapped).join(", ")}`);
+        continue;
+      }
+      // A kind with a model mapping takes any model its harness might accept: the harness checks
+      // the name at the first turn, and its list can depend on the account, so only the shape is
+      // checked here.
+      if (key === "model" && harness) {
+        if (typeof m.model !== "string" || !/^[^\s\p{Cc}]+$/u.test(m.model)) errors.push(`model must be a non-empty string with no whitespace or control characters, got ${JSON.stringify(m.model)}`);
+        continue;
+      }
+      if (key === "model") {
+        errors.push(`model has no mapping for kind ${JSON.stringify(kind)} — pass that harness's own model flag in args instead (got ${JSON.stringify(m.model)})`);
         continue;
       }
       errors.push(`${label} is a Claude Code CLI flag and has no meaning for kind ${JSON.stringify(kind)} — remove it (got ${JSON.stringify(m[key])})`);
@@ -216,7 +610,59 @@ export function kindFieldErrors(m) {
   if (!nonClaude && memberArgs(m)) {
     errors.push(`args is not allowed for kind "claude" — Claude CLI flags are set with --model/--effort/--auto-mode, which are validated; args would bypass that (got ${JSON.stringify(m.args)})`);
   }
+  // One channel per setting: the CLI adds the model and approvals flags itself, so the same
+  // setting in args would either conflict or silently undo what the CLI set.
+  if (harness && memberArgs(m)) {
+    if (m.model !== undefined && m.model !== null && harness.argsSetModel(memberArgs(m))) {
+      errors.push(`model is set, and args sets the model too — one channel per setting: drop the model flag from args, or drop model (got ${JSON.stringify(m.args)})`);
+    }
+    if (memberArgs(m).some((a) => typeof a === "string" && a.includes(harness.approvalsKey))) {
+      errors.push(`args must not set ${harness.approvalsKey}: every ${kind} member is launched with ${harness.approvalsArgs.join(" ")}, so an escalation waits for a human, and a later setting in args would undo that (got ${JSON.stringify(m.args)})`);
+    }
+  }
+  // An advise-class member's model is locked to the top tier. args could carry a second model flag
+  // in a spelling no check here knows, or a prompt that would brief it at launch with no approval.
+  if (nonClaude && memberArgs(m) && roleClass(m.role, resolved) === "advise") {
+    errors.push(`args is not allowed on a non-claude advise-class member (${m.role}) — it could set a second model past the tier lock, or brief the member at launch without the user's approval (got ${JSON.stringify(m.args)})`);
+  }
+  // A kind with no model mapping runs its harness's default model, which can never be declared a
+  // tier, so it could never meet the advise class's lock.
+  if (nonClaude && !harness && roleClass(m.role, resolved) === "advise") errors.push(unmappedAdviseMessage(kind));
   return errors;
+}
+
+/** Why an advise-class member cannot be of `kind`, a kind with no model mapping. */
+export function unmappedAdviseMessage(kind) {
+  return `The Ultra-Advisor's model must have a declared opus or fable tier, and \`${kind}\` has no model mapping, so its model cannot be set or declared. Use claude, or a kind with a model mapping (${Object.keys(KIND_HARNESS).join(", ")}).`;
+}
+
+/** The tiers an advise-class member's model must be declared at. */
+export const ADVISE_TIERS = ["opus", "fable"];
+
+/**
+ * Warnings, not errors, for a non-claude member: a chain member whose auto-mode leaves it a
+ * read-only sandbox cannot write its report without an approval answered in its own pane, and
+ * (with `tier`) an advise-class member whose model is not declared opus or fable will be refused
+ * when it is spawned. Spawn itself passes `tier: false`, because there the tier is a refusal.
+ */
+export function kindFieldWarnings(m, resolved = null, { tier = true } = {}) {
+  const warnings = [];
+  if (!m || typeof m !== "object" || resolveKind(m) === KIND_DEFAULT) return warnings;
+  const kind = resolveKind(m);
+  const cls = roleClass(m.role, resolved);
+  const autoArgs = kindAutoModeArgs(m);
+  if (cls && CLASSES[cls] && CLASSES[cls].chain && autoArgs && autoArgs.includes("read-only")) {
+    warnings.push(`auto-mode ${JSON.stringify(m.autoMode)} runs ${kind} in a read-only sandbox, so this ${m.role} cannot write its report file without an approval answered in its own pane`);
+  }
+  if (tier && cls === "advise" && KIND_HARNESS[kind] && typeof m.model === "string" && m.model) {
+    const declared = declaredTier(kind, m.model);
+    if (!ADVISE_TIERS.includes(declared)) {
+      warnings.push(
+        `${kind} model ${m.model} ${declared ? `is declared ${declared}` : "has no declared tier"}; an advise-class member needs a model declared opus or fable, so spawning it will refuse. Declare it with \`roster.mjs tier set ${kind} ${m.model} <opus|fable>\` if that is how it compares`
+      );
+    }
+  }
+  return warnings;
 }
 
 /**
@@ -231,7 +677,9 @@ export function validateMember(m, resolved = null) {
   if (!roles.includes(m.role)) errors.push(`role must be one of ${roles.join(", ")}, got ${JSON.stringify(m.role)}`);
   const cls = roleClass(m.role, resolved);
   const validModels = cls ? CLASSES[cls].models : [];
-  if (m.model !== undefined && m.model !== null && !validModels.includes(m.model)) {
+  // The class allowlist names Claude aliases, so it applies to claude members only; a non-claude
+  // member's model is checked by kindFieldErrors.
+  if (m.model !== undefined && m.model !== null && resolveKind(m) === KIND_DEFAULT && !validModels.includes(m.model)) {
     errors.push(`model ${JSON.stringify(m.model)} is not valid for role ${JSON.stringify(m.role)} (allowed: ${validModels.join(", ")})`);
   }
   if (m.effort !== undefined && m.effort !== null && !EFFORT_VALUES.includes(m.effort)) {
@@ -250,7 +698,7 @@ export function validateMember(m, resolved = null) {
     errors.push(`on-missing must be one of ${ON_MISSING_VALUES.join(", ")}, got ${JSON.stringify(m.onMissing)}${why}`);
   }
   if (m.name !== undefined) errors.push('member must not carry a stored "name" — it is derived at resolve time (spec §3.4)');
-  for (const e of kindFieldErrors(m)) errors.push(e);
+  for (const e of kindFieldErrors(m, resolved)) errors.push(e);
   return errors;
 }
 
@@ -278,7 +726,7 @@ export function validateTeamMember(m, resolved = null) {
     errors.push(`name must be a non-empty string or null, got ${JSON.stringify(m.name)}`);
   }
   if (!ROSTER_ROUTE_VALUES.includes(m.route)) errors.push(`route must be one of ${ROSTER_ROUTE_VALUES.join(", ")}, got ${JSON.stringify(m.route)}`);
-  for (const e of kindFieldErrors(m)) errors.push(e);
+  for (const e of kindFieldErrors(m, resolved)) errors.push(e);
   if (m.transport_id !== undefined && m.transport_id !== null && typeof m.transport_id !== "string") {
     errors.push(`transport_id must be a string or null, got ${JSON.stringify(m.transport_id)}`);
   }

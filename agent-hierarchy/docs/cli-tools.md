@@ -136,6 +136,9 @@ read the fresh root line, or resolve it with the recipe above.
 | untrack (close nothing) | `node <R>/hooks/roster.mjs untrack <name>\|--all [--plan\|--commit] [--keep-sessions] [--also-config] [--level <L>] [--team <t>]`. Idempotent: with no team file it exits 0 with `untracked: false, already_untracked: true, reason: "no team file to forget"`. Untracking the last member removes the team file and adds `team_removed: true` beside `team_empty`. |
 | re-register this session | `node <R>/hooks/roster.mjs checkin [--team <t>] [--orchestrator-pid <pid>]` — the output carries `team` when this session is attributed to one (`null` for a legacy `team.json`); a create commit refuses a verified member object whose `team` is not the team being committed |
 | who am I / where is my orchestrator (peer) | `node <R>/hooks/roster.mjs whoami [--team <t>]` — read-only, writes nothing, exit 0 whenever the lookup ran. Matches this session's pane id (`HERDR_PANE_ID`, else this pid's `peers.jsonl` row, else `TMUX_PANE`) against every team record, or only `--team`'s. A launched member knows its team first from `AH_TEAM_FILE`, which the launcher sets on every member it starts; the pane match is the fallback. The path alone names the team, whether or not its file exists (a member starts before `create --commit` writes it, and outlives a reap, disband or untrack that removes it); with no file there is no record, so `member` is `null` and `reason` is `no-team`. Output: `member: {name, role, route}\|null`, `team` (`null` for the legacy `team.json`), `team_file`, `orchestrator: {pid, session_id, live, send_to}\|null`, `answered_by`: `env` \| `pane` \| `null`, `reason`: `null` \| `no-pane-id` \| `no-team` \| `not-a-member` \| `ambiguous` (then `candidates: [{team, name}]`). An `AH_TEAM_FILE` that is not a team file of this repo is never followed; it is reported, beside that real outcome, as `env_team_invalid: {value, kind, why}` with `kind` `other-repo` (a well-formed team file of another repo's hierarchy dir) or `malformed`, and is absent when the variable is unset or accepted. `session_id` is passed through as recorded, and is `null` on every path the agent-team skill uses. `send_to` is usable directly as SendMessage `to`, but is best-effort — derived from the pid, non-null only while the orchestrator is alive and its session socket exists. Reply precedence: the brief's `reply-to` (or the orchestrator's session name from `ListAgents`) is authoritative — see [comms-protocol.md](comms-protocol.md); `send_to` is the fallback when that is lost. The socket directory follows this session's own `CLAUDE_CODE_MESSAGING_SOCKET` when the harness exports it (else `/tmp/cc-socks`); the real directory is harness-owned, so `send_to` stays best-effort. Every output, whatever its `reason`, also carries `last_observed_brief: {from, from_name, reply_to, ts}\|null` — the last obligation row a hook filed for this session in `~/.claude/agent-hierarchy.peer-pending.jsonl`, any status, with `from_name` `null` when none was recorded. These values are observed, not verified: they say who last briefed this session, which can differ from the recorded `orchestrator`, and like `send_to` they are a fallback below the brief's `reply-to` and the `ListAgents` name. `null` is the expected value, not a failure, in two cases: no session id resolves (`CLAUDE_CODE_SESSION_ID`, else the `session_id` on this pid's `peers.jsonl` row), or no row exists — only a sentinel or `[hierarchy-msg …]` brief files one, a plain cross-session message does not, and its absence does not make the session unaddressable. It never changes `reason`. |
+| brief a non-claude pane member | `node <R>/hooks/roster.mjs deliver <name> --req <abs request path> [--ping <n>] [--wait-only] [--timeout <s>] [--team <t>]` — run it in the background. Creates (or reuses) the response file beside the request, sends `[hierarchy-msg <req>]`, `Report to: <response>` and the member's standing-instructions path (a ping sends `Ping <n>/3: …`; `--wait-only` sends nothing and only waits), and waits for the turn to end. A member that is working or not ready is waited for first, polling, and both waits share one `--timeout` deadline (default 1800 s). Exit 0 with `{status, sent, name, request, response, agent_status}`; `status` is `reported`, `no-report`, `malformed-report`, `busy` (still working or not ready at the deadline; nothing sent: re-run the same command), `blocked`, `not-live`, `indeterminate`, `timeout` or `not-sent` (`--wait-only` found no response file). `sent` is true only when this run sent its brief or ping, never under `--wait-only`. A report is judged against the body the response file is created with, trailing whitespace aside. `no-report` and `timeout` carry `pane_tail`. `not-live` carries `spawn`: `spawn-one <role> --member <name>` when a roster row derives the name, else `spawn-ad-hoc` with the member's recorded fields and a `spawn_note` that the name may differ. `blocked` carries `blocked_by` (`trust-dialog`, `login`, `approval`, else `harness-prompt`), `screen` (the member's visible screen, verbatim), `screen_hash`, `options` (`[{id, label, description, grants}]`, only those the recognised option block reads; `[]` for `harness-prompt`) and a `message` with the relay steps. Nothing is sent to a member that is working, not ready or at a prompt, and a codex member is sent a brief or ping only while its screen is Codex's idle, empty composer: any other screen, read twice, is `blocked` with `harness-prompt` and `options: []`. `--wait-only` sends nothing and has no composer check. A Claude member, or a name the team does not hold, exits 2; so does an advise-class member when this session has no `session`/`each` Ultra-Advisor decision on record |
+| answer a member's prompt | `node <R>/hooks/roster.mjs answer <name> --prompt <blocked_by> --choice <id> --screen-hash <hash> [--team <t>]` — only after asking the user. Sends that option's keys from the kind's table, and only when one `visible` read still shows that prompt with that hash and that option. Exit 0 with `status`: `answered` (`agent_status`, `live`, `prompt_after`, `screen`), `screen-changed` (fresh `blocked_by`, `screen`, `screen_hash`, `options`; nothing sent), `not-live` or `indeterminate`. Takes no keys and no text. Exit 2 for a Claude member, an unknown `--prompt` or `--choice`, or an option not on the screen |
+| declare a non-Claude model's tier | `node <R>/hooks/roster.mjs tier set <kind> <model> <haiku\|sonnet\|opus\|fable>` · `… tier remove <kind> <model>` · `… tier list` — how that model compares with Claude's tiers, stored only in the global config's `modelTiers`. `list` also carries `warnings` for entries it ignores (kind `claude`, or not a tier). An advise-class member of a kind with a model mapping must run on a model declared `opus` or `fable` |
 | list roles | `node <R>/hooks/roster.mjs role list [--json]` — every built-in and custom role: class, agent, model, level, chain placement (`alt. to <Builtin>: <routes>`, `side`, `legwork`), effective description, and contract status (`shipped`, `ok`, `n warnings`, `UNAVAILABLE: n errors`, or `UNAVAILABLE → reverted to ah:<role>` for a failing built-in override). Invalid rows are listed as `excluded` with their reasons. `--json` adds each role's findings, and `path` names the agent-file copy that was checked. |
 | define or change a role | `node <R>/hooks/roster.mjs role set <name> [--class advise\|design\|review\|implement\|legwork] [--agent <ref>] [--label <l>] [--description <d>] [--routes <r>] [--model <M>] [--dispatch peer\|model] [--level global\|repo\|repo-user] [--scaffold repo\|user] [--dry-run]` — upserts one row at one level (default: the level the role is already defined at, else `repo` with `--scaffold repo`, else `global`), seeded from the effective row. A built-in takes only `--agent`, `--model` and `--dispatch`. `--dispatch model` only for a legwork-class role (else exit 2). `--routes ""` / `--description ""` delete the key. The agent file is validated against the class contract: errors refuse the write and print each finding with its fix; warnings print and the write proceeds. `--scaffold` writes a template that passes the contract, and removes it again if the write fails. `--dry-run` writes nothing. |
 | remove a role | `node <R>/hooks/roster.mjs role remove <name> [--level <L>]` — refused while any roster member uses the role; never deletes an agent file. For a built-in, removes only its `agent` override. |
@@ -152,7 +155,7 @@ refuse; beside an unparseable legacy `team.json` a bare read verb resolves to th
 rather than to `teams/<prefix>.json`, so it reports that scope.
 
 Flags are validated per verb: `spawn-one`, `spawn-ad-hoc`, `adopt`, `checkin`, `whoami`, `dismiss`,
-`disband`, `untrack`, `resync`, `move` and `reap` reject any flag not in their own set, so
+`disband`, `untrack`, `resync`, `move`, `reap`, `deliver`, `answer` and `tier` reject any flag not in their own set, so
 the lists above are exhaustive for those verbs rather than indicative.
 
 `--team <t>` names a live team, never a roster: `show`, `init`, `add`, `edit` and `remove` refuse it
@@ -176,7 +179,11 @@ and written nothing: `ok: false`, `refused: "team-name-unusable"`, `needs_user_c
 `--member-model` / `--model` — the verb exits 2 the same way, after the team-name check and before
 anything is launched or written: `ok: false`, `refused: "member-model-undefined"`, `verb`, `members`
 (roster order: `{name, role, class, allowed, fallback}`), `rerun`, `rerun_fallback` and `message`.
-`allowed` is the class's model allowlist. `fallback` is `{model, from}` — the highest-tier model a
+`allowed` is the class's model allowlist. A member of a kind with a model mapping (today: codex) is
+asked for too: it also carries `kind` and `models_command` (codex: `codex debug models`), its
+`allowed` is `null` (any model that harness accepts) — or, for an advise-class member, the models of
+its kind declared `opus` or `fable` — and its `fallback` is always `null`: models do not carry
+across harnesses. `fallback` is `{model, from}` — the highest-tier model a
 claude-kind design, review or implement member holds that the class allows (`inherit` never counts),
 first in roster order on a tie — or `null`; a legwork member never borrows one, and is listed only
 when task-gopher is not installed or `--no-legwork-handoff` is given (otherwise it is skipped, as
@@ -185,6 +192,52 @@ with one `<MODEL>` flag per listed member (`--member-model <name>=<MODEL>`; `--m
 <MODEL>`; `--model <MODEL>`). `rerun_fallback` applies every fallback, and is `null` when any is. The
 model is the user's choice: ask, then re-run `rerun` with each `<MODEL>` replaced; only a top-level
 session that cannot ask runs `rerun_fallback`, and a subagent never does.
+
+**`model` on a non-claude kind.** A kind with a model mapping (today: codex, `--model <M>`) takes a
+`model` on `add`, `edit`, `spawn-one --model`, `create --member-model` and `spawn-ad-hoc --model`,
+checked for shape only (no whitespace or control characters) — the harness checks the name at the
+first turn. `model` together with a model flag in `args` (codex: `--model`, `-m`, `-c model=…`) is a
+hard error, as is `approvals_reviewer` in a codex member's `args`, and any `args` on a non-claude
+advise-class member. A kind with no mapping rejects `model`: pass its own flag in `args`. A
+non-claude chain member whose auto-mode leaves a read-only sandbox (codex `manual`, `plan`) gets a
+warning at `add`, `edit` and spawn: it cannot write its report without an approval in its pane.
+
+**Spawning a non-claude member.** Every spawn writes its standing instructions to
+`<hierarchy dir>/instructions/<name>.md` (identity, the role's agent body, how a brief and a report
+work outside Claude Code) and, for codex, launches it with `--model <M>`,
+`-c model_instructions_file="<that file>"`, `--add-dir <message pool>` when the pool is outside the
+cwd, and `-c approvals_reviewer="user"`, ahead of the auto-mode flags and `args`. A member that stops
+at a prompt it recognises (trust dialog, sign-in, approval) is launched with a `blocked` object of
+`deliver`'s shape to relay; spawn never sends a key.
+
+**`name-in-use`.** When Herdr refuses to start a member because another Herdr agent holds its name
+(`agent_name_taken`), `spawn-one` and `spawn-ad-hoc` exit 2 with `ok: false`,
+`refused: "name-in-use"`, `name`, `rerun` (the same command plus `--names-in-use <name>`), `detail`
+and `message`, having closed the empty pane and written nothing. It is not a launch failure.
+`create --spawn` reports it on that member's `launch_result`.
+
+**Per-member refusals under `create --spawn`.** `name-in-use`, `harness-cwd-untrusted` and
+`agent-file-not-found` fail that member alone: `launch_status: "failed"` with
+`launch_result: {reason: "refused", refused: "<name>", …the refusal's fields}`. They are not launch
+failures.
+
+**`agent-file-not-found`.** A non-claude member's contract is a built-in role's `agents/<role>.md` in
+the running plugin, or a custom role's agent file found by the role resolver. When it is missing,
+spawn exits 2 before any pane opens with `ok: false`, `refused: "agent-file-not-found"`, `member`,
+`role`, `ref` and `message`.
+
+**`harness-cwd-untrusted`.** When Codex's own config (`$CODEX_HOME/config.toml`, else
+`~/.codex/config.toml`, read-only) says the cwd is not trusted and, once the member is ready, no
+prompt is recognised on its screen, spawn closes the pane it opened and exits 2 with `ok: false`,
+`refused: "harness-cwd-untrusted"`, `member`, `kind`, `cwd` and `message`. Trusting a directory is
+the user's decision: they run `codex` there once and answer its question.
+
+**`advise-model-tier`.** A non-claude advise-class member whose model is not declared `opus` or
+`fable` is refused before anything is launched or written: `ok: false`,
+`refused: "advise-model-tier"`, `member`, `kind`, `model`, `declared_tier` (`null` or the declared
+tier), `needs: ["opus","fable"]`, `rerun_declare` (the `tier set` command with `<TIER>`) and
+`message`. A kind with no model mapping can never be declared: `model`, `declared_tier` and
+`rerun_declare` are `null`, and `add`/`edit`/`spawn-ad-hoc` reject such a member outright.
 
 **Stale keys and `migrated`.** Keys that do nothing any more are ignored, reported by `status`,
 `doctor` and every `create` phase (never in session context), and migrated by the next CLI write

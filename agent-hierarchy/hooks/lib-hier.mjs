@@ -183,6 +183,12 @@ function skeletonBody(keys) {
   return lines.join("\n") + "\n";
 }
 
+/** What a response file is created with below its frontmatter's closing line (a blank line, then
+    the skeleton): while that is unchanged, nothing has been reported in it. */
+export function responseSkeleton() {
+  return "\n" + skeletonBody(RESPONSE_KEYS);
+}
+
 /** What the team file is and how a session acts on it — shipped with the plugin, named in every message that names a team file. */
 export const TEAM_GUIDE = resolve(dirname(fileURLToPath(import.meta.url)), "..", "docs", "team-file.md");
 

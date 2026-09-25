@@ -38,8 +38,11 @@ then `/agent-roster add` adds a member per role. Each member has these keys:
   `claude`, and that stays true for every roster written before this key
   existed. Any other value (`codex`, `pi`, … — Herdr owns the list; run
   `herdr agent` to see what your install has) makes the member a *non-Claude*
-  agent, which changes the four keys below.
-- `model` — which model that role runs on. **`kind: claude` only.**
+  agent, which changes the keys below.
+- `model` — which model that role runs on. For a non-Claude kind with a model
+  mapping (today: codex) it is that harness's model name, e.g.
+  `{ "role": "architect", "kind": "codex", "model": "gpt-6-astra", "route": "pane" }`;
+  any other non-Claude kind takes its model flag in `args`.
 - `effort` — reasoning effort, where the model supports it. **`kind: claude` only.**
 - `route` — `peer` (a separate live session, reached with SendMessage),
   `subagent` (spawned in-process by the Agent tool), or `pane` (driven through
@@ -56,15 +59,18 @@ then `/agent-roster add` adds a member per role. Each member has these keys:
   kinds only** — for a Claude member, `model`/`effort`/`auto_mode` are the
   validated way to set flags, and `args` would bypass that validation.
 
-`model` and `effort` are literally Claude Code CLI flags (`--model`,
-`--effort`), which is why they are *rejected* rather than ignored for another
-kind: a setting that silently affects nothing is worse than one that refuses.
+`effort` is literally a Claude Code CLI flag (`--effort`), which is why it is
+*rejected* rather than ignored for another kind, as `model` is for a kind with
+no model mapping: a setting that silently affects nothing is worse than one
+that refuses.
 `auto_mode` is the exception — permission policy exists in the other CLI's
 vocabulary too, so it is translated for a kind that has a mapping (today:
 codex) and still rejected for one that does not.
 
 A non-claude member requires a Herdr session (`HERDR_ENV=1`) to spawn — tmux
-and terminal transports can only start `claude`. Adding one from a non-Herdr
+and terminal transports can only start `claude`. It is briefed with
+`roster.mjs deliver`, never SendMessage, and reports only through its response
+file. Adding one from a non-Herdr
 session still works (rosters are portable); only spawning it needs Herdr.
 
 Value spaces and validation rules are in

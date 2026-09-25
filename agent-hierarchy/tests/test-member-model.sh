@@ -331,10 +331,10 @@ run_roster create --plan
 check "B8: a plan where every member has a model has no members_needing_model" '[ "$RC" = 0 ] && [ "$(jq_out "\"members_needing_model\" in o")" = false ]'
 
 new_repo b9
-roster_json '[{"role":"architect","model":"opus"},{"role":"ultra-advisor"},{"role":"implementor","kind":"codex","route":"pane"}]'
+roster_json '[{"role":"architect","model":"opus"},{"role":"ultra-advisor"},{"role":"implementor","kind":"pi","route":"pane"}]'
 run_roster create --plan --member-model nobody=opus;                                        check "B9: an unknown --member-model name exits 2" '[ "$RC" = 2 ]'
 run_roster create --plan --member-model b9-architect=opus --member-model b9-architect=sonnet; check "B9: a duplicate --member-model name exits 2" '[ "$RC" = 2 ]'
-run_roster create --plan --member-model b9-implementor=opus;                                check "B9: --member-model on a non-claude member exits 2" '[ "$RC" = 2 ]'
+run_roster create --plan --member-model b9-implementor=opus;                                check "B9: --member-model on a member of a kind with no model mapping (pi) exits 2" '[ "$RC" = 2 ]'
 run_roster create --plan --member-model b9-ultra-advisor=sonnet;                            check "B9: ultra-advisor=sonnet exits 2" '[ "$RC" = 2 ] && [[ "$OUT" == *"is not valid for role"* ]]'
 run_roster create --plan --member-model b9-architect=haiku;                                 check "B9: architect=haiku exits 2" '[ "$RC" = 2 ]'
 
@@ -376,9 +376,9 @@ TF=$(team_files)
 check "B12c: ...and keeps one that carries a model" '[ "$RC" = 0 ] && [ "$(jq_file "$TF" "t.members.map(m=>m.name+\":\"+m.model).join()")" = b12d-architect:opus,b12d-task-runner:haiku ] && [ "$(jq_out "\"skipped_members\" in o")" = false ]'
 
 new_repo b13
-roster_json '[{"role":"architect","model":"opus"},{"role":"implementor","kind":"codex","route":"pane"},{"role":"task-runner","route":"subagent"}]'
+roster_json '[{"role":"architect","model":"opus"},{"role":"implementor","kind":"pi","route":"pane"},{"role":"task-runner","route":"subagent"}]'
 run_herdr create --plan
-check "B13: a non-claude member and a subagent-routed member are never listed" '[ "$RC" = 0 ] && [ "$(jq_out "\"members_needing_model\" in o")" = false ]'
+check "B13: a member of a kind with no model mapping (pi) and a subagent-routed member are never listed" '[ "$RC" = 0 ] && [ "$(jq_out "\"members_needing_model\" in o")" = false ]'
 run_herdr create --spawn
 check "B13: ...and never refused" '[ "$RC" = 0 ] && [ "$(jq_out "o.refused")" = undefined ]'
 

@@ -33,6 +33,10 @@
  * member's real name: another session holds that name. A name one of the team's records holds
  * is never denied.
  *
+ * Any SendMessage whose `to` is a recorded non-claude pane member is DENIED with that member's
+ * `roster.mjs deliver` command: SendMessage cannot reach it, and a Claude session that happens to
+ * hold the same name must not receive its brief.
+ *
  * Tier gate (Agent/Task, and SendMessage peer briefs carrying the sentinel +
  * `[hierarchy-msg`): when the session model is known, the target is architect
  * or ultra-advisor, that role's tier ≤ the session tier, and the request file
@@ -46,7 +50,7 @@
  * independent.
  */
 
-import { chainRoles, classProp, hierarchyRoleOf, HOOK_ERROR_LOG, isSubagent, logHookError, readHookInput, resolveConfig, resolvedPeerTargets, ROLE_LABELS, roleLabel, ROSTER_CLI, roleFromName, rosterMemberFor, teamPrefix, tierOf } from "./lib-config.mjs";
+import { chainRoles, classProp, hierarchyRoleOf, HOOK_ERROR_LOG, isSubagent, KIND_DEFAULT, logHookError, readHookInput, resolveConfig, resolvedPeerTargets, resolveKind, ROLE_LABELS, roleLabel, ROSTER_CLI, roleFromName, rosterMemberFor, teamPrefix, tierOf } from "./lib-config.mjs";
 import {
   appendGate,
   describeInstance,
@@ -113,12 +117,12 @@ function failClosedReason(input) {
   return `${head} ${ROLE_LABELS[role]} never runs as a subagent: SendMessage its live peer, or start one with \`node "${ROSTER_CLI}" spawn-one ${role} --cwd ${cwd}\`.`;
 }
 
-function peersDenyReason(role, live, resolved) {
+function peersDenyReason(role, live, resolved, cwd) {
   const ordered = [...live.filter((i) => !i.busy), ...live.filter((i) => i.busy)];
   return [
     `ah: live ${label(role)} peer(s): ${ordered.map(describeInstance).join("; ")}.`,
     `ah roles are dispatched as peers: SendMessage "${ordered[0].name}" (set to_name) with the brief this Agent call carried, instead of spawning.`,
-    ...paneLine(resolved, rosterMemberFor(resolved, role)),
+    ...paneLine(resolved, rosterMemberFor(resolved, role), cwd),
   ].join("\n");
 }
 
@@ -127,9 +131,24 @@ function spawnCommand(role, member, cwd) {
   return `node "${ROSTER_CLI}" spawn-ad-hoc ${role} --cwd ${cwd}`;
 }
 
-function paneLine(resolved, member) {
-  return member && (member.route || resolved.roster.route) === "pane" ? ["This member's route is pane: drive it with `herdr agent prompt`, not SendMessage."] : [];
+function deliverCommand(name, reqPath, cwd) {
+  return `node "${ROSTER_CLI}" deliver ${name} --req ${reqPath || "<request path>"} --cwd ${cwd}`;
 }
+
+function paneLine(resolved, member, cwd) {
+  // A non-Claude member never appears in peers.jsonl, so it is never among the live instances this
+  // gate lists; spawn-one is what reports it live.
+  return member && (member.route || resolved.roster.route) === "pane"
+    ? [`This member's route is pane: brief it with \`${deliverCommand("<name>", null, cwd)}\`, run in the background, not SendMessage — <name> is the name the spawn command prints, including when spawn-one reports it already live.`]
+    : [];
+}
+
+/** A `to` that names a non-claude pane member: SendMessage cannot reach it, and a Claude session holding the same name must not get its brief. */
+function paneSendReason(member, text, cwd) {
+  return `ah: \`${member.name}\` runs in \`${resolveKind(member)}\` and cannot receive SendMessage. Brief it with \`${deliverCommand(member.name, extractMsgToken(text), cwd)}\`, run in the background.`;
+}
+
+const isPaneMember = (m) => Boolean(m) && resolveKind(m) !== KIND_DEFAULT && m.route === "pane";
 
 function renamedReason(to, member) {
   return `${to} is not in your team; its ${label(member.role)} is ${member.name}. SendMessage "${member.name}". To reach the other session on purpose, address it with its [ref].`;
@@ -144,7 +163,7 @@ function spawnReason(role, resolved, member, cwd, prefix) {
     "If the command reports the member already exists or is already live, SendMessage the name it reports.",
     'If the command refuses with `refused: "team-name-unusable"`, follow its `message`: ask the user for the team name, then re-run with `--team`. That is not a launch failure.',
     "If the command fails to launch, follow agent-team's 'When a role can't take the work'.",
-    ...paneLine(resolved, member),
+    ...paneLine(resolved, member, cwd),
   ].join("\n");
 }
 
@@ -196,6 +215,11 @@ try {
       const renamed = teamMemberRenamedFrom(dir, to, resolved.team);
       if (renamed) decide("deny", renamedReason(to, renamed));
     }
+    if (to) {
+      const anyTeam = resolveMemberTeam(dir, to);
+      const named = anyTeam.found ? teamMemberByName(dir, to, anyTeam.team) : null;
+      if (isPaneMember(named)) decide("deny", paneSendReason(named, text, cwd));
+    }
     if (!parseSentinel(text)) decide(null);
     // Mechanism (A) — spec 0011 §4.4.1/§9.1: "what role is this name" is
     // answered by an all-teams name search, independent of `resolved.team` —
@@ -214,6 +238,7 @@ try {
       }
     }
     const teamMember = membership.found ? teamMemberByName(teamDir, to, membership.team) : null;
+    if (isPaneMember(teamMember)) decide("deny", paneSendReason(teamMember, text, cwd));
     role = teamMember ? teamMember.role : null;
     if (!role) role = chainRoles(resolved).find((r) => resolvedPeerTargets(r, resolved.roles[r], repoBasename).includes(to)) || null;
     if (!role && to) {
@@ -233,7 +258,7 @@ try {
   // ---- Orchestrator: a chain role runs only as a peer — the live one gets the brief, or one is spawned
   if (peerEligible && isDispatch) {
     const live = (getRoster()[role] || []).filter((i) => i.live);
-    if (live.length) decide("deny", peersDenyReason(role, live, resolved));
+    if (live.length) decide("deny", peersDenyReason(role, live, resolved, cwd));
     decide("deny", spawnReason(role, resolved, rosterMemberFor(resolved, role), cwd, repoBasename));
   }
 

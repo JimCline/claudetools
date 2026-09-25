@@ -255,11 +255,11 @@ check "21f: a CLI with no CLAUDE_PID does not adopt its parent shell's team" 'ec
 OUT=$(cat "$SANDBOX/cli21g.out")
 check "21g: a CLI with CLAUDE_PID sees that session's team" 'echo "$OUT" | grep -q "^architect: adhoc-architect"'
 
-# ---- F2: a live pane-route member's deny says herdr, not SendMessage
+# ---- F2: a live pane-route member's deny says deliver, not SendMessage
 reset; roster_cfg ', "kind": "codex", "route": "pane"'
 seed_live myrepo-architect architect
 gate "$(payload sF2 ah:architect)"
-check "F2: a live pane-route member's deny says to drive it with herdr agent prompt" 'denied && echo "$OUT" | grep -q "herdr agent prompt"'
+check "F2: a live pane-route member's deny says to brief it with roster.mjs deliver, not SendMessage" 'denied && echo "$OUT" | grep -q "route is pane: brief it with" && echo "$OUT" | grep -qF "deliver <name> --req <request path>" && echo "$OUT" | grep -q "not SendMessage"'
 
 echo "---- $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
