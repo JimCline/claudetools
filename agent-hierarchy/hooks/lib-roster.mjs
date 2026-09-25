@@ -375,6 +375,14 @@ export function teamMemberByName(dir, name, team = null) {
   return t.members.find((m) => m.name === name) || null;
 }
 
+/** The member of one team (default when `team` is omitted) that was renamed away from `name`, the
+    name it would have had, because a session outside the team already held it. */
+export function teamMemberRenamedFrom(dir, name, team = null) {
+  const t = readTeam(dir, team);
+  if (!t || !name) return null;
+  return t.members.find((m) => m && m.renamed_from === name) || null;
+}
+
 /** Named-slot Team members for a role — peer and pane both occupy one (subagent-routed members
     are recorded but are never dispatch targets by name). Its consumer `resolveSessionTeam` counts
     slots to decide which team a session belongs to, and a pane member fills a slot exactly as a

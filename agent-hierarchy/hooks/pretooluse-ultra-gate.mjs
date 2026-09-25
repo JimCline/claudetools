@@ -22,7 +22,11 @@
  * name any session explicitly — or several (see `resolvedPeerTargets` in
  * lib-config.mjs; any of them is gated),
  * so a SendMessage that misses the convention-name fast path falls through
- * to a config read before being cleared. A SendMessage to any other peer —
+ * to a config read before being cleared. Another instance of the role, a
+ * second one or one renamed because another session held the plain name,
+ * is gated too: by the `<prefix>-<role>-<n>` pattern on every gated
+ * prefix, which needs no team file, and by its recorded name in a team
+ * whose prefix is gated. A SendMessage to any other peer —
  * including a peer for a different hierarchy role — passes through
  * untouched.
  */
@@ -44,7 +48,8 @@ import {
   teamPrefix,
 } from "./lib-config.mjs";
 import { getDecision, isGatedPeerTarget, NO_SESSION_KEY, normalizeSessionId } from "./lib-gate.mjs";
-import { listTeamNames } from "./lib-roster.mjs";
+import { stripRef } from "./lib-peer.mjs";
+import { listTeamNames, teamMemberByName } from "./lib-roster.mjs";
 
 const GATE_CLI = join(dirname(fileURLToPath(import.meta.url)), "gate.mjs");
 
@@ -151,12 +156,23 @@ try {
     const hit = hierarchyRoleOf(type, { resolved });
     gatedRole = hit && roleClass(hit, resolved) === "advise" ? hit : null;
   } else {
+    const to = typeof toolInput.to === "string" ? stripRef(toolInput.to.trim()) : "";
+    // `<prefix>-<role>-<n>` names another instance of the role, a second one or a renamed one, and
+    // is gated with no team file: `create --spawn` launches it before `--commit` records it.
+    const suffixed = (name) => to.startsWith(`${name}-`) && /^\d+$/.test(to.slice(name.length + 1));
     gatedRole =
       adviseRoles.find(
         (r) =>
-          gatedPrefixes.some((prefix) => isGatedPeerTarget(toolInput.to, peerName(prefix, r))) ||
+          gatedPrefixes.some((prefix) => isGatedPeerTarget(toolInput.to, peerName(prefix, r)) || suffixed(peerName(prefix, r))) ||
           resolvedPeerTargets(r, resolved.roles[r], repoBasename).some((name) => isGatedPeerTarget(toolInput.to, name))
       ) || null;
+    // A member recorded under an advise-class role is gated by its recorded name, in the same
+    // teams whose prefixes are.
+    if (!gatedRole && to) {
+      const teams = resolved.team !== null ? [resolved.team] : [null, ...teamNames];
+      const member = teams.map((team) => teamMemberByName(hierarchyDir(cwd), to, team)).find((m) => m && adviseRoles.includes(m.role));
+      if (member) gatedRole = member.role;
+    }
   }
   if (!gatedRole) decide(null);
 

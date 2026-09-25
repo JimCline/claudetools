@@ -28,6 +28,11 @@
  * team records first (all teams, then the team file its request names), then config peer
  * targets, then the roster, then the name's role token.
  *
+ * Orchestrator, any SendMessage, brief or not: a `to` with no `[ref]` that equals the name a
+ * member of the session's own team was renamed away from (`renamed_from`) is DENIED, naming the
+ * member's real name: another session holds that name. A name one of the team's records holds
+ * is never denied.
+ *
  * Tier gate (Agent/Task, and SendMessage peer briefs carrying the sentinel +
  * `[hierarchy-msg`): when the session model is known, the target is architect
  * or ultra-advisor, that role's tier ≤ the session tier, and the request file
@@ -55,7 +60,7 @@ import {
   sessionModel,
   upRecordFor,
 } from "./lib-hier.mjs";
-import { resolveMemberTeam, teamMemberByName } from "./lib-roster.mjs";
+import { resolveMemberTeam, teamMemberByName, teamMemberRenamedFrom } from "./lib-roster.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
 
 /** The registry this call resolved; labels for custom roles come from it. */
@@ -126,10 +131,15 @@ function paneLine(resolved, member) {
   return member && (member.route || resolved.roster.route) === "pane" ? ["This member's route is pane: drive it with `herdr agent prompt`, not SendMessage."] : [];
 }
 
-function spawnReason(role, resolved, member, cwd) {
+function renamedReason(to, member) {
+  return `${to} is not in your team; its ${label(member.role)} is ${member.name}. SendMessage "${member.name}". To reach the other session on purpose, address it with its [ref].`;
+}
+
+function spawnReason(role, resolved, member, cwd, prefix) {
   return [
     `ah: no live ${label(role)} peer. ah chain roles run as peers, never subagents.`,
     `Run: ${spawnCommand(role, member, cwd)}`,
+    `Before running it, run ListAgents and add \`--names-in-use <name>\` for every live name that starts with \`${prefix}-\`.`,
     "Then SendMessage the `name` the command prints, with the brief you gave this Agent call. The session takes a few seconds to boot: if the name is not in ListAgents yet, wait until it is (`roster.mjs teams` reports it live).",
     "If the command reports the member already exists or is already live, SendMessage the name it reports.",
     'If the command refuses with `refused: "team-name-unusable"`, follow its `message`: ask the user for the team name, then re-run with `--team`. That is not a launch failure.',
@@ -178,8 +188,15 @@ try {
     text = typeof toolInput.prompt === "string" ? toolInput.prompt : "";
   } else {
     text = typeof toolInput.message === "string" ? toolInput.message : "";
+    const rawTo = typeof toolInput.to === "string" ? toolInput.to.trim() : "";
+    const to = stripRef(rawTo);
+    // The name a member was renamed away from belongs to another session, unless one of the team's
+    // own records holds it too; only a `[ref]` says the sender means that other session.
+    if (!subagent && !isSubordinateSession && to && to === rawTo && !teamMemberByName(dir, to, resolved.team)) {
+      const renamed = teamMemberRenamedFrom(dir, to, resolved.team);
+      if (renamed) decide("deny", renamedReason(to, renamed));
+    }
     if (!parseSentinel(text)) decide(null);
-    const to = typeof toolInput.to === "string" ? stripRef(toolInput.to.trim()) : "";
     // Mechanism (A) — spec 0011 §4.4.1/§9.1: "what role is this name" is
     // answered by an all-teams name search, independent of `resolved.team` —
     // the team-scoped form has a silent-null failure mode when rung 2 misses.
@@ -217,7 +234,7 @@ try {
   if (peerEligible && isDispatch) {
     const live = (getRoster()[role] || []).filter((i) => i.live);
     if (live.length) decide("deny", peersDenyReason(role, live, resolved));
-    decide("deny", spawnReason(role, resolved, rosterMemberFor(resolved, role), cwd));
+    decide("deny", spawnReason(role, resolved, rosterMemberFor(resolved, role), cwd, repoBasename));
   }
 
   // ---- tier gate: same-or-lower-tier Architect / Ultra-Advisor without a reason

@@ -33,7 +33,8 @@
  *                       A legwork member with no model is skipped while task-gopher is installed:
  *                       `skipped_members` lists it, and its work goes to task-gopher subagents.
  *                       [--no-legwork-handoff] counts task-gopher as not installed, for a driver that
- *                       cannot dispatch it)
+ *                       cannot dispatch it; [--names-in-use <name>], repeatable, a live session name
+ *                       a member's derived name is renamed away from)
  *   (`--spawn` launches only; `--commit` persists. Both are required, in that order.)
  *   roster.mjs next-split --mode <auto|columns|grid> --pane-count <N> --self <pane-id>
  *                       --created '<json array of pane ids>'
@@ -51,13 +52,14 @@
  *                       <name> --new-workspace
  *                       [--dry-run] [--cwd <path>]
  *   roster.mjs spawn-one <role> [--member <name>] [--model M] [--team <T>] [--cwd <path>] [--dry-run]
- *                       [--allow-global] [--orchestrator-pid <pid>]
+ *                       [--allow-global] [--orchestrator-pid <pid>] [--names-in-use <name>]
  *                       (--model: required when the member has no model stored; this launch only)
  *                       (--team names the team to join; an unknown name creates that scope —
  *                        no separate create step, and nothing to ask about.)
  *   roster.mjs spawn-ad-hoc <role> [--model M] [--effort E] [--route peer|pane] [--kind K]
  *                       [--args '<json>'] [--auto-mode A] [--on-missing ...] [--team T]
- *                       [--dry-run] [--allow-global] [--orchestrator-pid <pid>] [--cwd <path>]
+ *                       [--dry-run] [--allow-global] [--orchestrator-pid <pid>] [--names-in-use <name>]
+ *                       [--cwd <path>]
  *                       (spec 0044 §1.4: spawn a member the roster does not define, or one whose
  *                        parameters diverge from it. Writes ONLY the team file — never the roster.)
  *   roster.mjs teams   [--cwd <path>] [--orchestrator-pid <pid>]
@@ -114,7 +116,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-import { AGENT_REF_RE, agentRefError, hierarchyNameParts as parseNameParts, chainRoles, checkCustomRow, CLASSES, classBuiltin, classProp, customRoleNames, defaultLabel, DISPATCH_MODES, formatFindings, hasContractErrors, isAlternative, isBuiltinRole, isOverride, locateAgentFile, registryRoles, roleAgent, roleClass, ROLE_LABELS, roleLabel, validateAgentContract, validateRole, CONFIG_VERSION, findGitRoot, hierarchyDir, mainHierarchyDir, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, ROLES, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, namedRosterKeys, normalizeRosterBlock, rosterBlocksOf, staleTeamKeys, STALE_ROUTE_VALUES, suggestTeamAlias, teamLayoutPreference, teamPrefix, teamPrefixInfo, tierOf, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
+import { AGENT_REF_RE, agentRefError, hierarchyNameParts as parseNameParts, chainRoles, checkCustomRow, CLASSES, classBuiltin, classProp, customRoleNames, defaultLabel, DISPATCH_MODES, formatFindings, hasContractErrors, isAlternative, isBuiltinRole, isOverride, locateAgentFile, registryRoles, roleAgent, roleClass, ROLE_LABELS, roleLabel, validateAgentContract, validateRole, CONFIG_VERSION, findGitRoot, hierarchyDir, mainHierarchyDir, peerName, pluginVersion, recentHookErrors, resolveConfig, statusReport, HOOK_ERROR_LOG, ROLES, ROSTER_LEVELS, resolveRoster, rosterLevelPaths, rosterMemberNames, namedRosterKeys, normalizeRosterBlock, rosterBlocksOf, staleTeamKeys, STALE_ROUTE_VALUES, suggestTeamAlias, teamLayoutPreference, teamPrefix, teamPrefixInfo, tierOf, validateHerdrName, validateTeamAlias } from "./lib-config.mjs";
 import { ageSecOf, appendRosterRecord, attributedRoster, fmtAge, latestRoster, livePeerSlots, peersPath, readJsonl, newId, localIso, NO_TEAM_SCOPE, pidAlive, realCwd, recordLiveness, synthesizedPeerName } from "./lib-hier.mjs";
 import { readPeerRecords } from "./lib-peer.mjs";
 import { attributeSessionTeam, clearTeam, defaultTeamScope, envTeamFile, fingerprint, herdrOnPath, historyEntryIsActive, KIND_AUTO_MODE_ARGS, KIND_DEFAULT, kindAutoModeArgs, kindFieldErrors, listTeamNames, memberArgs, memberNamePrefix, normalizeMembers, readHistory, readTeam, resolveKind, resolveTeamByPane, ROSTER_LAYOUT_VALUES, ROSTER_ROUTE_VALUES, routeHasPane, teamFileState, teamIsLive, teamIsOrphaned, teamMemberNameSet, teamOwnedBy, teamPath, teamRosterKey, upsertHistory, validateMember, validateRosterBlock, validateTeamMember, writeTeam } from "./lib-roster.mjs";
@@ -127,11 +129,11 @@ const UNTRACK_FLAGS = new Set(["all", "plan", "commit", "keep-sessions", "also-c
 const DISMISS_FLAGS = new Set(["plan", "close", "confirm", "plan-token", "also-config", "level", "allow-global", "cwd", "team"]);
 const RESYNC_FLAGS = new Set(["dry-run", "cwd", "team", "bind"]);
 const MOVE_FLAGS = new Set(["tab", "split", "new-tab", "workspace", "new-workspace", "dry-run", "allow-global", "cwd", "team"]);
-const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global", "team", "orchestrator-pid", "member", "model"]);
+const SPAWN_ONE_FLAGS = new Set(["cwd", "dry-run", "allow-global", "team", "orchestrator-pid", "member", "model", "names-in-use"]);
 /** Spec 0044 §1.4: the member-spec flags `add` takes, plus the spawn-side ones `spawn-one` takes.
     No `--level` and no `--member`: an ad hoc member has no roster level to land in, and its name
     is derived (point 5), never supplied. */
-const AD_HOC_FLAGS = new Set(["role", "model", "effort", "route", "kind", "args", "auto-mode", "on-missing", "cwd", "dry-run", "allow-global", "team", "orchestrator-pid"]);
+const AD_HOC_FLAGS = new Set(["role", "model", "effort", "route", "kind", "args", "auto-mode", "on-missing", "cwd", "dry-run", "allow-global", "team", "orchestrator-pid", "names-in-use"]);
 /** Spec 0044 §1.2/§1.3: the commands whose PURPOSE is writing a roster level file. The same list
     §1.5 classifies as legitimate roster writers and §8.1 puts on the `/agent-roster` surface —
     one list, so the gate and the surface split cannot drift apart. */
@@ -801,12 +803,11 @@ function adHocRoster(found) {
   return found && found.level === "global" ? null : found;
 }
 
-/** The `-<role>[-N]` tails of every pane-routed member `block` derives. */
-function paneSuffixes(block) {
-  const probe = "x";
-  return rosterMemberNames(block.members.map(({ name, ...m }) => m), probe)
+/** The final names of every pane-routed member `block` gives team `name`, renames included. */
+function paneNames(block, name) {
+  return renameInUse(rosterMemberNames(block.members.map(({ name: _name, ...m }) => m), name), name)
     .filter((m) => routeHasPane(m.route || block.route))
-    .map((m) => m.name.slice(probe.length));
+    .map((m) => m.name);
 }
 
 /**
@@ -816,7 +817,7 @@ function paneSuffixes(block) {
  * failing_member}` — the longest failing member name under herdr, else null.
  */
 function teamNameProblem(name, transport, block) {
-  const failing = transport === "herdr" ? paneSuffixes(block).map((suffix) => `${name}${suffix}`).filter((n) => !validateHerdrName(n).ok).sort((a, b) => b.length - a.length) : [];
+  const failing = transport === "herdr" ? paneNames(block, name).filter((n) => !validateHerdrName(n).ok).sort((a, b) => b.length - a.length) : [];
   const failingMember = failing.length ? { name: failing[0], length: failing[0].length } : null;
   const v = validateTeamAlias(name, registry());
   if (!v.ok) return { why: v.why, failing_member: failingMember };
@@ -863,7 +864,7 @@ function refuse(fields) {
  * launched or written.
  */
 function refuseTeamName(name, nameSource, problem, transport, block) {
-  const suffixes = transport === "herdr" ? paneSuffixes(block) : [];
+  const suffixes = transport === "herdr" ? paneNames(block, name).map((n) => n.slice(name.length)) : [];
   const suggestion = transport === "herdr" ? suggestTeamAlias(name, { transport, suffixes, resolved: registry() }) : suggestTeamAlias(name);
   let suggestionWhy = null;
   if (suggestion === null) {
@@ -923,6 +924,73 @@ function memberModelOverrides(members) {
 /** The member with `model` in place of its own when one is supplied at invocation. */
 function withModel(m, model) {
   return model === undefined ? m : { ...m, model };
+}
+
+/**
+ * `members`, named under team `prefix`, with each colliding one renamed to `<prefix>-<role>-<n>`
+ * and given `renamed_from`, the name it was derived as. A member collides when its name exactly
+ * matches a `--names-in-use` value, or when the name it was derived as is held by a record another
+ * member claimed (`claimRecords`). n is the smallest from 2 whose name is not in use, not taken by
+ * an earlier member, not a later non-colliding member's derived name, and not a record of the
+ * team being joined (`records`). A name in use that one of those records holds is the team's own
+ * session when `ownLive(name)` says that record is live or may be, and then causes no rename. The
+ * CLI cannot see live session names itself; the flag is all it knows of them.
+ */
+function renameInUse(members, prefix, records = [], ownLive = () => false) {
+  const inUse = new Set(repeatedFlag("names-in-use"));
+  const recordNames = new Set(records.map((r) => r && r.name).filter(Boolean));
+  const ownCache = new Map();
+  const own = (name) => {
+    if (!ownCache.has(name)) ownCache.set(name, recordNames.has(name) && ownLive(name));
+    return ownCache.get(name);
+  };
+  const derivedOf = (m) => m.derived || m.name;
+  const claimedByOther = (m) => members.some((x) => x !== m && x.record && x.record.name === derivedOf(m));
+  const collides = (m) => (inUse.has(m.name) && !own(m.name)) || claimedByOther(m);
+  if (!members.some(collides)) return members;
+  const taken = new Set(recordNames);
+  return members.map((m, i) => {
+    if (!collides(m)) {
+      taken.add(m.name);
+      return m;
+    }
+    const kept = new Set(members.slice(i + 1).filter((x) => !collides(x)).map(derivedOf));
+    const base = peerName(prefix, m.role);
+    let n = 2;
+    while (inUse.has(`${base}-${n}`) || taken.has(`${base}-${n}`) || kept.has(`${base}-${n}`)) n++;
+    taken.add(`${base}-${n}`);
+    return { ...m, name: `${base}-${n}`, renamed_from: derivedOf(m) };
+  });
+}
+
+/**
+ * spawn-one's roster members of one role, each holding the team record it stands for (`record`):
+ * first a record renamed away from the member's derived name, which the member takes with its name
+ * and `renamed_from`, then a record under that derived name. Each record goes to one member at most.
+ */
+function claimRecords(members, records) {
+  const claimed = new Set();
+  const claim = (m, match) => {
+    const r = records.find((x) => !claimed.has(x) && match(x));
+    if (r) claimed.add(r);
+    return r;
+  };
+  return members
+    .map((m) => {
+      const r = claim(m, (x) => x.renamed_from === m.name);
+      return r ? { ...m, name: r.name, renamed_from: r.renamed_from, derived: m.name, record: r } : m;
+    })
+    .map((m) => {
+      if (m.record) return m;
+      const r = claim(m, (x) => x.name === m.name);
+      return r ? { ...m, record: r } : m;
+    });
+}
+
+/** `renamed_members` for an output, listing each of `members` that was renamed; absent when none was. */
+function renamedField(members) {
+  const renamed = members.filter((m) => m.renamed_from).map((m) => ({ name: m.name, role: m.role, renamed_from: m.renamed_from }));
+  return renamed.length ? { renamed_members: renamed } : {};
 }
 
 let taskGopherInstalledCache;
@@ -1318,7 +1386,9 @@ function findMemberIndex(members, name) {
     because `dismiss` is now destructive-only (§3). The live guard that fronts it is the caller's. */
 function untrackMember(dir, team, target, name) {
   const outTeam = { ...team, members: team.members.filter((m) => m.name !== name) };
-  writeTeam(dir, outTeam, teamFile);
+  // The template key is read from the team file, which the last departure removes.
+  const templateKey = opts["also-config"] === true ? teamTemplateKey(dir) : null;
+  const teamRemoved = writeTeamRows(dir, team, outTeam.members);
   // §3.4: a commit on a still-live member is allowed, but must never be silent about it.
   // Spec 0043 §1.6: kind-aware, and an indeterminate answer warns too — the whole point of
   // the third value is that "Herdr did not answer" must not be spent as "it is dead".
@@ -1335,9 +1405,7 @@ function untrackMember(dir, team, target, name) {
     );
   }
   const teamEmpty = outTeam.members.length === 0;
-  if (teamEmpty) {
-    process.stderr.write(`roster.mjs: ah: team ${team.team_id} has no members left. If you meant to end the team entirely, use \`untrack --all\` (forget it) or \`disband --close\` (close the sessions too).\n`);
-  }
+  if (teamRemoved) process.stderr.write(`roster.mjs: ah: team ${team.team_id} has no members left, so it was removed.\n`);
   // Spec 0046 §2.3: `untracked`, not `dismissed` — dismiss now means "closed the session", and a
   // caller that greps for `dismissed` on this output would read a live session as gone.
   const dismissOut = {
@@ -1347,11 +1415,12 @@ function untrackMember(dir, team, target, name) {
     removed: target.name,
     remaining: outTeam.members.map((m) => m.name),
     team_empty: teamEmpty,
+    ...(teamRemoved ? { team_removed: true } : {}),
     config: null,
     store: `team ${JSON.stringify(team.team_id)}`,
   };
   if (opts["also-config"] === true) {
-    const result = removeConfigMember(target.name, teamTemplateKey(dir));
+    const result = removeConfigMember(target.name, templateKey);
     if (!result.removed) {
       process.stderr.write(
         `roster.mjs: ah: untracked ${target.name} from team ${team.team_id}, but no roster member named ${target.name} exists at level "${result.level}" — the config was not changed.\n`
@@ -2173,9 +2242,10 @@ function deriveTeamCandidate(dir, basePrefix) {
 function refuseLiveDefaultTeam(dir, existing) {
   const basePrefix = teamPrefix(cwd, null);
   const candidate = deriveTeamCandidate(dir, basePrefix);
+  const members = Array.isArray(existing.members) && existing.members.length > 0;
   fail(
     `a live team "${existing.team_id}" (orchestrator pid ${existing.orchestrator && existing.orchestrator.pid}) already holds the name "${basePrefix}" here, ` +
-      `and its members are dispatched under that prefix. ` +
+      (members ? `and its members are dispatched under that prefix. ` : `but it has no members: \`disband\` ends it. `) +
       `Re-run with --team ${candidate} to accept the auto-derived name, or --team <your-name> to choose your own.`
   );
 }
@@ -2249,7 +2319,7 @@ function refuseOrClearExistingTeam(dir) {
     // collision there is answered with a free candidate to accept — never silently applied. An
     // explicit `--team` the user chose gets the plain "disband it first" instead.
     if (teamFileDefaulted) refuseLiveDefaultTeam(dir, existing);
-    fail(`a live Team ${existing.team_id} already exists — disband it first`);
+    fail(`a live Team ${existing.team_id} already exists${existing.members.length === 0 ? " but has no members" : ""} — disband it first`);
   }
   clearTeam(dir, teamFile);
 }
@@ -2321,16 +2391,18 @@ function resolveMembersPlan(dir) {
   const resolved = resolveRoster(cwd, rosterArg, repoBasename, registry());
   if (!resolved) fail("no roster resolves at any level — hand off to `roster.mjs init`");
   const transport = detectTransport();
-  const models = memberModelOverrides(resolved.members);
-  const rows = resolved.members.map((row) => withModel(row, models.get(row.name)));
+  const members = renameInUse(resolved.members, repoBasename);
+  const models = memberModelOverrides(members);
+  const rows = members.map((row) => withModel(row, models.get(row.name)));
   const skipped = rows.filter((m) => routeHasPane(m.route || resolved.route) && autoSkipped(m));
-  const plan = rows.filter((m) => !skipped.includes(m)).map((m) => {
+  const planned = rows.filter((m) => !skipped.includes(m));
+  const plan = planned.map((m) => {
     const route = m.route || resolved.route;
     return { role: m.role, name: m.name, kind: resolveKind(m), model: m.model, effort: m.effort, route, autoMode: m.autoMode, args: memberArgs(m), spawn: routeHasPane(route) ? shapeFor({ ...m, route }, transport) : null };
   });
   const layout = createLayout();
   const named = namedRosterKeys(cwd);
-  const result = { level: resolved.level, path: resolved.path, transport, layout, layout_plan: layoutPlan(layout.mode, transport, plan), members: plan, ...(named.length ? { named_rosters: named } : {}) };
+  const result = { level: resolved.level, path: resolved.path, transport, layout, layout_plan: layoutPlan(layout.mode, transport, plan), members: plan, ...(named.length ? { named_rosters: named } : {}), ...renamedField(planned) };
   return withSkipped(result, skipped.map(skippedEntry));
 }
 
@@ -2375,16 +2447,17 @@ function planMembersFromHistory(entry, dir) {
   const renamed = validateHistoryMembers(entry);
   const rosterBlock = normalizeRosterBlock({ route: (renamed[0] && renamed[0].route) || "peer", members: renamed }, registry());
   const transport = detectTransport();
-  const named = namedMembers(rosterBlock.members);
+  const named = renameInUse(namedMembers(rosterBlock.members), repoBasename);
   const models = memberModelOverrides(named);
   const rows = named.map((row) => withModel(row, models.get(row.name)));
   const skipped = rows.filter((m) => routeHasPane(m.route || rosterBlock.route) && autoSkipped(m));
-  const plan = rows.filter((m) => !skipped.includes(m)).map((m) => {
+  const planned = rows.filter((m) => !skipped.includes(m));
+  const plan = planned.map((m) => {
     const route = m.route || rosterBlock.route;
     return { role: m.role, name: m.name, kind: resolveKind(m), model: m.model, effort: m.effort, route, autoMode: m.autoMode, args: memberArgs(m), spawn: routeHasPane(route) ? shapeFor({ ...m, route }, transport) : null };
   });
   const layout = createLayout();
-  const result = { level: entry.roster_level || null, path: null, transport, layout, layout_plan: layoutPlan(layout.mode, transport, plan), members: plan };
+  const result = { level: entry.roster_level || null, path: null, transport, layout, layout_plan: layoutPlan(layout.mode, transport, plan), members: plan, ...renamedField(planned) };
   return withSkipped(result, skipped.map(skippedEntry));
 }
 
@@ -2394,10 +2467,10 @@ function createSourceMembers(dir) {
   if (typeof opts.from === "string") {
     const renamed = validateHistoryMembers(resolveHistoryEntry(dir));
     const block = normalizeRosterBlock({ route: (renamed[0] && renamed[0].route) || "peer", members: renamed }, registry());
-    return namedMembers(block.members).map((m) => ({ ...m, route: m.route || block.route }));
+    return renameInUse(namedMembers(block.members), repoBasename).map((m) => ({ ...m, route: m.route || block.route }));
   }
   const resolved = resolveRoster(cwd, rosterArg, repoBasename, registry());
-  return resolved ? resolved.members.map((m) => ({ ...m, route: m.route || resolved.route })) : [];
+  return resolved ? renameInUse(resolved.members, repoBasename).map((m) => ({ ...m, route: m.route || resolved.route })) : [];
 }
 
 /** `create`'s member source: history (`--from`) or the live roster (default). */
@@ -2986,9 +3059,15 @@ function reconcileAfterClose(dir, snapshot, results) {
       keptRows.push(m);
     } else pruned.push(label);
   }
-  if (keptRows.length === 0) clearTeam(dir, teamFile);
-  else writeTeam(dir, { ...fresh, members: keptRows }, teamFile);
-  return { pruned, kept, team_removed: keptRows.length === 0, team_file: path };
+  return { pruned, kept, team_removed: writeTeamRows(dir, fresh, keptRows), team_file: path };
+}
+
+/** Writes `team` with only `rows`, or clears its file when no row is left: a team's last departure
+    ends it. True when the file was cleared. */
+function writeTeamRows(dir, team, rows) {
+  if (rows.length === 0) clearTeam(dir, teamFile);
+  else writeTeam(dir, { ...team, members: rows }, teamFile);
+  return rows.length === 0;
 }
 
 /** `create --spawn` (spec 0005): resolve + layout + launch + retry in one script invocation. */
@@ -3034,7 +3113,8 @@ async function createSpawn(dir, withWarnings) {
     return entry;
   });
   const isPartial = outputMembers.some((m) => routeHasPane(m.route) && m.launch_status === "failed");
-  out(withWarnings(withSkipped({ level, transport, members: outputMembers, partial: isPartial }, plan.skipped_members || [])));
+  const renamed = plan.renamed_members ? { renamed_members: plan.renamed_members } : {};
+  out(withWarnings(withSkipped({ level, transport, members: outputMembers, partial: isPartial, ...renamed }, plan.skipped_members || [])));
 }
 
 /** One team's inventory row (spec 0011 §5.4 / 0033 §3.1): `null` for the default team, or
@@ -3084,6 +3164,18 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
     fail(`${callerLabel}: no ${role} member in the roster — roles it defines: ${roles.join(", ") || "(none)"}`);
   }
   const dir = hierarchyDir(cwd);
+  const team = readTeam(dir, teamFile);
+  // The role's members are named as create names them, but against the team being joined: each
+  // takes the record it stands for, then any whose name another session holds is renamed. The
+  // choice below is made on those final names.
+  const records = team ? team.members : [];
+  const claimed = adHocMember ? candidates : claimRecords(candidates, records.filter((r) => r && r.role === role));
+  const named = adHocMember
+    ? candidates
+    : renameInUse(claimed, repoBasename, records, (name) => {
+        const st = memberLiveness(dir, records.find((r) => r && r.name === name));
+        return st.live || st.indeterminate;
+      });
   // §3.2: --member is value-taking; parseArgs sets it to `true` (not a string) when given
   // with no value or immediately followed by another flag — that must fail loudly, never
   // silently fall through to implicit selection.
@@ -3092,13 +3184,16 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
   if (adHocMember) {
     member = adHocMember;
   } else if (typeof opts["member"] === "string") {
-    member = candidates.find((m) => m.name === opts["member"]);
-    if (!member) fail(`${callerLabel}: no member named ${opts["member"]} for role ${role} in the roster — it defines: ${candidates.map((m) => m.name).join(", ") || "(none)"}`);
-  } else if (candidates.length === 1) {
-    member = candidates[0];
+    member = named.find((m) => m.name === opts["member"]);
+    if (!member) fail(`${callerLabel}: no member named ${opts["member"]} for role ${role} in the roster — it defines: ${named.map((m) => m.name).join(", ") || "(none)"}`);
+  } else if (named.length === 1) {
+    member = named[0];
   } else {
-    member = candidates.find((m) => !memberLiveness(dir, m).live) || candidates[candidates.length - 1];
+    member = named.find((m) => !memberLiveness(dir, m).live) || named[named.length - 1];
   }
+  // The members this call renamed away from --names-in-use, which its output reports; a member
+  // that only took its record's existing name was not renamed.
+  const renamedNow = (adHocMember ? member.renamed_from : !claimed.includes(member)) ? [member] : [];
   // A model given at invocation launches this member on it, this time only; the roster is untouched.
   if (!adHocMember && opts.model !== undefined) {
     if (typeof opts.model !== "string") fail(`${callerLabel}: --model requires a value`);
@@ -3108,7 +3203,6 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
     member = withModel(member, opts.model);
   }
 
-  const team = readTeam(dir, teamFile);
   // Spec 0018 §3/§4.3: creating a new team here needs a resolvable, live owner pid — refuse
   // before anything spawns, so a half-launched team (panes up, no persisted owner) never
   // happens. Only relevant when no team file exists yet; an existing team already has one.
@@ -3127,7 +3221,9 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
   // record — which is the one outcome that point forbids, and which the name-collision refusal
   // above does not catch because the two names differ.
   const byName = Boolean(adHocMember) || candidates.length > 1;
-  const matches = (m) => (byName ? m.name === member.name : m.role === role);
+  // A member renamed in place is matched under the name its record still has.
+  const recordName = member.record ? member.record.name : member.name;
+  const matches = (m) => (byName ? m.name === recordName : m.role === role);
   const existing = team && Array.isArray(team.members) ? team.members.find(matches) : null;
   // §3.3(i)/§3.3.1, amendment (b): the already-live decision is a disjunction over TWO names,
   // both asked of the registry (`memberIsLive`) — never the team-record lookup by itself.
@@ -3165,7 +3261,7 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
       // Reporting only (the load-bearing refusal already fired above). An indeterminate candidate
       // is listed with a marker rather than dropped — vanishing from the list would read as
       // "confirmed not live", which is exactly what indeterminate does not mean.
-      const candidatesLive = candidates
+      const candidatesLive = named
         .map((c) => ({ name: c.name, st: memberLiveness(dir, c) }))
         .filter(({ st }) => st.live || st.indeterminate)
         .map(({ name, st }) => (st.indeterminate ? `${name} (liveness unknown)` : name));
@@ -3193,7 +3289,7 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
   if (planEntry.spawn.validation && planEntry.spawn.validation.refused) fail(`${callerLabel}: ${planEntry.spawn.refuse}`);
   const validation = planEntry.spawn.validation ? { validation: planEntry.spawn.validation } : {};
   if (opts["dry-run"] === true) {
-    return { dry_run: true, role: member.role, name: member.name, mode, launch: planEntry.spawn.launch, ...validation };
+    return { dry_run: true, role: member.role, name: member.name, mode, launch: planEntry.spawn.launch, ...validation, ...renamedField(renamedNow) };
   }
 
   const seedPanes = team && Array.isArray(team.members)
@@ -3215,7 +3311,7 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
     fail([`${callerLabel}: launching ${member.name} failed`, launched.error, ...extra].filter(Boolean).join(" — "));
   }
 
-  const newRecord = { role: member.role, name: member.name, route: memberRoute, model: member.model, effort: member.effort, autoMode: member.autoMode, transport_id: launched.transport_id };
+  const newRecord = { role: member.role, name: member.name, ...(member.renamed_from ? { renamed_from: member.renamed_from } : {}), route: memberRoute, model: member.model, effort: member.effort, autoMode: member.autoMode, transport_id: launched.transport_id };
   // §1.1: written only when it is not the default, so claude-kind team.json rows are unchanged.
   if (resolveKind(member) !== KIND_DEFAULT) newRecord.kind = resolveKind(member);
   if (memberArgs(member)) newRecord.args = [...memberArgs(member)];
@@ -3257,7 +3353,7 @@ async function spawnOneCore(role, callerLabel, adHocMember = null) {
   writeTeam(dir, outTeam, teamFile);
   const outMember = launched.label ? { ...newRecord, label: launched.label } : newRecord;
   // Spec 0035 §2.4: report where this peer actually launched, not just that it launched.
-  const spawnOut = { spawned: true, member: outMember, team_id: outTeam.team_id, roster_level: outTeam.roster_level, launch_cwd: planEntry.spawn.launch_cwd, ...validation };
+  const spawnOut = { spawned: true, member: outMember, team_id: outTeam.team_id, roster_level: outTeam.roster_level, launch_cwd: planEntry.spawn.launch_cwd, ...validation, ...renamedField(renamedNow) };
   // Spec 0043 §1.4: blocked-at-startup is success WITH AN ACTION OUTSTANDING, not a failure —
   // the agent is live and queryable, so the team row stands and the caller is told what to do.
   if (launched.launch_status === "blocked-at-startup") {
@@ -3696,7 +3792,7 @@ try {
           // so an override with `members: []` was picked here while --plan correctly fell
           // through to the default. resolveRoster is exactly what --plan itself calls.
           const resolved = resolveRoster(cwd, rosterArg, repoBasename, registry());
-          const rosterMembers = resolved ? resolved.members : [];
+          const rosterMembers = resolved ? renameInUse(resolved.members, repoBasename) : [];
           const rosterRoute = resolved ? resolved.route : undefined;
           members = verified.filter((name) => !skipNames.has(name)).map((name) => {
             const found = rosterMembers.find((m) => m.name === name);
@@ -3727,6 +3823,13 @@ try {
         } else {
           fail("create --commit: --verified must be either all member objects or all member-name strings, not a mix");
         }
+        // renamed_from comes only from this commit's own renames: a member its --names-in-use renamed
+        // is recorded with the name it was derived as, and any value the caller supplied is dropped.
+        members = members.map((m) => {
+          const source = sourceMembers.find((s) => s.renamed_from && s.name === m.name && s.role === m.role);
+          const { renamed_from: _supplied, ...rest } = m;
+          return source ? { ...rest, renamed_from: source.renamed_from } : rest;
+        });
         // roster.mjs runs as a transient Bash-tool subprocess, so process.ppid here is
         // that shell, not the orchestrator's own long-lived process — using it would make
         // the staleness sweep (sessionstart.mjs) tear the Team down almost immediately.
@@ -3765,7 +3868,7 @@ try {
         // A history-write failure must not fail `create` — the Team is already committed and
         // running; a missing history row is cosmetic (spec 0015 §4).
         const skipped = skips.filter((m) => !members.some((x) => x.name === m.name)).map(skippedEntry);
-        const outObj = withSkipped(withWarnings({ committed: true, team }), skipped);
+        const outObj = withSkipped(withWarnings({ committed: true, team, ...renamedField(members) }), skipped);
         // Spec 0025 §4: a hydrated commit has names but no panes yet — tell the caller the next
         // step (`resync`) instead of letting `move` fail confusingly on "no pane to move".
         if (needsResync) outObj.needs_resync = true;
@@ -4020,9 +4123,11 @@ try {
         // that still dropped the record is exactly the orphan GitHub #4 was about.
         const dismissClose = { closed: allClosed, results, untracked: false, sources: sourcesField(dir, teamFile, team) };
         if (allClosed) {
-          writeTeam(dir, { ...team, members: team.members.filter((m) => m.name !== name) }, teamFile);
+          // The template key is read from the team file, which the last departure removes.
+          const templateKey = opts["also-config"] === true ? teamTemplateKey(dir) : null;
+          if (writeTeamRows(dir, team, team.members.filter((m) => m.name !== name))) dismissClose.team_removed = true;
           dismissClose.untracked = true;
-          if (opts["also-config"] === true) dismissClose.config = removeConfigMember(target.name, teamTemplateKey(dir));
+          if (opts["also-config"] === true) dismissClose.config = removeConfigMember(target.name, templateKey);
         }
         out(dismissClose);
         break;
@@ -4061,6 +4166,7 @@ try {
         sources: sourcesField(dir, teamFile, team),
         team_id: team.team_id,
         remaining: team.members.filter((m) => m.name !== name).map((m) => m.name),
+        ...(team.members.every((m) => m.name === name) ? { team_will_be_removed: true } : {}),
       });
       break;
     }
@@ -4277,7 +4383,7 @@ try {
       // dead or never launched. Extracted, not forked, from `createSpawn`'s launch path.
       for (const key of Object.keys(opts)) {
         if (key === "_") continue;
-        if (!SPAWN_ONE_FLAGS.has(key)) fail(`spawn-one: unrecognized flag --${key} (use --cwd, --dry-run, --allow-global, --team, --orchestrator-pid, --member, or --model)`);
+        if (!SPAWN_ONE_FLAGS.has(key)) fail(`spawn-one: unrecognized flag --${key} (use --cwd, --dry-run, --allow-global, --team, --orchestrator-pid, --member, --model, or --names-in-use)`);
       }
       out(await spawnOneCore(opts._[0], "spawn-one"));
       break;
@@ -4291,7 +4397,7 @@ try {
       // touches no roster level file under any input (§1.2's anti-requirement).
       for (const key of Object.keys(opts)) {
         if (key === "_") continue;
-        if (!AD_HOC_FLAGS.has(key)) fail(`spawn-ad-hoc: unrecognized flag --${key} (use --role, --model, --effort, --route, --kind, --args, --auto-mode, --on-missing, --team, --cwd, --dry-run, --allow-global, --orchestrator-pid)`);
+        if (!AD_HOC_FLAGS.has(key)) fail(`spawn-ad-hoc: unrecognized flag --${key} (use --role, --model, --effort, --route, --kind, --args, --auto-mode, --on-missing, --team, --cwd, --dry-run, --allow-global, --orchestrator-pid, --names-in-use)`);
       }
       const role = typeof opts.role === "string" ? opts.role : opts._[0];
       // The ad hoc path takes exactly one peer-eligible role and defaults everything else; a
@@ -4329,6 +4435,7 @@ try {
       if (teamMemberNameSet(dir, teamFile).has(adHoc.name)) {
         fail(`spawn-ad-hoc: team ${teamPath(dir, teamFile)} already has a member named ${adHoc.name} — refusing to overwrite its record. Dismiss it first, or spawn into a different --team`);
       }
+      Object.assign(adHoc, renameInUse([adHoc], repoBasename, existingTeam ? existingTeam.members : [])[0]);
       requireHerdrName(adHoc, "spawn-ad-hoc");
       out(await spawnOneCore(role, "spawn-ad-hoc", adHoc));
       break;

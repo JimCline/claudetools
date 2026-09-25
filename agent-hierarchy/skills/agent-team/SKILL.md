@@ -38,7 +38,7 @@ drifted — say so rather than silently picking one.
 When the request names (or clearly implies) ONE role, skip everything below:
 
 - `node ${CLAUDE_PLUGIN_ROOT}/hooks/roster.mjs spawn-ad-hoc <role> --cwd <abs>`
-  works in any repo, roster or not — no skill load. It prints the derived name.
+  works in any repo, roster or not — no skill load. It prints the member's `name` (renamed or not).
 - Under Herdr every session name — `<team-prefix>-<role>`, or `--member` — must
   be `[a-z][a-z0-9_-]`, at most 32 characters. Check it before spawning; the
   CLI refuses a longer one before any pane opens. Never run `herdr pane split`
@@ -103,7 +103,7 @@ someone else's live Team.
   and drops its row: the inverse of `spawn-one`, and what "dismiss the architect" / "remove that
   member" / "kick the reviewer" mean. The plan form (no `--close`) is read-only and returns a `close_token`;
   `--close` needs `--confirm` and that token, and the harness asks the user once.
-  `<name>` accepts anything the user can see for a live session — the derived member name, a
+  `<name>` accepts anything the user can see for a live session — the member's `name` as the CLI printed it, a
   `pane_id`, a `session_id` or a unique 8+ character prefix of one, the `role@sid8` form
   `teams` prints, or the herdr display name (spec 0046 §2.4). `--also-config` additionally
   removes the row from the roster template and is the one command that crosses into roster
@@ -171,7 +171,7 @@ runs `create`, never a team member.
 A non-Claude agent runs no Claude hooks, registers no name with the Claude
 CLI, and appears in no `ListAgents` listing — so **SendMessage cannot reach
 it**, and `peers.jsonl` will never show it. Drive it through Herdr instead,
-addressed by the same derived name the roster already uses:
+addressed by its `name` as the CLI printed it (renamed or not):
 
 | need | command |
 |---|---|
@@ -227,18 +227,44 @@ check-in) apply unchanged. This capability is skill-only.
    a live Team already exists (tell the user to `disband` first), clears an
    already-stale one automatically, detects the transport (`herdr` if
    `HERDR_ENV=1`, else `tmux` if a tmux server is reachable, else
-   `terminal`), and returns each member's derived name, role, model,
+   `terminal`), and returns each member's `name` (renamed or not), role, model,
    effort, route, and — for peer-routed members — a `spawn` shape (`layout`
    and `launch` command lists for the detected transport, plus how to thread
    the target id from one to the other). If it errors because no roster
    resolves, hand off to § Init.
+
+   **Names already in use — before the team-name question.** Call
+   `ListAgents` once, before asking the team-name question, and keep its
+   result. For the plan's team name, and for any team name the user then
+   chooses, collect every live session name that begins with `<team>-`, with
+   any trailing `[ref]` stripped. Only exact names count: `x-architect-2` in
+   use does not touch a member named `x-architect`.
+   - Pass each collected name as `--names-in-use <name>` (repeated, one per
+     name) to that team name's plan. A member whose name is in use comes back
+     renamed, listed in the plan's `renamed_members`; never work out a suffix
+     yourself.
+   - In the team-name question, the option for a name with renames carries
+     them in its label, e.g. "claudetools (architect →
+     claudetools-architect-2)".
+   - Once the team name is settled, capture that name's set **once** and
+     pass it **unchanged** to every later phase (the re-run plan, `--spawn`,
+     `--commit`), carried like `--roster <r>`.
+   - Never re-read `ListAgents` for the set after `--spawn`: the team's own
+     new sessions are live by then, and a fresh set would rename them again
+     at `--commit`. Step 4's check-in calls do not change it.
+
+   **Renamed members — `renamed_members`.** After any create phase whose
+   output has `renamed_members`, tell the user one line per team and ask
+   nothing: "Renamed <renamed_from> → <name> (and …): another session
+   already holds that name." The same line follows a `spawn-one` or
+   `spawn-ad-hoc` whose output has `renamed_members`.
 
    **Team name — one question, every create.** A Team's name is chosen here
    and belongs to that Team only; nothing stores it for the next one. When the
    user already named the team, skip this question. Otherwise ask with one
    AskUserQuestion, built from the bare plan's result:
    - The plan succeeded: first option is the plan's team name — show the
-     derived names it produces (`<name>-architect`, …), marked
+     member names it produces (`<name>-architect`, …, renamed or not), marked
      "(Recommended)".
    - The plan refused with `refused: "team-name-unusable"` and
      `needs_user_choice: true`: first option is "Use `<suggestion>`
@@ -433,8 +459,8 @@ check-in) apply unchanged. This capability is skill-only.
    show the intended placement and allow an override **before** phase 3a, per
    member. Manual mode may present all members' placements at once; it must not
    be silently converted into a per-member pause between 3a and 3b.
-4. **Check in.** Call `ListAgents` and match each spawned member's derived
-   name. **Poll every 2 seconds, give up at 60 seconds** — fixed interval,
+4. **Check in.** Call `ListAgents` and match each member's `name` as
+   `--spawn` printed it (renamed or not). **Poll every 2 seconds, give up at 60 seconds** — fixed interval,
    not backoff; this is not configurable. A member `--spawn` reported as
    `dispatched` (tmux only — `send-keys` has no readiness signal to wait on)
    is *expected* to still be checking in here; it is not a partial and needs
@@ -673,7 +699,7 @@ gap; it is not a lighter-weight alternative to Create for a full team.
   — resolves the roster, finds `<role>`'s member, and:
   - bare `spawn-one <role>` picks the first member of that role that is not
     live; `--member <name>` targets one specific same-role instance by its
-    derived name (spec 0019).
+    final name, as spawn output or the team record shows it (renamed or not).
   - a live team member for that role already exists → no-op,
     `{spawned:false, reason:"already live"}`.
   - otherwise → places one pane, launches and verifies it the same way
@@ -712,7 +738,8 @@ one — a wall, not a reminder — and the deny carries the whole instruction:
 | none live; no roster member for the role | the exact `spawn-ad-hoc <role> --cwd <cwd>` command |
 
 Run the command, then SendMessage the name it prints. If it fails to launch,
-follow § When a role can't take the work.
+follow § When a role can't take the work. If its output has
+`renamed_members`, tell the user the one-line rename notice (§ Create).
 
 ## `dismiss`
 
@@ -749,9 +776,9 @@ non-last same-role config entry re-ordinals later siblings' derived names
 (§3.5.1) — the CLI warns and reports it (`config.reordinaled`); live
 `team.json` records keep their original names regardless.
 
-Dismissing the last member leaves `team.json` with `members: []` rather than
-removing the file — `team_empty: true` in the output flags this; point the
-user at `disband` if they meant to end the Team entirely.
+Dismissing the last member ends the Team: the plan reports
+`team_will_be_removed: true` (say so when you ask the user), and the close
+removes the team file and reports `team_removed: true`.
 
 ## `untrack`
 
@@ -773,6 +800,9 @@ the user's words are genuinely ambiguous, ask; do not pick.
    refusal names both remedies (`dismiss` to close it, or `--keep-sessions` to
    leave it running untracked) and says the record cannot be recovered.
 
+Untracking the last member ends the Team: the team file is removed and the
+output reports `team_removed: true`. The session itself is left running.
+
 `--all` forgets the whole team file instead of one member. Untracking
 something already gone succeeds with `already_untracked: true`, so a retry is
 never an error. `--also-config` (single member only) additionally removes the
@@ -783,7 +813,7 @@ roster template row, with the same ordinal-shift warning `dismiss` gives.
 One active Team per repo, at `<hierarchyDir>/team.json` alongside
 `peers.jsonl`/`gates.jsonl`. Once it exists, it is the **authoritative**
 source for peer dispatch (ADR 0002): a SendMessage `to` or role lookup that
-matches a Team member's derived name resolves from `team.json` first, before
+matches a Team member's recorded name resolves from `team.json` first, before
 the existing config-peer and live-roster fallbacks — those two paths are
 unchanged and still cover the ad-hoc-peer case outside any Team.
 
@@ -846,7 +876,7 @@ default, and writes only the team file.
    differs. A roster that resolves at the global level is treated as no roster;
    `--allow-global` is accepted but does nothing.
 
-Report the derived name back to the user in one line — they did not choose it,
+Report the `name` it printed (renamed or not) back to the user in one line — they did not choose it,
 and they need it for a later `dismiss`.
 
 ## When a role can't take the work
