@@ -210,9 +210,13 @@ check "T8: sessionstart-mcp-ensure.mjs is deleted" '[ ! -f "$PLUGIN/hooks/sessio
 # ---------------------------------------------------------------------------
 # §2.1: SessionStart publishes the absolute CLI root — the only channel roles have
 # ---------------------------------------------------------------------------
-ROOT_LINE=$(printf '{"source":"startup","cwd":"%s","session_id":"root-line","agent_type":"ah:implementor"}' "$PLUGIN" \
+# The session's cwd is a sandbox repo, so the peer row the hook writes lands there, never in the
+# checkout this suite runs from.
+PROJ="$SANDBOX/proj"; mkdir -p "$PROJ"; git -C "$PROJ" init -q
+ROOT_LINE=$(cd "$PROJ" && printf '{"source":"startup","cwd":"%s","session_id":"root-line","agent_type":"ah:implementor"}' "$PROJ" \
   | HOME="$FAKEHOME" node "$PLUGIN/hooks/sessionstart.mjs" 2>&1)
 OUT="$ROOT_LINE"
+check "§2.1: the hook's peer row lands in the sandbox repo's hierarchy dir" 'grep -q "\"session_id\":\"root-line\"" "$PROJ/.claude/hierarchy/peers.jsonl"'
 check "§2.1: SessionStart injects an 'ah CLI root:' line naming the absolute root and both scripts" \
   'echo "$ROOT_LINE" | grep -qE "ah CLI root \(v[^)]+\): $PLUGIN" && echo "$ROOT_LINE" | grep -q "$PLUGIN/hooks/roster.mjs" && echo "$ROOT_LINE" | grep -q "$PLUGIN/hooks/msg.mjs"'
 
