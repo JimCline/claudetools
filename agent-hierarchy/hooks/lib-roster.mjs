@@ -312,6 +312,15 @@ export const KIND_HARNESS = {
     approvalsArgs: ["-c", 'approvals_reviewer="user"'],
     approvalsKey: "approvals_reviewer",
     trust: codexTrust,
+    // How a member spawns, instructs and waits on a native legwork child, `model` being the child's
+    // model or null. Its presence is what gives this kind native delegation. Which tools a Codex
+    // session exposes varies by model at run time, not by launch argv, so only the form verified live
+    // is named, as an example.
+    nativeLegwork: (model) => {
+      const m = model ? `, \`model: ${JSON.stringify(model)}\`` : "";
+      const modelRule = model ? "If the spawn is refused for that model, spawn once more without `model` and say so in your response." : "Do not set `model`: the child runs on your model.";
+      return `The tested form: \`spawn_agent\` with \`task_name\`, \`message\` and \`fork_turns: "none"\`${m}; then \`wait_agent\`; \`followup_task\` with \`target\` sends that child a further order. If your spawn tool's names or fields differ, use their equivalents. Never fork your conversation history into a child: it starts from this file and your order alone. ${modelRule}`;
+    },
     // Idle and empty, the bottom band is padding, the prompt row, padding and a one-line footer; the
     // placeholder is drawn only while the input is empty.
     composer: { glyphs: ["›", "»"], placeholders: ["Ask Codex to do anything", "Ask a follow-up question"] },
