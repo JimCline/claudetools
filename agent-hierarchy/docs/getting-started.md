@@ -73,6 +73,9 @@ and terminal transports can only start `claude`. It is briefed with
 file. Adding one from a non-Herdr
 session still works (rosters are portable); only spawning it needs Herdr.
 
+Your own roles, and members that run in Codex, are covered in
+[custom-roles.md](./custom-roles.md).
+
 Value spaces and validation rules are in
 [SKILL.md — Levels](../skills/agent-roster/SKILL.md#levels) and
 [SKILL.md — `add` / `edit` / `remove`](../skills/agent-roster/SKILL.md#add--edit--remove).

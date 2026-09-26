@@ -205,18 +205,19 @@ Herdr version, so this codebase validates only the *shape*
 at `add` and fails at spawn with Herdr's own error, unmodified. Run
 `herdr agent` to see what an install actually has.
 
-Choosing a non-claude kind changes four things, all enforced at `add`/`edit`:
+Choosing a non-claude kind changes these, all enforced at `add`/`edit`:
 
 | field | requirement |
 |---|---|
 | `route` | must be `pane` — `peer` and `subagent` are hard errors |
-| `model` / `effort` / `auto-mode` | must be absent — they are literally the `--model`/`--effort`/`--permission-mode` Claude CLI flags and mean nothing to another CLI |
-| `args` | optional; native CLI arguments, passed verbatim after Herdr's `--` |
+| `model` | a kind with a model mapping (`codex`) takes any model, checked by shape only (no whitespace or control characters) — the harness checks the name at its first turn. A kind with no mapping refuses it, naming `args` as the way to pass that harness's own model flag |
+| `effort` | must be absent — it is the literal `--effort` Claude CLI flag and means nothing to another CLI |
+| `auto-mode` | allowed for a kind with a permission mapping (translated to that CLI's own approvals setting); refused otherwise |
+| `args` | optional; native CLI arguments, passed verbatim after Herdr's `--`. Refused on an advise-class member, and where they set the model or approvals a second time |
 | transport | spawning needs a Herdr session (`HERDR_ENV=1`); `add`/`edit` still work anywhere |
 
-`--args '<json-array>'` (`args` on `roster.mjs add`, a real array there) is the
-*only* way a non-claude member gets flags, since the three Claude flags are
-rejected for it. Each element is one argument and is shell-quoted before it
+`--args '<json-array>'` (`args` on `roster.mjs add`, a real array there) is how
+a non-claude member gets any flag beyond the mapped `model` and `auto-mode`. Each element is one argument and is shell-quoted before it
 reaches the launch line. `args` is a **hard error for `kind: claude`** — for a
 Claude member the validated `--model`/`--effort`/`--auto-mode` already fill
 that slot, and a second unvalidated channel would let
@@ -232,6 +233,12 @@ captures the pane's recent output into its report — usually the only
 explanation of what went wrong — and then closes that orphaned pane. A pane
 is left open, with `herdr pane close <id>` as the remedy, only when an agent
 may still be live in it or the close itself fails.
+
+An advise-class member (the Ultra-Advisor) of a non-claude kind needs a kind
+with a model mapping and a model declared at the `opus` or `fable` tier
+(`roster.mjs tier set <kind> <model> <opus|fable>`); an unmapped kind is
+refused. It is briefed only through `roster.mjs deliver`, which is gated like
+SendMessage, never by typing into its pane.
 
 A member's `role` still picks its derived name and its roster slot, but the
 role's `agents/*.md` contract is **not** loaded into a non-Claude agent. Put
