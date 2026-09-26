@@ -5,7 +5,7 @@ Configures and runs a team of Claude Code agents (Orchestrator, Architect, Imple
 ## Language
 
 **Roster**:
-The configured set of team members for a repo — which roles exist, how many of each, and each member's model/effort/route/auto-mode.
+The configured set of team members for a repo — which roles exist, how many of each, and each member's model/effort/route/auto-mode. It has no name and no pane layout: those belong to a Team (spec 0057). A repo may keep named blocks (`rosters.<r>`) beside the default one; `create --roster <r>` picks one.
 _Avoid_: config, team definition
 
 **Roster level**:
@@ -27,17 +27,17 @@ _Avoid_: handoff mode (that's a separate, existing `/hierarchy` setting — conf
 The single coordinating role, always exactly one per team. It has no roster entry — it's whatever session invokes `/agent-team create`, running as that session's own model/effort/permission mode.
 
 **Team**:
-A running instantiation of a Roster — the actual spawned sessions (peer panes and/or subagents) for one work session, created by `create`. Every Team has its own file: `teams/<name>.json`, named for the team, which is also its members' name prefix. Nothing writes the shared `team.json` any more; one that already exists is read and operated on until its team disbands, never migrated (spec 0044 §1.1/§1.7).
+A running instantiation of a Roster — the actual spawned sessions (peer panes and/or subagents) for one work session, created by `create`. Every Team has its own file: `teams/<name>.json`, named for the team, which is also its members' name prefix. The name is chosen at `create` (`--team`, default the repo basename) and frozen by that file; the file also records which roster block the Team was built from (`roster`) and its pane `layout`, which defaults to the global `teamLayout` preference that an explicit `create --mode` sets. A member knows its Team from its launch: the launcher hands it the team file's path as `AH_TEAM_FILE`. Nothing writes the shared `team.json` any more; one that already exists is read and operated on until its team disbands, never migrated, and is named by its own members (spec 0044 §1.1/§1.7, spec 0057).
 _Avoid_: session group
 
 **Two entry points, one implementation (spec 0044 §8)**:
-`/agent-roster` (skill `ah:agent-roster`) edits the **template**: `init`, `add`, `edit`, `remove`, `layout`, `alias`, `show`. `/agent-team` (skill `ah:agent-team`) operates the **instance**: `create`, `spawn-one`, `spawn-ad-hoc`, `dismiss`, `disband`, `untrack`, `adopt`, `move`, `resync`, `reap`, `teams`, `history`, `checkin`. The dividing test is mechanical and identical to §1.5's: a command belongs to `/agent-roster` if and only if writing a roster level file is its purpose. `roster.mjs` stays the single implementation — there is no second CLI, no second team-creation path, no second spawn builder. `/agent-roster <lifecycle command>` remains a **permanent** forwarding alias with identical behaviour (not a deprecation), and `pretooluse-roster-skill-gate.mjs` covers both surfaces; what changed is only what each skill *lists*, because an agent chooses its command from the menu it is shown.
+`/agent-roster` (skill `ah:agent-roster`) edits the **template**: `init`, `add`, `edit`, `remove`, `show`. `/agent-team` (skill `ah:agent-team`) operates the **instance**: `create`, `spawn-one`, `spawn-ad-hoc`, `dismiss`, `disband`, `untrack`, `adopt`, `move`, `resync`, `reap`, `teams`, `history`, `checkin`. The dividing test is mechanical and identical to §1.5's: a command belongs to `/agent-roster` if and only if writing a roster level file is its purpose. `roster.mjs` stays the single implementation — there is no second CLI, no second team-creation path, no second spawn builder. `/agent-roster <lifecycle command>` remains a **permanent** forwarding alias with identical behaviour (not a deprecation), and `pretooluse-roster-skill-gate.mjs` covers both surfaces; what changed is only what each skill *lists*, because an agent chooses its command from the menu it is shown.
 
 **Read-only roster (spec 0044)**:
 The Roster is a TEMPLATE and is read-only for the whole team lifecycle — this is enforced, not advised. Creating, populating, operating or tearing down a Team never writes a roster level file, and *divergence from the roster must never reach a roster write*: spawning a member whose model, effort, kind, route or args differ from the roster's, or whose role the roster does not define, writes only the team file. There is no divergence severity at which a roster write becomes correct.
 
 Three things make that hold rather than merely state it:
-- `init`/`add`/`edit`/`remove`/`layout`/`alias` are the only roster writers, and a session that owns a live Team is **refused** them (§1.3). The refusal names `spawn-ad-hoc`. Its `--allow-roster-edit` override is the user's — no agent may add it to get a call through.
+- `init`/`add`/`edit`/`remove` are the only roster writers, and a session that owns a live Team is **refused** them (§1.3). The refusal names `spawn-ad-hoc`. Its `--allow-roster-edit` override is the user's — no agent may add it to get a call through.
 - `spawn-ad-hoc` (§1.4) spawns a divergent or ad hoc member into the team file, through the same launch path as `spawn-one`. It exists because an agent asked for a member the roster does not describe previously had no non-roster-writing option.
 - `add` writes the config row and **spawns nothing** (§1.10, superseding spec 0039). While one command both edited the template and produced a live member, the boundary was one rationalization away from being crossed.
 

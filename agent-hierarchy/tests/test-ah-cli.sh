@@ -9,7 +9,8 @@ SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-ah-cli-test.XXXXXX")"
 # No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
 # the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 trap 'rm -rf "$SANDBOX"' EXIT
 FAKEHOME="$SANDBOX/home"
 mkdir -p "$FAKEHOME/.claude"
@@ -209,9 +210,13 @@ check "T8: sessionstart-mcp-ensure.mjs is deleted" '[ ! -f "$PLUGIN/hooks/sessio
 # ---------------------------------------------------------------------------
 # §2.1: SessionStart publishes the absolute CLI root — the only channel roles have
 # ---------------------------------------------------------------------------
-ROOT_LINE=$(printf '{"source":"startup","cwd":"%s","session_id":"root-line","agent_type":"ah:implementor"}' "$PLUGIN" \
+# The session's cwd is a sandbox repo, so the peer row the hook writes lands there, never in the
+# checkout this suite runs from.
+PROJ="$SANDBOX/proj"; mkdir -p "$PROJ"; git -C "$PROJ" init -q
+ROOT_LINE=$(cd "$PROJ" && printf '{"source":"startup","cwd":"%s","session_id":"root-line","agent_type":"ah:implementor"}' "$PROJ" \
   | HOME="$FAKEHOME" node "$PLUGIN/hooks/sessionstart.mjs" 2>&1)
 OUT="$ROOT_LINE"
+check "§2.1: the hook's peer row lands in the sandbox repo's hierarchy dir" 'grep -q "\"session_id\":\"root-line\"" "$PROJ/.claude/hierarchy/peers.jsonl"'
 check "§2.1: SessionStart injects an 'ah CLI root:' line naming the absolute root and both scripts" \
   'echo "$ROOT_LINE" | grep -qE "ah CLI root \(v[^)]+\): $PLUGIN" && echo "$ROOT_LINE" | grep -q "$PLUGIN/hooks/roster.mjs" && echo "$ROOT_LINE" | grep -q "$PLUGIN/hooks/msg.mjs"'
 

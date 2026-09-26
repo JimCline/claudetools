@@ -49,6 +49,8 @@ export const ROSTER_BOOL_FLAGS = new Set([
   "also-config",
   "no-spawn",
   "allow-roster-edit",
+  "no-legwork-handoff",
+  "wait-only",
 ]);
 
 export const MSG_BOOL_FLAGS = new Set(["plain", "json", "open", "closed", "all"]);

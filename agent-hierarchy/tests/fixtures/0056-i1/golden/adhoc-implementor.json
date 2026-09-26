@@ -1,0 +1,9 @@
+{
+  "dry_run": true,
+  "role": "implementor",
+  "name": "myrepo-implementor",
+  "mode": "auto",
+  "launch": [
+    "herdr agent start myrepo-implementor --kind claude --pane <TARGET> -- --agent ah:implementor --name myrepo-implementor --settings '{\"env\":{\"AH_TEAM_FILE\":\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\"}}'"
+  ]
+}

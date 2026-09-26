@@ -6,6 +6,8 @@
 # Usage: bash tests/test-team-untrack.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 H="$PLUGIN/hooks"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-untrack-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT

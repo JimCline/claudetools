@@ -1,9 +1,8 @@
 #!/bin/bash
-# agent-hierarchy — team/repo naming alias (spec 0010 §3-§7). A `teamAlias` is
-# a top-level sibling of `roster` in the repo/repo-user config, read only at
-# those two levels (never global — an alias is a property of one repo, not a
-# machine-wide default) and resolved by ONE function, `teamPrefix`/
-# `teamPrefixInfo`, that every member-naming call site now goes through.
+# agent-hierarchy — member-name prefixes (spec 0010, reshaped by 0057). Every member-naming call
+# site goes through ONE function, `teamPrefix`/`teamPrefixInfo`. A team's name belongs to the team;
+# a `teamAlias` left in config names nothing and is only reported as ignored. Team-name validation
+# (`validateTeamAlias`) is unchanged.
 # Usage: bash tests/test-team-alias.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,7 +21,8 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
 # the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude" "$PROJ/sub/dir"
@@ -72,14 +72,13 @@ ROUTE_PAYLOAD=$(HOME="$FAKEHOME" "$NODE_BIN" -e '
   const [cwd, to, msg] = process.argv.slice(1);
   process.stdout.write(JSON.stringify({
     session_id: "team-alias-test-13b",
-    cwd, tool_name: "SendMessage",
+    cwd, model: "claude-opus-4-1", tool_name: "SendMessage",
     tool_input: { to, message: msg },
   }));
-' "$PROJ/sub/dir" "$BASE-reviewer" '[hierarchy-peer-brief reply-to="me" task="x"]
+' "$PROJ/sub/dir" "$BASE-architect" '[hierarchy-peer-brief reply-to="me" task="x"]
 plain')
-HOME="$FAKEHOME" "$NODE_BIN" "$H/msg.mjs" route subagents --session team-alias-test-13b --cwd "$PROJ/sub/dir" >/dev/null
 OUT=$(echo "$ROUTE_PAYLOAD" | HOME="$FAKEHOME" "$NODE_BIN" "$ROUTE_GATE" 2>&1); RC=$?
-check "13b: route-gate's derived prefix (subdir cwd) agrees with resolveRoster's" \
+check "13b: route-gate's derived prefix (subdir cwd) agrees with resolveRoster's (the tier rule denies an architect brief)" \
   'echo "$OUT" | grep -q "\"permissionDecision\":\"deny\""'
 
 # ==== 27 — inventory completeness guard (amendment (c)): no hooks/ file
@@ -93,147 +92,99 @@ check "13b: route-gate's derived prefix (subdir cwd) agrees with resolveRoster's
 GREP_HITS=$(grep -rn 'basename(resolved\.cwd)\|basename(resolve(cwd))' "$H" 2>/dev/null)
 check "27: no hooks/ file spells basename(resolved.cwd) or basename(resolve(cwd))" '[ -z "$GREP_HITS" ]'
 
-# ==== 14 — alias set at repo level applies, even resolved from a subdirectory ====
+# ==== 14-18 — spec 0057: a configured teamAlias names nothing any more, at any level. It is read
+# only to warn that it is ignored; the default team's prefix is the repo basename. ====
+warned_for() { # <path> — status reports that path's teamAlias as ignored (hook context never does)
+  evalc "C.statusReport('$PROJ').includes('teamAlias in $1 is ignored') && !C.resolveConfig('$PROJ').warnings.some(w => w.includes('teamAlias'))"
+  [ "$OUT" = true ]
+}
 reset_levels
 write_level "$REPO_PATH" '{"teamAlias":"ct"}'
 evalc "JSON.stringify(C.teamPrefixInfo('$PROJ/sub/dir'))"
-check "14: repo-level teamAlias -> {prefix,alias:'ct',source:'repo'}" \
-  '[ "$OUT" = "{\"prefix\":\"ct\",\"alias\":\"ct\",\"source\":\"repo\"}" ]'
+check "14: repo-level teamAlias is ignored -> {prefix: basename, source: default}" \
+  '[ "$OUT" = "{\"prefix\":\"$BASE\",\"source\":\"default\"}" ]'
+check "14b: and status reports it as ignored" 'warned_for "$REPO_PATH"'
 
-# ==== 15 — repo-user precedence over repo when both set ====
 reset_levels
 write_level "$REPO_PATH" '{"teamAlias":"repolevel"}'
 write_level "$REPO_USER_PATH" '{"teamAlias":"repouserlevel"}'
-evalc "JSON.stringify(C.teamPrefixInfo('$PROJ'))"
-check "15: repo-user teamAlias wins over repo" \
-  '[ "$OUT" = "{\"prefix\":\"repouserlevel\",\"alias\":\"repouserlevel\",\"source\":\"repo-user\"}" ]'
+evalc "C.teamPrefix('$PROJ')"
+check "15: repo-user and repo teamAlias are both ignored" '[ "$OUT" = "$BASE" ]'
+check "15b: each is warned about" 'warned_for "$REPO_PATH" && warned_for "$REPO_USER_PATH"'
 
-# ==== 16 — a teamAlias at global/user scope is never consulted ====
 reset_levels
 write_level "$GLOBAL_PATH" '{"teamAlias":"globalalias"}'
 evalc "C.teamPrefix('$PROJ')"
-check "16: global-level teamAlias is ignored -> falls back to basename" '[ "$OUT" = "$BASE" ]'
+check "16: global-level teamAlias is ignored -> basename" '[ "$OUT" = "$BASE" ]'
+check "16b: and warned about too" 'warned_for "$GLOBAL_PATH"'
 
-# ==== 17 — invalid alias (bad character set) is ignored and warned about ====
 reset_levels
 write_level "$REPO_PATH" '{"teamAlias":"bad_alias!"}'
-evalc "C.teamPrefixInfo('$PROJ').alias"
-check "17a: invalid-charset alias -> falls through, alias null" '[ "$OUT" = null ]'
-evalc "C.resolveConfig('$PROJ').warnings.some(w => w.includes('teamAlias'))"
-check "17b: invalid-charset alias -> resolveConfig warns" '[ "$OUT" = true ]'
+evalc "C.teamPrefix('$PROJ')"
+check "17a: an invalid-charset alias is ignored like any other" '[ "$OUT" = "$BASE" ]'
+check "17b: and warned about" 'warned_for "$REPO_PATH"'
 
-# ==== 18 — invalid alias (ends in -<role>, ambiguous double-role suffix) ====
 reset_levels
 write_level "$REPO_PATH" '{"teamAlias":"ct-reviewer"}'
-evalc "C.teamPrefixInfo('$PROJ').alias"
-check "18a: role-suffix alias -> falls through, alias null" '[ "$OUT" = null ]'
+evalc "C.teamPrefix('$PROJ')"
+check "18a: a role-suffix alias is ignored" '[ "$OUT" = "$BASE" ]'
 evalc "C.validateTeamAlias('ct-reviewer').why"
 check "18b: validateTeamAlias names the role-suffix reason" 'echo "$OUT" | grep -qi "role"'
 
 # ==== 19 — seam guard: rosterMemberNames stays a pure, prefix-agnostic
-# function untouched by the alias/teamPrefix machinery — proven by the
+# function untouched by the teamPrefix machinery — proven by the
 # pre-existing test-roster-names.sh suite still passing unmodified. If this
 # ever needs editing to pass, the seam was cut in the wrong place; the fix is
 # never to relax that suite's expectations. ====
 OUT=$(bash "$PLUGIN/tests/test-roster-names.sh" 2>&1); RC=$?
 check "19: seam guard — test-roster-names.sh green with zero edits" '[ "$RC" -eq 0 ]'
 
-# ---- roster.mjs alias subcommand ----
+# ---- roster.mjs alias: a signpost to `create --team`, never a writer ----
 
-# ==== 20 — read-only, nothing configured anywhere ====
+# ==== 20-24, 26 — every form of the removed verb exits non-zero naming the replacement, and writes
+# nothing, with or without a live team. ====
 reset_levels
-run_roster alias --cwd "$PROJ"
-check "20: alias (read-only), nothing set -> alias null, source default" \
-  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"alias\": null" && echo "$OUT" | grep -q "\"source\": \"default\""'
-check "20b: read-only prefix + sample reflect the default basename" \
-  "echo \"\$OUT\" | grep -q '\"prefix\": \"$BASE\"' && echo \"\$OUT\" | grep -q '\"effective_names_sample\": \"$BASE-architect\"'"
+mkdir -p "$HIER_DIR"
+cat > "$TEAM_FILE" <<EOF
+{ "version": 1, "team_id": "t2", "roster_level": "repo", "transport": "herdr",
+  "members": [ { "name": "$BASE-architect", "role": "architect" } ] }
+EOF
+for args in "" "--set myalias --level repo" "--set bad\ name --level repo" "--clear --level repo" "--set ct --level global"; do
+  eval "run_roster alias $args --cwd \"\$PROJ\""
+  check "20: alias $args -> non-zero, naming create --team" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "create --team"'
+  check "20b: alias $args wrote no config at any level" '[ ! -f "$REPO_PATH" ] && [ ! -f "$GLOBAL_PATH" ] && [ ! -f "$REPO_USER_PATH" ]'
+done
 
-# ==== 21 — --set writes teamAlias at the given level, prefix reflects it ====
-reset_levels
-run_roster alias --set myalias --level repo --cwd "$PROJ"
-check "21: alias --set -> RC 0, echoes level/path/teamAlias/prefix" \
-  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"teamAlias\": \"myalias\"" && echo "$OUT" | grep -q "\"prefix\": \"myalias\""'
-check "21b: --set actually wrote the repo-level config file" 'grep -q "\"teamAlias\": \"myalias\"" "$REPO_PATH"'
-evalc "C.teamPrefix('$PROJ')"
-check "21c: teamPrefix now resolves the newly-set alias" '[ "$OUT" = myalias ]'
-
-# ==== 22 — --set with an invalid name fails, writes nothing ====
-reset_levels
-run_roster alias --set "bad name" --level repo --cwd "$PROJ"
-check "22: alias --set <invalid> -> non-zero, roster.mjs-prefixed reason" \
-  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "^roster.mjs: alias:"'
-check "22b: invalid --set never created the config file" '[ ! -f "$REPO_PATH" ]'
-
-# ==== 23 — --clear removes the key, prefix falls back to default ====
-reset_levels
-run_roster alias --set ct --level repo --cwd "$PROJ" >/dev/null
-run_roster alias --clear --level repo --cwd "$PROJ"
-check "23: alias --clear -> RC 0, teamAlias null, prefix back to basename" \
-  "[ \"\$RC\" -eq 0 ] && echo \"\$OUT\" | grep -q '\"teamAlias\": null' && echo \"\$OUT\" | grep -q '\"prefix\": \"$BASE\"'"
-check "23b: --clear actually removed the key from the file" '! grep -q "teamAlias" "$REPO_PATH"'
-
-# ==== 24 — --set/--clear at --level global hard-fails: alias is repo-scoped ====
-reset_levels
-run_roster alias --set ct --level global --cwd "$PROJ"
-check "24: alias --set --level global -> hard fail, repo-scoped reason" \
-  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -qi "repo-scoped"'
-check "24b: never touched the global config file" '[ ! -f "$GLOBAL_PATH" ]'
-
-# ---- non-blocking warnings (§7.2/§7.4) ----
-
-# ==== 25 — spawn-one warns on a prefix mismatch against a live team.json,
-# without itself blocking (execution reaches the later herdr-presence check,
-# proven by that failure message also being present in the same run). ====
+# ==== 25 — a live legacy team.json is named by its own members: spawn-one derives a new member
+# under that team's frozen prefix, so there is no second prefix to warn about. ====
 reset_levels
 run_roster init --level repo --route peer --cwd "$PROJ" >/dev/null
 run_roster add --no-spawn --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
 mkdir -p "$HIER_DIR"
 # Spec 0044 §1.7: the legacy team.json is kept as the scope for the team that is LIVE across the
 # upgrade, so the fixture carries an owner and a creation stamp — without them it reads as stale
-# and a spawn correctly re-points at teams/<prefix>.json instead of warning about this file.
+# and a spawn correctly re-points at teams/<prefix>.json.
 cat > "$TEAM_FILE" <<EOF
 { "version": 1, "team_id": "t1", "roster_level": "repo", "transport": "herdr",
   "created": "$(date +%Y-%m-%dT%H:%M:%S%z | sed 's/\(..\)$/:\1/')",
   "orchestrator": { "session_id": null, "pid": $$ },
   "members": [ { "name": "otherprefix-architect", "role": "architect" } ] }
 EOF
+BEFORE_TEAM25=$(cat "$TEAM_FILE")
 NODE_DIR="$(dirname "$NODE_BIN")"
-NO_HERDR_DIR="$SANDBOX/no-herdr-bin"
-mkdir -p "$NO_HERDR_DIR"
-OUT=$(env -u HERDR_ENV HOME="$FAKEHOME" HERDR_PANE_ID=p0 PATH="$NO_HERDR_DIR:$NODE_DIR" HERDR_ENV=1 \
-  "$NODE_BIN" "$H/roster.mjs" spawn-one reviewer --cwd "$PROJ" 2>&1); RC=$?
-check "25a: spawn-one prints the mixed-prefix warning" \
-  'echo "$OUT" | grep -q "existing members are named .otherprefix-\*."'
-check "25b: mixed-prefix warning never mentions disband" '! echo "$OUT" | grep -qi disband'
-check "25c: warning is non-blocking — execution reaches the later herdr-presence fail" \
-  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "binary is on PATH"'
-check "25d: still never wrote a new member (herdr-presence fail stopped it first)" \
-  '[ "$(grep -c "\"role\"" "$TEAM_FILE")" -eq 1 ]'
+OUT=$(env -u HERDR_ENV -u CLAUDE_PID HOME="$FAKEHOME" HERDR_PANE_ID=p0 PATH="$SANDBOX/nolaunch:$NODE_DIR" HERDR_ENV=1 \
+  "$NODE_BIN" "$H/roster.mjs" spawn-one reviewer --dry-run --cwd "$PROJ" 2>&1); RC=$?
+check "25a: spawn-one derives the member under the legacy team's frozen prefix" \
+  '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"name\": \"otherprefix-reviewer\""'
+check "25b: and prints no mixed-prefix warning" '! echo "$OUT" | grep -q "existing members are named"'
+check "25c: team.json untouched by the dry run" '[ "$(cat "$TEAM_FILE")" = "$BEFORE_TEAM25" ]'
 
-# ==== 26 — alias --set/--clear warns when a Team is live, but still writes ====
-reset_levels
-run_roster init --level repo --route peer --cwd "$PROJ" >/dev/null
-mkdir -p "$HIER_DIR"
-cat > "$TEAM_FILE" <<EOF
-{ "version": 1, "team_id": "t2", "roster_level": "repo", "transport": "herdr",
-  "members": [ { "name": "$BASE-architect", "role": "architect" } ] }
-EOF
-run_roster alias --set newalias --level repo --cwd "$PROJ"
-check "26a: alias --set with a live team -> RC 0 (write still happens)" '[ "$RC" -eq 0 ]'
-check "26b: warns that names are frozen, using the first member as the example" \
-  "echo \"\$OUT\" | grep -q 'named \"$BASE-architect\"' && echo \"\$OUT\" | grep -qi frozen"
-check "26c: live-team warning never mentions disband/teardown" '! echo "$OUT" | grep -qiE "disband|teardown"'
-check "26d: the write actually happened despite the warning" 'grep -q "\"teamAlias\": \"newalias\"" "$REPO_PATH"'
-
-# ==== 12 — spec 0019 §6 case 12 / amendment (b): record-live under a stale name (population 2),
-#            single-candidate role. team.json holds "old-implementor", live in the registry; the
-#            alias then changes so the roster derives "new-implementor". spawn-one must treat this
-#            as a no-op — never launch a second pane for the same role, never overwrite the still-
-#            live "old-implementor" row. Assert all four: spawned:false/already-live; claude/herdr
-#            never invoked; team.json byte-identical; member.name is old-implementor not
-#            new-implementor. Existing case 25 does NOT cover this — it seeds a cross-role stale
-#            record with no registry entry, so existingRecord is null under both old and new code
-#            and passes either way; this needs a same-role, registry-live stale record. ====
+# ==== 12 — spec 0019 §6 case 12 / amendment (b): a registry-live member of a legacy team, single-
+#            candidate role, while the repo's config carries a teamAlias naming something else.
+#            spawn-one must treat this as a no-op — never launch a second pane for the same role,
+#            never overwrite the still-live "old-implementor" row, and never take the stale
+#            config's name. Assert all four: spawned:false/already-live; herdr never invoked;
+#            team.json byte-identical; member.name is old-implementor, not new-implementor. ====
 reset_levels
 PEERS_FILE="$HIER_DIR/peers.jsonl"
 seed_peer() { # <name> <role> <status> <pid>
@@ -243,7 +194,6 @@ seed_peer() { # <name> <role> <status> <pid>
     "$PEERS_FILE" "$1" "$2" "$3" "$4"
 }
 run_roster init --level repo --route peer --cwd "$PROJ" >/dev/null
-run_roster alias --set old --level repo --cwd "$PROJ" >/dev/null
 run_roster add --no-spawn --level repo --role implementor --model opus --cwd "$PROJ" >/dev/null
 mkdir -p "$HIER_DIR"
 cat > "$TEAM_FILE" <<EOF
@@ -254,8 +204,7 @@ cat > "$TEAM_FILE" <<EOF
 EOF
 BEFORE_TEAM12=$(cat "$TEAM_FILE")
 seed_peer "old-implementor" "implementor" "up" "$$"
-# alias changes AFTER the team was created — roster now derives "new-implementor" for this role.
-run_roster alias --set new --level repo --cwd "$PROJ" >/dev/null
+"$NODE_BIN" -e 'const f=process.argv[1],fs=require("fs");const d=JSON.parse(fs.readFileSync(f,"utf8"));d.teamAlias="new";fs.writeFileSync(f,JSON.stringify(d))' "$REPO_PATH"
 HERDR_MARKER="$SANDBOX/herdr-invoked-12"
 HERDR_STUB_DIR="$SANDBOX/herdr-stub-bin-12"
 mkdir -p "$HERDR_STUB_DIR"
@@ -265,14 +214,13 @@ echo "HERDR INVOKED: \$@" >> "$HERDR_MARKER"
 exit 1
 STUBEOF
 chmod +x "$HERDR_STUB_DIR/herdr"
-NODE_DIR="$(dirname "$NODE_BIN")"
 OUT=$(env -u HERDR_ENV HOME="$FAKEHOME" HERDR_PANE_ID=p0 PATH="$HERDR_STUB_DIR:$NODE_DIR" HERDR_ENV=1 \
   "$NODE_BIN" "$H/roster.mjs" spawn-one implementor --cwd "$PROJ" 2>&1); RC=$?
 check "12a: spawned false, reason already live" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | grep -q "\"spawned\": false" && echo "$OUT" | grep -q "\"reason\": \"already live\""'
-check "12b: herdr never invoked (no launch attempt for the drifted name)" '[ ! -f "$HERDR_MARKER" ]'
+check "12b: herdr never invoked (no launch attempt)" '[ ! -f "$HERDR_MARKER" ]'
 check "12c: team.json byte-identical afterward" '[ "$(cat "$TEAM_FILE")" = "$BEFORE_TEAM12" ]'
-check "12d: emitted member.name is the live old-implementor, not the drifted new-implementor" \
+check "12d: emitted member.name is the live old-implementor, not the stale config's new-implementor" \
   'echo "$OUT" | grep -q "\"name\": \"old-implementor\"" && ! echo "$OUT" | grep -q "\"name\": \"new-implementor\""'
 
 # ==== 29 — role-token collision (amendment (d), §4.4): validateTeamAlias rejects ====

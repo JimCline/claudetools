@@ -1,0 +1,9 @@
+{
+  "dry_run": true,
+  "role": "reviewer",
+  "name": "myrepo-reviewer",
+  "mode": "auto",
+  "launch": [
+    "herdr agent start myrepo-reviewer --kind claude --pane <TARGET> -- --agent ah:reviewer --name myrepo-reviewer --model opus --settings '{\"env\":{\"AH_TEAM_FILE\":\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\"}}'"
+  ]
+}

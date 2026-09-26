@@ -17,7 +17,7 @@ root marketplace.json to 0.29.0.
 - [5] dispatch gate: role dispatch (Agent or peer brief) must carry `[hierarchy-msg <request-path>]`; deny-with-instructions otherwise
 - [6] response gate: role subagent's last message / peer's reply must carry `[hierarchy-msg <response-path>]`; one nudge, fail-open
 - [7] peer roster: `peers.jsonl`, written by peers (SessionStart/End) and by orchestrator PostToolUse on ListAgents/SendMessage
-- [8] routing preference: ask ONCE per session peers|subagents|prefer-peers, then enforce silently; replaces per-role roster deny
+- [8] route gate: chain roles run only as peers — every Agent dispatch of one is denied with the live peer or the spawn command; legwork alone runs as a subagent; no route question
 - [9] tier rule: haiku<sonnet<opus<fable; Architect/Ultra-Advisor at ≤ own tier → do inline unless `reason:` given; one-shot gate when model known
 - [10] SessionStart: compact/resume/startup inject open exchanges + roster + tier line
 - [11] directive/agent-file text changes
@@ -86,7 +86,7 @@ root marketplace.json to 0.29.0.
 - `index <path>` — prints `line:## [N] key` for every anchor (portable equivalent of the grep; agents may use either).
 - `sweep [--days 7]` — moves closed pairs whose response is older than N days to `msgs/archive/`. Prints count.
 - `roster` — see [7]; prints roster summary.
-- `route [peers|subagents|prefer-peers]` — with no argument prints the effective route and its source (session|config|default); with one, appends `{type:"route", session_id, value, ts}` to `gates.jsonl`. Requires `--session <id>` (hooks pass it; the orchestrator is told the id in the deny text). Rejects any other value.
+- `route [peers]` — with no argument prints the effective route and its source (session|config|default), which is always `peers`; `route peers` appends `{type:"route", session_id, value, ts}` to `gates.jsonl`. Requires `--session <id>`. Rejects any other value: only legwork roles run as subagents.
 - Exit non-zero with one-line stderr on bad args / missing request for a response.
 
 ## [5] dispatch gate (PreToolUse)
@@ -130,32 +130,16 @@ root marketplace.json to 0.29.0.
 - Config: `peer` accepts a string OR an array of names. `resolvedPeerTarget` becomes `resolvedPeerTargets(role, entry, repoBasename) → string[]` (keep the old name as a one-element convenience wrapper for existing callers/tests); ultra gate and roster match ANY of them. PEER NAME CONFIRMATION still writes a single string; users hand-edit arrays. Names matched only by role token (unconfigured peers) are still recorded and count as candidates.
 - `msg.mjs roster` prints it. `/hierarchy peers` calls it.
 
-## [8] routing preference gate (PreToolUse)
-- REPLACES the earlier "deny once per role" roster gate. One routing question per session, asked before the FIRST roster dispatch, then honored silently. Rationale: `handoffs:"confirm"` item 0 and a per-role deny were both asking about the same choice; three prompts for one decision is worse than one.
+## [8] route gate (PreToolUse)
 - In `hooks/pretooluse-route-gate.mjs` (also hosts [9]); matcher `Agent|Task|SendMessage`.
-- ROUTE values: `peers` (peers only — never spawn a roster subagent), `subagents` (never route to a peer), `prefer-peers` (peer when one is live and free, else subagent). Default when the user has not answered: `prefer-peers`.
-- Precedence: session answer (`gates.jsonl`) > config `route` key in agent-hierarchy.json > `prefer-peers`. A config `route` value means never ask — the user already decided durably.
-- Trigger: a dispatch that would task a peer-eligible role (Agent/Task with a roster `subagent_type`, or SendMessage carrying `[hierarchy-peer-brief`), when NO `{type:"route", session_id, value}` record exists this session AND no config `route` key. Task-runner/task-gopher exempt — errands are not roster dispatches.
-- On trigger, DENY once with:
-  ```
-  ah: choose this session's dispatch route before tasking roles. Live peers: <Role>="<name>" <how> <age><, busy><, N open>; … | none.
-  Ask the user with AskUserQuestion, exactly these options in this order:
-    "Prefer peer agents, fall back to subagents (Recommended)" — reuse a live peer when one is free; spawn only when none is.
-    "Peer agents only" — never spawn a roster subagent; wait or tell the user when no peer is free.
-    "Subagents only" — ignore peers entirely this session.
-  Record it: node <AH_ROOT>/hooks/msg.mjs route <prefer-peers|peers|subagents> --session <session_id>
-  (the deny text must interpolate the real session id; `route` requires it — see [4])
-  Then re-issue this exact dispatch. Say in one line what you recorded.
-  ```
-  Do not reword the options and do not record a choice the user did not pick.
-- After a route is recorded, enforce it (no further prompts):
-  - `subagents`: allow every Agent spawn; DENY a SendMessage peer brief with "route is subagents this session — spawn the subagent instead, or change route with msg.mjs route".
-  - `peers`: DENY an Agent spawn of a roster role while `roster()` shows ANY live instance for it, listing them and instructing SendMessage with `to_name` set. Allow the spawn when no live instance exists (nothing to route to) and say so in a `systemMessage`.
-  - `prefer-peers`: DENY an Agent spawn only while a live instance for that role is NOT busy, listing candidates; allow when all are busy or none is live. This is the only value where "busy" matters.
-  - Every deny under an established route is ONE-SHOT per (session, role): the identical re-issue passes, so the orchestrator can always override with intent. Record `{type:"route-deny", session_id, role}`.
-- `/hierarchy route [peers|subagents|prefer-peers]` prints or sets it; setting with no session answer yet also writes the session record. Saying "use peers only" etc. in chat is honored the same way (directive item 13 tells the orchestrator to record it).
-- Interaction with `handoffs:"confirm"`: item 0 still asks per dispatch, but its peer-vs-subagent options are now FILTERED by the session route — under `peers` it offers only the peer option, under `subagents` only the subagent option, under `prefer-peers` both with the peer first. One decision, asked once; item 0 remains about whether to hand off at all.
-- Fail-open on any internal error. Inert for subagents (`isSubagent`).
+- Chain roles (Ultra-Advisor, Architect, Reviewer, Implementor, and custom chain roles) run only as peers. From the Orchestrator, every Agent/Task dispatch of one is DENIED, every time, and the reason is the whole instruction:
+  - a live instance exists → name it (free ones first) and SendMessage it the brief, `to_name` set;
+  - none live → the exact `spawn-one` command (`spawn-ad-hoc` when the roster has no member for the role), then SendMessage the name it prints. A launch that fails follows agent-team's "When a role can't take the work".
+- No route question and no opt-in. `msg.mjs route` accepts only `peers` ([4]). A `subagents`/`prefer-peers` value left in config or `gates.jsonl`, a chain member's roster `route:"subagent"`, `onMissing` `never`/`prompt`, and a chain role's `dispatch:"model"` are all ignored; the CLI reports them and its next write to that file migrates them.
+- Legwork (task-runner, `task-gopher:*`, custom legwork roles) passes: the only roles that run as subagents. `ah:orchestrator` is always denied as a subagent.
+- Role sessions and subagents never dispatch a chain role: denied with route-back text.
+- `handoffs:"confirm"` item 0 still asks per dispatch whether to hand off; the answer is a peer, inline, or skip.
+- `enabled:false` passes everything. Fail-open on any internal error.
 
 ## [9] tier rule
 - `TIER = {haiku:1, sonnet:2, opus:3, fable:4}`; `tierOf(modelString)` matches family token in `claude-<family>-…` or bare family; unknown → null.
@@ -182,7 +166,7 @@ root marketplace.json to 0.29.0.
 - `lib-config.mjs buildDirective`: add item 12 (message files: writer/reader protocol, CLI, in-band pointer rule, style rules), item 13 (roster + route: "peers.jsonl is ground truth; after compaction trust HIERARCHY STATE over memory; this session's route is <value> — honor it without re-asking; if the user changes it in chat, record it with `msg.mjs route <v>` and confirm in one line"), item 14 (tier rule per [9]). PEER BRIEF CONTRACT: add bullet "first line after the sentinel is `[hierarchy-msg <request path>]`". Item 3 (spec path): default `<dir>/specs/<slug>.md`.
 - `agents/orchestrator.md`: same three rules, compressed.
 - `agents/architect.md`, `agents/reviewer.md`, `agents/implementor.md`, `agents/ultra-advisor.md`: add "BRIEF INTAKE — your brief is a file: `[hierarchy-msg <path>]`. `grep -n '^## \[' <path>` for the index, Read only what you need. REPORT — write `msg.mjs new --type response --id <id> --req <request path> --to <from> --from <role>` (spec 0037: `--req` is the brief's own `[hierarchy-msg]` path, so the reply lands beside the request whatever pool your cwd resolves) and fill it (bullets, no prose, status first); your final message is `[hierarchy-msg <response path>]` + status bullet — nothing else." Architect/Ultra-Advisor additionally: "If the request's `reason:` is `second-opinion`, the caller is your tier or higher: give a verdict, not a tutorial."
-- `commands/hierarchy.md`: add `/hierarchy msgs [open|closed|all]` → `msg.mjs list`; `/hierarchy peers` → `msg.mjs roster`; `/hierarchy route [peers|subagents|prefer-peers]` → `msg.mjs route` (no arg prints; with arg records session value, and offers to persist it as the config `route` key); `/hierarchy sweep [days]`; `/hierarchy msgs off|required` toggles config key.
+- `commands/hierarchy.md`: add `/hierarchy msgs [open|closed|all]` → `msg.mjs list`; `/hierarchy peers` → `msg.mjs roster`; `msg.mjs route` prints the session route, always `peers`; `/hierarchy sweep [days]`; `/hierarchy msgs off|required` toggles config key.
 - README: new section "Message files, roster, tier rule" — the protocol, the token-math caveat, the one-shot gate semantics, cross-repo limitation.
 - `docs/hierarchy.html`: add the three rules to the mechanics page (brief).
 

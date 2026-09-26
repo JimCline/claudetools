@@ -11,6 +11,8 @@
 # Usage: bash tests/test-cli-tools-doc.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 PASS=0; FAIL=0
 check() {
   local name=$1; shift
@@ -49,6 +51,7 @@ const readFlags = (src) =>
   new Set([
     ...[...src.matchAll(/opts\.([A-Za-z][A-Za-z0-9]*)/g)].map((m) => m[1]),
     ...[...src.matchAll(/opts\["([^"]+)"\]/g)].map((m) => m[1]),
+    ...[...src.matchAll(/repeatedFlag\("([^"]+)"\)/g)].map((m) => m[1]),
   ]);
 // a bool flag counts as accepted by being in BOOL_FLAGS even when the code never names it:
 // --open is the default for msg.mjs list, selected by the absence of --closed/--all

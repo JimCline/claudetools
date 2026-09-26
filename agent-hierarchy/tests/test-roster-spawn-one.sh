@@ -14,7 +14,8 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
 # the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude" "$SANDBOX/bin"
@@ -112,6 +113,10 @@ init_geometry() {
 EOF
 }
 clear_hierarchy() { rm -rf "$PROJ/.claude/hierarchy"; }
+# A team's default layout is the stored global preference (`teamLayout`), not a roster setting.
+store_layout() {
+  node -e 'const fs=require("fs"),f=process.argv[1];let d={version:1};try{d=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}d.teamLayout=process.argv[2];fs.writeFileSync(f,JSON.stringify(d))' "$FAKEHOME/.claude/agent-hierarchy.json" "$1"
+}
 
 # Roster setup: N peer members via real roster.mjs calls, add-order is plan order.
 ROLES4=(ultra-advisor architect reviewer implementor)
@@ -424,7 +429,7 @@ split_directions() { # reads the fake herdr's call log, returns a JSON array of 
 # ==== A1 — spec 0023 §8.1 A1: sequential spawn-one tiles a grid, not a row (the reported bug). ====
 reset_state; clear_hierarchy; init_geometry 180 42
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" layout --level repo --layout grid --cwd "$PROJ" >/dev/null
+store_layout grid
 HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
 HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
 HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
@@ -441,7 +446,7 @@ for dims in "180 42" "200 50"; do
   set -- $dims
   reset_state; clear_hierarchy; init_geometry "$1" "$2"
   HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-  HOME="$FAKEHOME" node "$H/roster.mjs" layout --level repo --layout grid --cwd "$PROJ" >/dev/null
+  store_layout grid
   HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
   HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
   HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role reviewer --model opus --cwd "$PROJ" >/dev/null
@@ -461,7 +466,7 @@ done
 #           geometry filter (§3.3) is omitted — verified by hand against the pre-fix loop body. ====
 reset_state; clear_hierarchy; init_geometry 180 42
 HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --cwd "$PROJ" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" layout --level repo --layout grid --cwd "$PROJ" >/dev/null
+store_layout grid
 HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role ultra-advisor --model opus --cwd "$PROJ" >/dev/null
 HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role architect --model opus --cwd "$PROJ" >/dev/null
 write_team "$(node -e '
@@ -501,18 +506,18 @@ plan_field() { echo "$OUT" | node -e 'let s="";process.stdin.on("data",d=>s+=d).
 no_bare_state() { [ ! -e "$BARE/.claude/hierarchy/teams" ]; }
 
 reset_state; init_geometry 180 42
-bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --dry-run
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --model opus --dry-run
 check "Z1: no config, empty HOME -> spawn-ad-hoc --dry-run exits 0 and names <basename>-reviewer" \
   '[ "$RC" -eq 0 ] && [ "$(plan_field name)" = "bare-reviewer" ]'
 NO_ROSTER_MODE="$(plan_field mode)"
 check "Z1b: --dry-run wrote no team file" 'no_bare_state'
 
-bare "$GLOBHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --dry-run
+bare "$GLOBHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --model opus --dry-run
 check "Z2: only a GLOBAL roster, no --allow-global -> spawn-ad-hoc still exits 0" \
   '[ "$RC" -eq 0 ] && [ "$(plan_field name)" = "bare-reviewer" ]'
 check "Z2b: and the global roster's layout is not borrowed — same mode as with no roster at all" \
   '[ -n "$NO_ROSTER_MODE" ] && [ "$(plan_field mode)" = "$NO_ROSTER_MODE" ]'
-bare "$GLOBHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --dry-run --allow-global
+bare "$GLOBHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --model opus --dry-run --allow-global
 check "Z2c: --allow-global is still accepted, and changes nothing" \
   '[ "$RC" -eq 0 ] && [ "$(plan_field mode)" = "$NO_ROSTER_MODE" ]'
 bare "$GLOBHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-one reviewer --dry-run
@@ -528,7 +533,7 @@ bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-one reviewer
 check "Z5: spawn-one with no roster -> exit 2, spawn-ad-hoc is the FIRST remedy, /agent-roster second" \
   '[ "$RC" -eq 2 ] && [ "$(echo "$OUT" | grep -bo "spawn-ad-hoc reviewer" | head -1 | cut -d: -f1)" -lt "$(echo "$OUT" | grep -bo "/agent-roster" | head -1 | cut -d: -f1)" ]'
 
-bare "$EMPTYHOME" "HERDR_ENV=1" spawn-ad-hoc reviewer --dry-run
+bare "$EMPTYHOME" "HERDR_ENV=1" spawn-ad-hoc reviewer --model opus --dry-run
 check "Z6: no CLAUDE_PID and no --orchestrator-pid -> the first spawn refuses naming --orchestrator-pid" \
   '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q -- "--orchestrator-pid" && no_bare_state'
 
@@ -539,7 +544,7 @@ mkdir -p "$BARE/.claude/hierarchy"
 node -e 'const fs=require("fs");const[f,p]=process.argv.slice(1);
   fs.appendFileSync(f,JSON.stringify({type:"peer",status:"up",name:"bare-reviewer",role:"reviewer",pid:Number(p),ts:new Date().toISOString()})+"\n");' \
   "$BARE/.claude/hierarchy/peers.jsonl" "$$"
-bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --model opus
 check "Z7: derived name live outside the team file -> exit 2 naming it and the remedies" \
   '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "bare-reviewer" && echo "$OUT" | grep -q "dismiss bare-reviewer" && echo "$OUT" | grep -q "untrack bare-reviewer" && echo "$OUT" | grep -q -- "--team"'
 check "Z7b: not the already-live success shape" '! echo "$OUT" | grep -q "already live\"" && ! echo "$OUT" | grep -q "\"spawned\""'
@@ -550,7 +555,7 @@ rm -rf "$BARE/.claude"
 # A name taken where the liveness check cannot see it surfaces only as the launch failing; that
 # refusal still has to say which name was attempted, and must not leave a team record behind.
 reset_state; init_geometry 180 42
-bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_FAIL_ALWAYS_NAME=bare-reviewer" spawn-ad-hoc reviewer
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_FAIL_ALWAYS_NAME=bare-reviewer" spawn-ad-hoc reviewer --model opus
 check "Z8: launch fails for the derived name -> non-zero exit naming the attempted name" \
   '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "bare-reviewer"'
 check "Z8b: and no team file is written" 'no_bare_state'
@@ -567,28 +572,28 @@ launched_id() { echo "$OUT" | grep -oE 'transport_id [^ ]+' | head -1 | cut -d' 
 
 reset_state; init_geometry 180 42; rm -rf "$BARE/.claude"
 rival_team reviewer race-reviewer
-bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=$RIVAL::$RACE_FILE" spawn-ad-hoc reviewer --team race
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=$RIVAL::$RACE_FILE" spawn-ad-hoc reviewer --model opus --team race
 check "R1: the derived name is recorded by another spawn mid-launch -> exit 2 naming it and the launched transport_id" \
   '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "race-reviewer" && [ -n "$(launched_id)" ] && [ "$(launched_id)" != "pRIVAL" ]'
 check "R1b: the rival row is not overwritten" 'cmp -s "$RIVAL" "$RACE_FILE"'
 
 reset_state; init_geometry 180 42; rm -rf "$BARE/.claude"
 rival_team architect race-architect
-bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=$RIVAL::$RACE_FILE" spawn-ad-hoc reviewer --team race
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=$RIVAL::$RACE_FILE" spawn-ad-hoc reviewer --model opus --team race
 check "R2: a different member is recorded mid-launch, no team at the start -> joins that record, no second team minted" \
   '[ "$RC" -eq 0 ] && node -e "const t=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));process.exit(t.team_id===\"t-rival\"&&t.created===\"2026-01-01T00:00:00Z\"&&t.members.length===2&&t.members[0].name===\"race-architect\"&&t.members[0].transport_id===\"pRIVAL\"&&t.members[1].name===\"race-reviewer\"?0:1)" "$RACE_FILE"'
 
 reset_state; init_geometry 180 42; rm -rf "$BARE/.claude"
 rival_team architect race-architect
 mkdir -p "$(dirname "$RACE_FILE")"; cp "$RIVAL" "$RACE_FILE"
-bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=::$RACE_FILE" spawn-ad-hoc reviewer --team race
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=::$RACE_FILE" spawn-ad-hoc reviewer --model opus --team race
 check "R3: the team file is removed mid-launch -> exit 2 saying it is gone, launched transport_id reported, nothing written" \
   '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "is gone" && [ -n "$(launched_id)" ] && [ ! -e "$RACE_FILE" ]'
 
 reset_state; init_geometry 180 42; rm -rf "$BARE/.claude"
 mkdir -p "$(dirname "$RACE_FILE")"; cp "$RIVAL" "$RACE_FILE"
 printf 'not json {{{' > "$SANDBOX/garbage.json"
-bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=$SANDBOX/garbage.json::$RACE_FILE" spawn-ad-hoc reviewer --team race
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=$SANDBOX/garbage.json::$RACE_FILE" spawn-ad-hoc reviewer --model opus --team race
 check "R4: the team file turns unparseable mid-launch -> exit 2 saying it is no longer readable, bytes left alone" \
   '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "no longer readable" && ! echo "$OUT" | grep -q "is gone" && [ -n "$(launched_id)" ] && cmp -s "$SANDBOX/garbage.json" "$RACE_FILE"'
 rm -rf "$BARE/.claude"
@@ -601,7 +606,7 @@ only_bad_legacy() { [ "$(find "$BARE/.claude/hierarchy" -type f | wc -l | tr -d 
 no_launch() { [ "$(call_count "c.argv[0]===\"agent\" && c.argv[1]===\"start\"")" -eq 0 ]; }
 
 bad_legacy
-bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --model opus
 check "U1: unreadable legacy team.json, bare spawn-ad-hoc -> exit 2 naming the file, repair-or-remove, and --team" \
   '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qF "$LEGACY_BAD" && echo "$OUT" | grep -qi "repair or remove" && echo "$OUT" | grep -q -- "--team <name>"'
 check "U1b: nothing written, nothing launched" 'only_bad_legacy && no_launch'
@@ -614,7 +619,7 @@ bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" create --spawn
 check "U3: same, bare create -> exit 2 naming the file, nothing written or launched" \
   '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qF "$LEGACY_BAD" && only_bad_legacy && no_launch'
 bad_legacy
-bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --team named
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --model opus --team named
 check "U4: same, spawn-ad-hoc --team named -> succeeds, writes teams/named.json, legacy bytes untouched" \
   '[ "$RC" -eq 0 ] && grep -q "\"name\": \"named-reviewer\"" "$BARE/.claude/hierarchy/teams/named.json" && [ "$(cat "$LEGACY_BAD")" = "not json {{{" ]'
 
@@ -624,7 +629,7 @@ NAMED_BAD="$BARE/.claude/hierarchy/teams/T.json"
 bad_named() { rm -rf "$BARE/.claude"; mkdir -p "$(dirname "$NAMED_BAD")"; printf 'not json {{{' > "$NAMED_BAD"; reset_state; init_geometry 180 42; }
 only_bad_named() { [ "$(find "$BARE/.claude/hierarchy" -type f | wc -l | tr -d ' ')" -eq 1 ] && [ "$(cat "$NAMED_BAD")" = 'not json {{{' ]; }
 bad_named
-bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --team T
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --model opus --team T
 check "U5: unreadable teams/T.json, spawn-ad-hoc --team T -> exit 2 naming the path and the remedy, no --team <name> escape" \
   '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qF "$NAMED_BAD" && echo "$OUT" | grep -qi "repair or remove" && echo "$OUT" | grep -q "a different --team" && ! echo "$OUT" | grep -q -- "--team <name>"'
 check "U5b: file untouched, no session launched" 'only_bad_named && no_launch'
@@ -650,17 +655,20 @@ check "U9: same, a read verb (disband plan --team T) -> not refused, reports the
 shaped_named() { rm -rf "$BARE/.claude"; mkdir -p "$(dirname "$NAMED_BAD")"; printf '%s' "$1" > "$NAMED_BAD"; reset_state; init_geometry 180 42; }
 for shape in '{"version":1,"team_id":"t-trunc"}' '{"version":1,"team_id":"t-trunc","members":"x"}'; do
   shaped_named "$shape"
-  bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --team T
+  bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --model opus --team T
   check "U10: team file $shape -> exit 2 naming it before any launch, no stack, file untouched" \
     '[ "$RC" -eq 2 ] && echo "$OUT" | grep -qF "$NAMED_BAD" && ! echo "$OUT" | grep -qE "TypeError|^ +at " && no_launch && [ "$(cat "$NAMED_BAD")" = "$shape" ]'
 done
-shaped_named '{"version":1,"team_id":"t-empty","roster_level":null,"transport":"herdr","orchestrator":{"session_id":null,"pid":null},"members":[]}'
-bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --team T
+# Herdr refuses an uppercase agent name, so a Herdr team here is lowercase.
+NAMED_EMPTY="$BARE/.claude/hierarchy/teams/t.json"
+rm -rf "$BARE/.claude"; mkdir -p "$(dirname "$NAMED_EMPTY")"; reset_state; init_geometry 180 42
+printf '%s' '{"version":1,"team_id":"t-empty","roster_level":null,"transport":"herdr","orchestrator":{"session_id":null,"pid":null},"members":[]}' > "$NAMED_EMPTY"
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --model opus --team t
 check "U11: an empty members array is a usable team -> the spawn joins it" \
-  '[ "$RC" -eq 0 ] && node -e "const t=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));process.exit(t.team_id===\"t-empty\"&&t.members.length===1&&t.members[0].name===\"T-reviewer\"?0:1)" "$NAMED_BAD"'
+  '[ "$RC" -eq 0 ] && node -e "const t=JSON.parse(require(\"fs\").readFileSync(process.argv[1],\"utf8\"));process.exit(t.team_id===\"t-empty\"&&t.members.length===1&&t.members[0].name===\"t-reviewer\"?0:1)" "$NAMED_EMPTY"'
 
 reset_state; init_geometry 180 42; rm -rf "$BARE/.claude"
-bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=$SANDBOX/garbage.json::$RACE_FILE" spawn-ad-hoc reviewer --team race
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$ FAKE_HERDR_ON_START_TEAM=$SANDBOX/garbage.json::$RACE_FILE" spawn-ad-hoc reviewer --model opus --team race
 check "R5: no team file at the start, an unparseable one at write time -> exit 2, no new team built over it" \
   '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "no longer readable" && [ -n "$(launched_id)" ] && cmp -s "$SANDBOX/garbage.json" "$RACE_FILE"'
 rm -rf "$BARE/.claude"
@@ -691,9 +699,9 @@ check "10b: test-roster-disband.sh passes unmodified" '[ "$DB_RC" -eq 0 ]'
 # Two user-named teams in one repo: each name is its members' prefix, and no alias is stored.
 reset_state; init_geometry 180 42
 rm -rf "$BARE/.claude"
-bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --team alpha
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --model opus --team alpha
 ALPHA_RC=$RC
-bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --team beta
+bare "$EMPTYHOME" "HERDR_ENV=1 CLAUDE_PID=$$" spawn-ad-hoc reviewer --model opus --team beta
 check "two --team names in one repo -> members alpha-reviewer and beta-reviewer, one record each" \
   '[ "$ALPHA_RC" -eq 0 ] && [ "$RC" -eq 0 ] && grep -q "\"name\": \"alpha-reviewer\"" "$BARE/.claude/hierarchy/teams/alpha.json" && grep -q "\"name\": \"beta-reviewer\"" "$BARE/.claude/hierarchy/teams/beta.json"'
 check "two --team names in one repo -> no teamAlias written to any level file" \

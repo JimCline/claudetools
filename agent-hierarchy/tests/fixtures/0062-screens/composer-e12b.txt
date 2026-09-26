@@ -1,0 +1,19 @@
+╰────────────────────────────────────────────────╯
+
+  Tip: Try the Desktop app. Run 'codex app' or visit
+  https://chatgpt.com/codex?app-landing-page=true
+
+⚠ 3 MCP startup issues · ctrl + t for details
+
+⚠ clamping SessionEnd hook timeout to 3s in /Users/
+  jimcline/.codex/plugins/cache/jcline-claude-
+  compaction-tools/idle-compactor/0.9.0/hooks/
+  hooks.json
+
+• You have 1 usage limit reset available. Run /usage
+to use one.
+
+⠁   ⠈         ⠄                   ⢀     ⠁        ⠐
+› Ask Codex to do anything           ⠂  ⠁
+      ⠠ ⠐        ⠄        ⠄         ⠠
+  gpt-6-astra high · ~/git/repos/claudetools/agent-…

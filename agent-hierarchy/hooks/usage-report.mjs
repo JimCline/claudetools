@@ -32,6 +32,17 @@
 import { readFileSync, renameSync, statSync, writeFileSync, openSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { CACHE_FILE, USAGE_FILE, addUsage, roleFor, zeroUsage } from "./lib-usage.mjs";
+import { registryRoles, resolveConfig, roleAgent } from "./lib-config.mjs";
+
+/** Agent → role for the report cwd's registry rows, so custom roles and overrides are attributed. */
+const AGENT_ROLES = (() => {
+  try {
+    const resolved = resolveConfig(process.cwd());
+    return Object.fromEntries(registryRoles(resolved).map((r) => [roleAgent(r, resolved.roles[r]), r]));
+  } catch {
+    return null;
+  }
+})();
 
 const args = process.argv.slice(2);
 const asJson = args.includes("--json");
@@ -184,7 +195,7 @@ function aggregate(winStart, sessionOnly) {
   for (const r of records) {
     if (sessionOnly && r.session_id !== latestSession) continue;
     if (!sessionOnly && !inWindow(r.ts, winStart)) continue;
-    const role = roleFor(r.agent_type);
+    const role = roleFor(r.agent_type, AGENT_ROLES);
     const b = (roles[role] ||= { agents: new Set(), missing: 0, ...zeroUsage() });
     b.agents.add(r.agent_id);
     if (r.found === false) b.missing += 1;
@@ -244,11 +255,9 @@ const pad = (s, w) => String(s).padEnd(w);
 const rpad = (s, w) => String(s).padStart(w);
 
 const ROLE_ORDER = ["orchestrator", "ultra-advisor", "architect", "reviewer", "implementor", "task-runner", "other"];
-const orderedRoles = (roles) =>
-  Object.keys(roles).sort((a, b) => {
-    const ia = ROLE_ORDER.indexOf(a), ib = ROLE_ORDER.indexOf(b);
-    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
-  });
+// Custom roles sort after the built-ins, alphabetically, and before "other".
+const rank = (r) => (r === "other" ? 99 : ROLE_ORDER.includes(r) ? ROLE_ORDER.indexOf(r) : 50);
+const orderedRoles = (roles) => Object.keys(roles).sort((a, b) => rank(a) - rank(b) || (rank(a) === 50 ? a.localeCompare(b) : 0));
 
 function renderTable(roles) {
   const lines = [

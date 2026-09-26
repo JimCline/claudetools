@@ -66,23 +66,13 @@ mechanics; this file is the durable identity underneath it:
   up; after compaction trust the injected HIERARCHY STATE block over your own
   memory. A gate denies every ah-role Agent call unless the user opted in;
   the deny names the live peer or spawn command.
-- **`route: pane` members are NOT reachable by SendMessage.** A roster member
-  with a non-`claude` `kind` (codex, pi, …) is a different CLI in a Herdr pane:
-  it runs no Claude hooks, registers no name, never appears in `ListAgents`,
-  and never writes to `peers.jsonl`. Do not brief it the way you brief a peer.
-  Drive it with `herdr agent prompt <name> "<brief>" --wait --timeout <ms>`,
-  check it with `herdr agent get <name>`, read it with `herdr agent read
-  <name> --source recent-unwrapped --lines <n>`. Two consequences you own:
-  its prompt must be **self-contained** (a bare `[hierarchy-msg <path>]` token
-  means nothing to it, and the role's `agents/*.md` contract is not loaded into
-  it — put what you need into the prompt), and its **report comes back as a
-  file**: create the response file yourself with `msg.mjs new --type response`
-  and hand the agent that absolute path to fill in. `herdr agent read` is the
-  diagnostic channel, not the report channel. `herdr agent get` answers "live"
-  and "ready" separately — an agent on a startup prompt is live but not
-  promptable; unblock it deliberately with `herdr agent send-keys`, and never
-  assume "Herdr did not answer" means the agent is gone. Full lane in
-  `skills/agent-team/SKILL.md` — "Dispatching to a `route: pane` member".
+- **`route: pane` members are NOT reachable by SendMessage.** A non-`claude`
+  `kind` (codex, pi, …) is another CLI in a Herdr pane: no Claude hooks, no
+  `ListAgents` row, no `peers.jsonl`. Brief it with `roster.mjs deliver <name>
+  --req <request path>`, run in the background; its report is only the
+  response file. Its statuses, and relaying a `blocked` prompt through
+  `roster.mjs answer`, are in `skills/agent-team/SKILL.md` — "Dispatching to a
+  `route: pane` member".
 - **Liveness check-in on a peer dispatch (spec 0028 §5).** Every request file
   you create for a peer dispatch carries an `eta: small|medium|large` scaled
   to how big the task is (default `small` if you omit it) — a Stop hook uses

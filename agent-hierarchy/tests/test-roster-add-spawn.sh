@@ -19,7 +19,8 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
 # the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude" "$SANDBOX/bin"
@@ -150,8 +151,8 @@ check "T1: §1.10 — no team file at either location" 'no_team_file'
 check "T1: §1.10 — no spawn field in the output" '! echo "$OUT" | grep -q "\"spawn\":"'
 check "T1: §1.10 — the write is reported and the spawn step is named, not left to be discovered" \
   'echo "$OUT" | grep -q "added reviewer to $CFG" && echo "$OUT" | grep -q "spawn-one reviewer"'
-check "T1: §1.10 — the removal is surgical: the row is exactly what add always wrote" \
-  'grep -q "\"role\": \"reviewer\"" "$CFG" && grep -q "\"model\": \"opus\"" "$CFG"'
+check "T1: §1.10 — the removal is surgical: the row is exactly what add writes, with no model it was not given" \
+  'grep -q "\"role\": \"reviewer\"" "$CFG" && ! grep -q "\"model\"" "$CFG"'
 
 # ==== T2 — --no-spawn (§1.10 R1): still accepted, now a silent no-op — byte-identical to T1. ====
 T1_CFG="$(cat "$CFG")"
@@ -162,10 +163,10 @@ check "T2: R1 — produces the byte-identical roster the flagless form did" '[ "
 check "T2: R1 — no spawn attempt, no team file" '[ "$(starts)" -eq 0 ] && no_team_file'
 check "T2: R1 — the flag is not echoed back as a reason for anything" '! echo "$OUT" | grep -q -- "--no-spawn"'
 
-# ==== T3 — --route subagent: config only, and the notice names why there is nothing to launch. ====
+# ==== T3 — --route subagent (legwork only): config only, and the notice names why there is nothing to launch. ====
 fresh
-run_add "" --role reviewer --route subagent
-check "T3: subagent-route add exits 0 with the row written" '[ "$RC" -eq 0 ] && [ "$(roles_in_cfg)" = "reviewer" ]'
+run_add "" --role task-runner --route subagent
+check "T3: subagent-route add exits 0 with the row written" '[ "$RC" -eq 0 ] && [ "$(roles_in_cfg)" = "task-runner" ]'
 check "T3: notice names the route and says nothing was launched" 'echo "$OUT" | grep -q "route subagent" && echo "$OUT" | grep -q "config only"'
 check "T3: no spawn attempt, no team file" '[ "$(starts)" -eq 0 ] && no_team_file'
 
@@ -179,9 +180,9 @@ check "T4: roster entry written" '[ "$(roles_in_cfg)" = "reviewer" ]'
 check "T4: §1.10 — no spawn-failure remedy text survives" '! echo "$OUT" | grep -q "spawn FAILED"'
 check "T4: §1.10 — the stub was never asked to start anything" '[ "$(starts)" -eq 0 ]'
 
-# ==== T5 — add --team X with no rosters.X: 0032 §3.4b error, unchanged by §1.10. ====
+# ==== T5 — add --roster X with no rosters.X: 0032 §3.4b error, unchanged by §1.10. ====
 fresh
-run_add "" --role reviewer --team X
+run_add "" --role reviewer --roster X
 check "T5: exits non-zero (validation, code 2)" '[ "$RC" -eq 2 ]'
 check "T5: names init as the remedy (0032 §3.4b)" 'echo "$OUT" | grep -q "init"'
 check "T5: nothing written, nothing spawned" '[ "$(roles_in_cfg)" = "" ] && [ "$(starts)" -eq 0 ] && no_team_file'

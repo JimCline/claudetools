@@ -15,11 +15,9 @@
  * and `msgs:"off"` in agent-hierarchy.json. Any internal error allows.
  */
 
-import { hierarchyRoleOf, isSubagent, logHookError, MSG_CLI, PEER_ELIGIBLE_ROLES, readHookInput, resolveConfig, resolvedPeerTargets, resolveHierarchyRole, teamPrefix } from "./lib-config.mjs";
+import { chainRoles, classProp, isSubagent, lookupRole, logHookError, MSG_CLI, readHookInput, resolveConfig, resolvedPeerTargets, resolveHierarchyRole, teamPrefix } from "./lib-config.mjs";
 import { hierarchyDir, validateRequestToken } from "./lib-hier.mjs";
 import { parseSentinel, stripRef } from "./lib-peer.mjs";
-
-const GATED_ROLES = ["architect", "implementor", "reviewer", "ultra-advisor"];
 
 function decide(decision, reason) {
   if (decision) {
@@ -66,8 +64,9 @@ try {
   let role = null;
   let text = "";
   if (isDispatch) {
-    role = hierarchyRoleOf(toolInput.subagent_type);
-    if (!role || !GATED_ROLES.includes(role)) decide(null);
+    const hit = lookupRole(toolInput.subagent_type, cwd);
+    role = hit.role;
+    if (!role || classProp(role, hit.resolved, "chain") !== true) decide(null);
     text = typeof toolInput.prompt === "string" ? toolInput.prompt : "";
   } else {
     text = typeof toolInput.message === "string" ? toolInput.message : "";
@@ -81,7 +80,7 @@ try {
   if (isSend) {
     const to = typeof toolInput.to === "string" ? stripRef(toolInput.to.trim()) : "";
     const repoBasename = teamPrefix(cwd, resolved.team);
-    role = PEER_ELIGIBLE_ROLES.find((r) => resolvedPeerTargets(r, resolved.roles[r], repoBasename).includes(to)) || null;
+    role = chainRoles(resolved).find((r) => resolvedPeerTargets(r, resolved.roles[r], repoBasename).includes(to)) || null;
   }
 
   const dir = hierarchyDir(cwd);

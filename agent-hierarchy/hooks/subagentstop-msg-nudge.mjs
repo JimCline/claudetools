@@ -23,10 +23,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { hierarchyRoleOf, logHookError, MSG_CLI, readHookInput, resolveConfig } from "./lib-config.mjs";
+import { classProp, logHookError, lookupRole, MSG_CLI, readHookInput, resolveConfig } from "./lib-config.mjs";
 import { appendGate, extractMsgToken, hasGate, hasResponseToken, hierarchyDir, parseMsgFilename, readMsgFile } from "./lib-hier.mjs";
-
-const NUDGED_ROLES = ["architect", "implementor", "reviewer", "ultra-advisor"];
 
 function allow() {
   process.exit(0);
@@ -90,10 +88,10 @@ function scanTranscript(path) {
 try {
   const input = await readHookInput();
   const agentId = typeof input.agent_id === "string" ? input.agent_id : "";
-  const role = hierarchyRoleOf(input.agent_type);
-  if (!agentId || !role || !NUDGED_ROLES.includes(role)) allow();
-
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
+  const { role, resolved: registry } = agentId ? lookupRole(input.agent_type, cwd) : { role: null, resolved: null };
+  if (!agentId || !role || classProp(role, registry, "chain") !== true) allow();
+
   const resolved = resolveConfig(cwd);
   if (!resolved.enabled || resolved.msgs === "off") allow();
 

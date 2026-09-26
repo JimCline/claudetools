@@ -11,7 +11,8 @@ SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-disband-close-gate-test.XX
 # No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
 # the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 trap 'rm -rf "$SANDBOX"' EXIT
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/proj"
@@ -80,10 +81,39 @@ OUT=$(printf '{"session_id":"s1","cwd":"%s","tool_name":"mcp__ah__team_disband",
   | HOME="$FAKEHOME" node "$HOOK" 2>&1); RC=$?
 check "an mcp__ah__team_disband tool call is no longer gated (MCP surface removed)" '[ -z "$OUT" ]'
 
-# ---- a close command the parser rejects must NOT be silently allowed past the gate either:
-# it is unrecognised, so the gate stays silent and the user's normal permission flow applies.
-hook "cd /x && node $ROSTER disband --close --confirm --plan-token t --cwd $PROJ"
-check "a compound command is not recognised (parser fails closed, gate silent)" '[ -z "$OUT" ]'
+# ---- a close the parser cannot read must still ask, never run unasked
+for verb in "dismiss m" "disband"; do
+  hook "cd /x && node $ROSTER $verb --close"
+  check "asks on a cd-chained $verb --close" '[ "$RC" -eq 0 ] && is_ask'
+  hook "FOO=1 node $ROSTER $verb --close --cwd $PROJ"
+  check "asks on an env-prefixed $verb --close" '[ "$RC" -eq 0 ] && is_ask'
+  hook "cd $PLUGIN && node hooks/roster.mjs $verb --close"
+  check "asks on a relative-path $verb --close" '[ "$RC" -eq 0 ] && is_ask'
+  hook "true; node $ROSTER $verb --close"
+  check "asks on a ;-chained $verb --close" '[ "$RC" -eq 0 ] && is_ask'
+  hook "sh -c \"node $ROSTER $verb --close\""
+  check "asks on an sh -c $verb --close" '[ "$RC" -eq 0 ] && is_ask'
+  hook "cd /x && node $ROSTER \\
+  $verb \\
+  --close"
+  check "asks on a backslash-continued $verb --close" '[ "$RC" -eq 0 ] && is_ask'
+  for rt in "node --no-warnings" "node --trace-warnings" "node -r /dev/null" "bun" "deno run -A" "nodejs --import x" "npx tsx" "node --a --b --c --d --e --f" "deno run --allow-read --allow-write --allow-env --allow-sys --allow-run"; do
+    hook "$rt $ROSTER $verb --close"
+    check "asks on '$rt' $verb --close" '[ "$RC" -eq 0 ] && is_ask'
+  done
+  hook "cd /x && node $ROSTER $verb m \"--close\""
+  check "asks on a quoted --close ($verb)" '[ "$RC" -eq 0 ] && is_ask'
+  hook "cd /x && node $ROSTER \"$verb\" m --close"
+  check "asks on a quoted $verb verb" '[ "$RC" -eq 0 ] && is_ask'
+  hook "cd /x && node $ROSTER $verb --cwd $PROJ"
+  check "stays silent on an unparsed $verb plan form (no --close)" '[ -z "$OUT" ]'
+done
+hook 'git commit -m "roster.mjs dismiss m --close"'
+check "stays silent on a commit message that mentions the close" '[ -z "$OUT" ]'
+hook "echo roster.mjs --close"
+check "stays silent on an unrelated command that mentions both strings" '[ -z "$OUT" ]'
+
+check "hooks/roster.mjs is not executable, so a bare-path shebang run cannot bypass the gate" '[ ! -x "$ROSTER" ]'
 
 # ---- matcher reachability: the cases above pipe JSON straight to the .mjs and bypass hooks.json,
 # so a gate whose matcher no longer selects it would ship ungated while they all pass (0020 §4.1).

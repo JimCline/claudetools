@@ -79,6 +79,8 @@ binary surfaces only as a bare "command not found" from deep inside a
 Add a check that is loud, early, and impossible to trip for a user who does
 not use herdr.
 
+> Superseded in part by spec 0057: `teamAlias` is no longer read (only reported as ignored) and `alias` is a signpost verb — a team's name is chosen at `create --team` and belongs to that team.
+
 **Feature B.** Peer session names are derived as `<repo-basename>-<role>`.
 For a repo named `claudetools` that yields `claudetools-architect`. The user
 wants a short per-repo alias — `ct-architect` — chosen once during roster

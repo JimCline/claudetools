@@ -1,0 +1,1 @@
+Implement exactly what the spec says, no more and no less; make no design decisions. Report the files you changed. A spec gap (silent, ambiguous, or wrong about the code) means stop and report it; never fill it yourself.

@@ -14,7 +14,8 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
 # the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 mkdir -p "$FAKEHOME/.claude" "$PROJ/.claude" "$SANDBOX/bin"
@@ -219,7 +220,9 @@ process.exit(1);
 EOF
 chmod +x "$SANDBOX/markerbin/herdr"
 rm -f "$SANDBOX/marker"
-INVOK() { HOME="$FAKEHOME" HERDR_ENV=1 PATH="$SANDBOX/markerbin:$NODE_DIR" FAKE_HERDR_MARKER="$SANDBOX/marker" node "$H/roster.mjs" "$@" --cwd "$PROJ" >/dev/null 2>&1; }
+# create --commit below must write the team the later verbs act on, so it needs an orchestrator pid:
+# $$, this invoker, owns it. Without one it writes nothing and disband falls back to `herdr agent list`.
+INVOK() { CLAUDE_PID=$$ HOME="$FAKEHOME" HERDR_ENV=1 PATH="$SANDBOX/markerbin:$NODE_DIR" FAKE_HERDR_MARKER="$SANDBOX/marker" node "$H/roster.mjs" "$@" --cwd "$PROJ" >/dev/null 2>&1; }
 INVOK show
 INVOK init --level repo --route peer
 INVOK add --no-spawn --level repo --role architect --model opus

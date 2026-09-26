@@ -7,6 +7,8 @@
 # Usage: bash tests/test-agent-frontmatter.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 ROOT="$(cd "$PLUGIN/.." && pwd)"
 A="$PLUGIN/agents"
 PASS=0; FAIL=0

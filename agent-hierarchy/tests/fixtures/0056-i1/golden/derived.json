@@ -1,0 +1,154 @@
+{
+  "ROLES": [
+    "ultra-advisor",
+    "architect",
+    "reviewer",
+    "implementor",
+    "task-runner"
+  ],
+  "ROLE_LABELS": {
+    "ultra-advisor": "Ultra-Advisor",
+    "architect": "Architect",
+    "reviewer": "Reviewer",
+    "implementor": "Implementor",
+    "task-runner": "Task-Runner"
+  },
+  "ROLE_DEFAULTS": {
+    "ultra-advisor": {
+      "model": "fable"
+    },
+    "architect": {
+      "model": "opus"
+    },
+    "reviewer": {
+      "model": "opus"
+    },
+    "implementor": {
+      "model": "inherit"
+    },
+    "task-runner": {
+      "model": "haiku",
+      "delegate": "task-gopher"
+    }
+  },
+  "VALID_MODELS_BY_ROLE": {
+    "ultra-advisor": [
+      "fable",
+      "opus"
+    ],
+    "architect": [
+      "opus",
+      "sonnet",
+      "fable",
+      "inherit"
+    ],
+    "reviewer": [
+      "opus",
+      "sonnet",
+      "fable",
+      "inherit"
+    ],
+    "implementor": [
+      "opus",
+      "sonnet",
+      "fable",
+      "inherit"
+    ],
+    "task-runner": [
+      "opus",
+      "sonnet",
+      "fable",
+      "inherit",
+      "haiku"
+    ]
+  },
+  "PEER_ELIGIBLE_ROLES": [
+    "ultra-advisor",
+    "architect",
+    "reviewer",
+    "implementor"
+  ],
+  "MSG_ROLES": [
+    "orchestrator",
+    "ultra-advisor",
+    "architect",
+    "reviewer",
+    "implementor",
+    "task-runner"
+  ],
+  "resolvedRoles": {
+    "ultra-advisor": {
+      "model": "fable",
+      "dispatch": "peer",
+      "peer": "auto"
+    },
+    "architect": {
+      "model": "opus",
+      "dispatch": "peer",
+      "peer": "auto"
+    },
+    "reviewer": {
+      "model": "opus",
+      "dispatch": "peer",
+      "peer": "auto"
+    },
+    "implementor": {
+      "model": "inherit",
+      "dispatch": "peer",
+      "peer": "auto"
+    },
+    "task-runner": {
+      "model": "haiku",
+      "delegate": "task-gopher"
+    }
+  },
+  "resolvedSources": {
+    "ultra-advisor": "default",
+    "architect": "default",
+    "reviewer": "default",
+    "implementor": "default",
+    "task-runner": "default"
+  },
+  "warnings": [],
+  "subagentType": {
+    "ultra-advisor": "ah:ultra-advisor",
+    "architect": "ah:architect",
+    "reviewer": "ah:reviewer",
+    "implementor": "ah:implementor",
+    "task-runner": "task-gopher:task-gopher"
+  },
+  "roleFromName": {
+    "myrepo-architect": "architect",
+    "myrepo-reviewer-2": "reviewer",
+    "x-advisor": "ultra-advisor",
+    "security-reviewer": "reviewer",
+    "myrepo-implementor": "implementor",
+    "myrepo-task-runner": null,
+    "nope": null
+  },
+  "hierarchyRoleOf": {
+    "ah:architect": "architect",
+    "architect": "architect",
+    "foo:architect": "architect",
+    "ah:ultra-advisor": "ultra-advisor",
+    "x:ultra-advisor": "ultra-advisor",
+    "task-gopher:task-gopher": null,
+    "my-auditor": null,
+    "": null
+  },
+  "validateTeamAlias": {
+    "architect": {
+      "ok": false,
+      "why": "alias collides with role-token matching: a \"reviewer\" peer name derived from it would not resolve back to role \"reviewer\""
+    },
+    "myrepo": {
+      "ok": true
+    },
+    "advisor": {
+      "ok": true
+    },
+    "ui": {
+      "ok": true
+    }
+  }
+}

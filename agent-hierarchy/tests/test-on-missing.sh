@@ -1,10 +1,13 @@
 #!/bin/bash
-# agent-hierarchy — spec 0021: per-roster-member `onMissing` policy (auto|prompt|never),
-# read by pretooluse-route-gate.mjs when route=peers and no live instance exists.
+# agent-hierarchy — spec 0021: per-roster-member `onMissing` policy, read by
+# pretooluse-route-gate.mjs when no live instance exists. Only "auto" remains: a chain role never
+# runs as a subagent, so a "prompt" or "never" left in a roster is ignored and gets the same wall.
 # HOME- and AGENT_HIERARCHY_DIR-redirected; real state untouched.
 # Usage: bash tests/test-on-missing.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 H="$PLUGIN/hooks"
 GATE="$H/pretooluse-route-gate.mjs"
 MSG="$H/msg.mjs"
@@ -60,24 +63,24 @@ gate "$(payload om1 Agent ah:implementor 'implement it')"
 check "1: re-issue denied again" 'denied && echo "$OUT" | grep -q "spawn-one implementor"'
 check "1: no one-shot record written" '! grep "\"session_id\":\"om1\"" "$GATES" 2>/dev/null | grep -qE "peer-fallback-ask|on-missing-auto"'
 
-# ---- 2: onMissing:"prompt" explicit — the one-shot ask, spawning the peer first, then the re-issue passes
+# ---- 2: a stale onMissing:"prompt" is ignored — the spawn-one wall, no ask, and the re-issue is denied too
 write_repo_roster '[{"role":"implementor","model":"sonnet","onMissing":"prompt"}]'
 set_route om2 peers
 gate "$(payload om2 Agent ah:implementor 'implement it')"
-check "2: onMissing prompt: asks, \"Spawn the Implementor peer (Recommended)\" first" \
-  'denied && case "$OUT" in *AskUserQuestion*"Spawn the Implementor peer (Recommended)"*"spawn-one implementor"*"Use a subagent"*) true;; *) false;; esac'
-check "2: one-shot peer-fallback-ask recorded" 'grep "\"session_id\":\"om2\"" "$GATES" | grep -q "peer-fallback-ask"'
+check "2: stale onMissing prompt: denied with the spawn-one command, no AskUserQuestion" \
+  'denied && echo "$OUT" | grep -q "spawn-one implementor --cwd" && ! echo "$OUT" | grep -q "AskUserQuestion"'
+check "2: no one-shot peer-fallback-ask recorded" '! grep "\"session_id\":\"om2\"" "$GATES" 2>/dev/null | grep -q "peer-fallback-ask"'
 gate "$(payload om2 Agent ah:implementor 'implement it')"
-check "2: re-issue passes" 'allowed_with_note'
+check "2: re-issue denied again" 'denied && echo "$OUT" | grep -q "spawn-one implementor"'
 
-# ---- 3: onMissing:"never" — the user's opt-in: passes every time, no gate record
+# ---- 3: a stale onMissing:"never" is ignored — denied every time, no gate record
 write_repo_roster '[{"role":"implementor","model":"sonnet","onMissing":"never"}]'
 set_route om3 peers
 gate "$(payload om3 Agent ah:implementor 'implement it')"
-check "3: onMissing never: passes" 'allowed'
+check "3: stale onMissing never: denied with the spawn-one command" 'denied && echo "$OUT" | grep -q "spawn-one implementor --cwd"'
 check "3: no gate recorded for this session" '! grep "\"session_id\":\"om3\"" "$GATES" | grep -qE "on-missing-auto|peer-fallback-ask|route-deny"'
 gate "$(payload om3 Agent ah:implementor 'implement it')"
-check "3: still passes on a second dispatch" 'allowed'
+check "3: still denied on a second dispatch" 'denied'
 
 # ---- 4: onMissing:"auto" explicit — same wall as the default
 write_repo_roster '[{"role":"implementor","model":"sonnet","onMissing":"auto"}]'
@@ -106,12 +109,12 @@ gate "$(payload om6 Agent ah:implementor 'implement it')"
 check "6: live instance exists: denied naming it (SendMessage instead), not the spawn-one text" \
   'denied && echo "$OUT" | grep -q "myrepo-implementor" && echo "$OUT" | grep -q "SendMessage" && ! echo "$OUT" | grep -q "spawn-one"'
 
-# ---- 7: prefer-peers route with no live peer passes silently, whatever onMissing says
+# ---- 7: a stale prefer-peers session record with no live peer is ignored too — the spawn-one wall
 : > "$PEERS"   # case 6 left a live "myrepo-implementor" registry entry; clear it for the no-live cases below
 write_repo_roster '[{"role":"implementor","model":"sonnet","onMissing":"never"}]'
-set_route om7 prefer-peers
+echo '{"type":"route","session_id":"om7","value":"prefer-peers"}' >> "$GATES"
 gate "$(payload om7 Agent ah:implementor 'implement it')"
-check "7: prefer-peers, no live peer: passes silently (RC 0, no output)" 'allowed'
+check "7: stale prefer-peers record, no live peer: denied with the spawn-one command" 'denied && echo "$OUT" | grep -q "spawn-one implementor --cwd"'
 
 # ---- 8: a global-level roster confirms nothing: its member's onMissing:"auto" gives the spawn-one wall
 write_global_roster '[{"role":"architect","model":"opus","onMissing":"auto"}]'
@@ -119,13 +122,12 @@ gate "$(payload om8 Agent ah:architect 'design it')"
 check "8: global roster: denied with the spawn-one command, no global-scope confirm" \
   'denied && echo "$OUT" | grep -q "spawn-one architect" && ! echo "$OUT" | grep -q "global-scope"'
 
-# ---- 9: multi-member role — two members of the same role with different onMissing values;
-# the gate uses the FIRST in roster order
+# ---- 9: multi-member role — a stale "never" on the first member lets nothing through either
 rm -f "$FAKEHOME/.claude/agent-hierarchy.json"
 write_repo_roster '[{"role":"implementor","model":"sonnet","onMissing":"never"},{"role":"implementor","model":"opus","onMissing":"auto"}]'
 set_route om9 peers
 gate "$(payload om9 Agent ah:implementor 'implement it')"
-check "9: multi-member role: first member's onMissing (never) wins, not the second's (auto)" 'allowed'
+check "9: multi-member role: the first member's stale never is ignored — denied with the spawn-one command" 'denied && echo "$OUT" | grep -q "spawn-one implementor"'
 
 # ---- 11: fingerprint stability — normalizeMembers does not copy onMissing (spec 0021 §3.1,
 # NEEDS-EVIDENCE #1, resolved: the field is display/dispatch-time only, never in the fingerprint)

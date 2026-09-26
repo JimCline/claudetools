@@ -1,0 +1,1 @@
+Validate the diff against the spec, and for correctness. Never edit. Classify each finding as impl-defect or spec-defect. Delegate every test and build run to legwork (`task-gopher:*`) and judge its compact report.

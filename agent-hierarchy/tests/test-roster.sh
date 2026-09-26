@@ -6,6 +6,8 @@
 # Usage: bash tests/test-roster.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 H="$PLUGIN/hooks"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-roster-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -121,7 +123,7 @@ check "roster: down supersedes up (instance dropped)" '[ "$OUT" = false ]'
 
 # ---- 5: array peer config resolves all; single string still one; ultra gate matches any
 eval_hier "C.resolvedPeerTargets('reviewer', resolved.roles.reviewer, 'myrepo').join(',')+'|'+C.resolvedPeerTarget('reviewer', resolved.roles.reviewer, 'myrepo')+'|'+C.resolvedPeerTargets('implementor', resolved.roles.implementor, 'myrepo').join(',')+'|'+C.resolvedPeerTargets('architect', resolved.roles.architect, 'myrepo').length"
-check "resolvedPeerTargets: array -> all; wrapper -> first; auto -> convention; model -> none" '[ "$OUT" = "rev-a,rev-b|rev-a|myrepo-implementor|0" ]'
+check "resolvedPeerTargets: array -> all; wrapper -> first; auto -> convention; a chain role's stale model -> read as peer, the convention" '[ "$OUT" = "rev-a,rev-b|rev-a|myrepo-implementor|1" ]'
 cat > "$PROJ/.claude/agent-hierarchy.json" <<EOF
 { "version": 1, "enabled": true, "roles": { "reviewer": { "model": "opus", "dispatch": "peer", "peer": [] } } }
 EOF

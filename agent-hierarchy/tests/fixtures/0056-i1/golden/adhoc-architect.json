@@ -1,0 +1,9 @@
+{
+  "dry_run": true,
+  "role": "architect",
+  "name": "myrepo-architect",
+  "mode": "auto",
+  "launch": [
+    "herdr agent start myrepo-architect --kind claude --pane <TARGET> -- --agent ah:architect --name myrepo-architect --model opus --settings '{\"env\":{\"AH_TEAM_FILE\":\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\"}}'"
+  ]
+}

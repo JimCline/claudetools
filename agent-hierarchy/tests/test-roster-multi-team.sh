@@ -7,6 +7,8 @@
 # Usage: bash tests/test-roster-multi-team.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 H="$PLUGIN/hooks"
 NODE_BIN="$(command -v node)"
 PASS=0; FAIL=0
@@ -139,13 +141,10 @@ check "7a: bare create fails when a live default team already exists" '[ "$RC" -
 check "7b: refusal names the live team id" 'echo "$OUT" | grep -q "live-default"'
 check "7c: refusal names an auto-derived --team candidate (never the bare prefix)" 'echo "$OUT" | grep -qF -- "--team $BASE-2"'
 
-# ==== 8 — alias refusal: --set with an active team scope fails; the
-# read-only report names both the config-level alias and the team scope (§7.4). ====
+# ==== 8 — spec 0057: the alias verb is gone; a team's name is its --team. With a team scope
+# active it is still only a signpost (tests/test-team-identity.sh D2 covers every form). ====
 run_roster alias --set x --team alpha
-check "8a: alias --set with --team active fails" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -qi "team scope is active"'
-run_roster alias --team alpha
-check "8b: alias (read-only) --team alpha reports both the team scope and its prefix" \
-  'echo "$OUT" | grep -q "\"teamScope\": \"alpha\"" && echo "$OUT" | grep -q "\"prefix\": \"alpha\""'
+check "8: alias --set --team alpha exits non-zero naming create --team" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "create --team"'
 
 # ==== 9 — name validation: create --team architect is rejected by spec
 # 0010's exact role-token collision `why` text. ====
@@ -192,12 +191,11 @@ EOF
 node --input-type=module -e "
   const R = await import('$H/lib-roster.mjs');
   R.writeTeam('$S12HD', { version: 1, team_id: 'epsilon', created: new Date().toISOString(), roster_level: 'global', transport: 'terminal',
-    orchestrator: { session_id: 's12-epsilon', pid: $$ }, members: [{ name: 'epsilon-reviewer', role: 'reviewer' }], partial: false }, 'epsilon');
+    orchestrator: { session_id: 's12-epsilon', pid: $$ }, members: [{ name: 'epsilon-architect', role: 'architect' }], partial: false }, 'epsilon');
 "
-S12_PAYLOAD=$(S12PROJ="$S12PROJ" node -e 'const[s,t,m]=process.argv.slice(1);process.stdout.write(JSON.stringify({session_id:s,cwd:process.env.S12PROJ,tool_name:"SendMessage",tool_input:{to:t,message:m}}));' "s12-epsilon" "epsilon-reviewer" '[hierarchy-peer-brief reply-to="x" task="t"]')
-echo '{"type":"route","session_id":"s12-epsilon","value":"subagents"}' >> "$S12HD/gates.jsonl"
+S12_PAYLOAD=$(S12PROJ="$S12PROJ" node -e 'const[s,t,m]=process.argv.slice(1);process.stdout.write(JSON.stringify({session_id:s,cwd:process.env.S12PROJ,model:"claude-opus-4-1",tool_name:"SendMessage",tool_input:{to:t,message:m}}));' "s12-epsilon" "epsilon-architect" '[hierarchy-peer-brief reply-to="x" task="t"]')
 OUT=$(echo "$S12_PAYLOAD" | HOME="$S12HOME" AGENT_HIERARCHY_DIR="$S12HD" "$NODE_BIN" "$H/pretooluse-route-gate.mjs" 2>&1); RC=$?
-check "12: named-team SendMessage to its own member resolves a role and reaches the route gate (subagents denies a brief) — POSITIVE deny, not silence" \
+check "12: named-team SendMessage to its own member resolves a role and reaches the route gate (the tier rule denies an architect brief) — POSITIVE deny, not silence" \
   'echo "$OUT" | grep -q "\"permissionDecision\":\"deny\""'
 rm -rf "$S12"
 
@@ -275,10 +273,9 @@ EOF
 node --input-type=module -e "
   const R = await import('$H/lib-roster.mjs');
   R.writeTeam('$S16HD', { version: 1, team_id: 'theta', created: new Date().toISOString(), roster_level: 'global', transport: 'terminal',
-    orchestrator: { session_id: 's16-theta', pid: $$ }, members: [{ name: 'quill', role: 'reviewer' }], partial: false }, 'theta');
+    orchestrator: { session_id: 's16-theta', pid: $$ }, members: [{ name: 'quill', role: 'architect' }], partial: false }, 'theta');
 "
-S16_PAYLOAD=$(S16PROJ="$S16PROJ" node -e 'const[s,t,m]=process.argv.slice(1);process.stdout.write(JSON.stringify({session_id:s,cwd:process.env.S16PROJ,tool_name:"SendMessage",tool_input:{to:t,message:m}}));' "" "quill" '[hierarchy-peer-brief reply-to="x" task="t"]')
-echo '{"type":"route","session_id":"__nosession__","value":"subagents"}' >> "$S16HD/gates.jsonl"
+S16_PAYLOAD=$(S16PROJ="$S16PROJ" node -e 'const[s,t,m]=process.argv.slice(1);process.stdout.write(JSON.stringify({session_id:s,cwd:process.env.S16PROJ,model:"claude-opus-4-1",tool_name:"SendMessage",tool_input:{to:t,message:m}}));' "" "quill" '[hierarchy-peer-brief reply-to="x" task="t"]')
 OUT=$(echo "$S16_PAYLOAD" | HOME="$S16HOME" AGENT_HIERARCHY_DIR="$S16HD" "$NODE_BIN" "$H/pretooluse-route-gate.mjs" 2>&1); RC=$?
 check "16: resolveMemberTeam finds a named team's member with no session_id available — POSITIVE deny, not silence" \
   'echo "$OUT" | grep -q "\"permissionDecision\":\"deny\""'

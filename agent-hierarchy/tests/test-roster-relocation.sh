@@ -25,7 +25,8 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
 # the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 FAKEHOME="$SANDBOX/home"
 mkdir -p "$FAKEHOME/.claude"
 export CLAUDE_PID=$$
@@ -93,9 +94,9 @@ setup_named_team() { # <dir> <team-name>
   local dir=$1 team=$2
   mkdir -p "$dir/.claude"
   (cd "$dir" && git init -q && git config user.email t@t.com && git config user.name t) 2>/dev/null || true
-  HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --team "$team" --cwd "$dir" >/dev/null
-  HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --team "$team" --cwd "$dir" >/dev/null
-  HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --team "$team" \
+  HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --roster "$team" --cwd "$dir" >/dev/null
+  HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --roster "$team" --cwd "$dir" >/dev/null
+  HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --team "$team" --roster "$team" \
     --verified "[\"${team}-implementor\"]" --orchestrator-pid "$$" --cwd "$dir" >/dev/null
 }
 
@@ -322,13 +323,13 @@ mkdir -p "$T12/.claude"
 # Both roster containers are seeded BEFORE either team is created: spec 0044 §1.3/[9.2] refuses a
 # roster edit from a session that owns any live team, so interleaving create with add would refuse
 # teamb's row. Nothing about this scenario needs the template edited mid-flight.
-HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --team teama --cwd "$T12" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --team teama --cwd "$T12" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --team teamb --cwd "$T12" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --team teamb --cwd "$T12" >/dev/null
-HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --team teama \
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --roster teama --cwd "$T12" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --roster teama --cwd "$T12" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --roster teamb --cwd "$T12" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --roster teamb --cwd "$T12" >/dev/null
+HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --team teama --roster teama \
   --verified '["teama-implementor"]' --orchestrator-pid "$$" --cwd "$T12" >/dev/null
-HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --team teamb \
+HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --team teamb --roster teamb \
   --verified '["teamb-implementor"]' --orchestrator-pid "$$" --cwd "$T12" >/dev/null
 append_peer_row "$T12" "t12a-sess" "implementor" "teama" "$$" "true" "$SANDBOX/t12-wrong-a"
 append_peer_row "$T12" "t12b-sess" "implementor" "teamb" "$$" "false" "$T12"
@@ -414,9 +415,9 @@ HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role impleme
 cat > "$T17/.claude/hierarchy/team.json" <<EOF
 {"version":1,"team_id":"t17teamA","created":"2026-01-01T00:00:00-00:00","roster_level":"repo","transport":"terminal","orchestrator":{"session_id":null,"pid":$$},"members":[{"role":"implementor","name":"impl-1","route":"peer","transport_id":"x"},{"role":"implementor","name":"impl-2","route":"peer","transport_id":"y"}],"partial":false,"expected_root":"$(realpath_of "$T17")"}
 EOF
-HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --team teamb --cwd "$T17" >/dev/null
-HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --team teamb --cwd "$T17" >/dev/null
-HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --team teamb \
+HOME="$FAKEHOME" node "$H/roster.mjs" init --level repo --route peer --roster teamb --cwd "$T17" >/dev/null
+HOME="$FAKEHOME" node "$H/roster.mjs" add --no-spawn --level repo --role implementor --roster teamb --cwd "$T17" >/dev/null
+HOME="$FAKEHOME" CLAUDE_PID=$$ node "$H/roster.mjs" create --commit --transport terminal --roster-level repo --team teamb --roster teamb \
   --verified '["teamb-implementor"]' --orchestrator-pid "$$" --cwd "$T17" >/dev/null
 patch_expected_root_team "$T17" "teamb" "$SANDBOX/t17-teamb-elsewhere"
 sessionstart_role "$T17" "t17-sess"

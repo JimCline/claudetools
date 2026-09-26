@@ -418,12 +418,16 @@ create.** It runs in tests, CI, and scripts, none of which can answer a question
 
 #### 5.3.3 What each answer does
 
+> Superseded by spec 0057: the team name is asked at every create and passed as `--team`; nothing is written to config.
+
 - **Accept** → run `create` exactly as today. **Byte-identical output.**
 - **Override** → `roster.mjs alias --set <name>`, then `create`.
 
 The prompt must say an override persists for the repo.
 
 #### 5.3.4 Naming is not scoping
+
+> Superseded by spec 0057: there is no repo-level naming alias; a team's name is its `--team`, which is also its file scope.
 
 - **Naming** — which prefix the team's peers use. Stored as 0010's alias.
 - **Scoping** — whether a team gets its own `teams/<T>.json`. Collision-only.

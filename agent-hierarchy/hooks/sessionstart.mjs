@@ -47,6 +47,7 @@ import {
   isSubagent,
   isTopLevelAgentSession,
   logHookError,
+  mainHierarchyDir,
   readHookInput,
   recentHookErrors,
   resolveConfig,
@@ -54,7 +55,7 @@ import {
   teamPrefix,
 } from "./lib-config.mjs";
 import { appendGate, appendRosterRecord, buildStateBlock, cacheSessionModel, effectiveRoute, ensureHierarchyDir, realCwd, sessionModel, sweep, SWEEP_DAYS } from "./lib-hier.mjs";
-import { clearTeam, herdrOnPath, readTeam, resolveSessionTeam, teamIsLive } from "./lib-roster.mjs";
+import { attributeSessionTeam, clearTeam, herdrOnPath, readTeam, teamIsLive } from "./lib-roster.mjs";
 import { writeSessionRole } from "./lib-session-role.mjs";
 
 /** Feature A (spec 0010 §2.5): advisory only, never blocks. */
@@ -73,10 +74,15 @@ function herdrWarning() {
   return null;
 }
 
-/** Clear an abandoned team.json (default, or the resolved team's file): dead orchestrator pid or past the age cap. Returns a note string, or null. */
-function sweepStaleTeam(dir, team = null) {
+/** Clear an abandoned team.json (default, or the resolved team's file): dead orchestrator pid or past the age cap.
+    A team this session owns is never abandoned, whatever its age. A team the session was only
+    attributed to (its launch env, or a pane match) is someone else's to clear, and so is whatever
+    the default scope would have been: this does nothing then. Returns a note string, or null. */
+function sweepStaleTeam(dir, resolved, invoker) {
+  if (resolved.teamVia === "env" || resolved.teamVia === "pane") return null;
+  const team = resolved.team;
   const t = readTeam(dir, team);
-  if (!t || teamIsLive(t)) return null;
+  if (!t || teamIsLive(t, invoker)) return null;
   clearTeam(dir, team);
   return `cleared stale team ${t.team_id}`;
 }
@@ -87,8 +93,16 @@ try {
   let context = null;
 
   if (!isSubagent(input)) {
-    const role = isTopLevelAgentSession(input) ? hierarchyRoleOf(input.agent_type) : null;
     const cwd = input.cwd || process.cwd();
+    let registry = null;
+    if (isTopLevelAgentSession(input)) {
+      try {
+        registry = resolveConfig(cwd, { sessionId: input.session_id || null });
+      } catch {
+        registry = null;
+      }
+    }
+    const role = isTopLevelAgentSession(input) ? hierarchyRoleOf(input.agent_type, { resolved: registry }) : null;
 
     // Compaction drops the skill body out of context while the one-shot gate record still says this
     // session was shown it once. A reset record puts the gate back within reach. Unconditional on
@@ -102,7 +116,7 @@ try {
     }
 
     if (role) {
-      context = buildRoleSessionNotice(role, input.agent_type);
+      context = buildRoleSessionNotice(role, input.agent_type, registry);
       // Spec 0028 §3.3: the persisted half of resolveHierarchyRole's fallback —
       // non-enforcing (§3.7), best-effort like the roster record beside it.
       try {
@@ -115,17 +129,14 @@ try {
       let teamId = null;
       try {
         const dir = ensureHierarchyDir(cwd);
-        // Spec 0036 §3.2 (F4/F6): SessionStart has no --team and no known peer name, only role.
-        // Spec 0044 §1.6 chose channel (b), attribute at READ time: this hook fires while the
-        // orchestrator is still launching, BEFORE its `writeTeam` lands, so there is usually no
-        // member row to match this session's pane against yet and nothing here can know the team
-        // reliably. Matching the pane against the member rows is therefore done by the readers
-        // (`roster teams`, `checkin`), which run after the write. What stays here is §3.2's role
-        // scan — the fallback — recorded best-effort and safe-refusing to no `team` field at all
-        // when it is ambiguous. A session that resolves to no team is a legitimate non-peer
-        // session, not a mismatch: detection skips entirely, silently, same reasoning as an
-        // absent expected_root.
-        const resolved = resolveSessionTeam(dir, role);
+        // This hook fires while the orchestrator is still launching, BEFORE its `writeTeam` lands,
+        // so the member row to match this session's pane against usually does not exist yet. The
+        // launcher hands every member its team file as AH_TEAM_FILE, which answers from the start;
+        // the pane step and the role scan are the fallbacks for a session it did not launch, and
+        // the role scan safe-refuses to no `team` field at all when it is ambiguous. A session that
+        // resolves to no team is a legitimate non-peer session, not a mismatch: detection skips
+        // entirely, silently, same reasoning as an absent expected_root.
+        const resolved = attributeSessionTeam(dir, role, { paneId: process.env.HERDR_PANE_ID || process.env.TMUX_PANE || null, homes: [dir, mainHierarchyDir(cwd)] });
         const team = resolved && resolved.team;
         expectedRoot = (team && team.expected_root) || null;
         teamId = team && team.team_id;
@@ -185,13 +196,13 @@ try {
           // Orchestrator's own session before it has written the registry, and never a
           // `--agent <role>` member session (excluded above by the `role` branch, but
           // guarded again here per the spec's exact condition).
-          if (!isTopLevelAgentSession(input)) teamSweepNote = sweepStaleTeam(dir, resolved.team);
+          if (!isTopLevelAgentSession(input)) teamSweepNote = sweepStaleTeam(dir, resolved, { pid: process.ppid, sessionId: input.session_id || null });
           route = effectiveRoute(dir, resolved, input.session_id || null);
           state = buildStateBlock(dir, resolved, teamPrefix(resolved.cwd, resolved.team), model, input.session_id || null, route);
         } catch {
           // state block is best-effort; the directive still goes out
         }
-        context = buildDirective(resolved, input.session_id, { hierDir: dir, model, route });
+        context = buildDirective(resolved, input.session_id, { hierDir: dir, model });
         if (teamSweepNote) context += "\n\n" + teamSweepNote;
         if (state) context += "\n\n" + state;
         const herdrNote = herdrWarning();

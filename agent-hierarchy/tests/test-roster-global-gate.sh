@@ -6,6 +6,8 @@
 # Usage: bash tests/test-roster-global-gate.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 H="$PLUGIN/hooks"
 GATE="$H/pretooluse-route-gate.mjs"
 MSG="$H/msg.mjs"
@@ -65,13 +67,12 @@ check "A1: global roster, live implementor: denied naming it, no confirm" \
 : > "$PEERS"
 gate "$(PROJ="$PROJ" payload sA2 Agent ah:implementor 'implement it')"
 check "A2: global roster, none live: the spawn-one wall, no confirm" 'denied && echo "$OUT" | grep -q "spawn-one implementor" && no_confirm_text'
-set_route sA3 subagents
+echo '{"type":"route","session_id":"sA3","value":"subagents"}' >> "$GATES"   # written before only "peers" existed
 gate "$(PROJ="$PROJ" payload sA3 Agent ah:implementor 'implement it')"
-check "A3: route subagents: the Agent dispatch passes" 'allowed'
+check "A3: a stale route subagents record: the Agent dispatch gets the spawn-one wall, no confirm" 'denied && echo "$OUT" | grep -q "spawn-one implementor" && no_confirm_text'
 gate "$(PROJ="$PROJ" send_payload sA3 g-implementor "[hierarchy-peer-brief reply-to=\"me\" task=\"x\"]
 do it")"
-check "A4: route subagents: a SendMessage brief is denied by the route, not a confirm" \
-  'denied && echo "$OUT" | grep -q "route is subagents" && no_confirm_text'
+check "A4: a stale route subagents record: a SendMessage brief passes — no route deny, no confirm" 'allowed'
 gate "$(PROJ="$PROJ" send_payload sA5 g-implementor "[hierarchy-peer-brief reply-to=\"me\" task=\"x\"]
 do it")"
 check "A5: default route: a SendMessage brief to a global-roster member passes" 'allowed'

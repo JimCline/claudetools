@@ -6,6 +6,8 @@
 # Usage: bash tests/test-roster-spawn.sh   (exits 0 iff all cases pass)
 
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
+unset AH_TEAM_FILE  # every session roster.mjs launches carries one; a test must not inherit it
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 H="$PLUGIN/hooks"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/agent-hierarchy-roster-spawn-test.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -31,14 +33,14 @@ EOF
 chmod +x "$SANDBOX/bin/tmux"
 NODE_DIR="$(dirname "$(command -v node)")"
 
-# every role exercised: implementor defaults to model "inherit" (ROLE_DEFAULTS),
+# every role exercised, each on the model ROLE_DEFAULTS gives it — the implementor's is "inherit" —
 # plus a second implementor with an explicit model to prove real models still emit.
 run init --level repo --route peer
-run add --no-spawn --level repo --role ultra-advisor
-run add --no-spawn --level repo --role architect
-run add --no-spawn --level repo --role reviewer
-run add --no-spawn --level repo --role implementor
-run add --no-spawn --level repo --role task-runner
+run add --no-spawn --level repo --role ultra-advisor --model fable
+run add --no-spawn --level repo --role architect --model opus
+run add --no-spawn --level repo --role reviewer --model opus
+run add --no-spawn --level repo --role implementor --model inherit
+run add --no-spawn --level repo --role task-runner --model haiku
 run add --no-spawn --level repo --role implementor --model opus
 check "setup: 6 members added" 'echo "$OUT" | grep -q "\"name\": \"myrepo-implementor-2\""'
 
@@ -97,7 +99,7 @@ done
 # precise checks on the two implementors, herdr transport (exact spawn-step strings)
 HOME="$FAKEHOME" HERDR_ENV=1 node "$H/roster.mjs" create --plan --cwd "$PROJ" > "$SANDBOX/plan-precise.json" 2>&1
 check "create --plan (herdr): default implementor (model inherit) emits no --model flag at all" \
-  'grep -q "herdr agent start myrepo-implementor --kind claude --pane <TARGET> -- --agent ah:implementor --name myrepo-implementor\"" "$SANDBOX/plan-precise.json"'
+  'node -e "const p=JSON.parse(require(\"fs\").readFileSync(\"$SANDBOX/plan-precise.json\",\"utf8\"));const l=p.members.find(m=>m.name===\"myrepo-implementor\").spawn.launch[0];process.exit(l.startsWith(\"herdr agent start myrepo-implementor --kind claude --pane <TARGET> -- --agent ah:implementor --name myrepo-implementor \")&&!l.includes(\"--model\")?0:1)"'
 check "create --plan (herdr): explicit-model implementor still emits --model opus" \
   'grep -q "herdr agent start myrepo-implementor-2 --kind claude --pane <TARGET> -- --agent ah:implementor --name myrepo-implementor-2 --model opus" "$SANDBOX/plan-precise.json"'
 check "create --plan (herdr): spawn.layout is empty, target_from is null (0004 §11.1.1 — layout is no longer per-member)" \
@@ -142,12 +144,12 @@ OUT=$(HOME="$FAKEHOME" HERDR_ENV=1 node "$H/roster.mjs" create --plan --cwd "$BA
 check "create --plan: pre-0004 roster (no layout key) resolves layout_plan.mode 'auto'" \
   '[ "$RC" -eq 0 ] && echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>process.exit(JSON.parse(s).layout_plan.mode===\"auto\"?0:1))"'
 
-# ---- 0004 §11.1.6: an all-subagent roster yields layout_plan === null
+# ---- 0004 §11.1.6: an all-subagent roster yields layout_plan === null (only legwork runs as a subagent)
 ALLSUBAGENT="$SANDBOX/allsubagent"
 mkdir -p "$ALLSUBAGENT/.claude"
 (cd "$ALLSUBAGENT" && git init -q)
 cat > "$ALLSUBAGENT/.claude/agent-hierarchy.json" <<'EOF'
-{"roster":{"route":"subagent","members":[{"role":"architect","model":"opus"}]}}
+{"roster":{"route":"peer","members":[{"role":"task-runner","model":"haiku","route":"subagent"}]}}
 EOF
 OUT=$(HOME="$FAKEHOME" HERDR_ENV=1 node "$H/roster.mjs" create --plan --cwd "$ALLSUBAGENT" 2>&1); RC=$?
 check "create --plan: all-subagent roster yields layout_plan null" \

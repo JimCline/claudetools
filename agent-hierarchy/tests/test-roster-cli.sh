@@ -12,7 +12,8 @@ SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 # No test may reach the real herdr or tmux: a stub that fails every call sits first on PATH, and
 # the session's pane environment is dropped. A wrapper that sets PATH to its own fakes still wins.
 mkdir -p "$SANDBOX/nolaunch"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nolaunch/herdr"; cp "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"; chmod +x "$SANDBOX/nolaunch/herdr" "$SANDBOX/nolaunch/tmux"
-export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX
+export PATH="$SANDBOX/nolaunch:$PATH"; unset HERDR_ENV HERDR_PANE_ID TMUX_PANE TMUX AH_TEAM_FILE
+unset CLAUDE_PID  # every Claude session exports one; a test must not inherit it
 FAKEHOME="$SANDBOX/home"
 PROJ="$SANDBOX/myrepo"
 # Spec 0044 §1.1: a team with no `--team` lands at `teams/<effective-prefix>.json`, never the
@@ -67,10 +68,10 @@ run show
 check "edit --on-missing: a subsequent show reports it" 'echo "$OUT" | grep -q "\"onMissing\": \"auto\""'
 
 run edit --member myrepo-implementor --on-missing bogus
-check "edit --on-missing: invalid value rejected, listing the three values" \
-  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "auto" && echo "$OUT" | grep -q "prompt" && echo "$OUT" | grep -q "never"'
+check "edit --on-missing: invalid value rejected, listing the one value, auto" \
+  '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "must be one of auto,"'
 
-run add --no-spawn --role reviewer --route subagent --on-missing auto
+run add --no-spawn --role task-runner --route subagent --on-missing auto
 check "add --on-missing with route subagent: rejected" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "on-missing applies only to peer-routed members"'
 
 run add --no-spawn --role reviewer --on-missing
@@ -100,7 +101,8 @@ run show
 check "12: the failed edit did not mutate the member (still peer, still onMissing auto)" \
   'echo "$OUT" | grep -q "\"name\": \"myrepo-implementor\"" && echo "$OUT" | grep -q "\"onMissing\": \"auto\""'
 
-# ---- 13: the trap — a route switch with NO --on-missing supplied must clear an inherited value
+# ---- 13: the trap — a route switch with NO --on-missing supplied must clear an inherited value.
+# Only a legwork member can be routed subagent, so the switch is made on a task-runner.
 # and warn, never carry it forward into an invalid route:subagent + onMissing:auto state, and never
 # hard-fail on a value the user did not type this time.
 #
@@ -112,19 +114,21 @@ check "12: the failed edit did not mutate the member (still peer, still onMissin
 # restore path, which is unsafe regardless of how careful the backup/restore bookkeeping is. A future
 # re-automation belongs in a $SANDBOX-copied, patched fixture — never a write to $PLUGIN — the way
 # 0020's hooks.json-matcher must-fail proofs already do it.
-run edit --member myrepo-implementor --route subagent
+run add --no-spawn --role task-runner --on-missing auto
+run edit --member myrepo-task-runner --route subagent
 check "13 (post-fix): exit 0" '[ "$RC" -eq 0 ]'
 check "13 (post-fix): stderr names the dropped value" 'echo "$OUT" | grep -q "dropped on-missing \"auto\""'
 run show
-check "13 (post-fix): member's route is now subagent" 'echo "$OUT" | grep -q "\"name\": \"myrepo-implementor\"" && echo "$OUT" | grep -q "\"route\": \"subagent\""'
+check "13 (post-fix): member's route is now subagent" 'echo "$OUT" | grep -q "\"name\": \"myrepo-task-runner\"" && echo "$OUT" | grep -q "\"route\": \"subagent\""'
 check "13 (post-fix): onMissing key is absent from the level file (not null, not retained)" \
-  '! (echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const m=JSON.parse(s).members.find(x=>x.name===\"myrepo-implementor\");process.exit(\"onMissing\" in m?0:1)})")'
+  '! (echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const m=JSON.parse(s).members.find(x=>x.name===\"myrepo-task-runner\");process.exit(\"onMissing\" in m?0:1)})")'
 
 # ---- 14: round-trip — the transition is not one-way
-run edit --member myrepo-implementor --route peer --on-missing prompt
+run edit --member myrepo-task-runner --route peer --on-missing auto
 check "14: switching back to peer + supplying on-missing again succeeds" '[ "$RC" -eq 0 ]'
 run show
-check "14: onMissing is back" 'echo "$OUT" | grep -q "\"onMissing\": \"prompt\""'
+check "14: onMissing is back" 'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const m=JSON.parse(s).members.find(x=>x.name===\"myrepo-task-runner\");process.exit(m&&m.onMissing===\"auto\"&&m.route===\"peer\"?0:1)})"'
+run remove --member myrepo-task-runner
 
 run show
 check "show: resolved roster lists 3 members" 'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>process.exit(JSON.parse(s).members.length===3?0:1))"'
@@ -174,26 +178,22 @@ check "create --commit: --orchestrator-pid <dead pid> -> refuses, exit 2" '[ "$R
 check "create --commit: dead --orchestrator-pid -> no team file written" '[ ! -e "$DERIVED_TEAM_FILE" ]'
 check "create --commit: missing-pid and dead-pid refusals have distinct messages" '[ "$OUT" != "$MISSING_PID_MSG" ]'
 
-# ---- 0004 §11.2: roster.layout validation and the `layout` subcommand
+# ---- spec 0057: layout belongs to a team, not a roster. A roster block's `layout` key is ignored
+# (reported by resolveConfig, never validated or acted on) and the `layout` verb is a signpost.
 cat > "$SANDBOX/validate-layout.mjs" <<EOF
 import { validateRosterBlock } from "$H/lib-roster.mjs";
-const bad = validateRosterBlock({ route: "peer", layout: "quadrant", members: [] });
+const stale = validateRosterBlock({ route: "peer", layout: "quadrant", members: [] });
 const okAbsent = validateRosterBlock({ route: "peer", members: [] });
-console.log(JSON.stringify({ bad, okAbsent }));
+console.log(JSON.stringify({ stale, okAbsent }));
 EOF
 OUT=$(node "$SANDBOX/validate-layout.mjs" 2>&1); RC=$?
-check "roster.layout: invalid value rejected, message names the allowed values" \
-  'echo "$OUT" | grep -q "auto, columns, grid"'
-check "roster.layout: absent key -> no validation error (contrast with roster.route, which must error)" \
-  'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>process.exit(JSON.parse(s).okAbsent.length===0?0:1))"'
+check "roster.layout: a stale layout key is not a validation error (the roster no longer has one)" \
+  'echo "$OUT" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const o=JSON.parse(s);process.exit(o.stale.length===0&&o.okAbsent.length===0?0:1)})"'
 
+CFG_BEFORE=$(cat "$PROJ/.claude/agent-hierarchy.json" 2>/dev/null)
 run layout --level repo --layout grid
-check "layout: writes the level file" 'echo "$OUT" | grep -q "\"layout\": \"grid\"" && [ "$RC" -eq 0 ]'
-run show --level repo
-check "layout: a subsequent show reports the new value" 'echo "$OUT" | grep -q "\"layout\": \"grid\""'
-
-run layout --level repo --layout bogus
-check "layout: invalid mode rejected" '[ "$RC" -ne 0 ]'
+check "layout: the verb exits non-zero naming create --mode" '[ "$RC" -ne 0 ] && echo "$OUT" | grep -q "create --mode"'
+check "layout: and writes nothing" '[ "$(cat "$PROJ/.claude/agent-hierarchy.json" 2>/dev/null)" = "$CFG_BEFORE" ]'
 
 # a per-member "layout" field is a stray key that validation ignores (there is no per-member layout)
 ROSTER_PATH="$PROJ/.claude/agent-hierarchy.json"

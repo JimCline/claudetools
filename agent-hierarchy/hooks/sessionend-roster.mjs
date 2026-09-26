@@ -11,7 +11,7 @@
  * writes nothing. Fail-open.
  */
 
-import { hierarchyRoleOf, isSubagent, isTopLevelAgentSession, logHookError, readHookInput } from "./lib-config.mjs";
+import { isSubagent, isTopLevelAgentSession, logHookError, lookupRole, readHookInput } from "./lib-config.mjs";
 import { appendRosterRecord, hierarchyDir, upRecordFor } from "./lib-hier.mjs";
 
 try {
@@ -20,7 +20,7 @@ try {
     const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd();
     const dir = hierarchyDir(cwd);
     const sessionId = typeof input.session_id === "string" ? input.session_id : "";
-    let role = isTopLevelAgentSession(input) ? hierarchyRoleOf(input.agent_type) : null;
+    let role = isTopLevelAgentSession(input) ? lookupRole(input.agent_type, cwd).role : null;
     const up = sessionId ? upRecordFor(dir, sessionId) : null;
     if (!role && up) role = up.role || null;
     if (role) {

@@ -1,0 +1,188 @@
+roster.mjs: warning — ah: roles.reviewer.dispatch "model" in <SANDBOX>/myrepo/.claude/agent-hierarchy.json is ignored — only legwork roles run as subagents. It is migrated at the next CLI write to that file, or delete it by hand.
+{
+  "level": "repo",
+  "path": "<SANDBOX>/myrepo/.claude/agent-hierarchy.json",
+  "transport": "tmux",
+  "layout": {
+    "mode": "auto",
+    "source": "default"
+  },
+  "layout_plan": null,
+  "members": [
+    {
+      "role": "architect",
+      "name": "myrepo-architect",
+      "kind": "claude",
+      "model": "opus",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "tmux",
+        "kind": "claude",
+        "args": null,
+        "layout": [
+          "tmux new-window -P -F '#{pane_id}' -c \"<SANDBOX>/myrepo\""
+        ],
+        "launch": [
+          "tmux send-keys -t <TARGET> \"claude --agent ah:architect --name myrepo-architect --model opus --settings '{\\\"env\\\":{\\\"AH_TEAM_FILE\\\":\\\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\\\"}}'\" Enter"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": "<TARGET>",
+        "target_from": 0,
+        "target_source": {
+          "kind": "stdout",
+          "trim": true
+        }
+      }
+    },
+    {
+      "role": "implementor",
+      "name": "myrepo-implementor",
+      "kind": "claude",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "tmux",
+        "kind": "claude",
+        "args": null,
+        "layout": [
+          "tmux new-window -P -F '#{pane_id}' -c \"<SANDBOX>/myrepo\""
+        ],
+        "launch": [
+          "tmux send-keys -t <TARGET> \"claude --agent ah:implementor --name myrepo-implementor --settings '{\\\"env\\\":{\\\"AH_TEAM_FILE\\\":\\\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\\\"}}'\" Enter"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": "<TARGET>",
+        "target_from": 0,
+        "target_source": {
+          "kind": "stdout",
+          "trim": true
+        }
+      }
+    },
+    {
+      "role": "reviewer",
+      "name": "myrepo-reviewer",
+      "kind": "claude",
+      "model": "opus",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "tmux",
+        "kind": "claude",
+        "args": null,
+        "layout": [
+          "tmux new-window -P -F '#{pane_id}' -c \"<SANDBOX>/myrepo\""
+        ],
+        "launch": [
+          "tmux send-keys -t <TARGET> \"claude --agent ah:reviewer --name myrepo-reviewer --model opus --settings '{\\\"env\\\":{\\\"AH_TEAM_FILE\\\":\\\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\\\"}}'\" Enter"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": "<TARGET>",
+        "target_from": 0,
+        "target_source": {
+          "kind": "stdout",
+          "trim": true
+        }
+      }
+    },
+    {
+      "role": "ultra-advisor",
+      "name": "myrepo-ultra-advisor",
+      "kind": "claude",
+      "model": "fable",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "tmux",
+        "kind": "claude",
+        "args": null,
+        "layout": [
+          "tmux new-window -P -F '#{pane_id}' -c \"<SANDBOX>/myrepo\""
+        ],
+        "launch": [
+          "tmux send-keys -t <TARGET> \"claude --agent ah:ultra-advisor --name myrepo-ultra-advisor --model fable --settings '{\\\"env\\\":{\\\"AH_TEAM_FILE\\\":\\\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\\\"}}'\" Enter"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": "<TARGET>",
+        "target_from": 0,
+        "target_source": {
+          "kind": "stdout",
+          "trim": true
+        }
+      }
+    },
+    {
+      "role": "task-runner",
+      "name": "myrepo-task-runner",
+      "kind": "claude",
+      "model": "haiku",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "tmux",
+        "kind": "claude",
+        "args": null,
+        "layout": [
+          "tmux new-window -P -F '#{pane_id}' -c \"<SANDBOX>/myrepo\""
+        ],
+        "launch": [
+          "tmux send-keys -t <TARGET> \"claude --agent ah:task-runner --name myrepo-task-runner --model haiku --settings '{\\\"env\\\":{\\\"AH_TEAM_FILE\\\":\\\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\\\"}}'\" Enter"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": "<TARGET>",
+        "target_from": 0,
+        "target_source": {
+          "kind": "stdout",
+          "trim": true
+        }
+      }
+    },
+    {
+      "role": "implementor",
+      "name": "myrepo-implementor-2",
+      "kind": "claude",
+      "model": "opus",
+      "route": "peer",
+      "args": null,
+      "spawn": {
+        "transport": "tmux",
+        "kind": "claude",
+        "args": null,
+        "layout": [
+          "tmux new-window -P -F '#{pane_id}' -c \"<SANDBOX>/myrepo\""
+        ],
+        "launch": [
+          "tmux send-keys -t <TARGET> \"claude --agent ah:implementor --name myrepo-implementor-2 --model opus --settings '{\\\"env\\\":{\\\"AH_TEAM_FILE\\\":\\\"<SANDBOX>/myrepo/.claude/hierarchy/teams/myrepo.json\\\"}}'\" Enter"
+        ],
+        "launch_cwd": "<SANDBOX>/myrepo",
+        "target_placeholder": "<TARGET>",
+        "target_from": 0,
+        "target_source": {
+          "kind": "stdout",
+          "trim": true
+        }
+      }
+    }
+  ],
+  "warnings": [
+    "ah: roles.reviewer.dispatch \"model\" in <SANDBOX>/myrepo/.claude/agent-hierarchy.json is ignored — only legwork roles run as subagents. It is migrated at the next CLI write to that file, or delete it by hand."
+  ],
+  "members_needing_model": [
+    {
+      "name": "myrepo-implementor",
+      "role": "implementor",
+      "class": "implement",
+      "allowed": [
+        "opus",
+        "sonnet",
+        "fable",
+        "inherit"
+      ],
+      "fallback": {
+        "model": "opus",
+        "from": "myrepo-architect"
+      }
+    }
+  ]
+}
