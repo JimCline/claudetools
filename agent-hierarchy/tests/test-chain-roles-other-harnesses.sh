@@ -402,7 +402,7 @@ BODY_LINE=$(awk 'f==2 && NF {print; exit} /^---$/ {f++}' "$PLUGIN/agents/archite
 check "K3: spawn writes the instructions file" '[ "$RC" -eq 0 ] && [ -f "$INS" ]'
 check "K3: ...with the identity lines" 'grep -qF -- "- Member name: myrepo-architect" "$INS" && grep -qF -- "- Team: myrepo" "$INS" && grep -qF -- "- Team file: $HIER/teams/myrepo.json" "$INS" && grep -qF -- "- Working directory: $PROJ" "$INS" && grep -qF "Your Orchestrator briefs you; you brief no one." "$INS"'
 check "K3: ...the role's agent body without its frontmatter" 'grep -qF -- "$BODY_LINE" "$INS" && ! grep -q "^name: architect" "$INS" && [ "$(head -1 "$INS")" != "---" ]'
-check "K3: ...and the adapter" 'grep -qF "**How a brief arrives.**" "$INS" && grep -qF "**Pings.**" "$INS" && grep -qF "There is no SendMessage, Agent tool, ListAgents" "$INS"'
+check "K3: ...and the adapter" 'grep -qF "**How a brief arrives.**" "$INS" && grep -qF "**Pings.**" "$INS" && grep -qF "**Delegation.**" "$INS"'
 r "HERDR_ENV=1" spawn-one auditor
 check "K3: a custom role gets its own agent's body" '[ "$RC" -eq 0 ] && grep -q "AUDITOR-CONTRACT-MARKER" "$HIER/instructions/myrepo-auditor.md" && ! grep -qF -- "$BODY_LINE" "$HIER/instructions/myrepo-auditor.md"'
 echo "STALE" > "$INS"
@@ -410,6 +410,131 @@ hs '{agents:{}}'
 r "HERDR_ENV=1" spawn-one architect
 check "K3: a respawn overwrites it" '[ "$RC" -eq 0 ] && ! grep -q STALE "$INS" && grep -qF -- "$BODY_LINE" "$INS"'
 rm -rf "$PROJ/.claude/agents"
+
+########################################################################
+# K3 Part 1 — the adapter's tool mapping, class limits and interim delegation
+########################################################################
+INTERIM="Native task-runner delegation is not wired into this hierarchy adapter. Do only work your role contract permits you to do directly, including reading your brief and files needed for your own judgment. For work the contract requires you to delegate, list the unmet need in your response: NEEDS-EVIDENCE for tests, builds, scripts or other runs; NEEDS-IMPLEMENTOR for delegated retrieval. The Orchestrator routes it. Do not substitute self-execution, do required delegated legwork yourself, or launch a peer/subagent as a workaround. Do not claim unmet checks passed."
+CLASSES_ALL="design review implement advise legwork"
+row() { # <class>: its whole limits row
+  case $1 in
+    design) echo "File writes beyond the response: Only the absolute spec path dictated by the Orchestrator; no product code, tests, config or memory files. With no spec path, return the spec in the response rather than inventing a path. Executing code: Forbidden: tests, builds, scripts, interpreter snippets (\`node\`, Python, etc.), experiments, through any tool or a delegate. Return NEEDS-EVIDENCE with the exact run/measurement and what each outcome decides." ;;
+    review) echo "File writes beyond the response: None: do not fix code or amend the spec. Executing code: No direct execution. Report required runs as NEEDS-EVIDENCE. Never claim an unrun check passed." ;;
+    implement) echo "File writes beyond the response: Task-authorized code, tests, config and documentation; retain any narrower custom-role restrictions. Executing code: Task-authorized tests/builds/scripts allowed, subject to the harness's sandbox and approval requirements." ;;
+    advise) echo "File writes beyond the response: No product edits. Amend only the absolute spec path when the Orchestrator expressly asks to fold a ruling into it. Otherwise response only. Executing code: Read-only inspection locally. Report required runs as NEEDS-EVIDENCE." ;;
+    legwork) echo "File writes beyond the response: Only the precise writes ordered by the lead, plus the response. Executing code: Only the precise execution ordered by the lead; incomplete orders are reported, not improvised." ;;
+  esac
+}
+adapter() { sed -n '/^## Working outside Claude Code$/,$p' "$1"; }
+has() { adapter "$1" | grep -qF -- "$2"; }
+only_row() { # <file> <class>: that class's row, once, and no other class's
+  local f=$1 c=$2 o
+  [ "$(adapter "$f" | grep -c '^- \*\*Your limits')" -eq 1 ] || return 1
+  has "$f" "- **Your limits ($c class).** $(row "$c")" || return 1
+  for o in $CLASSES_ALL; do [ "$o" = "$c" ] || ! has "$f" "$(row "$o")" || return 1; done
+}
+body_equal() { # <instructions file> <agent file>: the contract section is the agent body, verbatim
+  node -e 'const fs=require("fs");const ins=fs.readFileSync(process.argv[1],"utf8");const src=fs.readFileSync(process.argv[2],"utf8");const m=src.match(/^---\n[\s\S]*?\n---\n/);const body=(m?src.slice(m[0].length):src).trim();const h="## Your role'"'"'s contract\n\n";const a=ins.indexOf(h)+h.length;const b=ins.indexOf("\n\n## Working outside Claude Code");process.exit(ins.slice(a,b)===body?0:1)' "$1" "$2"
+}
+passthrough() { # <agent name>: the arguments after -- on its last herdr agent start
+  node -e 'const rows=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).filter(a=>a[0]==="agent"&&a[1]==="start"&&a[2]===process.argv[2]);const a=rows[rows.length-1]||[];console.log(JSON.stringify(a.slice(a.indexOf("--")+1)))' "$FAKE_STATE_DIR/calls.jsonl" "$1"
+}
+spawn_gen() { reset_state; hs '{agents:{}}'; r "HERDR_ENV=1" spawn-one "$1"; }
+fingerprints() { shasum "$CODEXHOME/config.toml" "$PLUGIN"/agents/*.md "$PROJ"/.claude/agents/*.md; }
+k3p1_cfg() { # <members JSON array>, with a custom role of every class
+  printf '{"version":1,"enabled":true,"roles":{"planner":{"class":"design","agent":"planner","label":"Planner"},"auditor":{"class":"review","agent":"auditor","label":"Auditor"},"builder":{"class":"implement","agent":"builder","label":"Builder"},"sage":{"class":"advise","agent":"sage","label":"Sage","model":"fable"},"fetcher":{"class":"legwork","agent":"fetcher","label":"Fetcher"}},"roster":{"route":"pane","members":%s}}\n' "$1" > "$CFG"
+}
+k3p1_checks() { # <role> <class> <ah|custom> <model>: every per-member check on its generated instructions
+  local role=$1 cls=$2 src=$3 model=$4
+  local f="$HIER/instructions/myrepo-$role.md" agentfile="$PLUGIN/agents/$role.md"
+  [ "$src" = custom ] && agentfile="$PROJ/.claude/agents/$role.md"
+  check "K3 Part 1: codex $role ($src, $cls class) is launched and gets only the $cls row" '[ "$RC" -eq 0 ] && only_row "$f" "$cls"'
+  check "K3 Part 1: ...its role body verbatim" 'body_equal "$f" "$agentfile"'
+  check "K3 Part 1: ...the exact interim delegation paragraph, with no support claim or do-it-yourself fallback" 'has "$f" "- **Delegation.** $INTERIM" && ! adapter "$f" | grep -qiE "do it yourself|no subagents|task-gopher|spawn_agent|wait_agent|features\\."'
+  check "K3 Part 1: ...read-only shell commands mapped to Read/Grep/Glob, and the Codex apply_patch/exec mapping" 'has "$f" "\`cat\`, \`sed -n\`, \`grep\`, \`rg\`, \`ls\` and \`head\` with read-only arguments are the equivalents of Read/Grep/Glob" && has "$f" "Read-only Git inspection (\`git diff\`, \`git status\`, \`git show\`) is also allowed" && has "$f" "\`apply_patch\` is Write/Edit, restricted to the paths your limits below allow" && has "$f" "A tool named \`exec\` does not turn file inspection into a forbidden test run" && has "$f" "Do not ask for the brief to be pasted when permitted file reading is available."'
+  check "K3 Part 1: ...no MCP-specific instruction in the adapter" '! adapter "$f" | grep -qi mcp'
+  check "K3 Part 1: ...the copied Bash/edit bans translated, not left contradictory" 'has "$f" "So \"Bash denied\" does not forbid the native shell performing Read/Grep/Glob, and \"never edit\" does not forbid writing the assigned response body. A narrower task or contract restriction still wins."'
+  check "K3 Part 1: ...the response-body-only write, preserved frontmatter, missing-response blocker, and no member-side msg.mjs" 'has "$f" "write only its body below the existing frontmatter, and preserve that frontmatter. This narrowly scoped reporting exception applies even to review and advise roles." && has "$f" "Do not run \`node .../msg.mjs\`, create a replacement response, or use SendMessage" && has "$f" "If the response file is missing or inaccessible, state the blocker in your turn'"'"'s final output; do not fabricate its frontmatter or report success."'
+  check "K3 Part 1: ...no claim that skills are absent" 'has "$f" "Use a supplied skill only through the tools available here and within these limits." && ! adapter "$f" | grep -qiE "no skills|skills or task-gopher|no SendMessage, Agent tool"'
+  check "K3 Part 1: ...and no added launch arguments" '[ "$(passthrough "myrepo-$role")" = "$(node -e "const [m,p]=process.argv.slice(1);console.log(JSON.stringify([\"--model\",m,\"-c\",\"model_instructions_file=\"+JSON.stringify(p),\"-c\",\"approvals_reviewer=\\\"user\\\"\"]))" "$model" "$f")" ]'
+}
+
+rm -rf "$HIER"; reset_state
+mkdir -p "$PROJ/.claude/agents"
+printf -- '---\nname: planner\ndescription: plans\ntools: Read, Write, SendMessage\n---\nPLANNER-CONTRACT-MARKER: design it.\n' > "$PROJ/.claude/agents/planner.md"
+printf -- '---\nname: auditor\ndescription: audits\ntools: Read, Grep, Glob, SendMessage\n---\nAUDITOR-CONTRACT-MARKER: audit the change.\n' > "$PROJ/.claude/agents/auditor.md"
+printf -- '---\nname: builder\ndescription: builds\ntools: Read, Edit, Write, Bash, SendMessage\n---\nBUILDER-CONTRACT-MARKER: never touch the migrations directory.\n' > "$PROJ/.claude/agents/builder.md"
+printf -- '---\nname: sage\ndescription: advises\nmodel: fable\ntools: Read, SendMessage\n---\nSAGE-CONTRACT-MARKER: rule on it.\n' > "$PROJ/.claude/agents/sage.md"
+printf -- '---\nname: fetcher\ndescription: fetches\ntools: Read, Grep, Glob, Bash\n---\nFETCHER-CONTRACT-MARKER: fetch it.\n' > "$PROJ/.claude/agents/fetcher.md"
+printf 'model = "fixture-model"\n' > "$CODEXHOME/config.toml"
+echo '{"modelTiers":{"codex":{"m-top":"fable"}}}' > "$GLOBAL"
+FP_BEFORE=$(fingerprints)
+# legwork is launched only as create launches it: spawn-one still takes chain roles alone
+k3p1_cfg '[{"role":"task-runner","kind":"codex","route":"pane","model":"gpt-6-astra"},{"role":"fetcher","kind":"codex","route":"pane","model":"gpt-6-astra"}]'
+r "HERDR_ENV=1" create --spawn
+k3p1_checks task-runner legwork ah gpt-6-astra
+k3p1_checks fetcher legwork custom gpt-6-astra
+r "HERDR_ENV=1" spawn-one fetcher
+check "K3 Part 1: spawn-one still refuses a legwork role: no new route" '[ "$RC" -eq 2 ] && echo "$OUT" | grep -q "role must be one of"'
+rm -rf "$HIER"; reset_state
+k3p1_cfg '[{"role":"architect","kind":"codex","route":"pane","model":"gpt-6-astra"},{"role":"reviewer","kind":"codex","route":"pane","model":"gpt-6-astra"},{"role":"implementor","kind":"codex","route":"pane","model":"gpt-6-astra"},{"role":"ultra-advisor","kind":"codex","route":"pane","model":"m-top"},{"role":"planner","kind":"codex","route":"pane","model":"gpt-6-astra"},{"role":"auditor","kind":"codex","route":"pane","model":"gpt-6-astra"},{"role":"builder","kind":"codex","route":"pane","model":"gpt-6-astra"},{"role":"sage","kind":"codex","route":"pane","model":"m-top"}]'
+for spec in architect:design:ah:gpt-6-astra reviewer:review:ah:gpt-6-astra implementor:implement:ah:gpt-6-astra ultra-advisor:advise:ah:m-top planner:design:custom:gpt-6-astra auditor:review:custom:gpt-6-astra builder:implement:custom:gpt-6-astra sage:advise:custom:m-top; do
+  IFS=: read -r role cls src model <<<"$spec"
+  spawn_gen "$role"
+  k3p1_checks "$role" "$cls" "$src" "$model"
+done
+check "K3 Part 1: design cannot execute through any tool or a delegate; runs come back as NEEDS-EVIDENCE" 'has "$HIER/instructions/myrepo-planner.md" "Forbidden: tests, builds, scripts, interpreter snippets (\`node\`, Python, etc.), experiments, through any tool or a delegate. Return NEEDS-EVIDENCE"'
+check "K3 Part 1: review and advise cannot execute directly and route required runs to the Orchestrator" 'has "$HIER/instructions/myrepo-auditor.md" "No direct execution. Report required runs as NEEDS-EVIDENCE." && has "$HIER/instructions/myrepo-sage.md" "Read-only inspection locally. Report required runs as NEEDS-EVIDENCE." && has "$HIER/instructions/myrepo-auditor.md" "The Orchestrator routes it."'
+check "K3 Part 1: advise has the expressly-requested spec exception; review has no spec write" 'has "$HIER/instructions/myrepo-sage.md" "Amend only the absolute spec path when the Orchestrator expressly asks" && has "$HIER/instructions/myrepo-auditor.md" "None: do not fix code or amend the spec." && ! has "$HIER/instructions/myrepo-auditor.md" "spec path"'
+check "K3 Part 1: implement keeps its authorized work, and a custom role's narrower limit stays binding" 'has "$HIER/instructions/myrepo-builder.md" "Task-authorized tests/builds/scripts allowed" && grep -qF "BUILDER-CONTRACT-MARKER: never touch the migrations directory." "$HIER/instructions/myrepo-builder.md" && has "$HIER/instructions/myrepo-builder.md" "retain any narrower custom-role restrictions"'
+check "K3 Part 1: user config (a custom CODEX_HOME) and every agent file stay byte-identical" '[ "$(fingerprints)" = "$FP_BEFORE" ]'
+
+# the same member through create --spawn: both generation call sites carry the same policy
+cp "$HIER/instructions/myrepo-architect.md" "$SANDBOX/arch-spawn-one.md"
+rm -rf "$HIER"; reset_state
+printf '{"version":1,"enabled":true,"roles":{},"roster":{"route":"pane","members":[{"role":"architect","kind":"codex","route":"pane","model":"gpt-6-astra"}]}}\n' > "$CFG"
+r "HERDR_ENV=1" create --spawn
+check "K3 Part 1: create --spawn writes the same instructions as spawn-one" '[ "$RC" -eq 0 ] && cmp -s "$SANDBOX/arch-spawn-one.md" "$HIER/instructions/myrepo-architect.md"'
+check "K3 Part 1: spawnShape and launchMember both generate through standingInstructions(member), the only caller of the adapter" '[ "$(grep -c "standingInstructions(member)" "$H/roster.mjs")" -eq 3 ] && [ "$(grep -c "harnessAdapter(" "$H/roster.mjs")" -eq 2 ]'
+
+# a kind with no mapping: generic action limits, no apply_patch, the same interim paragraph
+rm -rf "$HIER"; reset_state
+roster_cfg '[{"role":"architect","kind":"pi","route":"pane"}]'
+spawn_gen architect
+PI="$HIER/instructions/myrepo-architect.md"
+check "K3 Part 1: a pi member gets generic action limits and no assumed apply_patch tool" '[ "$RC" -eq 0 ] && has "$PI" "Apply these action limits with this harness'"'"'s native file-editing tools; do not assume an \`apply_patch\` tool exists." && ! has "$PI" "Codex tools" && ! has "$PI" "\`apply_patch\` is Write/Edit"'
+check "K3 Part 1: ...its class row, the exact interim delegation paragraph, and no MCP-specific instruction" 'only_row "$PI" design && has "$PI" "- **Delegation.** $INTERIM" && ! adapter "$PI" | grep -qi mcp'
+
+# an unresolved class, forced at the generator seam: reading and the response only, never implement's row
+cat > "$SANDBOX/unresolved-class.mjs" <<'EOF'
+import { register } from "node:module";
+register("data:text/javascript," + encodeURIComponent(`
+export async function load(url, context, nextLoad) {
+  const result = await nextLoad(url, context);
+  if (!url.endsWith("/hooks/roster.mjs")) return result;
+  const source = String(result.source);
+  const target = "const cls = roleClass(member.role, reg);";
+  if (source.split(target).length !== 2) throw new Error("unresolved-class.mjs: the class lookup is not in " + url + " exactly once");
+  return { ...result, source: source.replace(target, "const cls = null;") };
+}`));
+EOF
+rm -rf "$HIER"; reset_state
+roster_cfg '[{"role":"implementor","kind":"codex","route":"pane","model":"gpt-6-astra"}]'
+r "HERDR_ENV=1 NODE_OPTIONS=--import=$SANDBOX/unresolved-class.mjs" spawn-one implementor
+UNR="$HIER/instructions/myrepo-implementor.md"
+check "K3 Part 1: an unresolved class permits reading and the response only, and says to report it" '[ "$RC" -eq 0 ] && has "$UNR" "- **Your limits.** Your role'"'"'s class could not be resolved. Read files and write your response only: no other file writes and no code execution. Say in your report that your class could not be resolved." && [ "$(adapter "$UNR" | grep -c "^- \*\*Your limits")" -eq 1 ]'
+check "K3 Part 1: ...never falling back to implement (or any class) permissions" '! has "$UNR" "$(row implement)" && ! adapter "$UNR" | grep -qF "class).**"'
+
+# a Claude member: no instructions file created or overwritten, launch golden unchanged
+rm -rf "$HIER"; reset_state
+roster_cfg '[{"role":"reviewer","model":"opus"},{"role":"implementor","model":"opus"}]'
+mkdir -p "$HIER/instructions"; echo SENTINEL > "$HIER/instructions/myrepo-reviewer.md"
+FP_BEFORE=$(fingerprints)
+spawn_gen reviewer
+check "K3 Part 1: a Claude spawn leaves a pre-existing instructions file untouched and creates none" '[ "$(cat "$HIER/instructions/myrepo-reviewer.md")" = SENTINEL ] && [ "$(ls "$HIER/instructions" | wc -l | tr -d " ")" = 1 ]'
+check "K3 Part 1: ...its launch argv is the 0.91.0 golden" '[ "$(passthrough myrepo-reviewer)" = "$(node -e "console.log(JSON.stringify([\"--agent\",\"ah:reviewer\",\"--name\",\"myrepo-reviewer\",\"--model\",\"opus\",\"--settings\",JSON.stringify({env:{AH_TEAM_FILE:process.argv[1]}})]))" "$HIER/teams/myrepo.json")" ]'
+check "K3 Part 1: ...and its agent file is byte-identical" '[ "$(fingerprints)" = "$FP_BEFORE" ]'
+rm -rf "$PROJ/.claude/agents" "$HIER"; rm -f "$GLOBAL" "$CODEXHOME/config.toml"
 
 ########################################################################
 # K4 — deliver

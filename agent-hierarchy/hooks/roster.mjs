@@ -1635,16 +1635,59 @@ function isUnderDir(path, dir) {
 }
 
 /**
- * How working as a hierarchy member differs outside Claude Code. The one part of a non-claude
- * member's standing instructions written for it; the rest is its role's own contract.
+ * What a non-claude member may write and execute, by role class: the one row its standing
+ * instructions carry. A class missing here (an unresolved one) gets reading and its response only,
+ * never another class's row.
  */
-const HARNESS_ADAPTER = [
-  "- **How a brief arrives.** A prompt whose first line is `[hierarchy-msg <abs request path>]` and whose second is `Report to: <abs response path>`. Read the request file; it is the whole task.",
-  "- **How to report.** Write your report as the body of the response file, below its frontmatter, and never edit the frontmatter. Use bullets with the status first, then end your turn. Nothing you print is read; only the file is.",
-  "- **What you do not have.** There is no SendMessage, Agent tool, ListAgents, skills or task-gopher. Where the contract says to delegate retrieval, do it yourself. Where it says to message someone, or to route a need (`NEEDS-<ROLE>`, NEEDS-EVIDENCE), put it in the report.",
-  "- **Tool limits.** The contract's tool limits bind you even where this harness would allow more. For example, an Architect never runs code.",
-  "- **Pings.** A prompt that starts `Ping n/3:` means the report is overdue: write it now.",
-].join("\n");
+const CLASS_LIMITS = {
+  design: {
+    writes: "Only the absolute spec path dictated by the Orchestrator; no product code, tests, config or memory files. With no spec path, return the spec in the response rather than inventing a path.",
+    exec: "Forbidden: tests, builds, scripts, interpreter snippets (`node`, Python, etc.), experiments, through any tool or a delegate. Return NEEDS-EVIDENCE with the exact run/measurement and what each outcome decides.",
+  },
+  review: {
+    writes: "None: do not fix code or amend the spec.",
+    exec: "No direct execution. Report required runs as NEEDS-EVIDENCE. Never claim an unrun check passed.",
+  },
+  implement: {
+    writes: "Task-authorized code, tests, config and documentation; retain any narrower custom-role restrictions.",
+    exec: "Task-authorized tests/builds/scripts allowed, subject to the harness's sandbox and approval requirements.",
+  },
+  advise: {
+    writes: "No product edits. Amend only the absolute spec path when the Orchestrator expressly asks to fold a ruling into it. Otherwise response only.",
+    exec: "Read-only inspection locally. Report required runs as NEEDS-EVIDENCE.",
+  },
+  legwork: {
+    writes: "Only the precise writes ordered by the lead, plus the response.",
+    exec: "Only the precise execution ordered by the lead; incomplete orders are reported, not improvised.",
+  },
+};
+
+/**
+ * How working as a hierarchy member differs outside Claude Code: the one part of a non-claude
+ * member's standing instructions written for it; the rest is its role's own contract. It translates
+ * the contract's Claude tool names into this harness's actions and carries only the member's own
+ * class row. Advisory text, not enforcement: only the harness's sandbox enforces anything.
+ */
+function harnessAdapter(kind, cls) {
+  const limits = CLASS_LIMITS[cls];
+  return [
+    "- **How a brief arrives.** A prompt whose first line is `[hierarchy-msg <abs request path>]` and whose second is `Report to: <abs response path>`. Read the request file; it is the whole task.",
+    "- **How to report.** Write your report as the body of the response file, below its frontmatter, and never edit the frontmatter. Use bullets with the status first, then end your turn. Nothing you print is read; only the file is.",
+    "- **Writing the response (every role).** Read the assigned response file first; write only its body below the existing frontmatter, and preserve that frontmatter. This narrowly scoped reporting exception applies even to review and advise roles. Do not run `node .../msg.mjs`, create a replacement response, or use SendMessage: the Orchestrator has supplied the response file. If the response file is missing or inaccessible, state the blocker in your turn's final output; do not fabricate its frontmatter or report success.",
+    "- **Hierarchy facilities.** Claude's peer-messaging workflow is unavailable in this lane. Never spawn a chain-role subagent. Where your contract says to message someone, or to route a need (`NEEDS-<ROLE>`, NEEDS-EVIDENCE), put it in the report. Use a supplied skill only through the tools available here and within these limits.",
+    "- **Delegation.** Native task-runner delegation is not wired into this hierarchy adapter. Do only work your role contract permits you to do directly, including reading your brief and files needed for your own judgment. For work the contract requires you to delegate, list the unmet need in your response: NEEDS-EVIDENCE for tests, builds, scripts or other runs; NEEDS-IMPLEMENTOR for delegated retrieval. The Orchestrator routes it. Do not substitute self-execution, do required delegated legwork yourself, or launch a peer/subagent as a workaround. Do not claim unmet checks passed.",
+    "- **Tool mapping and limits.** Use the action-based mapping and the limits below, not a literal ban on a tool name from another harness. These are advisory instructions, not enforcement or a sandbox grant.",
+    "- **Precedence.** This section translates your contract's Claude tool-name bans and its reporting and delegation instructions for this harness. It does not override substantive bans on implementation, execution or changing unrelated files. So \"Bash denied\" does not forbid the native shell performing Read/Grep/Glob, and \"never edit\" does not forbid writing the assigned response body. A narrower task or contract restriction still wins.",
+    "- **Reading (every role).** `cat`, `sed -n`, `grep`, `rg`, `ls` and `head` with read-only arguments are the equivalents of Read/Grep/Glob. Read-only Git inspection (`git diff`, `git status`, `git show`) is also allowed; disable external diff and text-conversion helpers (`--no-ext-diff`, `--no-textconv`) so inspection does not run project code. No in-place flags, executing search actions, output redirection to files, or embedded commands that mutate or run code become permitted merely because the outer command is a reader.",
+    kind === "codex"
+      ? "- **Codex tools.** The shell/exec facility is Read/Grep/Glob for the read-only operations above; `apply_patch` is Write/Edit, restricted to the paths your limits below allow. A tool named `exec` does not turn file inspection into a forbidden test run. Do not ask for the brief to be pasted when permitted file reading is available. If a required capability is missing, report it rather than substituting an interpreter or script."
+      : "- **This harness's tools.** Apply these action limits with this harness's native file-editing tools; do not assume an `apply_patch` tool exists. If a required capability is missing, report it rather than substituting an interpreter or script.",
+    limits
+      ? `- **Your limits (${cls} class).** File writes beyond the response: ${limits.writes} Executing code: ${limits.exec}`
+      : "- **Your limits.** Your role's class could not be resolved. Read files and write your response only: no other file writes and no code execution. Say in your report that your class could not be resolved.",
+    "- **Pings.** A prompt that starts `Ping n/3:` means the report is overdue: write it now.",
+  ].join("\n");
+}
 
 /**
  * A non-claude member's standing instructions, assembled only from sources that already exist: who
@@ -1669,6 +1712,7 @@ function standingInstructions(member) {
   const fm = parseFrontmatter(source);
   const body = fm ? source.split("\n").slice(fm.end).join("\n") : source;
   const label = roleLabel(member.role, reg);
+  const cls = roleClass(member.role, reg);
   const text = [
     `# Standing instructions: ${label} (${member.name})`,
     "",
@@ -1687,7 +1731,7 @@ function standingInstructions(member) {
     "",
     "## Working outside Claude Code",
     "",
-    HARNESS_ADAPTER,
+    harnessAdapter(resolveKind(member), cls),
     "",
   ].join("\n");
   return { text };
