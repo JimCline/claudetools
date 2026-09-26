@@ -97,7 +97,7 @@ for verb in "dismiss m" "disband"; do
   $verb \\
   --close"
   check "asks on a backslash-continued $verb --close" '[ "$RC" -eq 0 ] && is_ask'
-  for rt in "node --no-warnings" "node --trace-warnings" "node -r /dev/null" "bun" "deno run -A" "nodejs --import x"; do
+  for rt in "node --no-warnings" "node --trace-warnings" "node -r /dev/null" "bun" "deno run -A" "nodejs --import x" "npx tsx" "node --a --b --c --d --e --f" "deno run --allow-read --allow-write --allow-env --allow-sys --allow-run"; do
     hook "$rt $ROSTER $verb --close"
     check "asks on '$rt' $verb --close" '[ "$RC" -eq 0 ] && is_ask'
   done

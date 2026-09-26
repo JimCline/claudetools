@@ -39,12 +39,13 @@ function ask(reason) {
 /**
  * The parser reads only a command that begins `node <abs>/roster.mjs`. A `cd … &&` or env prefix,
  * a relative script path, a `;` chain, `sh -c "…"`, a backslash continuation, a runtime option
- * (`node --no-warnings`) or another runtime (`bun`, `deno run -A`) is a shape it cannot read, and
- * the close would then run unasked. Such a command is a close when a runtime word is followed
- * within a few words by a `roster.mjs` word and, after it, a `dismiss`/`disband` word and a
- * `--close` word. Requiring a runtime word keeps a mention that has none (`git commit -m
+ * (`node --no-warnings`) or another runtime (`bun`, `tsx`, `deno run -A`) is a shape it cannot read,
+ * and the close would then run unasked. Such a command is a close when a runtime word is followed
+ * by a `roster.mjs` word — past any number of `-` options and at most two other words (`run`, an
+ * option's value) — and, after it, a `dismiss`/`disband` word and a `--close` word. Requiring a runtime word keeps a mention that has none (`git commit -m
  * "roster.mjs dismiss --close"`) silent; one that spells out `node roster.mjs …` asks, which
- * fails safe. Every command that does not mention both strings costs two substring tests and
+ * fails safe — so test shapes belong in the test file and reach the hook through stdin, never in a
+ * Bash command, where a grep pattern or heredoc mentioning one asks by design. Every command that does not mention both strings costs two substring tests and
  * reads no config.
  */
 function unparsedClose(command) {
@@ -52,8 +53,11 @@ function unparsedClose(command) {
   const words = command.replace(/\\\n/g, " ").split(/[\s;&|()<>`]+/).filter(Boolean);
   let at = -1;
   for (let i = 0; i < words.length && at < 0; i++) {
-    if (!/^["']?(.*\/)?(node|nodejs|bun|deno)$/.test(words[i])) continue;
-    for (let j = i + 1; j <= i + 5 && j < words.length; j++) if (/(^|\/)roster\.mjs["']?$/.test(words[j])) { at = j; break; }
+    if (!/^["']?(.*\/)?(node|nodejs|bun|deno|tsx)$/.test(words[i])) continue;
+    for (let j = i + 1, other = 0; j < words.length; j++) {
+      if (/(^|\/)roster\.mjs["']?$/.test(words[j])) { at = j; break; }
+      if (!words[j].startsWith("-") && ++other > 2) break;
+    }
   }
   if (at < 0) return false;
   const rest = words.slice(at + 1).map((w) => w.replace(/^["']+|["']+$/g, ""));
